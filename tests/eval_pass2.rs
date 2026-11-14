@@ -627,6 +627,90 @@ fn comparable_recording(dump: &str) -> Vec<String> {
         .collect()
 }
 
+/// snapshot-miss-speed: with the incremental tracker on (a snapshot miss)
+/// a native rule a frozen walk's worker published is merged, the accesses
+/// its worker's run made replayed in its planning frame
+/// (`buffer::tracked_natives`). `BAZEL_RS_T3_VERIFY_NATIVE_ACCESSES=1`
+/// commits each such rule at its turn instead and checks them against the
+/// commit's: clean for an output-group filegroup, an alias, and
+/// filegroups whose source lookups observe (sources in subdirectories);
+/// the index is the one of the natives committed at their turn either way.
+#[test]
+fn a_published_native_rules_accesses_are_its_commits() {
+    let ws = Workspace::new(
+        4,
+        r#"load("//tools:groups.bzl", "grouped")
+grouped(name = "made", deps = ["//p1:top"])
+filegroup(name = "picked", srcs = [":made"], output_group = "extra")
+filegroup(name = "plain", srcs = [":made", "a.txt", "sub/b.txt", "//p2:top"])
+filegroup(name = "nested", srcs = [":plain", "sub/deeper/c.txt"])
+alias(name = "named", actual = ":nested")
+filegroup(name = "all", srcs = [":everything", ":picked", ":named"])
+"#,
+    );
+    for (path, text) in [
+        ("a.txt", "x\n"),
+        ("sub/b.txt", "x\n"),
+        ("sub/deeper/c.txt", "x\n"),
+        ("tools/BUILD.bazel", ""),
+        (
+            "tools/groups.bzl",
+            "def _grouped_impl(ctx):\n    out = ctx.actions.declare_file(ctx.label.name + '.extra')\n    ctx.actions.write(out, 'x')\n    return [DefaultInfo(), OutputGroupInfo(extra = depset([out]))]\n\ngrouped = rule(implementation = _grouped_impl, attrs = {'deps': attr.label_list()})\n",
+        ),
+    ] {
+        let path = ws.path().join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+    let args = ["//:all", "--experimental-builtin-modules=true"];
+    let index = ws.path().join("tmp/index.txt");
+    let tracked = |mode: &str, env: &[(&str, &str)]| {
+        let _ = fs::remove_file(&index);
+        let _ = fs::remove_dir_all(ws.path().join("cache/worktrees"));
+        let mut all: Vec<(&str, &str)> = vec![
+            ("BAZEL_RS_SNAPSHOT", "on"),
+            ("BAZEL_RS_SNAPSHOT_INDEX_DUMP", index.to_str().unwrap()),
+            ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all"),
+            ("BAZEL_RS_TIMING", "1"),
+        ];
+        all.extend_from_slice(env);
+        let output = ws.build(mode, 8, &all, &args);
+        assert!(output.status.success(), "{env:?}: {}", stable(&output));
+        let dumped = fs::read_to_string(&index)
+            .unwrap_or_else(|error| panic!("the index dump: {error}: {}", stable(&output)));
+        (dumped, String::from_utf8_lossy(&output.stderr).into_owned())
+    };
+    // (The natives committed at their turn, as before snapshot-miss-speed.
+    // Not the walk's index: on this fixture main's evaluator records one
+    // label access the walk does not — `//p3:other` looking up `//:all` —
+    // whatever the natives do; reported as an open item.)
+    let (walk, _) = tracked("eval", &[("BAZEL_RS_T3_TRACKED_NATIVES", "0")]);
+    let (merged, stderr) = tracked("eval", &[]);
+    assert_eq!(merged, walk, "the merged natives' index");
+    // (The buffer's PERF line: natives merged as published.)
+    let fast = |stderr: &str| {
+        stderr
+            .lines()
+            .find(|line| line.starts_with("PERF-PARALLEL buffer starlark="))
+            .and_then(|line| {
+                line.split(' ')
+                    .find(|part| part.starts_with("fast_native="))
+            })
+            .and_then(|part| part["fast_native=".len()..].parse::<usize>().ok())
+            .unwrap_or(0)
+    };
+    assert!(
+        fast(&stderr) > 0,
+        "no native rule merged as published: {stderr}"
+    );
+    let (verified, stderr) = tracked("eval", &[("BAZEL_RS_T3_VERIFY_NATIVE_ACCESSES", "1")]);
+    assert_eq!(verified, walk, "the verified natives' index");
+    assert!(
+        stderr.contains("native_commit:filegroup=") && stderr.contains("native_commit:alias="),
+        "the natives were not checked at their turn: {stderr}"
+    );
+}
+
 /// S3 with the analysis snapshot's recording and the incremental tracker
 /// on (a snapshot miss, the default mode; docs/EVALUATOR.md "Selecting the
 /// engine"): the flushes are deferred there too, and the recording (the
