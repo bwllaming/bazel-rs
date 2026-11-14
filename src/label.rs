@@ -19,14 +19,18 @@ use crate::bazel_label::Parts;
 thread_local! {
     /// [`Label::parse_canonical_memo`]'s results while a package evaluates
     /// on this thread (`None` otherwise).
-    static CANONICAL_MEMO: std::cell::RefCell<Option<std::collections::HashMap<String, Result<Label, String>>>> =
+    static CANONICAL_MEMO: std::cell::RefCell<Option<crate::fast_hash::FxHashMap<String, Result<Label, String>>>> =
         const { std::cell::RefCell::new(None) };
     /// The native-rule converter's label resolutions while a package
     /// evaluates on this thread, by (package context, text)
     /// ([`converted_label`]).
-    static CONVERTED_MEMO: std::cell::RefCell<Option<std::collections::HashMap<(PackageId, String), ConvertedLabel>>> =
+    /// (By package, then by text: a lookup copies neither.)
+    static CONVERTED_MEMO: std::cell::RefCell<Option<ConvertedMemo>> =
         const { std::cell::RefCell::new(None) };
 }
+
+type ConvertedMemo =
+    crate::fast_hash::FxHashMap<PackageId, crate::fast_hash::FxHashMap<String, ConvertedLabel>>;
 
 /// The context-pure outcome of resolving a native rule attribute's label
 /// text in a package (crate::native_rules' converter): everything but the
@@ -50,18 +54,26 @@ pub(crate) fn converted_label(
     text: &str,
     compute: impl FnOnce() -> ConvertedLabel,
 ) -> ConvertedLabel {
-    let key = (package.clone(), text.to_owned());
     if let Some(cached) = CONVERTED_MEMO.with(|memo| {
         memo.borrow()
             .as_ref()
-            .and_then(|memo| memo.get(&key).cloned())
+            .and_then(|memo| memo.get(package)?.get(text).cloned())
     }) {
         return cached;
     }
     let converted = compute();
     CONVERTED_MEMO.with(|memo| {
         if let Some(memo) = memo.borrow_mut().as_mut() {
-            memo.insert(key, converted.clone());
+            match memo.get_mut(package) {
+                Some(texts) => {
+                    texts.insert(text.to_owned(), converted.clone());
+                }
+                None => {
+                    memo.entry(package.clone())
+                        .or_default()
+                        .insert(text.to_owned(), converted.clone());
+                }
+            }
         }
     });
     converted
@@ -80,9 +92,9 @@ pub(crate) fn package_parse_memo() -> PackageParseMemo {
         let mut memo = memo.borrow_mut();
         let owner = memo.is_none();
         if owner {
-            *memo = Some(std::collections::HashMap::new());
+            *memo = Some(Default::default());
             CONVERTED_MEMO.with(|converted| {
-                *converted.borrow_mut() = Some(std::collections::HashMap::new());
+                *converted.borrow_mut() = Some(Default::default());
             });
         }
         PackageParseMemo { owner }

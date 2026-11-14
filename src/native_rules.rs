@@ -1502,8 +1502,17 @@ pub(crate) fn input_labels(target: &NativeTarget, nodep: impl Fn(&str) -> bool) 
         }
     }
     // First occurrences in attribute order; the set only answers lookups.
-    let mut seen = std::collections::HashSet::with_capacity(labels.len());
-    labels.retain(|label| seen.insert(label.clone()));
+    // (Kept by position: no label copied into the set.)
+    let keep: Vec<bool> = {
+        let mut seen = crate::fast_hash::FxHashSet::default();
+        seen.reserve(labels.len());
+        labels.iter().map(|label| seen.insert(label)).collect()
+    };
+    let mut position = 0;
+    labels.retain(|_| {
+        position += 1;
+        keep[position - 1]
+    });
     labels
 }
 
