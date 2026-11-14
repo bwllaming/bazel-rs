@@ -1,7 +1,8 @@
 # The parallel analysis evaluator
 
 Status: **the default engine** (0.4.16, "Selecting the engine" below).
-The evaluator plans every request it covers unless the walk is faster;
+The evaluator plans every request (no fallback is left since
+eval-profile);
 `BAZEL_RS_ANALYSIS=walk` forces today's sequential phase-1 walk with the
 P3/S1/S2 pipeline (docs/PARALLEL_ANALYSIS.md); `BAZEL_RS_EVAL_VERIFY=1`
 plans with both and compares.
@@ -14,8 +15,8 @@ through it):
 
 | `BAZEL_RS_ANALYSIS` | Engine |
 |---|---|
-| unset, empty, `auto` (the default) | the evaluator, unless a fallback below applies |
-| `eval` | the evaluator, unless a **coverage** fallback applies (also where the walk is faster: tests, measurements) |
+| unset, empty, `auto` (the default) | the evaluator (a fallback below would apply here) |
+| `eval` | the evaluator (also where a future speed fallback would pick the walk: tests, measurements) |
 | `walk` | the walk, always |
 | anything else | an error naming the three values |
 
@@ -23,23 +24,20 @@ A test-suite binary built with `BAZEL_RS_DEFAULT_ANALYSIS=walk` (or
 `eval`) has that as its default (the walk-forced and eval-forced suite
 runs; tests that set `BAZEL_RS_ANALYSIS` themselves are unaffected).
 `BAZEL_RS_ANALYSIS_REPORT=1` (hidden) prints one line per planning:
-`bazel-rs: analysis engine: eval`, `walk (forced)` or
-`walk (fallback: <reason>)`.
+`bazel-rs: analysis engine: eval` or `walk (forced)`.
 
 `BAZEL_RS_ANALYSIS_ORDER=genuine` (opt-in; default `exact`) relaxes the
 console order and the first error to genuine Bazel's ("Genuine parity,
 task C" below).
 
-**Fallbacks** (silent: both engines plan identically, so nothing the user
-sees depends on the choice; `tests/eval_default.rs` checks each against the
-forced walk byte for byte):
-
-| Reason (report text) | When | Kind | Why |
-|---|---|---|---|
-| `--profile` | `--profile` | speed | the evaluator keeps every flush ordered there (the profile's spans of phase 2 and of the tape in the walk's order); ~/code `build --nobuild //src/...`: walk 46.6 s, eval 49.0 s, and its span set differs (eval-coverage, below) |
-
-The coverage fallbacks (`--keep_going`, cquery and its root checkpoint,
-aquery/print_action, top-level aspects) are gone since eval-coverage.
+**Fallbacks**: none is left. The coverage fallbacks (`--keep_going`,
+cquery and its root checkpoint, aquery/print_action, top-level aspects)
+are gone since eval-coverage; the last, `--profile` (a speed fallback: the
+evaluator kept every flush ordered there and was slower than the walk),
+since eval-profile ("eval-profile: `--profile` on the evaluator" below).
+`select::Selected` has `Eval` and `Forced`; a future fallback would be a
+variant reported as `walk (fallback: <reason>)`; `tests/eval_default.rs`
+checks the default and `eval` against the forced walk byte for byte.
 
 A snapshot recording (`BAZEL_RS_SNAPSHOT` `on`/`verify` on a miss — the
 default mode —, `record`) and the incremental tracker plan with the
@@ -402,6 +400,20 @@ change announced to the other two workers; adding a helper is not.
   documented). The `ExecCfg` value marks an interning failure with
   `nodes::phase1::EXEC_INTERN_ERROR` (the consumer locates it at its
   rule).
+- 2026-11-14 (eval-profile): `select::Fallback` and `Selected::Fallback`
+  are gone (`select_engine` keeps its signature). `--profile` no longer
+  changes the evaluator's scheduling: `lin.defer`, the speculative flag
+  phase 2s (`speculate::run`) and `fast_natives` ignore it. The
+  `configured target` span is the planning loops' (`profile::TargetSpan`
+  per plan entry in `plan_targets_timed`, `plan_targets_pipelined` and the
+  buffered walk's loop; `span.skip()` on a `--keep_going` skip) — not
+  `plan_one_target_body`/`commit_turn`'s any more (their `profiled`
+  parameter is gone); `speculate::isolated` runs under
+  `profile::without_targets`. `package::LoadUnit::profiled` (a
+  `profile::PendingSpan`) is committed by `settle_load_unit` /
+  `package::evaluate_in`; a new path that consumes a `LoadUnit` must
+  commit or drop it. The driver records `evaluator phase 1 and pass 1`
+  and `evaluator deferred walks` spans.
 - 2026-11-10 (eval-phase1, step 1): `repository::EvalAdoption::start_limited(&[group keys])`
   (adoption restricted to those groups; thread-local `EVAL_ALLOWED`);
   `nodes::loading::PkgValue::adopted_groups` (the groups the pool load
@@ -1115,7 +1127,7 @@ Branch `eval-csmatch` (main `08c7174b`). A config_setting with Starlark
   `capture::isolated`); the workspace status is never computed there
   (`speculate::speculating`). A run that cannot be speculated (a
   transcript freed, a repository sentinel, a failure anywhere in the
-  subtree, `--profile`) leaves the `Ct2` to the sequential pass (the
+  subtree) leaves the `Ct2` to the sequential pass (the
   `INLINE` marker), which flushes as the walk does. A failed run discards
   the scratch engine (the next one forks anew).
 - **Verification.** The FeatureFlagInfo a config_setting read is compared
@@ -1248,7 +1260,7 @@ one) when the order would show (counted, `BAZEL_RS_EVAL_STATS`):
 |---|---|---|
 | it publishes a new platform | work ahead of its turn would see the platform deferred where the ordered walk sees it resolved (ctx surface, execution table); the deferred segments are walked before it is published | 5 (the first 22,397 plan entries) |
 | its segment holds a Starlark rule or genrule whose configuration's target platform is unresolved | its phase 2 may resolve the deferred platform, whose tree the ordered walk plans at the flush (`Engine::eval_pass2_resolves_platform`: an internal error if it happens in a deferred segment anyway); the no-config configuration's rules (licenses, package metadata) have none to resolve | 0 (68 before the no-config exception) |
-| `--profile`, `BAZEL_RS_EVAL_NO_DEFER=1` | the profile records phase 2 and the tape in their order | 0 |
+| `BAZEL_RS_EVAL_NO_DEFER=1` | a diagnostics switch (`--profile` kept every flush ordered until eval-profile) | 0 |
 
 (Until eval-record the tracker and the observation recording kept every
 flush ordered too: "eval-record" below.)
@@ -2102,8 +2114,9 @@ pass-2 walk of ≥ 2,048 entries; `BAZEL_RS_EVAL_FROZEN_PREPARES=0` off,
   native rule whose results a worker published is merged from them
   (`merge_published_native`: artifacts resolved through the index, the
   published files to build reused when no producer changed;
-  `BAZEL_RS_VERIFY_DELTA` / `BAZEL_RS_VERIFY_AHEAD` / `--profile` /
-  `BAZEL_RS_T3_NATIVE_COMMIT=1` commit instead, checking them). The first
+  `BAZEL_RS_VERIFY_DELTA` / `BAZEL_RS_VERIFY_AHEAD` /
+  `BAZEL_RS_T3_NATIVE_COMMIT=1` commit instead, checking them; `--profile`
+  did until eval-profile). The first
   error in plan order stops the walk (fail fast; later finished jobs held
   their effects: dropped; a worker's panic is raised at its turn).
 - **Declarations**: a merge republishes a declaration only as an
@@ -2869,7 +2882,7 @@ the deferred walk walks on the pipeline (−0.2 GB, ~+3 s;
 | `BAZEL_RS_SNAPSHOT=record` | 59.3 / 58.3 s, 9.58 / 9.44 GB | 46.5 / 45.2 s, 9.61 / 9.62 GB |
 | snapshot off | 44.3 / 43.8 s, 8.93 / 8.85 GB | 21.3 / 20.9 s, 9.73 / 9.79 GB |
 
-`--profile` still plans with the walk.
+`--profile` still plans with the walk (until eval-profile).
 ### The sweep while recording: one rewritten group per tree (eval-t3)
 
 The walk expands a tool's runfiles tree once per build (the memo
@@ -3453,7 +3466,8 @@ Measured (~/code): `aquery //src/rust/graphlake/...` (text, jsonproto),
 8–21 s on both engines (an aquery's phase 2 has no commits ahead or frozen
 walks either: its capture is the coordinator's).
 
-**`--profile`** (step 5, not done: still the speed fallback). Under
+**`--profile`** (step 5, done in eval-profile: "eval-profile: `--profile`
+on the evaluator" below). Before it, under
 `BAZEL_RS_ANALYSIS=eval` the evaluator plans it with ordered flushes and
 no speculative flag phase 2s. On a small workspace the profile's events
 are the walk's but for the package-loading lane (`eval-N` threads instead
@@ -3783,3 +3797,58 @@ ids canonical at the merge); memory of buffered results (cap); pass-1
 decisions (`empty_configuration_rules`, `forced_exec`) needed before a
 `Ct2` can start — pass 1 streams ahead of phase 2, or the merge checks the
 variant.
+
+## eval-profile: `--profile` on the evaluator
+
+The last fallback is gone: `--profile` plans with the evaluator, which
+schedules exactly as without it (flushes deferred, flag phase 2s
+speculated, plain natives merged). The spans are recorded per thread
+(`crate::profile`'s buffers), so nothing needs the walk's order; what the
+profile must contain is defined as sets (docs/PROFILE.md "Parity", from a
+genuine 9.3.1 capture: genuine's own spans come from many threads in a
+nondeterministic order, restarted SkyFunctions repeat theirs, and it has
+no per-target analysis spans by default).
+
+Why the evaluator was slower with `--profile` (main: 45.4–46.4 s vs the
+walk's 44.6–46.4 s, and ~16 s without the profile): `--profile` turned off
+three of its speedups — the deferral of flushes (`lin.defer`: every flush
+walked at once, in order), the speculative flag phase 2s (left to the
+sequential pass) and the fast native merges — to keep the spans in the
+walk's order. None is needed: the writer never flushed in order.
+
+Exact span sets: one `configured target` span per plan entry (the loops'
+`profile::TargetSpan`, whatever path planned it: a commit at its turn, a
+commit ahead of it, a merge of a worker's published results, a delta);
+one `package creation` span per committed load (`profile::PendingSpan`
+in the `LoadUnit`, committed by `settle_load_unit`), genuine's
+`PackageIdentifier.toString()` name. The walk had gaps the evaluator
+inherited: main's walk profile of ~/code held 99,955 `configured target`
+spans over only 12,845 of the 29,497 (label, rule) pairs (merged and
+committed-ahead entries had none, some had two) and 12,832
+`package creation` spans over 11,697 names (the prefetch's unused loads,
+attempts aborted for their inline re-run) for 10,264 packages loaded.
+
+Measured (2026-11-14, ~/code `80d6724f3a` private clone, non-LTO release
+builds, warm repositories, host load 14–38; `build --nobuild //src/...`,
+two alternating rounds):
+
+| | main `f8a74027` | eval-profile |
+|---|---|---|
+| default, `--profile` | 44.6 / 46.4 s (walk, fallback), 8.82 GB | 18.6 / 17.0 s (eval), 9.55–9.74 GB |
+| `BAZEL_RS_ANALYSIS=eval`, `--profile` | 46.4 / 45.4 s, 9.16–9.19 GB | (the default) |
+| `BAZEL_RS_ANALYSIS=walk`, `--profile` | (the default) | 43.1 / 45.6 s, 8.72–8.79 GB |
+| default, no profile | — | 15.9 / 16.1 s, 9.46–9.49 GB |
+
+Profile content, walk vs eval (eval-profile): 133,156 `configured target`
+spans each (= `133156 targets configured`), the same (label, rule)
+multiset (29,497 pairs); 10,264 `package creation` spans each
+(= `10264 packages loaded`), the same names; stderr and stdout identical.
+The evaluator's profile adds its `skyframe evaluator` / `evaluator
+deferred walks` spans and its lanes (98 vs 66). The profile costs the
+evaluator ~1–2 s (133k spans on the planning thread, 10k on the pool,
+writing ~27 MB of JSON).
+
+Tests: `tests/eval_pass2.rs::the_profile_has_the_walks_targets_and_packages`
+(deferral and speculation happen with `--profile`; the walk's span
+multisets at 1, 8 and 32 threads, jitter, restarts, the workers'
+prepares), `tests/eval_default.rs::the_profile_plans_with_the_evaluator`.
