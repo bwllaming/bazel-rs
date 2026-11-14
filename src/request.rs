@@ -1077,7 +1077,8 @@ pub fn execute_with_tests(
         }
         results
     } else {
-        drop(nodes);
+        // (~0.25 s for ~/code's plan: on the planning dropper thread.)
+        crate::engine::drop_elsewhere(nodes);
         BTreeMap::new()
     };
     crate::perf_mark("execute.end");

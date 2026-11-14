@@ -11322,12 +11322,16 @@ impl Engine {
             views,
             input_groups,
             listed_tree_actions: _,
-            input_memos: _,
+            input_memos,
             delegations_scanned: _,
-            delegated_keys: _,
-            walk_results: _,
-            canonical_reads: _,
+            delegated_keys,
+            walk_results,
+            canonical_reads,
         } = state;
+        // Not read again: the frozen walks' results, the sweep's reads and
+        // the memoized walks' shared inputs (~0.15 s to drop on ~/code, at
+        // the function's end before) go to the planning dropper thread.
+        drop_elsewhere((walk_results, canonical_reads, input_memos, delegated_keys));
         // The top-level lookups below: a workspace status File no target
         // registered (only possible under --nobuild, which plans no status
         // action above) is registered by the lookup that reaches it.
@@ -11878,6 +11882,8 @@ impl Engine {
             spent_taken.push(taken);
         }
         drop_elsewhere(spent_taken);
+        // The top-level deduplication's set (one entry per artifact).
+        drop_elsewhere(seen);
         if derive_recording {
             let mut roots = DeriveRoots::default();
             let mut own: HashMap<&Label, BTreeSet<String>> = HashMap::new();
@@ -11996,18 +12002,23 @@ impl Engine {
         );
         // By reference (the ids live in `nodes` and the artifacts): the
         // reachable set, then a mask over `nodes` in order.
-        let mut required: crate::fast_hash::FxHashSet<&str> = Default::default();
+        // Each id's last node (the one whose dependencies are followed)
+        // marks the id reached: one lookup per edge.
         let mut keep = vec![false; nodes.len()];
-        let position_of: crate::fast_hash::FxHashMap<&str, usize> = nodes
-            .iter()
-            .enumerate()
-            .map(|(position, node)| (node.action.id.as_str(), position))
-            .collect();
+        let mut position_of: crate::fast_hash::FxHashMap<&str, usize> =
+            crate::fast_hash::FxHashMap::with_capacity_and_hasher(nodes.len(), Default::default());
+        // The earlier nodes of an id planned twice (rare).
+        let mut repeated: Vec<usize> = Vec::new();
+        for (position, node) in nodes.iter().enumerate() {
+            if let Some(earlier) = position_of.insert(node.action.id.as_str(), position) {
+                repeated.push(earlier);
+            }
+        }
         while let Some(id) = todo.pop() {
-            if required.insert(id) {
-                let position = *position_of
-                    .get(id)
-                    .ok_or_else(|| format!("missing producing action: {id}"))?;
+            let position = *position_of
+                .get(id)
+                .ok_or_else(|| format!("missing producing action: {id}"))?;
+            if !keep[position] {
                 keep[position] = true;
                 todo.extend(
                     nodes[position]
@@ -12016,14 +12027,28 @@ impl Engine {
                 );
             }
         }
+        let reached = |id: &str| position_of.get(id).is_some_and(|position| keep[*position]);
         // An id planned twice keeps every node of it (as the id set did).
-        for (position, node) in nodes.iter().enumerate() {
-            if !keep[position] && required.contains(node.action.id.as_str()) {
-                keep[position] = true;
-            }
+        let repeated_kept: Vec<usize> = repeated
+            .into_iter()
+            .filter(|earlier| reached(nodes[*earlier].action.id.as_str()))
+            .collect();
+        // The runfiles supports whose manifest action is executed (their
+        // prefix conflicts are reported below).
+        let executed_supports: Vec<&RunfilesNodes> = runfiles_nodes
+            .values()
+            .filter(|support| {
+                support
+                    .manifest
+                    .as_ref()
+                    .and_then(|manifest| manifest.producer.as_ref())
+                    .is_some_and(|(id, _)| reached(id.as_str()))
+            })
+            .collect();
+        for earlier in repeated_kept {
+            keep[earlier] = true;
         }
         drop(position_of);
-        drop(required);
         // The unreachable nodes are dropped on a thread of their own.
         let mut position = 0;
         let unreachable: Vec<PlannedAction> = nodes
@@ -12090,27 +12115,17 @@ impl Engine {
         // conflicts of an executed manifest action are events at the
         // owner's location, errors under ConflictPolicy.ERROR.
         crate::perf_mark("plan.tail.owners");
-        // The reachable ids: the kept nodes'.
-        let required: crate::fast_hash::FxHashSet<&str> =
-            nodes.iter().map(|node| node.action.id.as_str()).collect();
-        for support in runfiles_nodes.values() {
-            let executed = support
-                .manifest
-                .as_ref()
-                .and_then(|manifest| manifest.producer.as_ref())
-                .is_some_and(|(id, _)| required.contains(id.as_str()));
-            if executed {
-                for message in &support.conflicts {
-                    let text = located(support.location.as_deref(), message.clone());
-                    if support.conflict_error {
-                        self.errors.push(text);
-                    } else {
-                        self.warnings.push(text);
-                    }
+        // (Found reached by the prune above.)
+        for support in executed_supports {
+            for message in &support.conflicts {
+                let text = located(support.location.as_deref(), message.clone());
+                if support.conflict_error {
+                    self.errors.push(text);
+                } else {
+                    self.warnings.push(text);
                 }
             }
         }
-        drop(required);
         // Missing declared source files fail only where needed: as requested
         // outputs or as inputs of an executed action (ArtifactFunction
         // "missing input file", skyframe/ArtifactFunction.java:79-90, 404-430;
@@ -12127,7 +12142,18 @@ impl Engine {
             .iter()
             .map(|(path, label)| (crate::path_key::PathKey(path), label))
             .collect();
+        let source_directories = self.source_directories.clone();
+        // Most paths are neither: a cheap prefilter first (crate::path_key).
+        let may_name_either = crate::path_key::PathFilter::new(
+            missing_sources
+                .keys()
+                .chain(source_directories.keys())
+                .map(PathBuf::as_path),
+        );
         let missing = |real: &Path| {
+            if !may_name_either.may_contain(real) {
+                return None;
+            }
             missing_lookup
                 .get(&crate::path_key::PathKey(real))
                 .filter(|_| crate::observed_fs::symlink_metadata(real).is_err())
@@ -12143,44 +12169,41 @@ impl Engine {
         // traverses each one it needs and fails like Bazel's traversal
         // (crate::source_directories), reported like a missing input file
         // (docs/SOURCE_DIRECTORIES.md).
-        let source_directories = self.source_directories.clone();
         let directory_lookup: crate::path_key::PathSet<'_> = source_directories
             .keys()
             .map(|path| crate::path_key::PathKey(path))
             .collect();
-        let is_directory = |real: &Path| {
-            directory_lookup.contains(&crate::path_key::PathKey(real))
-                && crate::observed_fs::is_dir(real)
+        let in_directories = |real: &Path| {
+            may_name_either.may_contain(real)
+                && directory_lookup.contains(&crate::path_key::PathKey(real))
         };
+        let is_directory = |real: &Path| in_directories(real) && crate::observed_fs::is_dir(real);
         // PA-1: a tool runfiles tree's shared group holding a source
         // directory is listed in the node (exactly what planning lists
         // without sharing), so its destination is marked like an own input.
         let mut directory_groups: HashMap<*const scheduler::InputGroup, bool> = HashMap::new();
         // Without source directories nothing is marked; a node none of whose
         // paths names one (found on workers, plan B4) marks nothing either.
-        let candidates =
-            if directory_lookup.is_empty() {
-                Vec::new()
-            } else {
-                let mut group_hits: crate::fast_hash::FxHashMap<usize, bool> = Default::default();
-                for group in nodes.iter().flat_map(|node| &node.groups) {
-                    group_hits
-                        .entry(Arc::as_ptr(group) as usize)
-                        .or_insert_with(|| {
-                            group.sources.iter().any(|real| {
-                                directory_lookup.contains(&crate::path_key::PathKey(real))
-                            })
-                        });
-                }
-                positions_where(&nodes, self.loading_phase_threads, |node| {
-                    node.groups
+        let candidates = if directory_lookup.is_empty() {
+            Vec::new()
+        } else {
+            let mut group_hits: crate::fast_hash::FxHashMap<usize, bool> = Default::default();
+            for group in nodes.iter().flat_map(|node| &node.groups) {
+                group_hits
+                    .entry(Arc::as_ptr(group) as usize)
+                    .or_insert_with(|| group.sources.iter().any(|real| in_directories(real)));
+            }
+            positions_where(&nodes, self.loading_phase_threads, |node| {
+                node.groups
+                    .iter()
+                    .any(|group| group_hits[&(Arc::as_ptr(group) as usize)])
+                    || node
+                        .action
+                        .inputs
                         .iter()
-                        .any(|group| group_hits[&(Arc::as_ptr(group) as usize)])
-                        || node.action.inputs.iter().any(|(real, _)| {
-                            directory_lookup.contains(&crate::path_key::PathKey(real))
-                        })
-                })
-            };
+                        .any(|(real, _)| in_directories(real))
+            })
+        };
         for position in candidates {
             let node = &mut nodes[position];
             let holds_directory = node.groups.iter().any(|group| {
@@ -12393,8 +12416,9 @@ impl Engine {
         // fail: a node none of whose source paths does is skipped before
         // its paths are listed (deduplicated) for the reports.
         let may_fail = |real: &Path| {
-            missing_lookup.contains_key(&crate::path_key::PathKey(real))
-                || directory_lookup.contains(&crate::path_key::PathKey(real))
+            may_name_either.may_contain(real)
+                && (missing_lookup.contains_key(&crate::path_key::PathKey(real))
+                    || directory_lookup.contains(&crate::path_key::PathKey(real)))
         };
         let none_may_fail = missing_lookup.is_empty() && directory_lookup.is_empty();
         let failing_paths_of =
