@@ -1347,6 +1347,17 @@ pub(super) fn publish_starlark_results(
         let Some(view) = frozen.view.as_ref() else {
             return false;
         };
+        // The delta's own artifacts by exec path, the first in op order
+        // (and in a dry list's order) for each path: what a scan of the
+        // ops for the path finds. Built at the first shared output (a scan
+        // per shared output was quadratic in large deltas).
+        let mut own_by_exec: Option<
+            HashMap<
+                crate::path_key::PathKey<'_>,
+                &crate::engine::Artifact,
+                crate::path_key::FastState,
+            >,
+        > = None;
         for op in &built.ops {
             let delta::DeltaOp::Output(path, _) = op else {
                 continue;
@@ -1358,19 +1369,30 @@ pub(super) fn publish_starlark_results(
             // or files), and the earlier entry's (its own File: another
             // owner's is a distinct entry): the merge names that one's
             // action as the producer (output_artifact's `first`).
-            let Some(own) = built.ops.iter().find_map(|op| match op {
-                delta::DeltaOp::Artifact(_, artifact, _)
-                | delta::DeltaOp::Declared { artifact, .. }
-                    if artifact.exec == *path.path() =>
-                {
-                    Some(artifact.clone())
+            let own_by_exec = own_by_exec.get_or_insert_with(|| {
+                let mut map = HashMap::default();
+                for op in &built.ops {
+                    match op {
+                        delta::DeltaOp::Artifact(_, artifact, _)
+                        | delta::DeltaOp::Declared { artifact, .. } => {
+                            map.entry(crate::path_key::PathKey(&artifact.exec))
+                                .or_insert(artifact);
+                        }
+                        delta::DeltaOp::Dry(dry) => {
+                            for artifact in dry.iter() {
+                                map.entry(crate::path_key::PathKey(&artifact.exec))
+                                    .or_insert(artifact);
+                            }
+                        }
+                        _ => {}
+                    }
                 }
-                delta::DeltaOp::Dry(dry) => dry
-                    .iter()
-                    .find(|artifact| artifact.exec == *path.path())
-                    .cloned(),
-                _ => None,
-            }) else {
+                map
+            });
+            let Some(own) = own_by_exec
+                .get(&crate::path_key::PathKey(path.path()))
+                .map(|artifact| (*artifact).clone())
+            else {
                 delta::provisional_bump(6);
                 // The sweep rewrites its readers at their merges.
                 if super::super::sweep::enabled() {
