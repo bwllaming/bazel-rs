@@ -627,8 +627,28 @@ impl<'a> SharedPrepare<'a> {
         // What the miss path registered is visible from this turn on (as
         // a hit ahead of its turn on the coordinator).
         if let Some(artifacts) = &fill.artifacts {
-            for artifact in artifacts.iter() {
-                register_artifact(&self.index, &artifact.file, artifact);
+            // On a worker: none again once they were all canonical and
+            // visible at or before this turn (parallel::VisibleViews; in
+            // debug builds and under BAZEL_RS_VERIFY_ARTIFACTS registered
+            // and checked anyway, each found so).
+            let frozen = self.frozen.map(|(frozen, _)| frozen);
+            let reader = self.index.turn;
+            let known =
+                frozen.is_some_and(|frozen| frozen.visible_views.visible(artifacts, reader));
+            if !known || cfg!(debug_assertions) || verify_artifacts() {
+                let mut visible = true;
+                for artifact in artifacts.iter() {
+                    let found = self.index.register_visible(&artifact.file, artifact);
+                    assert!(
+                        found || !known,
+                        "internal error: {} of a dependency view known visible at plan index {reader} was not",
+                        artifact.file.path
+                    );
+                    visible &= found;
+                }
+                if visible && let Some(frozen) = frozen {
+                    frozen.visible_views.note(artifacts, reader);
+                }
             }
         }
         if let Some(accessed) = &fill.accesses {

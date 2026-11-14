@@ -1062,6 +1062,21 @@ impl ConcurrentArtifactIndex {
         stamp: u32,
         provisional: bool,
     ) {
+        self.register_visible(hash, file, artifact, reader, stamp, provisional);
+    }
+
+    /// [`Self::register`]; whether `file`'s entry was canonical and visible
+    /// to `reader` already (a worker prepare's: it stays so, canonical
+    /// entries are never withdrawn and their stamps only lower).
+    fn register_visible(
+        &self,
+        hash: u64,
+        file: impl IntoOwned<File>,
+        artifact: impl IntoOwned<Artifact>,
+        reader: u32,
+        stamp: u32,
+        provisional: bool,
+    ) -> bool {
         // An entry visible to `reader` already, canonical: kept as it is
         // (the write path below does only the check) — under the read lock
         // (a dependency view's hit registers each of its artifacts again on
@@ -1080,7 +1095,7 @@ impl ConcurrentArtifactIndex {
                 {
                     check_reregistered(&entry.file, &entry.artifact, artifact.borrow());
                 }
-                return;
+                return true;
             }
         }
         let mut shard = self.shard(hash).write().unwrap_or_else(|e| e.into_inner());
@@ -1158,6 +1173,7 @@ impl ConcurrentArtifactIndex {
                 });
             }
         }
+        false
     }
 
     /// T2: an entry still provisional (its publisher never merged it), by
@@ -1275,6 +1291,20 @@ impl ArtifactIndex {
             self.stamp,
             self.provisional,
         );
+    }
+
+    /// [`register_artifact`] of a worker prepare's view: whether `file`'s
+    /// entry was canonical and visible at this turn already
+    /// ([`ConcurrentArtifactIndex::register_visible`]).
+    fn register_visible(&self, file: &File, artifact: &Artifact) -> bool {
+        self.shared.register_visible(
+            file_hash(file),
+            file,
+            artifact,
+            self.turn,
+            self.stamp,
+            self.provisional,
+        )
     }
 
     fn len(&self) -> usize {

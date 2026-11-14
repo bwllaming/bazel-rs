@@ -96,6 +96,55 @@ pub(in crate::engine) struct Frozen {
     /// Debug builds: the materialized repository roots when the walk
     /// froze (a symlinked source's answer on a worker depends on them).
     pub(in crate::engine) link_roots: usize,
+    /// The dependency views whose artifacts a worker prepare found all
+    /// canonical and visible ([`VisibleViews`]).
+    pub(in crate::engine) visible_views: VisibleViews,
+}
+
+/// A dependency view's artifacts (by the address of their shared list, the
+/// list kept) that a worker prepare at plan index `reader` found all
+/// registered, canonical and visible to it: they stay so for any later
+/// reader (canonical index entries are never withdrawn, their stamps only
+/// lower), so a view hit there registers none of them again (each a hash,
+/// a lookup and a lock: every edge to a view of thousands of files).
+pub(in crate::engine) struct VisibleViews {
+    shards: Box<[std::sync::Mutex<VisibleFrom>]>,
+}
+
+/// By list address: the list and the earliest reader it was visible to.
+type VisibleFrom = crate::fast_hash::FxHashMap<usize, (Artifacts, u32)>;
+
+impl Default for VisibleViews {
+    fn default() -> Self {
+        VisibleViews {
+            shards: (0..16).map(|_| Default::default()).collect(),
+        }
+    }
+}
+
+impl VisibleViews {
+    fn shard(&self, artifacts: &Artifacts) -> std::sync::MutexGuard<'_, VisibleFrom> {
+        let address = Arc::as_ptr(artifacts) as usize;
+        self.shards[(address >> 4) % self.shards.len()]
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Whether `artifacts` were all canonical and visible to a reader at or
+    /// before `reader`.
+    pub(in crate::engine) fn visible(&self, artifacts: &Artifacts, reader: u32) -> bool {
+        self.shard(artifacts)
+            .get(&(Arc::as_ptr(artifacts) as usize))
+            .is_some_and(|(_, from)| *from <= reader)
+    }
+
+    /// `artifacts` were all canonical and visible to `reader`.
+    pub(in crate::engine) fn note(&self, artifacts: &Artifacts, reader: u32) {
+        self.shard(artifacts)
+            .entry(Arc::as_ptr(artifacts) as usize)
+            .and_modify(|(_, from)| *from = (*from).min(reader))
+            .or_insert_with(|| (Arc::clone(artifacts), reader));
+    }
 }
 
 impl Frozen {
@@ -647,6 +696,7 @@ impl Engine {
             } else {
                 0
             },
+            visible_views: Default::default(),
         })
     }
 
@@ -740,6 +790,7 @@ impl Engine {
             } else {
                 0
             },
+            visible_views: Default::default(),
         }))
     }
 
