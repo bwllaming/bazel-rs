@@ -120,7 +120,7 @@ pub(crate) trait Host {
     fn toolchain_context_of(
         &mut self,
         key: &ConfiguredTargetKey,
-    ) -> Option<UnloadedToolchainContext>;
+    ) -> Option<Arc<UnloadedToolchainContext>>;
     fn exec_groups_of(
         &mut self,
         key: &ConfiguredTargetKey,

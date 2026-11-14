@@ -1210,12 +1210,15 @@ pub(crate) trait Phase1: Host {
         let mut result: Vec<(Label, Vec<Label>)> = Vec::new();
         let default = self.toolchain_context_of(key);
         let groups = self.exec_groups_of(key);
-        let contexts = default.iter().chain(groups.iter().flat_map(|groups| {
-            groups
-                .groups
-                .iter()
-                .filter_map(|group| group.context.as_ref())
-        }));
+        let contexts = default
+            .iter()
+            .map(Arc::as_ref)
+            .chain(groups.iter().flat_map(|groups| {
+                groups
+                    .groups
+                    .iter()
+                    .filter_map(|group| group.context.as_ref())
+            }));
         for context in contexts {
             for (info, implementation) in &context.resolved {
                 let mut labels = vec![info.type_label.clone()];

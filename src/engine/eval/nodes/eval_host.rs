@@ -47,7 +47,7 @@ struct Ct1Acc {
     node: Option<ConfiguredNode>,
     rule: Option<Arc<Rule>>,
     delegate: Option<ConfiguredTargetKey>,
-    toolchain_context: Option<UnloadedToolchainContext>,
+    toolchain_context: Option<Arc<UnloadedToolchainContext>>,
     exec_groups: Option<crate::exec_groups::TargetExecGroups>,
     exec_config: Option<ConfigId>,
     group_exec_configs: BTreeMap<String, ConfigId>,
@@ -722,7 +722,7 @@ impl Host for EvalHost<'_, '_> {
     fn toolchain_context_of(
         &mut self,
         key: &ConfiguredTargetKey,
-    ) -> Option<UnloadedToolchainContext> {
+    ) -> Option<Arc<UnloadedToolchainContext>> {
         if self.own_key() == Some(key) {
             return self.acc.toolchain_context.clone();
         }
@@ -973,7 +973,7 @@ impl Host for EvalHost<'_, '_> {
         _key: &ConfiguredTargetKey,
         context: UnloadedToolchainContext,
     ) {
-        self.acc.toolchain_context = Some(context);
+        self.acc.toolchain_context = Some(Arc::new(context));
     }
 
     fn record_exec_groups(

@@ -97,7 +97,7 @@ pub(crate) struct Ct1Ok {
     /// (`rule_delegations`): `node` is the owner's.
     pub(crate) delegate: Option<ConfiguredTargetKey>,
     /// `toolchain_contexts[key]`.
-    pub(crate) toolchain_context: Option<UnloadedToolchainContext>,
+    pub(crate) toolchain_context: Option<Arc<UnloadedToolchainContext>>,
     /// `exec_group_contexts[key]` (present when the rule resolves
     /// toolchains).
     pub(crate) exec_groups: Option<crate::exec_groups::TargetExecGroups>,

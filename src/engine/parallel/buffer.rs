@@ -1678,7 +1678,7 @@ fn requirements(
                 .map(|(label, config, _, _)| (label, config)),
         );
         let groups = engine.exec_group_contexts.get(key);
-        for context in std::iter::once(engine.toolchain_contexts.get(key))
+        for context in std::iter::once(engine.toolchain_contexts.get(key).map(Arc::as_ref))
             .flatten()
             .chain(groups.iter().flat_map(|groups| {
                 groups

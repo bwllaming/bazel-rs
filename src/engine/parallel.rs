@@ -3658,13 +3658,17 @@ impl Engine {
             .map(|(label, config, _, _)| (label, config))
             .collect();
         let groups = self.exec_group_contexts.get(key).cloned();
-        for context in std::iter::once(self.toolchain_contexts.get(key).cloned())
-            .chain(
-                groups
-                    .iter()
-                    .flat_map(|groups| groups.groups.iter().map(|group| group.context.clone())),
-            )
-            .flatten()
+        for context in std::iter::once(
+            self.toolchain_contexts
+                .get(key)
+                .map(|context| (**context).clone()),
+        )
+        .chain(
+            groups
+                .iter()
+                .flat_map(|groups| groups.groups.iter().map(|group| group.context.clone())),
+        )
+        .flatten()
         {
             for (_, implementation) in &context.resolved {
                 labels.push((implementation.clone(), key.config));

@@ -3487,7 +3487,7 @@ pub struct Engine {
     requested_trimmed_root: Option<ConfiguredTargetKey>,
     /// The resolved toolchain context of each toolchain-resolving rule of
     /// the build (UnloadedToolchainContext), read by the build loop.
-    toolchain_contexts: Shared<KeyMap<UnloadedToolchainContext>>,
+    toolchain_contexts: Shared<KeyMap<Arc<UnloadedToolchainContext>>>,
     /// The other exec groups of each toolchain-resolving rule's
     /// ToolchainCollection (docs/EXEC_GROUPS.md; the default `test` group of
     /// a Starlark test rule, docs/TEST_FLAGS.md).
@@ -5229,17 +5229,22 @@ impl Engine {
     /// aliases.
     fn base_target_toolchains(&self, key: &ConfiguredTargetKey) -> Vec<(Label, Vec<Label>)> {
         let mut result: Vec<(Label, Vec<Label>)> = Vec::new();
-        let contexts = self.toolchain_contexts.get(key).into_iter().chain(
-            self.exec_group_contexts
-                .get(key)
-                .into_iter()
-                .flat_map(|groups| {
-                    groups
-                        .groups
-                        .iter()
-                        .filter_map(|group| group.context.as_ref())
-                }),
-        );
+        let contexts = self
+            .toolchain_contexts
+            .get(key)
+            .map(Arc::as_ref)
+            .into_iter()
+            .chain(
+                self.exec_group_contexts
+                    .get(key)
+                    .into_iter()
+                    .flat_map(|groups| {
+                        groups
+                            .groups
+                            .iter()
+                            .filter_map(|group| group.context.as_ref())
+                    }),
+            );
         for context in contexts {
             for (info, implementation) in &context.resolved {
                 let mut labels = vec![info.type_label.clone()];
@@ -5339,7 +5344,7 @@ impl Engine {
         self.execution_table(
             config,
             &raw,
-            self.toolchain_contexts.get(&key),
+            self.toolchain_contexts.get(&key).map(Arc::as_ref),
             groups,
             &self.display_form(&rule.label),
         )
@@ -8558,7 +8563,7 @@ impl Engine {
             }
         };
         let target_exec_groups = cx.engine().exec_group_contexts.get(key).cloned();
-        for context in std::iter::once(cx.engine().toolchain_contexts.get(key))
+        for context in std::iter::once(cx.engine().toolchain_contexts.get(key).map(Arc::as_ref))
             .chain(
                 target_exec_groups
                     .iter()
@@ -8828,7 +8833,7 @@ impl Engine {
                     rule.rule_class_name(),
                     crate::rule_declarations::canonical_form(&rule.label)
                 );
-                for context in std::iter::once(engine.toolchain_contexts.get(&key))
+                for context in std::iter::once(engine.toolchain_contexts.get(&key).map(Arc::as_ref))
                     .chain(
                         exec_groups
                             .groups
@@ -8854,7 +8859,7 @@ impl Engine {
                 let default = engine.load_toolchain_context(
                     rule,
                     config,
-                    engine.toolchain_contexts.get(&key),
+                    engine.toolchain_contexts.get(&key).map(Arc::as_ref),
                     &target_description,
                     reads,
                 )?;

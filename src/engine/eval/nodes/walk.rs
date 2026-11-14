@@ -233,7 +233,7 @@ impl Host for Walk<'_> {
     fn toolchain_context_of(
         &mut self,
         key: &ConfiguredTargetKey,
-    ) -> Option<UnloadedToolchainContext> {
+    ) -> Option<Arc<UnloadedToolchainContext>> {
         self.engine.toolchain_contexts.get(key).cloned()
     }
 
@@ -484,7 +484,9 @@ impl Host for Walk<'_> {
         key: &ConfiguredTargetKey,
         context: UnloadedToolchainContext,
     ) {
-        self.engine.toolchain_contexts.insert(key.clone(), context);
+        self.engine
+            .toolchain_contexts
+            .insert(key.clone(), Arc::new(context));
     }
 
     fn record_exec_groups(
