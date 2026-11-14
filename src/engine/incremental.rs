@@ -361,6 +361,14 @@ impl Tracker {
         id
     }
 
+    /// [`Self::key`] of a borrowed identity (cloned only when new).
+    fn key_ref(&mut self, identity: &KeyIdentity) -> u32 {
+        if let Some(id) = self.key_ids.get(&self.keys, identity) {
+            return id;
+        }
+        self.key(identity.clone())
+    }
+
     fn package(&mut self, package: &PackageId) -> u32 {
         if let Some(id) = self.package_ids.get(package) {
             return *id;
@@ -395,8 +403,13 @@ impl Tracker {
     /// returns its id. Its frame is pushed by the caller when it is
     /// analyzed.
     fn reach(&mut self, identity: KeyIdentity) -> u32 {
-        let package = identity.0.package_id();
-        let id = self.key(identity);
+        self.reach_ref(&identity)
+    }
+
+    /// [`Self::reach`] of a borrowed identity.
+    fn reach_ref(&mut self, identity: &KeyIdentity) -> u32 {
+        let package = || identity.0.package_id();
+        let id = self.key_ref(identity);
         let inner = self.frames.last().copied();
         if let Some((parent, depth)) = inner
             && depth == shared_depth()
@@ -406,7 +419,7 @@ impl Tracker {
             }
         } else if shared() {
             self.shared_keys.insert(id);
-            let package = self.package(&package);
+            let package = self.package(&package());
             let label = &self.keys[id as usize].0;
             let why = format!("{} reached by {}", label, SHARED_NAME.with(Cell::get));
             self.make_global(package, || why);
@@ -417,7 +430,7 @@ impl Tracker {
             self.roots.push((position, id));
         } else {
             self.shared_keys.insert(id);
-            let package = self.package(&package);
+            let package = self.package(&package());
             let why = format!("{} reached outside every target", self.keys[id as usize].0);
             self.make_global(package, || why);
         }
@@ -507,12 +520,50 @@ pub(super) enum TrackOp {
 #[derive(Default)]
 struct TrackTables {
     keys: Vec<KeyIdentity>,
-    key_ids: FxHashMap<KeyIdentity, u32>,
+    /// The ids of `keys` (by [`key_hash`]; looked up by parts: the tape
+    /// replays millions of reaches of keys interned already).
+    key_ids: hashbrown::HashTable<u32>,
     labels: Vec<Label>,
     label_ids: FxHashMap<Label, u32>,
     packages: Vec<PackageId>,
     package_ids: FxHashMap<PackageId, u32>,
     scopes: Vec<&'static str>,
+}
+
+/// The hash of a key identity `(label, config, rule transition)` (as the
+/// tuple hashes).
+fn key_hash(label: &Label, config: Option<ConfigId>, rule_transition: bool) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = crate::fast_hash::FxHasher::default();
+    label.hash(&mut hasher);
+    config.hash(&mut hasher);
+    rule_transition.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// [`intern`] of a key identity given by its parts (cloned only when new).
+fn intern_key(
+    tables: &mut TrackTables,
+    label: &Label,
+    config: Option<ConfigId>,
+    rule_transition: bool,
+) -> u32 {
+    let hash = key_hash(label, config, rule_transition);
+    let keys = &tables.keys;
+    if let Some(id) = tables.key_ids.find(hash, |id| {
+        let (known, known_config, known_transition) = &keys[*id as usize];
+        known == label && *known_config == config && *known_transition == rule_transition
+    }) {
+        return *id;
+    }
+    let id = tables.keys.len() as u32;
+    tables.keys.push((label.clone(), config, rule_transition));
+    let keys = &tables.keys;
+    tables.key_ids.insert_unique(hash, id, |id| {
+        let (label, config, rule_transition) = &keys[*id as usize];
+        key_hash(label, *config, *rule_transition)
+    });
+    id
 }
 
 fn intern<T: Clone + Eq + std::hash::Hash>(
@@ -544,7 +595,7 @@ impl TapeReplay {
     /// Drop the lookup side of the interned names (memory: the tape is
     /// through; a name interned later is added again, unshared).
     pub(super) fn forget_interned_ids(&mut self) {
-        self.tables.key_ids = FxHashMap::default();
+        self.tables.key_ids = hashbrown::HashTable::new();
         self.tables.label_ids = FxHashMap::default();
         self.tables.package_ids = FxHashMap::default();
     }
@@ -617,14 +668,11 @@ impl TapeReplay {
             TapeOp::Reach { enter, .. } => TrackOp::Reach {
                 key: {
                     let key = reached?;
-                    intern(
-                        &mut tables.keys,
-                        &mut tables.key_ids,
-                        &(
-                            key.label.clone(),
-                            Some(key.config),
-                            key.apply_rule_transition,
-                        ),
+                    intern_key(
+                        tables,
+                        &key.label,
+                        Some(key.config),
+                        key.apply_rule_transition,
                     )
                 },
                 enter: *enter,
@@ -640,11 +688,9 @@ impl TapeReplay {
                 package: intern(&mut tables.packages, &mut tables.package_ids, package),
                 printed: *printed,
             },
-            TapeOp::Effect(Event::Source(label)) => TrackOp::Source(intern(
-                &mut tables.keys,
-                &mut tables.key_ids,
-                &(label.clone(), None, true),
-            )),
+            TapeOp::Effect(Event::Source(label)) => {
+                TrackOp::Source(intern_key(tables, label, None, true))
+            }
             TapeOp::Effect(Event::Print(_)) => TrackOp::Print,
             TapeOp::Fail(_) | TapeOp::Flush | TapeOp::Effect(_) => return None,
         })
@@ -692,7 +738,7 @@ impl TapeReplay {
             }
             TrackOp::Reach { key, enter } => {
                 let depth = tracker.frames.len();
-                let id = tracker.reach(self.tables.keys[key as usize].clone());
+                let id = tracker.reach_ref(&self.tables.keys[key as usize]);
                 if enter {
                     tracker.frames.push((id, shared_depth()));
                     tracker
