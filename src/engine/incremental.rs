@@ -1602,6 +1602,9 @@ fn rule_modules(
     packages: &BTreeMap<PackageId, Arc<Package>>,
     keys: &[(u32, Label)],
 ) -> Vec<(u32, Vec<Label>)> {
+    // (Hundreds of thousands of keys name a few hundred modules: each
+    // parsed once.)
+    let mut parsed: FxHashMap<&str, Label> = FxHashMap::default();
     keys.iter()
         .filter_map(|(key, label)| {
             let rule = packages.get(&label.package_id())?.rules.get(label)?;
@@ -1612,10 +1615,16 @@ fn rule_modules(
             ]
             .into_iter()
             .map(|text| {
-                // Unparsable: no module edit is attributable (the index
-                // says so, crate::snapshot::incremental::UNATTRIBUTED).
-                Label::parse_canonical(text)
-                    .unwrap_or_else(|_| crate::snapshot::incremental::unattributed_module())
+                parsed
+                    .entry(text.as_str())
+                    .or_insert_with(|| {
+                        // Unparsable: no module edit is attributable (the
+                        // index says so,
+                        // crate::snapshot::incremental::UNATTRIBUTED).
+                        Label::parse_canonical(text)
+                            .unwrap_or_else(|_| crate::snapshot::incremental::unattributed_module())
+                    })
+                    .clone()
             })
             .collect();
             Some((*key, modules))

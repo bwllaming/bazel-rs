@@ -101,6 +101,10 @@ const PARALLEL_DECODE_BYTES: usize = 4 << 20;
 /// `query //src/...`-sized request has hundreds of chunks; the hit path
 /// decodes beside the validation and replay threads).
 pub const MAX_THREADS: usize = 8;
+/// At most this many threads encode (and compress) the chunks of one plan:
+/// the analysis snapshot's save encodes on the main thread's critical path,
+/// after the analysis (~/code's 470 MB plan: 16 threads ~0.5 s, 8 ~1 s).
+pub const ENCODE_THREADS: usize = 16;
 
 const SECTION_META: u32 = 1;
 const SECTION_NODES: u32 = 2;
@@ -266,7 +270,7 @@ pub fn encode_parts_with<T: Send>(
     // Chunks encode independently (the same bytes on any thread): a large
     // plan encodes them on a few scoped threads (the analysis snapshot's
     // save, L2-W5, encodes on the main thread before execution).
-    let chunks = on_threads(&parts, encode_chunk)
+    let chunks = on_threads_up_to(ENCODE_THREADS, &parts, encode_chunk)
         .into_iter()
         .map(|chunk| {
             chunk.unwrap_or_else(|| {
@@ -666,9 +670,18 @@ fn decode_chunk(chunk: &[u8], table: &[Arc<InputGroup>]) -> Result<Vec<PlannedAc
 /// a shared counter (on the calling thread for one item or one thread).
 /// `None` for an item whose work panicked.
 fn on_threads<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<Option<R>> {
+    on_threads_up_to(MAX_THREADS, items, work)
+}
+
+/// [`on_threads`] on at most `max` threads.
+fn on_threads_up_to<T: Sync, R: Send>(
+    max: usize,
+    items: &[T],
+    work: impl Fn(&T) -> R + Sync,
+) -> Vec<Option<R>> {
     let threads = std::thread::available_parallelism()
         .map_or(1, usize::from)
-        .min(MAX_THREADS)
+        .min(max)
         .min(items.len());
     let run = |item: &T| crate::internal_error::recoverable_asserted(|| work(item)).ok();
     if threads <= 1 {
