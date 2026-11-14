@@ -47,10 +47,10 @@ pub(crate) enum AnalysisMode {
     /// The sequential walk (`BAZEL_RS_ANALYSIS=walk`).
     Walk,
     /// The parallel evaluator, asked for (`BAZEL_RS_ANALYSIS=eval`):
-    /// [`select`] falls back to the walk only for what it does not cover.
+    /// also where a future speed fallback ([`select`]) would pick the walk.
     Eval,
-    /// The default (`BAZEL_RS_ANALYSIS` unset or empty): the evaluator,
-    /// and the walk also where it is faster ([`select::Fallback::Profile`]).
+    /// The default (`BAZEL_RS_ANALYSIS` unset or empty): the evaluator
+    /// ([`select`]: no fallback is left).
     Auto,
 }
 
@@ -62,7 +62,7 @@ impl AnalysisMode {
             "eval" => Ok(Self::Eval),
             "walk" => Ok(Self::Walk),
             other => Err(format!(
-                "BAZEL_RS_ANALYSIS={other}: expected `auto` (the default: the evaluator where it is covered and faster), `eval` or `walk`"
+                "BAZEL_RS_ANALYSIS={other}: expected `auto` (the default: the evaluator), `eval` or `walk`"
             )),
         }
     }

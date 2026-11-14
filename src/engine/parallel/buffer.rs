@@ -455,14 +455,14 @@ pub(in crate::engine) fn count_in_phase_walk() {
 
 /// Whether a plain native rule whose results a worker published merges
 /// them ([`Engine::merge_published_native`]) instead of committing again
-/// (`BAZEL_RS_VERIFY_DELTA=1`, `BAZEL_RS_VERIFY_AHEAD=1`, `--profile` and
+/// (`BAZEL_RS_VERIFY_DELTA=1`, `BAZEL_RS_VERIFY_AHEAD=1` and
 /// `BAZEL_RS_T3_NATIVE_COMMIT=1` commit, checking the published results).
 fn fast_natives() -> bool {
     static FAST: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
         // snapshot-unrecorded: a scheduling switch; the output is the same either way.
         std::env::var_os("BAZEL_RS_T3_NATIVE_COMMIT").is_none()
     });
-    *FAST && !delta::verify_delta() && !verify_ahead() && !crate::profile::active()
+    *FAST && !delta::verify_delta() && !verify_ahead()
 }
 
 fn stat(index: usize, by: u64) {
@@ -2302,6 +2302,8 @@ impl Engine {
             self.eval_pass2_track(state.done);
             let index = state.done;
             state.done += 1;
+            // --profile: this entry's `configured target` span.
+            let span = crate::profile::TargetSpan::start(&key.label, rule.rule_class_name());
             crate::debug_panic::at("coordinator");
             frozen::profile(|profile| profile.turn(index));
             if crate::plan_timings::enabled()
@@ -2344,6 +2346,7 @@ impl Engine {
                     self.keep_going_withdraw(state, board, &key, &rule, index);
                 }
                 stat(S_KEEP_GOING_SKIPPED, 1);
+                span.skip();
                 continue;
             }
             // An entry not classified yet: classified here (its job, if
@@ -2702,7 +2705,6 @@ impl Engine {
         self.track_planning(key);
         let result = (|| {
             use crate::plan_timings::{PlanStage, StageTimer};
-            let profiled = crate::profile::active().then(std::time::Instant::now);
             let class = crate::plan_timings::class_id(rule.rule_class_name());
             // Its attribute aspects' applications analyzed on the workers
             // first (super::aspects), replayed by its prepare.
@@ -2725,7 +2727,7 @@ impl Engine {
             let (snapshot, outcome) = Engine::compute_target(*snapshot);
             timer.finish();
             self.commit_turn(
-                state, configured, key, rule, index, class, parts, snapshot, outcome, profiled,
+                state, configured, key, rule, index, class, parts, snapshot, outcome,
             )
         })();
         self.track_restore(depth);
@@ -2907,7 +2909,6 @@ impl Engine {
         parts: PreparedParts,
         worker: WorkerOutcome,
     ) -> Result<(), String> {
-        let profiled = crate::profile::active().then(std::time::Instant::now);
         let class = crate::plan_timings::class_id(rule.rule_class_name());
         let WorkerOutcome {
             snapshot,
@@ -2938,7 +2939,7 @@ impl Engine {
             (snapshot, outcome)
         };
         self.commit_turn(
-            state, configured, key, rule, index, class, parts, snapshot, outcome, profiled,
+            state, configured, key, rule, index, class, parts, snapshot, outcome,
         )
     }
 }

@@ -2122,13 +2122,12 @@ impl Engine {
                 let mut coord = bodies.coord();
                 coord.store.warnings_seen = coord.engine.warnings.len();
                 coord.store.delay_release = bodies.framed;
-                // S3 pass 2: a pooled evaluation defers flushes unless
-                // --profile records phase 2 and the tape (its spans) in
-                // their order. The observation recording is a set (the
-                // order of its commits does not show); the tracker's tape
-                // ops are kept by position like the tape's other effects.
+                // S3 pass 2: a pooled evaluation defers flushes. The
+                // observation recording is a set (the order of its commits
+                // does not show); the tracker's tape ops are kept by
+                // position like the tape's other effects; --profile's spans
+                // are per thread, their order free (docs/PROFILE.md).
                 lin.defer = bodies.framed
-                    && !crate::profile::active()
                     // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
                     && std::env::var_os("BAZEL_RS_EVAL_NO_DEFER").is_none();
                 // Its phase 2 then prepares on the workers (S3,
@@ -2276,6 +2275,13 @@ impl Engine {
                 driving.elapsed().as_micros() as u64,
                 std::sync::atomic::Ordering::Relaxed,
             );
+            // --profile: the evaluator's own phases (docs/PROFILE.md).
+            crate::profile::span(
+                "skyframe evaluator",
+                "evaluator phase 1 and pass 1",
+                driving,
+                Vec::new(),
+            );
             if stats_enabled() {
                 let stats = evaluator.stats();
                 crate::note!(
@@ -2409,6 +2415,7 @@ impl Engine {
             coord.store.segments_done = true;
             // The deferred flushes' phase 2 (S3, pass 2): a failure is the
             // flush's, worded by the walk.
+            let walks = std::time::Instant::now();
             let finished = match coord.linearize_all(&shared) {
                 Err(error) if result.is_ok() => Err(coord
                     .flush_failure(&shared, top)
@@ -2420,6 +2427,12 @@ impl Engine {
                 format!("the deferred walks done ({})", linearizer_times())
             });
             crate::perf_mark("plan.eval_walks_done");
+            crate::profile::span(
+                "general information",
+                "evaluator deferred walks",
+                walks,
+                Vec::new(),
+            );
             let mut lin = coord.lin.take().expect("the linearizer");
             coord.publish(&mut lin, &shared, true);
             coord.drop_leftover_observations();

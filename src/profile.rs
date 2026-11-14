@@ -173,6 +173,61 @@ static ACTIONS: Mutex<Vec<ActionNode>> = Mutex::new(Vec::new());
 
 thread_local! {
     static LOCAL: RefCell<Option<Arc<Mutex<ThreadBuffer>>>> = const { RefCell::new(None) };
+    /// [`without_targets`] is running on this thread.
+    static NO_TARGETS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The category of the per-target analysis spans (one per planned
+/// configured target, docs/PROFILE.md).
+pub const CONFIGURED_TARGET: &str = "configured target";
+
+/// Run `f` without recording `configured target` spans on this thread:
+/// work whose results the build never commits as such (the evaluator's
+/// speculative flag phase 2s on their scratch engine, which the build plans
+/// again at its turn — that planning records the span). Its package loads
+/// are real loads and keep their spans.
+pub fn without_targets<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            NO_TARGETS.with(|cell| cell.set(self.0));
+        }
+    }
+    let _restore = Restore(NO_TARGETS.with(|cell| cell.replace(true)));
+    f()
+}
+
+/// The `configured target` span of one plan entry's turn: recorded when
+/// dropped (the turn done, or failed), on this thread; [`Self::skip`]
+/// records none (a `--keep_going` entry skipped above a failure, never
+/// analyzed). Every planning loop opens one per plan entry — the entries
+/// the `targets configured` count counts — so the profile has exactly one
+/// span per configured target whatever path planned it (docs/PROFILE.md
+/// "Parity").
+pub struct TargetSpan(Option<(Instant, String, String)>);
+
+impl TargetSpan {
+    /// The turn of `label` (rule class `rule`) starts.
+    #[inline]
+    pub fn start(label: &crate::label::Label, rule: &str) -> Self {
+        if !active() || NO_TARGETS.with(std::cell::Cell::get) {
+            return Self(None);
+        }
+        Self(Some((Instant::now(), label.to_string(), rule.to_owned())))
+    }
+
+    /// No span: the entry was not analyzed.
+    pub fn skip(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for TargetSpan {
+    fn drop(&mut self) {
+        if let Some((start, name, rule)) = self.0.take() {
+            span(CONFIGURED_TARGET, name, start, vec![("rule", rule)]);
+        }
+    }
 }
 
 /// Whether a profile file is being recorded.
@@ -240,30 +295,89 @@ pub fn phase_millis(from: &str, to: &str) -> i64 {
 
 /// This thread's buffer, registered on first use.
 fn with_buffer(f: impl FnOnce(&mut ThreadBuffer)) {
+    let buffer = local_buffer();
+    f(&mut buffer.lock().unwrap_or_else(|e| e.into_inner()));
+}
+
+/// This thread's buffer (registered on first use).
+fn local_buffer() -> Arc<Mutex<ThreadBuffer>> {
     LOCAL.with(|local| {
         let mut local = local.borrow_mut();
-        let buffer = local.get_or_insert_with(|| {
-            let thread = std::thread::current();
-            let tid = if thread.name() == Some("main") {
-                1
-            } else {
-                NEXT_TID.fetch_add(1, Ordering::Relaxed)
-            };
-            let name = thread
-                .name()
-                .map_or_else(|| format!("worker-{tid}"), str::to_owned);
-            let buffer = Arc::new(Mutex::new(ThreadBuffer {
-                tid,
-                name,
-                spans: Vec::new(),
-            }));
-            if let Some(profile) = PROFILE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-                profile.threads.push(buffer.clone());
-            }
-            buffer
-        });
-        f(&mut buffer.lock().unwrap_or_else(|e| e.into_inner()));
-    });
+        local
+            .get_or_insert_with(|| {
+                let thread = std::thread::current();
+                let tid = if thread.name() == Some("main") {
+                    1
+                } else {
+                    NEXT_TID.fetch_add(1, Ordering::Relaxed)
+                };
+                let name = thread
+                    .name()
+                    .map_or_else(|| format!("worker-{tid}"), str::to_owned);
+                let buffer = Arc::new(Mutex::new(ThreadBuffer {
+                    tid,
+                    name,
+                    spans: Vec::new(),
+                }));
+                if let Some(profile) = PROFILE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                    profile.threads.push(buffer.clone());
+                }
+                buffer
+            })
+            .clone()
+    })
+}
+
+/// A span measured on one thread and recorded there only if the work it
+/// measured is kept ([`PendingSpan::commit`]; dropped: never recorded) —
+/// a package load whose unit the build commits, not a speculative load
+/// nobody took or an attempt aborted for its inline re-run.
+pub struct PendingSpan {
+    buffer: Arc<Mutex<ThreadBuffer>>,
+    span: Span,
+}
+
+impl PendingSpan {
+    /// Record the span on the thread that measured it.
+    pub fn commit(self) {
+        let PendingSpan { buffer, span } = self;
+        buffer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .spans
+            .push(span);
+    }
+}
+
+impl std::fmt::Debug for PendingSpan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingSpan")
+            .field("name", &self.span.name)
+            .finish()
+    }
+}
+
+/// [`span`], pending (`None` without a profile).
+pub fn pending_span(
+    category: &'static str,
+    name: impl Into<String>,
+    start: Instant,
+    args: Vec<(&'static str, String)>,
+) -> Option<PendingSpan> {
+    if !active() {
+        return None;
+    }
+    let end = Instant::now();
+    Some(PendingSpan {
+        buffer: local_buffer(),
+        span: Span {
+            category,
+            name: name.into(),
+            start: since_start(start),
+            duration: end.saturating_duration_since(start),
+            args,
+        },
+    })
 }
 
 /// A span on this thread (any category), recorded only with a profile.
@@ -579,6 +693,18 @@ fn write(profile: &Profile, path: &Path) -> std::io::Result<()> {
     for (from, to, name) in [
         ("select.start", "select.end", "evaluate target patterns"),
         ("plan.start", "plan.end", "analysis"),
+        // The analysis's steps, either engine (docs/PROFILE.md).
+        (
+            "plan.start",
+            "plan.phase1_analysis_done",
+            "analysis phase 1",
+        ),
+        (
+            "plan.phase1_analysis_done",
+            "plan.phase2_actions_done",
+            "analysis phase 2",
+        ),
+        ("plan.phase2_actions_done", "plan.tail.end", "planning tail"),
         ("execute.start", "execute.end", "execution"),
     ] {
         if let (Some(from), Some(to)) = (find(from), find(to)) {

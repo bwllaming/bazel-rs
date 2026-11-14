@@ -2093,6 +2093,8 @@ impl Engine {
             self.eval_pass2_track(state.done);
             let index = state.done;
             state.done += 1;
+            // --profile: this entry's `configured target` span.
+            let span = crate::profile::TargetSpan::start(&key.label, rule.rule_class_name());
             crate::debug_panic::at("coordinator");
             if self.frozen_walk.is_some() {
                 frozen::profile(|profile| profile.turn(index));
@@ -2172,6 +2174,7 @@ impl Engine {
                 // what a prepare ahead held is dropped with it.
                 drop(ahead);
                 self.keep_going_state.fail_propagated(&key);
+                span.skip();
                 continue;
             }
             let result = {
@@ -2508,7 +2511,6 @@ impl Engine {
         off_turn: &mut std::time::Duration,
     ) -> Result<(), String> {
         use crate::plan_timings::{PlanStage, StageTimer};
-        let profiled = crate::profile::active().then(std::time::Instant::now);
         let class = crate::plan_timings::class_id(rule.rule_class_name());
         let (parts, pending) = match ahead {
             Some(Ahead::Failed {
@@ -2635,7 +2637,7 @@ impl Engine {
                 }
                 timer.finish();
                 return self.commit_turn(
-                    state, configured, key, rule, index, class, parts, snapshot, outcome, profiled,
+                    state, configured, key, rule, index, class, parts, snapshot, outcome,
                 );
             }
         };
@@ -2720,7 +2722,7 @@ impl Engine {
             (snapshot, outcome)
         };
         self.commit_turn(
-            state, configured, key, rule, index, class, parts, snapshot, outcome, profiled,
+            state, configured, key, rule, index, class, parts, snapshot, outcome,
         )
     }
 
@@ -2736,7 +2738,6 @@ impl Engine {
         parts: PreparedParts,
         snapshot: ComputeSnapshot,
         outcome: ComputeOutcome,
-        profiled: Option<std::time::Instant>,
     ) -> Result<(), String> {
         use crate::plan_timings::{PlanStage, StageTimer};
         let prepared = parts.join(snapshot);
@@ -2747,14 +2748,6 @@ impl Engine {
         });
         timer.finish();
         committed?;
-        if let Some(started) = profiled {
-            crate::profile::span(
-                "configured target",
-                key.label.to_string(),
-                started,
-                vec![("rule", rule.rule_class_name().to_owned())],
-            );
-        }
         Ok(())
     }
 

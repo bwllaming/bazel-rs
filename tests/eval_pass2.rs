@@ -823,3 +823,192 @@ filegroup(name = "all", srcs = [":everything", ":after_cpu", ":sources", ":via_d
         assert_eq!(eval.3, walk.3, "{what}: stdout");
     }
 }
+
+/// What docs/PROFILE.md "Parity" requires of a `--profile` file's
+/// analysis, read from `path`: the file's structure (otherData, a thread
+/// metadata event for every lane used, the phase markers), the
+/// `configured target` spans as a multiset of (label, rule) and the
+/// `package creation` spans as a multiset of names, and the categories of
+/// the events.
+struct ProfileContent {
+    targets: std::collections::BTreeMap<(String, String), usize>,
+    packages: std::collections::BTreeMap<String, usize>,
+    categories: std::collections::BTreeSet<String>,
+}
+
+fn profile_content(path: &Path) -> ProfileContent {
+    use serde_json::Value;
+    let text = fs::read_to_string(path).unwrap();
+    let trace: Value = serde_json::from_str(&text).unwrap();
+    let mut other: Vec<&String> = trace["otherData"].as_object().unwrap().keys().collect();
+    other.sort();
+    assert_eq!(
+        other,
+        [
+            "bazel_version",
+            "build_id",
+            "date",
+            "output_base",
+            "profile_start_ts"
+        ]
+    );
+    let events = trace["traceEvents"].as_array().unwrap();
+    let lanes: std::collections::BTreeSet<u64> = events
+        .iter()
+        .filter(|event| event["ph"] == "M" && event["name"] == "thread_name")
+        .map(|event| event["tid"].as_u64().unwrap())
+        .collect();
+    let mut content = ProfileContent {
+        targets: Default::default(),
+        packages: Default::default(),
+        categories: Default::default(),
+    };
+    for event in events {
+        if event["ph"] == "M" {
+            continue;
+        }
+        assert!(
+            lanes.contains(&event["tid"].as_u64().unwrap()),
+            "no thread metadata for {event}"
+        );
+        assert!(event["ts"].is_u64(), "{event}");
+        if event["ph"] == "X" {
+            assert!(event["dur"].is_u64(), "{event}");
+        }
+        let category = event["cat"].as_str().unwrap().to_owned();
+        let name = event["name"].as_str().unwrap().to_owned();
+        match category.as_str() {
+            "configured target" => {
+                let rule = event["args"]["rule"].as_str().unwrap().to_owned();
+                *content.targets.entry((name, rule)).or_default() += 1;
+            }
+            "package creation" => *content.packages.entry(name).or_default() += 1,
+            _ => {}
+        }
+        content.categories.insert(category);
+    }
+    content
+}
+
+fn strs(args: &[String]) -> Vec<&str> {
+    args.iter().map(String::as_str).collect()
+}
+
+/// `(packages loaded, targets configured)` of the `Analyzed` line.
+fn analyzed_counts(output: &Output) -> (usize, usize) {
+    let text = stable(output);
+    let line = text
+        .lines()
+        .find(|line| line.starts_with("INFO: Analyzed "))
+        .unwrap_or_else(|| panic!("{text}"));
+    let number = |suffix: &str| {
+        line.split(suffix)
+            .next()
+            .unwrap()
+            .rsplit(['(', ' '])
+            .next()
+            .unwrap()
+            .parse::<usize>()
+            .unwrap()
+    };
+    (number(" packages loaded"), number(" targets configured"))
+}
+
+/// `--profile` plans with the evaluator, its flushes deferred and its flag
+/// phase 2s speculated as without it (docs/PROFILE.md "Parity"): the
+/// output is the walk's, and so is the profile's analysis — one
+/// `configured target` span per configured target (the same (label, rule)
+/// multiset as the walk's, as many as the `targets configured` count),
+/// one `package creation` span per loaded package (genuine's names: `p0`,
+/// the root package ``) — at every thread count, under jitter and
+/// restarts, with the workers' prepares; the evaluator's own phases are
+/// spans of their own.
+#[test]
+fn the_profile_has_the_walks_targets_and_packages() {
+    let ws = Workspace::new(8, "");
+    let args = |name: &str| {
+        vec![
+            "//:everything".to_owned(),
+            format!(
+                "--profile={}",
+                ws.path().join(format!("tmp/{name}.json")).display()
+            ),
+        ]
+    };
+    let walk = ws.build("walk", 1, &[], &strs(&args("walk")));
+    assert!(walk.status.success(), "{}", stable(&walk));
+    let (packages, configured) = analyzed_counts(&walk);
+    let expected = profile_content(&ws.path().join("tmp/walk.json"));
+    assert_eq!(expected.targets.values().sum::<usize>(), configured);
+    assert_eq!(expected.packages.values().sum::<usize>(), packages);
+    assert!(expected.packages.values().all(|count| *count == 1));
+    assert!(
+        expected.packages.contains_key("p0"),
+        "{:?}",
+        expected.packages
+    );
+    assert!(
+        expected.packages.contains_key(""),
+        "{:?}",
+        expected.packages
+    );
+    assert!(
+        expected
+            .targets
+            .contains_key(&("//p0:top".to_owned(), "printing".to_owned())),
+        "{:?}",
+        expected.targets
+    );
+    // Deferred and speculated as without --profile.
+    let stats = ws.build(
+        "eval",
+        8,
+        &[("BAZEL_RS_EVAL_STATS", "1")],
+        &strs(&args("stats")),
+    );
+    let text = String::from_utf8_lossy(&stats.stderr);
+    assert!(stats.status.success(), "{text}");
+    let count = |prefix: &str| {
+        text.lines()
+            .find_map(|line| line.split(prefix).nth(1))
+            .and_then(|rest| rest.split(',').next())
+            .and_then(|count| count.parse::<usize>().ok())
+    };
+    assert!(count("flushes deferred ").is_some_and(|n| n > 0), "{text}");
+    assert!(
+        count("speculative flag phase 2s ").is_some_and(|n| n > 0),
+        "{text}"
+    );
+    let runs: [(usize, &[(&str, &str)]); 5] = [
+        (8, &[]),
+        (32, &[("BAZEL_RS_EVAL_JITTER", "100")]),
+        (8, &[("BAZEL_RS_EVAL_RESTARTS", "5")]),
+        (8, &[("BAZEL_RS_EVAL_FROZEN_PREPARES", "all")]),
+        (1, &[]),
+    ];
+    for (threads, env) in runs {
+        let what = format!("{threads} threads, {env:?}");
+        let eval = ws.build("eval", threads, env, &strs(&args("eval")));
+        assert_eq!(
+            eval.status.code(),
+            walk.status.code(),
+            "{what}: {}",
+            stable(&eval)
+        );
+        assert_same(&what, &eval, &walk, || unreachable!());
+        let got = profile_content(&ws.path().join("tmp/eval.json"));
+        assert_eq!(got.targets, expected.targets, "{what}");
+        assert_eq!(got.packages, expected.packages, "{what}");
+        for category in [
+            "build phase marker",
+            "general information",
+            "configured target",
+            "package creation",
+        ] {
+            assert!(got.categories.contains(category), "{what}: {category}");
+        }
+        if threads > 1 {
+            assert!(got.categories.contains("skyframe evaluator"), "{what}");
+        }
+    }
+}

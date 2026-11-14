@@ -211,10 +211,6 @@ fn run(
     cx: &mut dyn Phase1Cx<'_>,
     ct: &CtKey,
 ) -> Result<Option<Providers>, Left> {
-    // --profile spans and the like would show the speculative work.
-    if crate::profile::active() {
-        return Err(left("--profile"));
-    }
     let root = cx.id_of(&NodeKey::Ct1(ct.clone()));
     let waited = std::time::Instant::now();
     let mut guard = lock_scratch(cx.scratch());
@@ -399,14 +395,19 @@ fn run(
 
 /// Run `f` with every effect a phase 2 has outside its engine set aside
 /// and dropped: console writes, observations, the evaluator's captures,
-/// `--toolchain_resolution_debug` events, the analysis progress counters.
+/// `--toolchain_resolution_debug` events, the analysis progress counters,
+/// `--profile`'s `configured target` spans.
 fn isolated<R>(f: impl FnOnce() -> R) -> R {
     let console = crate::ui::DeferredConsole::start();
     let scope = crate::observed_fs::unit_scope();
     let was = SPECULATING.with(|cell| cell.replace(true));
     // Left out of the counts on this thread only: the build's analysis
     // (the sequential pass's tape) counts beside it.
-    let result = crate::progress::uncounted(|| super::super::linearize::capture::isolated(f));
+    // (--profile: no `configured target` spans for the scratch planning;
+    // the build's own planning of each target records its span.)
+    let result = crate::progress::uncounted(|| {
+        crate::profile::without_targets(|| super::super::linearize::capture::isolated(f))
+    });
     SPECULATING.with(|cell| cell.set(was));
     drop(scope);
     drop(console.finish());

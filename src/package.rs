@@ -2184,6 +2184,11 @@ pub(crate) struct LoadUnit {
     /// recording with the coordinator's commit, at the sequential engine's
     /// load, and never for a unit the build drops or re-runs inline.
     pub(crate) observations: crate::observed_fs::Observations,
+    /// `--profile`'s `package creation` span, recorded when the unit is
+    /// committed (`Engine::settle_load_unit`, [`evaluate_in`]): a
+    /// speculative load nobody takes or an attempt aborted for its inline
+    /// re-run records none (docs/PROFILE.md "Parity").
+    pub(crate) profiled: Option<crate::profile::PendingSpan>,
 }
 
 pub fn evaluate_in(
@@ -2193,6 +2198,9 @@ pub fn evaluate_in(
     let unit = evaluate_load_unit(repositories, package);
     // The direct path's load is its own commit.
     crate::observed_fs::commit(unit.observations);
+    if let Some(span) = unit.profiled {
+        span.commit();
+    }
     // The direct path keeps the historical behavior: every buffered line
     // reaches stderr in order, immediately after the load (cache-hit
     // markers carry no lines of their own here).
@@ -2222,14 +2230,17 @@ pub(crate) fn evaluate_load_unit(
     // --profile (crate::profile): the package's evaluation on this thread.
     let started = crate::profile::active().then(std::time::Instant::now);
     let result = evaluate_in_with_prints(repositories, package, &prints);
-    if let Some(started) = started {
+    let profiled = started.and_then(|started| {
+        // PackageIdentifier.toString(), as genuine's PackageFunction names
+        // the span: a main-repository package by its path alone (`p`, the
+        // root package ``), an external one `@@repo//pkg`.
         let name = if package.repository.is_empty() {
-            format!("//{}", package.package)
+            package.package.to_string()
         } else {
             format!("@@{}//{}", package.repository, package.package)
         };
-        crate::profile::span("package creation", name, started, Vec::new());
-    }
+        crate::profile::pending_span("package creation", name, started, Vec::new())
+    });
     let roots = roots.finish();
     LoadUnit {
         result,
@@ -2238,6 +2249,7 @@ pub(crate) fn evaluate_load_unit(
         observations: frame
             .map(crate::observed_fs::UnitScope::finish)
             .unwrap_or_default(),
+        profiled,
     }
 }
 

@@ -1,12 +1,11 @@
 //! Which engine plans a request (docs/EVALUATOR.md "Selecting the
 //! engine"): the evaluator by default (`BAZEL_RS_ANALYSIS` unset, empty or
-//! `auto`), the walk when `BAZEL_RS_ANALYSIS=walk` forces it, and the walk,
-//! silently, for the requests the evaluator does not cover or where the
-//! walk is faster ([`Fallback`]; `BAZEL_RS_ANALYSIS=eval` keeps only the
-//! coverage fallbacks). Both engines plan identically (stdout, stderr,
-//! the action graph, the incremental index, the snapshot recording), so the
-//! fallback is never visible; only internal errors differ: the evaluator's
-//! name `BAZEL_RS_ANALYSIS=walk` as the workaround ([`with_workaround`]).
+//! `auto`, and `eval`), the walk when `BAZEL_RS_ANALYSIS=walk` forces it.
+//! No request falls back to the walk any more ([`Selected`]). Both engines
+//! plan identically (stdout, stderr, the action graph, the incremental
+//! index, the snapshot recording; `--profile`'s content as docs/PROFILE.md
+//! "Parity" defines it); only internal errors differ: the evaluator's name
+//! `BAZEL_RS_ANALYSIS=walk` as the workaround ([`with_workaround`]).
 //!
 //! No automatic retry with the walk after an evaluator failure: by then
 //! the failed planning has fetched repositories, written console output
@@ -20,35 +19,14 @@ use super::AnalysisMode;
 /// The workaround an evaluator internal error names.
 pub(crate) const WORKAROUND: &str = "BAZEL_RS_ANALYSIS=walk";
 
-/// Why a request plans with the walk although the evaluator is selected:
-/// a part of phase 1 the evaluator's driver does not run yet (S4), or a
-/// mode in which the evaluator is slower than the walk.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Fallback {
-    /// `--profile`: the evaluator keeps every flush ordered (the profile's
-    /// spans of phase 2 and of the tape in the walk's order) and is slower
-    /// than the walk there. (A snapshot recording and the incremental
-    /// tracker plan with the evaluator since eval-record: their effects are
-    /// applied in plan order by the deferred walk.)
-    Profile,
-}
-
-impl Fallback {
-    /// A fallback for speed (the evaluator covers the request):
-    /// `BAZEL_RS_ANALYSIS=eval` plans with the evaluator anyway.
-    pub(crate) fn performance(self) -> bool {
-        matches!(self, Self::Profile)
-    }
-
-    /// The reason as `BAZEL_RS_ANALYSIS_REPORT` prints it.
-    pub(crate) fn reason(self) -> &'static str {
-        match self {
-            Self::Profile => "--profile",
-        }
-    }
-}
-
-/// The engine one planning runs on, and why.
+/// The engine one planning runs on.
+///
+/// (No fallback is left: the last one, `--profile`, plans with the
+/// evaluator since eval-profile — its spans are recorded per thread, the
+/// profile's content defined as a set, docs/PROFILE.md "Parity". A future
+/// fallback — the walk, silently, for a request the evaluator does not
+/// cover or where the walk is faster — is a variant here reported as
+/// `walk (fallback: <reason>)`.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Selected {
     /// The evaluator.
@@ -57,8 +35,6 @@ pub(crate) enum Selected {
     /// built with `BAZEL_RS_DEFAULT_ANALYSIS=walk`, or the walk side of
     /// `BAZEL_RS_EVAL_VERIFY`).
     Forced,
-    /// The walk for a request the evaluator does not cover.
-    Fallback(Fallback),
 }
 
 impl Selected {
@@ -68,33 +44,17 @@ impl Selected {
 }
 
 impl Engine {
-    /// Why this request cannot plan with the evaluator (`None`: it can).
-    /// `checkpoint`: a cquery root checkpoint is installed.
-    pub(in crate::engine) fn eval_fallback(&self, checkpoint: bool) -> Option<Fallback> {
-        let _ = checkpoint;
-        if crate::profile::active() {
-            Some(Fallback::Profile)
-        } else {
-            None
-        }
-    }
-
-    /// The engine this planning runs on in `mode`.
+    /// The engine this planning runs on in `mode` (`checkpoint`: a cquery
+    /// root checkpoint is installed; the evaluator covers it).
     pub(in crate::engine) fn select_engine(
         &self,
         mode: AnalysisMode,
         checkpoint: bool,
     ) -> Selected {
+        let _ = checkpoint;
         let selected = match mode {
             AnalysisMode::Walk => Selected::Forced,
-            AnalysisMode::Eval | AnalysisMode::Auto => match self.eval_fallback(checkpoint) {
-                // `eval` asked for: the evaluator also where it is slower.
-                Some(fallback) if mode == AnalysisMode::Eval && fallback.performance() => {
-                    Selected::Eval
-                }
-                Some(fallback) => Selected::Fallback(fallback),
-                None => Selected::Eval,
-            },
+            AnalysisMode::Eval | AnalysisMode::Auto => Selected::Eval,
         };
         report(selected);
         selected
@@ -103,16 +63,15 @@ impl Engine {
 
 /// `BAZEL_RS_ANALYSIS_REPORT=1` (hidden, diagnostics): one stderr line per
 /// planning naming the engine (`bazel-rs: analysis engine: eval`, `walk
-/// (forced)`, `walk (fallback: --profile)`).
+/// (forced)`).
 fn report(selected: Selected) {
     // snapshot-unrecorded: a diagnostic switch; both engines plan identically.
     if std::env::var_os("BAZEL_RS_ANALYSIS_REPORT").is_none_or(|value| value != "1") {
         return;
     }
     let text = match selected {
-        Selected::Eval => "eval".to_owned(),
-        Selected::Forced => "walk (forced)".to_owned(),
-        Selected::Fallback(fallback) => format!("walk (fallback: {})", fallback.reason()),
+        Selected::Eval => "eval",
+        Selected::Forced => "walk (forced)",
     };
     crate::ui::raw(format!("bazel-rs: analysis engine: {text}\n").as_bytes());
 }
@@ -144,12 +103,5 @@ mod tests {
         let plain = with_workaround("internal error: pass 1: a body vanished".to_owned());
         assert!(plain.starts_with("internal error: pass 1: a body vanished (the parallel"));
         assert_eq!(plain.matches(WORKAROUND).count(), 1, "{plain}");
-    }
-
-    #[test]
-    fn fallback_reasons_are_distinct() {
-        let all = [Fallback::Profile];
-        let reasons: std::collections::BTreeSet<_> = all.iter().map(|f| f.reason()).collect();
-        assert_eq!(reasons.len(), all.len());
     }
 }

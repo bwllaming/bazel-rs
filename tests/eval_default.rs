@@ -1,8 +1,8 @@
 //! The analysis engine's selection (docs/EVALUATOR.md "Selecting the
 //! engine", src/engine/eval/select.rs): the evaluator plans by default,
-//! `BAZEL_RS_ANALYSIS=walk` forces the walk, and the requests where the
-//! walk is faster (`--profile`) plan with the walk,
-//! silently: the output is the forced walk's byte for byte.
+//! `BAZEL_RS_ANALYSIS=walk` forces the walk; no request falls back to the
+//! walk (`--profile` plans with the evaluator since eval-profile): the
+//! output is the forced walk's byte for byte.
 //! `BAZEL_RS_ANALYSIS_REPORT=1` names the engine each planning ran on.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 include!("support/temp_root.rs");
@@ -102,10 +102,9 @@ fn stable(output: &Output) -> String {
         .join("\n")
 }
 
-/// The default (`BAZEL_RS_ANALYSIS` unset, empty, `auto`) plans on
-/// `expected` (the evaluator or a fallback), an explicit `eval` too unless
-/// the fallback is one for speed (then the evaluator), each with the
-/// forced walk's exit code, stdout and stderr.
+/// The default (`BAZEL_RS_ANALYSIS` unset, empty, `auto`) and an explicit
+/// `eval` plan on `expected` (the evaluator: no fallback is left), each
+/// with the forced walk's exit code, stdout and stderr.
 fn same_as_walk(
     root: &Path,
     snapshot: &str,
@@ -115,10 +114,8 @@ fn same_as_walk(
 ) -> Output {
     let walk = run(root, Some("walk"), snapshot, command, args);
     assert_eq!(engines(&walk), ["walk (forced)"], "{}", stable(&walk));
-    let for_speed = expected.contains("--profile");
     let wanted = |mode: &str| match mode {
         "walk" => "walk (forced)",
-        "eval" if for_speed => "eval",
         _ => expected,
     };
     let modes: &[Option<&str>] = &[None, Some(""), Some("auto"), Some("eval")];
@@ -296,8 +293,11 @@ fn recording_plans_with_the_evaluator() {
     }
 }
 
+/// `--profile` plans with the evaluator (its spans are recorded per
+/// thread; docs/PROFILE.md "Parity"; the profile's content:
+/// tests/eval_pass2.rs).
 #[test]
-fn the_walk_plans_where_it_is_faster() {
+fn the_profile_plans_with_the_evaluator() {
     let ws = workspace();
     let profile = ws.path().join("tmp/profile.json");
     same_as_walk(
@@ -309,6 +309,7 @@ fn the_walk_plans_where_it_is_faster() {
             &format!("--profile={}", profile.display()),
             "//:top",
         ],
-        "walk (fallback: --profile)",
+        "eval",
     );
+    assert!(profile.exists());
 }

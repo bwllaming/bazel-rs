@@ -10363,6 +10363,8 @@ impl Engine {
             let index = state.done as u64;
             state.done += 1;
             crate::progress::analysis_configured(state.done);
+            // --profile: this entry's `configured target` span.
+            let span = crate::profile::TargetSpan::start(&key.label, rule.rule_class_name());
             self.flush_delegations(state);
             state.delegated_keys.clear();
             if !self.keep_going {
@@ -10375,6 +10377,7 @@ impl Engine {
             // a root cause, reported once, and fails what is above it.
             if self.keep_going_state.dependency_failed(key) {
                 self.keep_going_state.fail_propagated(key);
+                span.skip();
                 continue;
             }
             match self.plan_one_target(state, key, rule, configured, index) {
@@ -10427,8 +10430,6 @@ impl Engine {
                 .insert(key.clone(), Arc::new(Default::default()));
             return Ok(());
         }
-        // --profile (crate::profile): the target's analysis on this thread.
-        let profiled = crate::profile::active().then(std::time::Instant::now);
         {
             // The P1 split of plan_target (review §3): prepare builds the
             // coordinator context and the owned snapshot, compute runs the
@@ -10480,14 +10481,6 @@ impl Engine {
             });
             timer.finish();
             committed?;
-        }
-        if let Some(started) = profiled {
-            crate::profile::span(
-                "configured target",
-                key.label.to_string(),
-                started,
-                vec![("rule", rule.rule_class_name().to_owned())],
-            );
         }
         Ok(())
     }
@@ -18350,6 +18343,7 @@ pub(crate) fn settle_load_unit(
         prints: unit_prints,
         roots,
         observations,
+        profiled,
     } = unit;
     let mut steps = Vec::new();
     // The roots this load obtained on a worker count as materialized
@@ -18363,6 +18357,11 @@ pub(crate) fn settle_load_unit(
     {
         repositories.note_committed_roots(&roots);
         crate::observed_fs::commit(observations);
+        // (--profile: the committed load's span; an aborted attempt's is
+        // dropped, its inline re-run records its own.)
+        if let Some(span) = profiled {
+            span.commit();
+        }
     }
     let printed = |prints: &[crate::loading::LoadPrintEvent]| {
         prints
@@ -18389,6 +18388,9 @@ pub(crate) fn settle_load_unit(
                 let mut retried = rerun();
                 repositories.note_committed_roots(&retried.roots);
                 crate::observed_fs::commit(std::mem::take(&mut retried.observations));
+                if let Some(span) = retried.profiled.take() {
+                    span.commit();
+                }
                 return match retried.result {
                     Ok(rules) => {
                         steps.push(LoadStep::Committed(printed(&retried.prints)));
