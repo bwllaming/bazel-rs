@@ -4470,6 +4470,9 @@ impl Engine {
                             // is fetched (reused) ahead on the speculation
                             // pool, as the coordinator's loads do.
                             let committed = crate::repository_demand::committed_unit();
+                            // Its wide `.bzl` fan-outs load on helper
+                            // threads (crate::loading's `bzl_helpers`).
+                            let helpers = crate::loading::allow_bzl_helpers();
                             // BAZEL_RS_TIMING_TIMELINE: the worker's unit
                             // (docs/EVALUATOR.md, the pre-analysis span).
                             let span = crate::timeline::span("pattern-unit", || {
@@ -4477,6 +4480,7 @@ impl Engine {
                             });
                             let unit = package::evaluate_load_unit(repositories.clone(), id);
                             drop(span);
+                            drop(helpers);
                             drop(committed);
                             drop(reuse);
                             drop(guard);

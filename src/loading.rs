@@ -177,6 +177,9 @@ pub mod module_timings {
     }
 }
 
+mod bzl_helpers;
+pub(crate) use bzl_helpers::allow as allow_bzl_helpers;
+
 // Owned extension phase context, deliberately distinct from BUILD declarations.
 #[allow(unsafe_code)]
 mod extension_context {
@@ -808,8 +811,65 @@ fn load_build_file_modules(
         return Ok(LoadedModules::default());
     }
     warm_load_roots(&repositories, &labels);
+    if shared && bzl_helpers::allowed_here() {
+        let queue = bzl_helpers::Queue::default();
+        let width = bzl_helpers::width();
+        return std::thread::scope(|scope| {
+            let queue = &queue;
+            let shared_repositories = &repositories;
+            let spawn = || bzl_helpers::spawn(scope, queue, shared_repositories, globals, width);
+            let helpers = bzl_helpers::Helpers {
+                queue,
+                spawn: &spawn,
+            };
+            let loaded = load_build_file_modules_with(
+                Arc::clone(&repositories),
+                package,
+                ast,
+                globals,
+                shared,
+                prints,
+                labels,
+                Some(helpers),
+            );
+            queue.stop();
+            if crate::plan_timings::enabled() && queue.taken_by_helpers() > 0 {
+                crate::snapshot::diag::line_fmt(format_args!(
+                    "PERF-BZL-HELPERS package=@@{}//{} helped={}",
+                    package.repository,
+                    package.package,
+                    queue.taken_by_helpers()
+                ));
+            }
+            loaded
+        });
+    }
+    load_build_file_modules_with(
+        repositories,
+        package,
+        ast,
+        globals,
+        shared,
+        prints,
+        labels,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn load_build_file_modules_with<'a>(
+    repositories: Arc<RepositorySet>,
+    package: &PackageId,
+    ast: &AstModule,
+    globals: &'a Globals,
+    shared: bool,
+    prints: &'a LoadPrints,
+    labels: Vec<Label>,
+    helpers: Option<bzl_helpers::Helpers<'a>>,
+) -> Result<LoadedModules, String> {
     let mut loader = Loader::shared_build_phase(repositories, globals, prints);
     loader.shared = shared;
+    loader.helpers = helpers;
     for label in labels.iter().cloned() {
         loader.load(label)?;
     }
@@ -949,6 +1009,9 @@ pub(crate) struct BzlCache {
     /// Packages' `.bzl` load graphs by the BUILD file's direct loads
     /// ([`BzlCache::shared_load_graph`], MEM2).
     load_graphs: std::sync::Mutex<HashMap<Vec<Label>, Arc<LoadGraph>>>,
+    /// Labels a pattern unit's `.bzl` helper took ([`bzl_helpers`]): other
+    /// units' helpers leave them to it.
+    helped: std::sync::Mutex<std::collections::HashSet<Label>>,
 }
 
 /// A package's `.bzl` load graph: each `.bzl` file reachable from the
@@ -964,6 +1027,7 @@ impl Default for BzlCache {
             id: NEXT_BZL_CACHE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             modules: std::sync::Mutex::new(HashMap::new()),
             load_graphs: std::sync::Mutex::new(HashMap::new()),
+            helped: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 }
@@ -988,6 +1052,14 @@ impl BzlCache {
             .map_err(|_| "bzl module cache poisoned".to_owned())?
             .get(label)
             .cloned())
+    }
+
+    /// Whether a `.bzl` helper may load `label` (no helper took it yet).
+    fn help(&self, label: &Label) -> bool {
+        self.helped
+            .lock()
+            .map(|mut helped| helped.insert(label.clone()))
+            .unwrap_or(false)
     }
 
     /// Keep the first evaluation of a label (a later concurrent one is not
@@ -1612,6 +1684,9 @@ struct Loader<'a> {
     /// The replay-capture lookups entering them made (for the definition
     /// cache, W6R).
     entered_lookups: HashMap<Label, Vec<crate::snapshot::replay::Lookup>>,
+    /// A pattern unit's `.bzl` helpers ([`bzl_helpers`]): wide fan-outs
+    /// are loaded ahead into the shared cache on helper threads.
+    helpers: Option<bzl_helpers::Helpers<'a>>,
 }
 
 enum Work {
@@ -1655,6 +1730,7 @@ impl<'a> Loader<'a> {
             definitions: false,
             entered_mappings: HashMap::new(),
             entered_lookups: HashMap::new(),
+            helpers: None,
         }
     }
 
@@ -1782,6 +1858,9 @@ impl<'a> Loader<'a> {
                         continue;
                     }
                     if !self.shared_cache_hit(&label, &mut work, &mut active)? {
+                        if let Some(helpers) = self.helpers {
+                            helpers.queue.take_own(&label);
+                        }
                         let enter_started = std::time::Instant::now();
                         let recorded = self.repo_mappings.len();
                         // What a cache entry's hits replay (W6R).
@@ -1801,6 +1880,7 @@ impl<'a> Loader<'a> {
                             &label.to_string(),
                             enter_started.elapsed().as_secs_f64(),
                         );
+                        self.hand_out(&dependencies)?;
                         self.load_graph.insert(label.clone(), dependencies.clone());
                         active.push(label.clone());
                         work.extend(
@@ -2018,6 +2098,28 @@ impl<'a> Loader<'a> {
                     debug_assert_eq!(finished.as_ref(), Some(&label));
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// A pattern unit's wide fan-out: hand the loads the shared cache does
+    /// not hold yet to the unit's helpers ([`bzl_helpers`]).
+    fn hand_out(&self, dependencies: &[Label]) -> Result<(), String> {
+        let Some(helpers) = self.helpers else {
+            return Ok(());
+        };
+        if dependencies.len() < bzl_helpers::MIN_FANOUT {
+            return Ok(());
+        }
+        let cache = self.repositories.build_bzl_cache();
+        let mut missing = Vec::new();
+        for dependency in dependencies {
+            if !self.cache.contains_key(dependency) && cache.get(dependency)?.is_none() {
+                missing.push(dependency.clone());
+            }
+        }
+        if missing.len() >= bzl_helpers::MIN_FANOUT && helpers.queue.submit(missing) {
+            (helpers.spawn)();
         }
         Ok(())
     }
@@ -3298,6 +3400,110 @@ scalar = 42
         assert_eq!(function_reprs(&second).len(), 4);
         // A new repository set (invocation) evaluates again.
         assert_eq!(SHARED_EVALUATIONS.load(Ordering::Relaxed), 3);
+    }
+
+    /// A pattern unit's wide fan-out loads on `.bzl` helpers
+    /// (`bzl_helpers`): the unit's modules, functions, load graph and
+    /// printed lines are those of a load without helpers.
+    #[test]
+    fn bzl_helpers_load_wide_fan_outs_with_unchanged_results() {
+        let temp = Temp::new();
+        temp.file("BUILD", "");
+        temp.file(
+            "common.bzl",
+            "print('common')\ndef shared(x):\n    return x\n",
+        );
+        let width = bzl_helpers::MIN_FANOUT + 8;
+        let mut hub = String::new();
+        let mut sum = Vec::new();
+        for i in 0..width {
+            temp.file(
+                &format!("leaf{i}.bzl"),
+                &format!(
+                    "load(':common.bzl', 'shared')\nprint('leaf {i}')\ndef leaf_fn{i}():\n    return shared({i})\nvalue = {i}\n"
+                ),
+            );
+            hub.push_str(&format!("load(':leaf{i}.bzl', v{i} = 'value')\n"));
+            sum.push(format!("v{i}"));
+        }
+        hub.push_str(&format!("total = {}\n", sum.join(" + ")));
+        temp.file("hub.bzl", &hub);
+        let source = "load(':hub.bzl', 'total')\ntotal\n";
+        let mut builder = GlobalsBuilder::standard().with(test_globals);
+        crate::debug_print::install(&mut builder);
+        let globals = builder.build();
+        let package = root_package();
+        // The lines the coordinator emits for a unit's events: a module's
+        // own lines, a cache hit's stored lines, each module's once.
+        let emitted = |repositories: &RepositorySet, prints: &LoadPrints| {
+            let mut seen = std::collections::HashSet::new();
+            let mut lines = Vec::new();
+            for event in prints.take() {
+                match event {
+                    LoadPrintEvent::Module { label, line } => {
+                        seen.insert(label);
+                        lines.push(line);
+                    }
+                    LoadPrintEvent::Cached(label) => {
+                        if seen.insert(label.clone()) {
+                            lines.extend(repositories.build_bzl_cache().prints(&label));
+                        }
+                    }
+                    LoadPrintEvent::Build(line) => lines.push(line),
+                }
+            }
+            lines
+        };
+        let plain_repositories = Arc::new(RepositorySet::new(temp.0.clone()));
+        let plain_prints = LoadPrints::default();
+        let plain = load_build_modules_in(
+            plain_repositories.clone(),
+            &package,
+            &parse(source),
+            &globals,
+            &plain_prints,
+        )
+        .unwrap();
+        let helped_repositories = Arc::new(RepositorySet::new(temp.0.clone()));
+        let helped_prints = LoadPrints::default();
+        let helped = {
+            let _allow = bzl_helpers::allow();
+            let _guard = crate::repository_demand::no_demand();
+            let _reuse = crate::repository_demand::reuse_only();
+            let _committed = crate::repository_demand::committed_unit();
+            assert!(bzl_helpers::allowed_here());
+            load_build_modules_in(
+                helped_repositories.clone(),
+                &package,
+                &parse(source),
+                &globals,
+                &helped_prints,
+            )
+            .unwrap()
+        };
+        // The helpers took part of the fan-out.
+        assert!(
+            !helped_repositories
+                .build_bzl_cache()
+                .helped
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            evaluate(source, &helped.modules, &globals),
+            evaluate(source, &plain.modules, &globals)
+        );
+        assert_eq!(function_reprs(&helped), function_reprs(&plain));
+        assert_eq!(helped.direct_loads, plain.direct_loads);
+        assert_eq!(helped.load_graph, plain.load_graph);
+        let plain_lines = emitted(&plain_repositories, &plain_prints);
+        assert_eq!(plain_lines.len(), width + 1);
+        assert_eq!(emitted(&helped_repositories, &helped_prints), plain_lines);
+        assert_eq!(
+            helped_repositories.build_bzl_cache().len(),
+            plain_repositories.build_bzl_cache().len()
+        );
     }
 
     #[test]
