@@ -2183,6 +2183,80 @@ fn derive_note(ids: &mut BTreeSet<String>, artifact: &Artifact) {
     }
 }
 
+/// The planning tail's prune (plan_build_selected): the node positions of
+/// `roots` and of every node's dependencies (`offsets` into one list, in
+/// `all_dependencies` order), looked up in `position_of` on up to 16
+/// threads. `None` when some id has no node (the caller walks by id then).
+fn reachable_positions(
+    nodes: &[PlannedAction],
+    roots: &[&str],
+    position_of: &crate::fast_hash::FxHashMap<&str, usize>,
+    threads: usize,
+) -> Option<(Vec<u32>, Vec<u32>, Vec<u32>)> {
+    if nodes.len() >= u32::MAX as usize {
+        return None;
+    }
+    let workers = threads.clamp(1, 16);
+    let lookup = |id: &str| position_of.get(id).map(|position| *position as u32);
+    let chunk = nodes.len().div_ceil(workers).max(1);
+    let root_chunk = roots.len().div_ceil(workers).max(1);
+    type Part = Option<(Vec<u32>, Vec<u32>)>;
+    let (parts, root_parts): (Vec<Part>, Vec<Option<Vec<u32>>>) = std::thread::scope(|scope| {
+        let lookup = &lookup;
+        let handles: Vec<_> = nodes
+            .chunks(chunk)
+            .map(|slice| {
+                scope.spawn(move || -> Part {
+                    let mut lengths = Vec::with_capacity(slice.len());
+                    let mut dependencies = Vec::new();
+                    for node in slice {
+                        let before = dependencies.len();
+                        for dependency in node.all_dependencies() {
+                            dependencies.push(lookup(dependency.action_id.as_str())?);
+                        }
+                        lengths.push((dependencies.len() - before) as u32);
+                    }
+                    Some((lengths, dependencies))
+                })
+            })
+            .collect();
+        let root_handles: Vec<_> = roots
+            .chunks(root_chunk)
+            .map(|slice| {
+                scope.spawn(move || -> Option<Vec<u32>> {
+                    slice.iter().map(|id| lookup(id)).collect()
+                })
+            })
+            .collect();
+        (
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap_or(None))
+                .collect(),
+            root_handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap_or(None))
+                .collect(),
+        )
+    });
+    let mut root_positions = Vec::with_capacity(roots.len());
+    for part in root_parts {
+        root_positions.extend(part?);
+    }
+    let mut offsets = Vec::with_capacity(nodes.len() + 1);
+    offsets.push(0u32);
+    let mut dependencies = Vec::new();
+    for part in parts {
+        let (lengths, part) = part?;
+        for length in lengths {
+            let next = offsets.last().copied().unwrap_or(0).checked_add(length)?;
+            offsets.push(next);
+        }
+        dependencies.extend(part);
+    }
+    Some((root_positions, offsets, dependencies))
+}
+
 /// The positions of the `items` matching `pred`, in order, found on up to
 /// `threads` workers (plan B4: the planning tail's read-only scans).
 fn positions_where<T: Sync>(
@@ -11585,6 +11659,7 @@ impl Engine {
         // The requested targets' runfiles artifacts (the hidden top-level
         // group), listed, resolved and deduplicated per target on workers
         // (plan B4); the loop below takes them in label order.
+        crate::perf_mark("plan.tail.toplevel.seen");
         let mut top_runfiles = if runfiles_requested {
             let mut actual_keys = Vec::with_capacity(labels.len());
             for label in labels {
@@ -12005,7 +12080,7 @@ impl Engine {
         // By reference (the ids live in `nodes` and the artifacts): the
         // reachable set, then a mask over `nodes` in order.
         // Each id's last node (the one whose dependencies are followed)
-        // marks the id reached: one lookup per edge.
+        // marks the id reached.
         let mut keep = vec![false; nodes.len()];
         let mut position_of: crate::fast_hash::FxHashMap<&str, usize> =
             crate::fast_hash::FxHashMap::with_capacity_and_hasher(nodes.len(), Default::default());
@@ -12016,17 +12091,38 @@ impl Engine {
                 repeated.push(earlier);
             }
         }
-        while let Some(id) = todo.pop() {
-            let position = *position_of
-                .get(id)
-                .ok_or_else(|| format!("missing producing action: {id}"))?;
-            if !keep[position] {
-                keep[position] = true;
-                todo.extend(
-                    nodes[position]
-                        .all_dependencies()
-                        .map(|dependency| dependency.action_id.as_str()),
-                );
+        // The roots' and every node's dependencies' positions, looked up on
+        // workers; the walk over them below is the id walk's, in its order.
+        // An id with no node (an error if it is reached) walks by id
+        // instead, as before, for the same error.
+        let resolved = reachable_positions(&nodes, &todo, &position_of, self.loading_phase_threads);
+        match resolved {
+            Some((roots, offsets, dependencies)) => {
+                let mut stack = roots;
+                while let Some(position) = stack.pop() {
+                    let position = position as usize;
+                    if !keep[position] {
+                        keep[position] = true;
+                        stack.extend_from_slice(
+                            &dependencies[offsets[position] as usize..offsets[position + 1] as usize],
+                        );
+                    }
+                }
+            }
+            None => {
+                while let Some(id) = todo.pop() {
+                    let position = *position_of
+                        .get(id)
+                        .ok_or_else(|| format!("missing producing action: {id}"))?;
+                    if !keep[position] {
+                        keep[position] = true;
+                        todo.extend(
+                            nodes[position]
+                                .all_dependencies()
+                                .map(|dependency| dependency.action_id.as_str()),
+                        );
+                    }
+                }
             }
         }
         let reached = |id: &str| position_of.get(id).is_some_and(|position| keep[*position]);
@@ -12357,9 +12453,13 @@ impl Engine {
         // whose SymlinkTreeAction has them as inputs), so a source
         // directory among them fails that action, not the target.
         // By owner index (one per key, KeyTable).
-        let hidden_owners: BTreeSet<usize> = hidden.iter().map(|(owner, _)| *owner).collect();
+        // (A mask, in owner order: `hidden` has millions of entries.)
+        let mut hidden_owners = vec![false; owners.keys.len()];
+        for (owner, _) in &hidden {
+            hidden_owners[*owner] = true;
+        }
         let mut tree_runfiles = vec![false; owners.keys.len()];
-        for owner in hidden_owners {
+        for owner in (0..owners.keys.len()).filter(|owner| hidden_owners[*owner]) {
             let key = &owners.keys[owner];
             let actual = forwarded.get(key).unwrap_or(&key.label);
             let key = self.configurations.top_key(actual.clone());

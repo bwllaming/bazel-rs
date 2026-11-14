@@ -285,21 +285,24 @@ impl Runfiles {
     /// Runfiles.getAllArtifacts (Runfiles.java:422-438): artifacts, then the
     /// symlink and root symlink targets, deduplicated.
     pub fn all_artifacts(&self) -> Vec<File> {
-        let mut seen = BTreeSet::new();
-        let mut files = Vec::new();
         let symlinks = self.symlink_entries(false);
         let roots = self.symlink_entries(true);
-        for file in self
+        let all: Vec<File> = self
             .artifacts()
             .into_iter()
             .chain(symlinks.into_iter().map(|(_, file)| file))
             .chain(roots.into_iter().map(|(_, file)| file))
-        {
-            if seen.insert(file.clone()) {
-                files.push(file);
-            }
-        }
-        files
+            .collect();
+        // Membership only (hashed: the top-level runfiles of large
+        // executables list tens of thousands of files).
+        let mut seen: crate::fast_hash::FxHashSet<&File> =
+            crate::fast_hash::FxHashSet::with_capacity_and_hasher(all.len(), Default::default());
+        let first: Vec<bool> = all.iter().map(|file| seen.insert(file)).collect();
+        drop(seen);
+        all.into_iter()
+            .zip(first)
+            .filter_map(|(file, first)| first.then_some(file))
+            .collect()
     }
 }
 

@@ -63,29 +63,32 @@ pub(crate) fn is_normal(bytes: &[u8]) -> bool {
     segments.all(|segment| !segment.is_empty() && segment != b".")
 }
 
-/// A path's last component's bytes (`Path::components().next_back()`):
-/// the bytes after the last separator when they are one (neither empty nor
-/// `.`), else what the components give (`/` for the root, empty for the
-/// empty path). Equal paths have equal last components.
-fn last_component(path: &Path) -> &[u8] {
+/// The last (at most) 8 bytes of a path's last component
+/// (`Path::components().next_back()`), as a word: equal paths have equal
+/// tails. Read from the path's last 8 bytes when the component ends there
+/// (no trailing separator or `.`), else from the components.
+fn last_component_tail(path: &Path) -> u64 {
     let bytes = path.as_os_str().as_bytes();
-    let start = bytes
-        .iter()
-        .rposition(|&byte| byte == b'/')
-        .map_or(0, |separator| separator + 1);
-    let last = &bytes[start..];
-    if !last.is_empty() && last != b"." {
-        return last;
+    let mut tail = &bytes[bytes.len().saturating_sub(8)..];
+    if let Some(separator) = tail.iter().rposition(|&byte| byte == b'/') {
+        tail = &tail[separator + 1..];
     }
-    path.components()
-        .next_back()
-        .map_or(&[][..], |component| component.as_os_str().as_bytes())
+    if tail.is_empty() || tail == b"." {
+        // A trailing separator or `.`, the root, the empty path.
+        let last = path
+            .components()
+            .next_back()
+            .map_or(&[][..], |component| component.as_os_str().as_bytes());
+        tail = &last[last.len().saturating_sub(8)..];
+    }
+    let mut word = [0u8; 8];
+    word[..tail.len()].copy_from_slice(tail);
+    u64::from_le_bytes(word) ^ ((tail.len() as u64) << 61)
 }
 
 /// A prefilter of a set of paths: [`PathFilter::may_contain`] holds for
 /// every path equal (as a `Path`) to one of them, and for few others. It
-/// looks at a path's last component only (a bit per hashed last
-/// component), so a planning loop testing every input path of every action
+/// looks at the tail of a path's last component only (a bit per tail), so a planning loop testing every input path of every action
 /// against a small set (missing sources, source directories) skips the
 /// full path's normal-form check and hash for nearly all of them.
 pub(crate) struct PathFilter {
@@ -110,8 +113,7 @@ impl PathFilter {
     }
 
     fn bit(&self, path: &Path) -> u64 {
-        use std::hash::BuildHasher;
-        FastState::default().hash_one(last_component(path)) & self.mask
+        (last_component_tail(path).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) & self.mask
     }
 
     /// False only when no path of the set equals `path`.
@@ -214,15 +216,15 @@ mod tests {
             (".", "."),
             ("./", "."),
             ("x/..", ".."),
+            ("x/abcdefghij", "cdefghij"),
+            ("x/abcdefghij/", "cdefghij"),
+            ("abcdefghij/.", "cdefghij"),
+            ("a//bc", "bc"),
         ] {
-            let expected = Path::new(path)
-                .components()
-                .next_back()
-                .map_or(String::new(), |c| {
-                    c.as_os_str().to_string_lossy().into_owned()
-                });
-            assert_eq!(expected, last, "{path}");
-            assert_eq!(last_component(Path::new(path)), last.as_bytes(), "{path}");
+            let mut word = [0u8; 8];
+            word[..last.len()].copy_from_slice(last.as_bytes());
+            let tail = u64::from_le_bytes(word) ^ ((last.len() as u64) << 61);
+            assert_eq!(last_component_tail(Path::new(path)), tail, "{path}");
         }
         let filter = PathFilter::new([Path::new("only/this")]);
         assert!(
