@@ -813,6 +813,24 @@ change announced to the other two workers; adding a helper is not.
   verify compares `configured_rules`' keys sorted); new `BAZEL_RS_TIMING`
   marks `plan.tail.toplevel.{requested,seen,runfiles}`,
   `plan.tail.pruned.reached`, `plan.tail.inputs.{flagged,candidates}`.
+- 2026-11-14 (eval-speed round 8; no frozen interface changed):
+  `Engine::toolchain_contexts`, `Ct1Ok::toolchain_context` and
+  `Host::toolchain_context_of` hold `Arc<UnloadedToolchainContext>`;
+  `analyzed_sources`, `emitted_bzl_prints`, `console_owners`,
+  `LoadedFunctions`, the board's `index_of` and the aspect table's
+  `positions` are FxHash maps (order-free); the analysis pool's
+  `JobQueue` bounds the jobs running at once per walk
+  (`Engine::walk_workers(WalkKind)`: `BAZEL_RS_T3_DEFERRED_WORKERS`, 24,
+  `BAZEL_RS_T3_TAIL_WORKERS`, 14; the pool starts with the most);
+  `ConcurrentArtifactIndex::register_visible` (a worker prepare's
+  registration of a canonical, visible entry under the read lock) and
+  `Frozen::visible_views` (`VisibleViews`: a view's artifacts found all
+  canonical and visible are not registered again on later hits; checked
+  in debug builds and under `BAZEL_RS_VERIFY_ARTIFACTS`); the thaw's
+  `apply_memos` fills its three tables on scoped threads;
+  `PlannedResults::catch_up` on scoped threads; the per-package label
+  memos are keyed by package then text. Recording mode: the deferred and
+  tail walks keep the recording cap (4).
 
 ## 4. Stages and gates
 
@@ -3869,6 +3887,62 @@ pass 1, `publish_ct1`'s `UnloadedToolchainContext` clones, the tape),
 the repository store's per-invocation tree verification on the
 sequential thread (`materialize_registry`/`tree_matches`, its file lock),
 the top-level runfiles listing (bound by the largest target, ~0.17 s).
+
+### Round 8: the thaw, workers per walk, view registrations (eval-speed)
+
+Measured first (~/code `build --nobuild //src/...`, snapshot off, main
+`a8062a5e`): the deferred walk (~4.4 s) is bound by its jobs, not the
+cursor (`last_job` ≈ `total`; a faster cursor only waits longer on
+claims, e.g. with selective lowering drains or more lowering workers);
+some stretches are throughput-bound (24 workers −0.3 s), the rest
+dependency chains. The workers spent ~12 % re-registering a dependency
+view's artifacts on every hit (a write lock per artifact). The thaw
+applied every memo on one thread (0.4 s); the tail's freeze looked up
+130k keys on one. Phase 1's linearizer alone ~0.6–0.9 s after the pool.
+
+What changed:
+
+- **Workers per walk**: the pool's job queue bounds the jobs running at
+  once; the deferred walk runs on 24 workers, the planning tail on 14
+  (its jobs — the requested tests and binaries — set the resident peak:
+  16 workers 9.7 GB, 14 9.6 GB for +0.15 s, 12 9.45 GB for +0.3 s),
+  others on the frozen walks' cap.
+- **View registrations**: an already canonical entry visible to a worker
+  prepare is checked under the read lock; a view whose artifacts were all
+  found so at an earlier plan index registers none again in that walk
+  (canonical entries are never withdrawn, their stamps only lower).
+  Deferred walk 4.1 → 3.8–3.9 s, its CPU −10 core-s.
+- **Thaw and freeze**: the memo tables applied on scoped threads, the
+  walk-end view artifacts and the walk's aspect table to the dropper
+  (thaw 0.40 → 0.16 s); `PlannedResults::catch_up` on scoped threads.
+- **SipHash off hot order-free maps** (the board's plan index built at
+  each walk's start, `analyzed_sources` in the pass-2 ops, console
+  owners, loaded functions, package-load label memos), toolchain contexts
+  behind `Arc` (publication), quadratic scans as sets (a rule's orphan
+  check, cc compile inputs over a toolchain's `all_files`), the repo
+  mapping manifests' owner repositories memoized.
+
+Measured (2026-11-14, non-LTO, alternating, host load 22–33): `INFO:
+Elapsed time` main 14.29–14.56 s, round 8 (before the tail's 14 workers)
+13.44–13.75 s; the deferred walk 4.9–5.0 → 4.0–4.2 s (timeline,
+graph dropped → walk end). Max RSS 9.62–9.72 → 9.57–9.58 GB with the
+tail's 14 workers. Identical: the action dumps of `build` (also
+`PARITY_REVERSE`) and `test --nobuild`, the snapshot miss's dump;
+`PARITY_VERIFY`+`REVERSE`, `VERIFY_DELTA`/`ARTIFACTS`, `EVAL_VERIFY`
+(`--memory-limit=40000`) clean.
+
+Tried, not kept: draining the lowerings before pass-2 ops only when an
+op is ordered with them (no gain: the cursor waits on claims instead); a
+drop barrier before the tail (0.2 s, peak unchanged); a second dropper
+lane for the cursor's per-entry drops, jemalloc decay settings, a tail
+window of 1–4k entries (peak unchanged or the tail slower).
+
+Left: the `cc_build_info` entries' deltas fall back (`delta_workspace_status`)
+so their results are not published and their dependents' chains wait at
+the cursor (~0.1 s); the `zig_config` package load (~0.6 s on one pool
+thread, the pool idle behind it at 1.0–1.6 s); the select phase's
+pattern loading (~1.5 s, the main thread loads and commits); the
+linearizer alone after the pool (pass 1 ~0.4 s, tape ~0.2 s).
 
 ### Effort
 
