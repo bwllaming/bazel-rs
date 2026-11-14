@@ -2063,13 +2063,15 @@ impl Engine {
             .as_ref()
             .map_or(0, |plan| plan.len().saturating_sub(state.done));
         // While the snapshot records, the planning tail after the deferred
-        // walk (~/code: 14k entries) walks on the pipeline: the frozen
-        // walk's view and its computes at once peak higher (10.0 -> 9.8 GB
-        // on a miss, +1-2 s).
+        // walk (~/code: 14k entries) walks frozen too, on the recording's
+        // 4 workers (snapshot-miss-speed: since its natives and observing
+        // jobs merge as published, ~/code's miss peaks at 9.93 GB, 3.4 s
+        // faster than on the pipeline). `BAZEL_RS_EVAL_RECORDING_TAIL=
+        // pipeline` walks it on the pipeline (eval-record's choice: 9.77 GB).
         let tail_while_recording = self.eval_pass2.is_none()
             && crate::observed_fs::recording()
-            // snapshot-unrecorded: a scheduling switch (`frozen`: the tail frozen too); the output is the same either way.
-            && std::env::var_os("BAZEL_RS_EVAL_RECORDING_TAIL").is_none_or(|value| value != "frozen");
+            // snapshot-unrecorded: a scheduling switch (`pipeline`: the tail on the pipeline); the output is the same either way.
+            && std::env::var_os("BAZEL_RS_EVAL_RECORDING_TAIL").is_some_and(|value| value == "pipeline");
         // (Task D: a walk taking early boards' jobs is a buffered one.)
         if (frozen::walk_min().is_some_and(|min| remaining >= min) || self.early_ct2.is_some())
             && !tail_while_recording
