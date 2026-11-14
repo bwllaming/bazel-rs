@@ -193,7 +193,7 @@ impl NodeKey {
 pub(crate) struct NodeId(pub(crate) u32);
 
 /// Shards of the key → id index (a power of two).
-const SHARDS: usize = 64;
+const SHARDS: usize = 256;
 /// Segment `i` of the arena holds `FIRST_SEGMENT << i` slots.
 const FIRST_SEGMENT: usize = 1024;
 /// Segments: room for `FIRST_SEGMENT * (2^SEGMENTS - 1)` ids (> 4·10^12;
@@ -207,7 +207,9 @@ type Segment = Box<[OnceLock<NodeKey>]>;
 /// taken once per new key and per lookup) and an append-only arena (id →
 /// key: segmented, lock-free reads).
 pub(crate) struct Interner {
-    shards: Box<[Mutex<crate::fast_hash::FxHashMap<NodeKey, NodeId>>]>,
+    /// Each key with its hash (hashed once per use: the shard is picked by
+    /// the same hash).
+    shards: Box<[Mutex<hashbrown::HashTable<(u64, NodeKey, NodeId)>>]>,
     segments: Box<[OnceLock<Segment>]>,
     next: AtomicU32,
 }
@@ -232,16 +234,17 @@ pub(super) fn slot_of(id: u32) -> (usize, usize) {
 }
 
 impl Interner {
-    fn shard(&self, key: &NodeKey) -> &Mutex<crate::fast_hash::FxHashMap<NodeKey, NodeId>> {
+    fn shard(&self, key: &NodeKey) -> (u64, &Mutex<hashbrown::HashTable<(u64, NodeKey, NodeId)>>) {
         use std::hash::BuildHasher;
         let hash = crate::fast_hash::FxBuildHasher::default().hash_one(key);
-        &self.shards[(hash >> 32) as usize & (SHARDS - 1)]
+        (hash, &self.shards[crate::fast_hash::shard_of(hash, SHARDS)])
     }
 
     /// The id of `key`, assigned on first sight.
     pub(crate) fn intern(&self, key: &NodeKey) -> NodeId {
-        let mut shard = self.shard(key).lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(id) = shard.get(key) {
+        let (hash, shard) = self.shard(key);
+        let mut shard = shard.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, _, id)) = shard.find(hash, |entry| entry.0 == hash && entry.1 == *key) {
             return *id;
         }
         let id = self.next.fetch_add(1, Ordering::Relaxed);
@@ -255,17 +258,18 @@ impl Interner {
         // Published before the id escapes the shard lock.
         let _ = slots[offset].set(key.clone());
         let id = NodeId(id);
-        shard.insert(key.clone(), id);
+        shard.insert_unique(hash, (hash, key.clone(), id), |entry| entry.0);
         id
     }
 
     /// The id of `key` if interned.
     pub(crate) fn get(&self, key: &NodeKey) -> Option<NodeId> {
-        self.shard(key)
+        let (hash, shard) = self.shard(key);
+        shard
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(key)
-            .copied()
+            .find(hash, |entry| entry.0 == hash && entry.1 == *key)
+            .map(|entry| entry.2)
     }
 
     /// The key of `id` (lock-free).
