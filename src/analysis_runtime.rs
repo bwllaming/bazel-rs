@@ -43,15 +43,21 @@ use std::sync::atomic::AtomicBool;
 /// with `ptr_eq`.
 #[derive(Debug, Default)]
 pub struct LoadedFunctions {
-    by_identity: Mutex<std::collections::HashMap<u64, Vec<OwnedFrozenValue>>>,
+    /// By the identity's FxHash (a package commit registers each of its
+    /// loads' functions: SipHash twice per function showed on the
+    /// linearizer's path).
+    by_identity: Mutex<crate::fast_hash::FxHashMap<u64, Vec<OwnedFrozenValue>>>,
 }
 
 impl LoadedFunctions {
     fn key(value: Value<'_>) -> u64 {
         use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let mut hasher = crate::fast_hash::FxHasher::default();
         value.identity().hash(&mut hasher);
-        hasher.finish()
+        // (The high bits folded down: an aligned pointer's product has
+        // zero low bits, and the map indexes by them.)
+        let hash = hasher.finish();
+        hash ^ (hash >> 32)
     }
 
     /// Register the top-level functions of one loaded package.

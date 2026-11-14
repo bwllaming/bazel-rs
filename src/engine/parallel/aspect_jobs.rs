@@ -212,7 +212,7 @@ pub(in crate::engine) struct AspectTable {
     toolchains: HashMap<(ConfigId, String), (usize, Arc<AspectToolchains>)>,
     attribute_configs: HashMap<(ConfiguredTargetKey, String), (usize, AttributeConfigs)>,
     /// The plan index of each entry of the walk.
-    positions: HashMap<ConfiguredTargetKey, usize>,
+    positions: crate::fast_hash::FxHashMap<ConfiguredTargetKey, usize>,
     /// The applications committed so far in this walk (by the merges, in
     /// plan order): what a later entry's job sees in the aspect memo, as at
     /// its turn.

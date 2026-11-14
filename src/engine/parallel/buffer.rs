@@ -721,7 +721,7 @@ struct Board {
     /// BAZEL_RS_T3_DEBUG: (µs, what) of the cursor's slow steps.
     slow: std::sync::Mutex<Vec<(u64, String)>>,
     /// The plan index of each entry's key (a requirement must be earlier).
-    index_of: HashMap<ConfiguredTargetKey, usize>,
+    index_of: crate::fast_hash::FxHashMap<ConfiguredTargetKey, usize>,
     /// Classifications that panicked (their text), raised at the turn.
     panics: std::sync::Mutex<HashMap<usize, String>>,
     /// The requirement edges found so far (requirement's slot, entry's
@@ -1738,11 +1738,15 @@ impl Board {
         early: bool,
     ) -> Arc<Board> {
         let len = plan.len();
-        let index_of: HashMap<ConfiguredTargetKey, usize> = plan
-            .iter()
-            .enumerate()
-            .map(|(slot, (key, _))| (key.clone(), start + slot))
-            .collect();
+        // (FxHash: SipHash over the ~120k keys of ~/code's deferred walk
+        // showed at its start.)
+        let mut index_of = crate::fast_hash::FxHashMap::default();
+        index_of.reserve(len);
+        index_of.extend(
+            plan.iter()
+                .enumerate()
+                .map(|(slot, (key, _))| (key.clone(), start + slot)),
+        );
         Arc::new(Board {
             frozen,
             plan,

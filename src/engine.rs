@@ -3362,7 +3362,7 @@ pub struct Engine {
     /// Each action owner's console identity (crate::action_console::owner),
     /// recorded as its configured target or aspect application is analyzed
     /// and stamped on the planned actions it owns.
-    console_owners: HashMap<String, crate::shared_path::SharedPath>,
+    console_owners: crate::fast_hash::FxHashMap<String, crate::shared_path::SharedPath>,
     /// BAZEL_RS_ANALYSIS_ORDER=genuine: the entry analyzed again at its
     /// turn whose prints its job wrote already (parallel::buffer's
     /// `redo_at_turn`): its commit tracks them, writes none.
@@ -3373,7 +3373,7 @@ pub struct Engine {
     /// `.bzl` labels whose buffered top-level print lines the coordinator
     /// already emitted (one emission per evaluated module, review §1.4);
     /// lookups only, never iterated.
-    emitted_bzl_prints: HashSet<Label>,
+    emitted_bzl_prints: crate::fast_hash::FxHashSet<Label>,
     // N44 hash maps/sets (declared_inputs, source_targets, analyzed_sources)
     // answer lookups only and are never iterated: output order must not
     // depend on the per-process hash seed (tests/loading.rs
@@ -3396,7 +3396,7 @@ pub struct Engine {
     /// the consumer, so it runs once per label (a ConfiguredTargetKey of an
     /// input file has no configuration), not once per dependency edge
     /// (lookups only).
-    analyzed_sources: Shared<HashSet<Label>>,
+    analyzed_sources: Shared<crate::fast_hash::FxHashSet<Label>>,
     /// Top-level functions of every loaded package (Args `map_each`,
     /// crate::analysis_runtime::LoadedFunctions).
     loaded_functions: Arc<crate::analysis_runtime::LoadedFunctions>,
@@ -3696,7 +3696,7 @@ impl Engine {
         Self {
             repositories,
             packages: Default::default(),
-            emitted_bzl_prints: HashSet::new(),
+            emitted_bzl_prints: Default::default(),
             loading_phase_threads: std::thread::available_parallelism()
                 .map(usize::from)
                 .unwrap_or(1),
@@ -3711,7 +3711,7 @@ impl Engine {
             cquery_transitions: false,
             cquery_fragments: false,
             aquery_capture: None,
-            console_owners: HashMap::new(),
+            console_owners: Default::default(),
             streamed_redo: None,
             abandon_analysis_workers: false,
             declared_inputs: Default::default(),
