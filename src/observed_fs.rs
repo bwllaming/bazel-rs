@@ -653,7 +653,7 @@ pub struct TaintRecord {
 
 // ---- the recorder ----------------------------------------------------------
 
-type Shard = Mutex<HashMap<PathBuf, Vec<Observation>>>;
+type Shard = Mutex<crate::fast_hash::FxHashMap<PathBuf, Vec<Observation>>>;
 
 /// Who recorded a repository root (see [`repository_tree`],
 /// [`crossed_tree`], [`local_tree`]).
@@ -669,6 +669,45 @@ enum Claim {
     Local,
 }
 
+/// The REPO records of a window, one per root (in no order: a recording
+/// sorts them), indexed by root: thousands of trees are claimed, each
+/// claim looks its root up.
+#[derive(Default)]
+struct Repositories {
+    list: Vec<RepositoryRecord>,
+    index: crate::fast_hash::FxHashMap<PathBuf, usize>,
+}
+
+impl Repositories {
+    fn get_mut(&mut self, root: &Path) -> Option<&mut RepositoryRecord> {
+        let position = *self.index.get(root)?;
+        self.list.get_mut(position)
+    }
+
+    /// Forget `root`'s record, if any.
+    fn remove(&mut self, root: &Path) {
+        let Some(position) = self.index.remove(root) else {
+            return;
+        };
+        self.list.swap_remove(position);
+        if let Some(moved) = self.list.get(position) {
+            self.index.insert(moved.root.clone(), position);
+        }
+    }
+
+    /// Add `record` (its root has none: [`Self::remove`] first).
+    fn push(&mut self, record: RepositoryRecord) {
+        self.remove(&record.root);
+        self.index.insert(record.root.clone(), self.list.len());
+        self.list.push(record);
+    }
+
+    fn take(&mut self) -> Vec<RepositoryRecord> {
+        self.index = Default::default();
+        std::mem::take(&mut self.list)
+    }
+}
+
 /// The process-global recorder of one window.
 pub struct Recorder {
     window_start_ns: i64,
@@ -678,7 +717,7 @@ pub struct Recorder {
     framed: bool,
     shards: Vec<Shard>,
     env: Mutex<BTreeMap<OsString, EnvObservation>>,
-    repositories: Mutex<Vec<RepositoryRecord>>,
+    repositories: Mutex<Repositories>,
     selections: Mutex<BTreeMap<String, crate::repository_publication::Receipt>>,
     /// The specification pointers this process replaced, with the
     /// repository whose selection they name ([`supersede_selection`]): an
@@ -756,9 +795,11 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
 }
 
 fn shard_of(path: &Path) -> usize {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    // (Path's hash agrees with its equality: one shard per path whatever
+    // its spelling.)
+    let mut hasher = crate::fast_hash::FxHasher::default();
     path.hash(&mut hasher);
-    (hasher.finish() as usize) % SHARDS
+    crate::fast_hash::shard_of(hasher.finish(), SHARDS)
 }
 
 /// The digest of a projected listing: `(name, type letter)` pairs in byte
@@ -836,13 +877,19 @@ impl Recorder {
     /// order the observations come in (W6R: workers' units reach the
     /// recorder in another order than one loading thread's loads).
     fn store_observation(&self, path: &Path, op: Op, outcome: Outcome) {
+        self.store_observation_ref(path, &op, &outcome);
+    }
+
+    /// [`Self::store_observation`] by reference: a repeated observation
+    /// (most of a replayed set's) is compared, never copied.
+    fn store_observation_ref(&self, path: &Path, op: &Op, outcome: &Outcome) {
         // A pointer's absence before it was published — by this process
         // ([`Self::store_supersede_selection`]) or by another one whose
         // publication this process then read and reused (the double-checked
         // probe under the writer lock, a concurrent `affected` planning) —
         // is superseded by that publication, in whatever order the events
         // arrive: what the analysis used is the publication it read.
-        match &op {
+        match op {
             Op::SelectionAbsent(canonical)
                 if lock(&self.superseded_selections)
                     .contains(&(path.to_path_buf(), canonical.clone())) =>
@@ -862,8 +909,8 @@ impl Recorder {
             shard.insert(path.to_path_buf(), observations);
         }
         let conflict = match shard.get_mut(path) {
-            Some(observations) => match observations.iter().find(|seen| seen.op == op) {
-                Some(seen) if seen.outcome == outcome => None,
+            Some(observations) => match observations.iter().find(|seen| seen.op == *op) {
+                Some(seen) if seen.outcome == *outcome => None,
                 Some(seen) => Some(format!(
                     "{} {}: {} then {outcome}",
                     op.name(),
@@ -871,12 +918,21 @@ impl Recorder {
                     seen.outcome
                 )),
                 None => {
-                    observations.push(Observation { op, outcome });
+                    observations.push(Observation {
+                        op: op.clone(),
+                        outcome: outcome.clone(),
+                    });
                     None
                 }
             },
             None => {
-                shard.insert(path.to_path_buf(), vec![Observation { op, outcome }]);
+                shard.insert(
+                    path.to_path_buf(),
+                    vec![Observation {
+                        op: op.clone(),
+                        outcome: outcome.clone(),
+                    }],
+                );
                 None
             }
         };
@@ -1231,7 +1287,7 @@ impl Recorder {
             }
         }
         observations.sort_by(|(a, x), (b, y)| a.cmp(b).then_with(|| x.op.cmp(&y.op)));
-        let mut repositories = lock(&self.repositories).clone();
+        let mut repositories = lock(&self.repositories).list.clone();
         repositories.sort_by(|a, b| a.root.cmp(&b.root));
         self.restat_manifests(&mut repositories);
         let mut crossed: Vec<PathBuf> = lock(&self.repository_roots)
@@ -1291,7 +1347,7 @@ impl Recorder {
                 .cmp(b.as_os_str().as_bytes())
                 .then_with(|| x.op.cmp(&y.op))
         });
-        let mut repositories = std::mem::take(&mut *lock(&self.repositories));
+        let mut repositories = lock(&self.repositories).take();
         repositories.sort_by(|a, b| a.root.cmp(&b.root));
         self.restat_manifests(&mut repositories);
         let mut crossed: Vec<PathBuf> = lock(&self.repository_roots)
@@ -1466,10 +1522,7 @@ impl Recorder {
                 (None, _) | (Some(Claim::Crossing), Claim::Owner | Claim::Local) => {}
                 (Some(Claim::Owner), Claim::Owner) => {
                     let mut repositories = lock(&self.repositories);
-                    if let Some(record) = repositories
-                        .iter_mut()
-                        .find(|repository| repository.root == root)
-                    {
+                    if let Some(record) = repositories.get_mut(root) {
                         restat_manifest(record, self.window_start_ns);
                     }
                     return;
@@ -1484,7 +1537,7 @@ impl Recorder {
             return;
         }
         let mut repositories = lock(&self.repositories);
-        repositories.retain(|repository| repository.root != root);
+        repositories.remove(root);
         if let Some(mut record) = record {
             restat_manifest(&mut record, self.window_start_ns);
             repositories.push(record);
@@ -1522,10 +1575,7 @@ impl Recorder {
             (None, _) | (Some(Claim::Crossing), Claim::Owner | Claim::Local) => {}
             (Some(Claim::Owner), Claim::Owner) => {
                 let mut repositories = lock(&self.repositories);
-                if let Some(record) = repositories
-                    .iter_mut()
-                    .find(|repository| repository.root == root)
-                {
+                if let Some(record) = repositories.get_mut(&root) {
                     restat_manifest(record, self.window_start_ns);
                 }
                 return;
@@ -1534,7 +1584,7 @@ impl Recorder {
         }
         roots.insert(root.clone(), claim);
         let mut repositories = lock(&self.repositories);
-        repositories.retain(|repository| repository.root != root);
+        repositories.remove(&root);
         if let Some(record) = record {
             // Stored: a later claim inside a frame sees the owner and walks
             // nothing (the walk's copy is not kept twice).
@@ -1599,7 +1649,13 @@ impl Recorder {
             return;
         }
         for event in &captured.events.events {
-            self.apply_event(event.clone());
+            match event {
+                Event::Observe(path, op, outcome) => {
+                    APPLIED_EVENTS.fetch_add(1, Ordering::Relaxed);
+                    self.store_observation_ref(path, op, outcome);
+                }
+                event => self.apply_event(event.clone()),
+            }
         }
         for child in &captured.events.children {
             self.replay_captured(child);
