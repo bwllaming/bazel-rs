@@ -588,6 +588,13 @@ overlapping the Starlark-option loads with discovery (~0.08 s: the first
 wave of units only takes 0.05 s); reusing the resolved module graph
 (~0.1 s).
 
+**`.bzl` helpers** (eval-speed round 9, docs/EVALUATOR.md "Round 9"):
+`//src/ts`'s 1,700+ `.bzl` modules no longer load on one thread — a
+unit's wide fan-out (≥ 32 loads the shared cache misses) is handed to 8
+helper threads that load it last first into the shared cache while the
+unit's own traversal goes on in order (`BAZEL_RS_BZL_HELPERS`, `0` off).
+`select.loaded` 2.4 → ~1.5 s (non-LTO).
+
 ## Module extensions prepared ahead (branch `parallel-extensions`)
 
 Once the module graph is resolved and the extension catalog built (at

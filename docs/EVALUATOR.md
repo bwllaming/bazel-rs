@@ -838,6 +838,15 @@ change announced to the other two workers; adding a helper is not.
   `PlannedResults::catch_up` on scoped threads; the per-package label
   memos are keyed by package then text. Recording mode: the deferred and
   tail walks keep the recording cap (4).
+- 2026-11-14 (eval-speed round 9; no frozen interface changed):
+  `RegistrationLoader::found(&[Label])` (a default no-op; the expansion
+  reports each toolchain pattern's labels as it finds them) and
+  `EvalHost::hint_keys` (`hint_edges` without recording the hinted keys
+  as waited for); `EvalHost::registration_hints` is set only by the
+  RegToolchains body. Loading: `loading::bzl_helpers` (`Loader::helpers`,
+  `BzlCache::helped`), allowed only on a pattern-loading worker's thread
+  (`loading::allow_bzl_helpers`) in its no-demand, reuse-only,
+  committed-unit mode.
 
 ## 4. Stages and gates
 
@@ -3951,6 +3960,81 @@ the cursor (~0.1 s); the `zig_config` package load (~0.6 s on one pool
 thread, the pool idle behind it at 1.0–1.6 s); the select phase's
 pattern loading (~1.5 s, the main thread loads and commits); the
 linearizer alone after the pool (pass 1 ~0.4 s, tape ~0.2 s).
+
+### Round 9: the select phase's `.bzl` fan-outs, the registered toolchains (eval-speed)
+
+Measured first (~/code `build --nobuild //src/...`, snapshot off, main
+`198236c5`, non-LTO): `select.loaded` 2.4 s. Its critical path was
+`//src/ts` on one pattern worker (0.88 s: `@npm//:defs.bzl` loads 1,936
+`__links//:defs.bzl` files, each in its own repository — root, ignored
+subdirectories, read, parse, evaluation ~0.5 ms each, one after
+another), `//src/ts/bport` and `//src/ts/devenv-ui` walking the same
+graph at once (0.58 s each), then `//src/website3` (its own hub, 0.84 s)
+in a later wave. In phase 1 the pool was idle 0.4–0.9 s and again
+1.2–1.5 s: the RegToolchains body expands the registered patterns one
+after another (local_jdk, ~45 `toolchain_config_repo` local rules, the
+extension groups' commits), and only then analyzes the registered
+toolchains; ~/code's first ones (the root module's zig toolchains) pull
+the 15,185-file `@zig_config` package (0.6 s of BUILD evaluation on one
+thread), which every requested target's toolchain resolution waits for.
+
+What changed:
+
+- **`.bzl` helpers** (`loading::bzl_helpers`, `BAZEL_RS_BZL_HELPERS`, 8
+  per unit, `0` off): when a pattern unit's traversal enters a module
+  with at least 32 loads the shared cache does not hold, they are handed
+  to helper threads (scoped to the unit's load) that load them, last
+  first, into the repository set's shared `BzlCache`; the unit's own
+  traversal goes on from the first, in order, and finds them there. A
+  helper is another pattern worker loading one `.bzl` of a committed unit
+  (the same no-demand, reuse-only, committed-unit guards, a BUILD-phase
+  loader, its own print sink, roots and observation frame, all
+  discarded): whoever evaluates a label first, the entry is the same (the
+  cache's invariant), and a module's prints, root and observations are
+  stored with it and replayed where the unit's traversal reaches it, as
+  for a module another unit evaluated. Sentinels, cycles and depth errors
+  are never published; the unit still visits every module itself with its
+  cycle, depth and visibility checks. A label one unit's helper took is
+  left to it by other units' helpers (`BzlCache::helped`).
+- **Registered toolchains hinted as found** (`RegistrationLoader::found`,
+  `BAZEL_RS_EVAL_REGISTRATION_HINTS`, `0` off): each pattern's toolchains
+  are scheduled on the pool as soon as the expansion finds them (not
+  waited for; the body's own hint after the expansion is). `@zig_config`
+  now loads from phase 1's start, beside the expansion's chain: done at
+  ~0.65 s instead of ~1.55 s.
+
+Measured (2026-11-14, ~/code `80d6724f3a` private clone, snapshot off,
+alternating; the host's load 12–60, so single runs vary by ±0.5 s):
+
+| | main `198236c5` | round 9 |
+|---|---|---|
+| `select.loaded` (non-LTO, `BAZEL_RS_TIMING`) | 2.42 s | 1.46–1.63 s |
+| `@zig_config` loaded (plan.start-relative) | 1.53–1.59 s | 0.62–0.72 s |
+| `INFO: Elapsed time` (LTO, `BAZEL_RS_TIMING`+timeline, load 12–20) | 13.79–14.51 s | 13.04–13.51 s |
+| max RSS | 9.65–9.66 GB | 9.64–9.70 GB |
+
+Identical: the action dumps of `build` (also `PARITY_REVERSE`) and `test
+--nobuild` (vs main's walk), the record mode's dump (timings aside);
+`PARITY_VERIFY`+`REVERSE`, `VERIFY_DELTA`/`ARTIFACTS`, `EVAL_VERIFY`
+(`--memory-limit=40000`) clean; the private lockfile and the hidden
+lockfile untouched.
+
+Tried, not kept (no measurable gain at this host's noise): a first wave
+of 64 for the re-run batches (more units walk the same graph at once);
+the lane requesting every queued blocker's extension group and local
+rule ahead plus the registration packages hinted as `Pkg` nodes (the
+RegToolchains chain done at 0.88 s instead of ~1.2 s in one run, but the
+requested targets' timeline did not move; es-out/lane-ahead-pkg-hints.patch
+in the worker notes); 4 or 16 helpers instead of 8.
+
+Left: the RegToolchains chain (the `toolchain_config_repo` local rules
+execute one after another, ~5 ms each, ~0.2 s); `//src/ts`'s BUILD
+evaluation (0.25 s, `npm_link_all_packages`) and the coordinator's commits
+up to the `npm` demand (~0.8 s of `select.loaded`); `java_call_stack` per
+rule instantiation (~14 % of BUILD evaluation: a per-file path memo);
+`LinkPolicy::anchor` scanning every materialized root per symlink in a
+glob (~10 % of `@zig_config`); the linearizer alone after the pool and
+the `cc_build_info` fallbacks as before.
 
 ### Effort
 
