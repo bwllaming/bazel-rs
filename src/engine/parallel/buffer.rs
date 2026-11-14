@@ -553,6 +553,31 @@ pub(super) fn observed_jobs() -> bool {
     *ON
 }
 
+/// `BAZEL_RS_T3_TRACKED_NATIVES=0` (a diagnostics switch): with the
+/// incremental tracker a native rule a worker published is committed again
+/// at its turn (its planning frame's accesses the commit's), as before
+/// snapshot-miss-speed. By default its results are merged as without the
+/// tracker and the accesses its worker's run made — the same lookups of
+/// the same dependencies, in the same order — are replayed in its planning
+/// frame (`BAZEL_RS_T3_VERIFY_NATIVE_ACCESSES=1` commits it at its turn and
+/// checks them against the commit's).
+pub(super) fn tracked_natives() -> bool {
+    static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling switch; the index is the same either way.
+        std::env::var_os("BAZEL_RS_T3_TRACKED_NATIVES").is_none_or(|value| value != "0")
+    });
+    *ON && !verify_native_accesses()
+}
+
+/// `BAZEL_RS_T3_VERIFY_NATIVE_ACCESSES=1`: [`tracked_natives`]' check.
+fn verify_native_accesses() -> bool {
+    static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
+        std::env::var_os("BAZEL_RS_T3_VERIFY_NATIVE_ACCESSES").is_some()
+    });
+    *ON
+}
+
 pub(super) fn observed_natives() -> bool {
     static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
         // snapshot-unrecorded: a scheduling switch; the recording is the same either way.
@@ -2460,35 +2485,87 @@ impl Engine {
                         }
                         // (A filegroup's output group: its worker selected
                         // the files from its `srcs`' published views.)
-                        Some(merge)
+                        // With the tracker its planning frame records
+                        // the accesses its worker's run made (the
+                        // commit's: `tracked_natives`).
+                        Some(mut merge)
                             if fast_natives()
-                                && !self.tracking()
+                                && (!self.tracking() || tracked_natives())
                                 && (native_results::plain(&rule)
                                     || native_results::selected_output_group(&rule).is_some()) =>
                         {
                             stat(S_FAST_NATIVE, 1);
                             let _split = frozen::Split::enter(16);
-                            self.merge_published_native(state, &board.frozen, &key, &rule, merge)
-                                .map(|forwarded_same| {
-                                    fast = forwarded_same;
-                                    stale = !forwarded_same;
-                                    if stale {
-                                        stat(S_FORWARDED_REPUBLISHED, 1);
-                                    }
-                                })
+                            let depth = self.track_depth();
+                            let started = self.tracking().then(std::time::Instant::now);
+                            if started.is_some() {
+                                self.track_planning(&key);
+                                self.track_replay(incremental::TrackLog::accesses(
+                                    std::mem::take(&mut merge.accesses),
+                                    incremental::ScopeContext::current(),
+                                ));
+                            }
+                            let merged = self.merge_published_native(
+                                state,
+                                &board.frozen,
+                                &key,
+                                &rule,
+                                merge,
+                            );
+                            if let Some(started) = started {
+                                self.track_cost(started.elapsed());
+                            }
+                            self.track_restore(depth);
+                            merged.map(|forwarded_same| {
+                                fast = forwarded_same;
+                                stale = !forwarded_same;
+                                if stale {
+                                    stat(S_FORWARDED_REPUBLISHED, 1);
+                                }
+                            })
                         }
                         registered => {
                             let started = std::time::Instant::now();
                             let published = registered.is_some();
                             // Committed again here: what its worker
                             // observed as discarded work's.
+                            let mut expected = None;
                             if let Some(merge) = registered {
                                 crate::observed_fs::commit(
                                     merge.observations.without_registrations(),
                                 );
+                                if verify_native_accesses()
+                                    && self.tracking()
+                                    && fast_natives()
+                                    && (native_results::plain(&rule)
+                                        || native_results::selected_output_group(&rule).is_some())
+                                {
+                                    expected = Some(merge.accesses);
+                                    self.access_capture.push(Vec::new());
+                                }
                             }
                             let result =
                                 self.plan_one_target(state, &key, &rule, configured, index as u64);
+                            if let Some(expected) = expected {
+                                // (The tracker keeps them as sets, its
+                                // packages numbered in first-seen order:
+                                // the labels' first occurrences.)
+                                let distinct = |labels: Vec<Label>| {
+                                    let mut seen = HashSet::new();
+                                    labels
+                                        .into_iter()
+                                        .filter(|label| seen.insert(label.clone()))
+                                        .collect::<Vec<_>>()
+                                };
+                                let committed = self.access_capture.pop().unwrap_or_default();
+                                let (expected, committed) =
+                                    (distinct(expected), distinct(committed));
+                                assert_eq!(
+                                    expected, committed,
+                                    "internal error: BAZEL_RS_T3_VERIFY_NATIVE_ACCESSES: the accesses of {}'s worker differ from its commit's",
+                                    key.label
+                                );
+                            }
                             if published && result.is_ok() && matches!(rule.kind, RuleKind::Genrule)
                             {
                                 adopt_published_genrule(state, &board.frozen, &key);
@@ -2853,9 +2930,12 @@ impl Engine {
                 || !effects.console.is_empty()
                 // (Only plain observations, committed at its merge: a
                 // taint — a registration its placement may count again —
-                // is the turn's.)
+                // is the turn's; so is everything with the incremental
+                // tracker, whose aspect applications its prepare records.)
                 || (!effects.observations.is_empty()
-                    && (!observed_jobs() || effects.observations.order_dependent()))
+                    && (!observed_jobs()
+                        || self.tracking()
+                        || effects.observations.order_dependent()))
                 || !effects.roots.is_empty()
                 || super::aspect_jobs::verify_mode())
         {
@@ -3015,6 +3095,7 @@ impl Engine {
             sources,
             owner,
             observations,
+            ..
         } = merge;
         crate::observed_fs::commit(observations);
         // The source lookups its commit would have made (Engine::target):

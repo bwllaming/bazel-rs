@@ -1287,6 +1287,7 @@ pub(super) fn run_native(
             sources: std::mem::take(&mut cx.record.sources),
             owner: native_owner(engine, key, rule),
             observations: effects.observations,
+            accesses: std::mem::take(&mut cx.record.accesses),
         }))
     }))
     .ok()
@@ -1310,6 +1311,7 @@ pub(super) fn publish_native_results(
         sources,
         owner,
         observations,
+        accesses,
     } = published;
     for artifact in &registered {
         frozen.artifacts.publish_provisional(
@@ -1341,6 +1343,7 @@ pub(super) fn publish_native_results(
         sources,
         owner,
         observations,
+        accesses,
     }
 }
 
@@ -1355,6 +1358,10 @@ pub(super) struct NativeMerge {
     /// merge, or without its registrations when its turn commits it
     /// again, as discarded work's).
     pub(super) observations: crate::observed_fs::Observations,
+    /// The incremental tracker's accesses of its worker's run, in order
+    /// (empty without the tracker): its commit's, replayed in its
+    /// planning frame at its merge.
+    pub(super) accesses: Vec<Label>,
 }
 
 /// A native rule's action owner and console owner, as
@@ -1625,6 +1632,8 @@ pub(super) struct NativePublished {
     owner: (String, crate::shared_path::SharedPath),
     /// What it observed ([`NativeMerge::observations`]).
     observations: crate::observed_fs::Observations,
+    /// [`NativeMerge::accesses`].
+    accesses: Vec<Label>,
 }
 
 /// A native rule's results being computed on a worker (`None`: not
@@ -1742,6 +1751,7 @@ fn package_group_results(
         sources: Vec::new(),
         owner: native_owner(engine, key, rule),
         observations: crate::observed_fs::Observations::default(),
+        accesses: Vec::new(),
     }))
 }
 
