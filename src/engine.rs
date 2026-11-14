@@ -6712,14 +6712,14 @@ impl Engine {
                 .map(|node| (node.action.id.as_str(), node))
                 .collect();
             let checked = self.source_directories_checked;
+            let status = memchr::memmem::Finder::new(b"-status.txt");
             let reads = |node: &crate::scheduler::PlannedAction| {
                 (!checked && !node.action.extra.source_directories.is_empty())
                     || node.inputs().any(|(_, exec)| {
                         // (A path equal to a status file by components
                         // holds its name's bytes: most inputs are ruled
                         // out without parsing their components.)
-                        memchr::memmem::find(exec.as_os_str().as_encoded_bytes(), b"-status.txt")
-                            .is_some()
+                        status.find(exec.as_os_str().as_encoded_bytes()).is_some()
                             && (exec == Path::new("bazel-out/stable-status.txt")
                                 || exec == Path::new("bazel-out/volatile-status.txt"))
                     })

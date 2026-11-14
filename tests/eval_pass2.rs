@@ -782,12 +782,13 @@ filegroup(name = "all", srcs = [":everything", ":after_cpu", ":sources", ":via_d
         (8, &[("BAZEL_RS_EVAL_RESTARTS", "5")]),
         (8, &[("BAZEL_RS_EVAL_FROZEN_PREPARES", "all")]),
         (8, &[("BAZEL_RS_EVAL_FROZEN_PREPARES", "0")]),
-        // The sweep while recording (opt-in, super::sweep::enabled).
+        // Deltas built again at the merge while recording (the sweep is on
+        // there by default, super::sweep::enabled).
         (
             8,
             &[
                 ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all"),
-                ("BAZEL_RS_EVAL_SWEEP_RECORDING", "1"),
+                ("BAZEL_RS_EVAL_SWEEP_RECORDING", "0"),
             ],
         ),
     ];

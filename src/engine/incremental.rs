@@ -1605,9 +1605,14 @@ fn rule_modules(
     // (Hundreds of thousands of keys name a few hundred modules: each
     // parsed once.)
     let mut parsed: FxHashMap<&str, Label> = FxHashMap::default();
+    // (Each package looked up once.)
+    let mut by_package: FxHashMap<(&str, &str), Option<&Arc<Package>>> = FxHashMap::default();
     keys.iter()
         .filter_map(|(key, label)| {
-            let rule = packages.get(&label.package_id())?.rules.get(label)?;
+            let package = *by_package
+                .entry((label.repository.as_str(), label.package.as_str()))
+                .or_insert_with(|| packages.get(&label.package_id()));
+            let rule = package?.rules.get(label)?;
             let custom = rule.custom.as_ref()?;
             let modules = [
                 &custom.declaration.definition_label,
