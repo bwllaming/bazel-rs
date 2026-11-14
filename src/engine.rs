@@ -11536,6 +11536,7 @@ impl Engine {
             results.push((label.clone(), own));
         }
         let results = self.displayed_results(results)?;
+        crate::perf_mark("plan.tail.toplevel.requested");
         // OutputGroupInfo.HIDDEN_TOP_LEVEL (RuleConfiguredTargetBuilder.java:156-171):
         // the default runfiles artifacts of requested targets are built too,
         // but not reported. The runfiles tree itself is not created (docs/RUNFILES.md).
@@ -11618,6 +11619,7 @@ impl Engine {
                 &status_client_environment,
             )
         };
+        crate::perf_mark("plan.tail.toplevel.runfiles");
         let mut spent_taken = Vec::with_capacity(labels.len());
         // Room for the listed runfiles artifacts (no regrowth moves).
         hidden.reserve(
@@ -12058,6 +12060,7 @@ impl Engine {
                 drop_it
             })
             .collect();
+        crate::perf_mark("plan.tail.pruned.reached");
         drop_elsewhere(unreachable);
         crate::perf_mark("plan.tail.pruned");
         // The console identity of each action's owner (ActionOwner,
@@ -12292,6 +12295,7 @@ impl Engine {
                 }
             }
         }
+        crate::perf_mark("plan.tail.inputs.flagged");
         // A node's source inputs that may fail (a missing source or a
         // source directory), in order: its own followed by its shared
         // groups' when one of them is flagged (`SourceInputs::listed_where`),
@@ -12438,6 +12442,7 @@ impl Engine {
                     .is_some_and(|sources| sources.any_listed(node, &flagged, &may_fail))
             })
         };
+        crate::perf_mark("plan.tail.inputs.candidates");
         for node in candidates.into_iter().map(|position| &nodes[position]) {
             // SourceManifestAction has no inputs (SourceManifestAction.java:
             // 168): its source directories are never traversed.
