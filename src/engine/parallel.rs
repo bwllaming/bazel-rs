@@ -98,8 +98,8 @@ fn tail_workers(loading_phase_threads: usize, lowering: bool) -> usize {
 }
 
 /// `BAZEL_RS_T3_DEFERRED_WORKERS=<n>`: the analysis workers of an evaluated
-/// build's deferred walk (24; the frozen walks' cap, 16, when not more or
-/// while the analysis snapshot records). That walk's jobs follow its
+/// build's deferred walk (24, 12 while the analysis snapshot records; the
+/// frozen walks' cap when not more). That walk's jobs follow its
 /// dependency chains with workers to spare, but some stretches are
 /// throughput-bound (~/code: 24 workers 4.4 -> 4.1 s); its compute peak
 /// stays under the planning tail's, which keeps the cap (its peak rises
@@ -112,12 +112,28 @@ fn deferred_workers(loading_phase_threads: usize, lowering: bool) -> usize {
             .and_then(|value| value.parse().ok())
             .unwrap_or(24)
     });
+    // While the analysis snapshot records, 12 (snapshot-miss-speed, ~/code
+    // on main 198236c5: the deferred walk peaks at 9.77 GB with 12 workers,
+    // 7.3 s against 8.9 s with the recording's 6; its frozen tail keeps
+    // the 6, its peak the miss's, 9.8 GB).
+    static RECORDING: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling bound; the output is the same either way.
+        std::env::var("BAZEL_RS_T3_DEFERRED_WORKERS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(12)
+    });
     let walk = frozen_workers(loading_phase_threads, lowering);
-    if worker_cap_overridden() || crate::observed_fs::recording() || *DEFERRED <= walk {
+    let wanted = if crate::observed_fs::recording() {
+        *RECORDING
+    } else {
+        *DEFERRED
+    };
+    if worker_cap_overridden() || wanted <= walk {
         return walk;
     }
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
-    let deferred = match *DEFERRED {
+    let deferred = match wanted {
         deferred if lowering => deferred + deferred / 4,
         deferred => deferred,
     };
