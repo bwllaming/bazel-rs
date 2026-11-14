@@ -2083,9 +2083,9 @@ impl Engine {
             .map_or(0, |plan| plan.len().saturating_sub(state.done));
         // While the snapshot records, the planning tail after the deferred
         // walk (~/code: 14k entries) walks frozen too, on the recording's
-        // 4 workers (snapshot-miss-speed: since its natives and observing
-        // jobs merge as published, ~/code's miss peaks at 9.93 GB, 3.4 s
-        // faster than on the pipeline). `BAZEL_RS_EVAL_RECORDING_TAIL=
+        // 6 workers (snapshot-miss-speed: since its natives and observing
+        // jobs merge as published, measured with 4 workers then: ~/code's
+        // miss peaked at 9.93 GB, 3.4 s faster than on the pipeline). `BAZEL_RS_EVAL_RECORDING_TAIL=
         // pipeline` walks it on the pipeline (eval-record's choice: 9.77 GB).
         let tail_while_recording = self.eval_pass2.is_none()
             && crate::observed_fs::recording()

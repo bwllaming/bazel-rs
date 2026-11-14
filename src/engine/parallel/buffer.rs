@@ -536,8 +536,6 @@ pub(super) fn report() {
     }
 }
 
-/// `BAZEL_RS_T3_DEBUG=1`: the cursor's longest waits and entries at their
-/// turn, with what readied them.
 /// `BAZEL_RS_T3_OBSERVED=0` (a diagnostics switch): a frozen walk's job
 /// that observed something (the analysis snapshot records) is done again
 /// at its turn — an aspect job prepared there, a native rule committed
@@ -587,6 +585,8 @@ pub(super) fn observed_natives() -> bool {
     *ON
 }
 
+/// `BAZEL_RS_T3_DEBUG=1`: the cursor's longest waits and entries at their
+/// turn, with what readied them.
 pub(super) fn debug() -> bool {
     static DEBUG: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
         // snapshot-unrecorded: a diagnostics switch; the output is the same either way.
@@ -1306,8 +1306,8 @@ impl Board {
                 // kept whole, the analysis too (a delta it cannot rewrite
                 // is built again from it).
                 let mut result = result;
-                // While the analysis snapshot records (4 workers, the
-                // recording's own memory): the delta only — what the sweep
+                // While the analysis snapshot records (the recording's
+                // own memory beside the workers'): the delta only — what the sweep
                 // cannot rewrite is computed again at its merge (~/code: no
                 // fallback; the walk's end peak 10.02 -> 9.9 GB).
                 if super::super::sweep::enabled()
@@ -2999,6 +2999,9 @@ impl Engine {
             drop(worker);
             return self.redo_at_turn(state, configured, key, rule, index, streamed);
         }
+        // (Into the recorder at once: the placement memoized the sources
+        // its lookups resolved.)
+        debug_assert!(!crate::observed_fs::in_frame());
         effects.apply(self, true);
         let worker = match worker {
             Ok(worker) => worker,
@@ -3097,6 +3100,9 @@ impl Engine {
             observations,
             ..
         } = merge;
+        // (Into the recorder at once: the sources below are memoized only
+        // once their lookups' observations are recorded.)
+        debug_assert!(!crate::observed_fs::in_frame());
         crate::observed_fs::commit(observations);
         // The source lookups its commit would have made (Engine::target):
         // what they record, their memoized paths.
@@ -3195,6 +3201,7 @@ impl Engine {
         merge: frozen::NativeMerge,
     ) -> Result<(), String> {
         debug_assert!(merge.registered.is_empty() && merge.sources.is_empty());
+        debug_assert!(!crate::observed_fs::in_frame());
         crate::observed_fs::commit(merge.observations);
         let results = frozen
             .results

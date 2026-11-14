@@ -2005,7 +2005,7 @@ thread_local! {
 }
 
 /// Whether this thread has an open frame.
-fn in_frame() -> bool {
+pub(crate) fn in_frame() -> bool {
     FRAMES.with(|frames| !frames.borrow().is_empty())
 }
 

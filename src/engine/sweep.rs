@@ -52,8 +52,9 @@ pub(super) fn enabled() -> bool {
     });
     // While the analysis snapshot records too (snapshot-miss-speed; it
     // keeps the walk's plan there, one rewritten group per tree:
-    // Rewrite::rewritten_group): with the recording's 8 workers the merges
-    // bound the walks (~/code miss 33.3 -> 31.8 s, peak 9.90 -> 9.84 GB).
+    // Rewrite::rewritten_group): with more than eval-record's 4 workers
+    // while recording the merges bound the walks (~/code miss with 8
+    // workers 33.3 -> 31.8 s, peak 9.90 -> 9.84 GB).
     // `BAZEL_RS_EVAL_SWEEP_RECORDING=0` builds such deltas again at the
     // merge while recording (eval-t3's choice with 4 workers).
     static RECORDING: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
