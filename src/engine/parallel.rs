@@ -77,6 +77,26 @@ fn frozen_workers(loading_phase_threads: usize, lowering: bool) -> usize {
     loading_phase_threads.min(cores).clamp(2, cap.max(2))
 }
 
+/// `BAZEL_RS_T3_TAIL_WORKERS=<n>`: the analysis workers of an evaluated
+/// build's planning tail walk (14, at most the frozen walks' cap): its jobs
+/// (the requested tests and binaries: runfiles, repository mappings) are
+/// the build's heaviest at once, its compute peak the resident peak
+/// (~/code: 16 workers 9.7 GB, 14 9.6 GB (+0.15 s), 12 9.45 GB (+0.3 s)).
+fn tail_workers(loading_phase_threads: usize, lowering: bool) -> usize {
+    static TAIL: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling bound; the output is the same either way.
+        std::env::var("BAZEL_RS_T3_TAIL_WORKERS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(14)
+    });
+    let walk = frozen_workers(loading_phase_threads, lowering);
+    if worker_cap_overridden() {
+        return walk;
+    }
+    walk.min((*TAIL).max(2))
+}
+
 /// `BAZEL_RS_T3_DEFERRED_WORKERS=<n>`: the analysis workers of an evaluated
 /// build's deferred walk (24; the frozen walks' cap, 16, when not more or
 /// while the analysis snapshot records). That walk's jobs follow its
@@ -102,6 +122,16 @@ fn deferred_workers(loading_phase_threads: usize, lowering: bool) -> usize {
         deferred => deferred,
     };
     loading_phase_threads.min(cores).clamp(walk, deferred)
+}
+
+/// Which frozen walk runs (its analysis workers: [`Engine::walk_workers`]).
+#[derive(Clone, Copy)]
+pub(super) enum WalkKind {
+    /// An evaluated build's deferred walk (phase 2 of the deferred flushes).
+    Deferred,
+    /// An evaluated build's planning tail (the entries after the last flush).
+    Tail,
+    Other,
 }
 
 /// Whether frozen walks merge through the T3 buffer (the sweep needs it:
@@ -1954,17 +1984,17 @@ impl Engine {
     }
 
     /// Bound the analysis workers' jobs to this walk's workers: the deferred
-    /// walk's ([`deferred_workers`]: `deferred`) or any other frozen walk's
-    /// ([`frozen_workers`]).
-    pub(super) fn walk_workers(&self, deferred: bool) {
+    /// walk's ([`deferred_workers`]), the planning tail's
+    /// ([`tail_workers`]) or any other frozen walk's ([`frozen_workers`]).
+    pub(super) fn walk_workers(&self, walk: WalkKind) {
         let Some(pool) = &self.analysis_pool else {
             return;
         };
         let lowering = self.keep_going_buffered();
-        let workers = if deferred {
-            deferred_workers(self.loading_phase_threads, lowering)
-        } else {
-            frozen_workers(self.loading_phase_threads, lowering)
+        let workers = match walk {
+            WalkKind::Deferred => deferred_workers(self.loading_phase_threads, lowering),
+            WalkKind::Tail => tail_workers(self.loading_phase_threads, lowering),
+            WalkKind::Other => frozen_workers(self.loading_phase_threads, lowering),
         };
         pool.jobs
             .set_limit(if workers >= pool.size { 0 } else { workers });
@@ -1975,7 +2005,7 @@ impl Engine {
     fn ensure_analysis_pool(&mut self) {
         if self.analysis_pool.is_none() {
             self.analysis_pool = AnalysisPool::start(self.analysis_workers());
-            self.walk_workers(false);
+            self.walk_workers(WalkKind::Other);
         }
         self.ensure_lowering_pool();
     }
