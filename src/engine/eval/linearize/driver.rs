@@ -2474,6 +2474,18 @@ impl Engine {
                 (Ok(()), Some(mismatch)) => Err(mismatch),
                 (result, _) => result,
             };
+            // Phase 1's tables (~0.2 s to drop on ~/code) go to the planning
+            // dropper thread.
+            super::super::super::drop_elsewhere((
+                std::mem::take(&mut coord.store),
+                std::mem::take(&mut coord.ct1_values),
+                std::mem::take(&mut coord.ct1_by_node),
+                std::mem::take(&mut coord.ct1_done),
+                std::mem::take(&mut coord.sources),
+                std::mem::take(&mut coord.restarted),
+            ));
+            drop(coord);
+            super::super::super::drop_elsewhere(std::mem::take(&mut bodies.ct1_done));
             (result.map(|()| accepted), lin)
         };
         crate::perf_mark("plan.eval_bodies_dropped");

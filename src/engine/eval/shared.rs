@@ -203,5 +203,12 @@ impl EvalShared {
         {
             engine.group_nodes.entry(label).or_insert(group);
         }
+        // The transition inputs (~30 ms to drop on ~/code): on the planning
+        // dropper thread.
+        super::super::drop_elsewhere(
+            self.transitions
+                .into_inner()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
     }
 }

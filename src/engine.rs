@@ -12104,7 +12104,8 @@ impl Engine {
                     if !keep[position] {
                         keep[position] = true;
                         stack.extend_from_slice(
-                            &dependencies[offsets[position] as usize..offsets[position + 1] as usize],
+                            &dependencies
+                                [offsets[position] as usize..offsets[position + 1] as usize],
                         );
                     }
                 }
