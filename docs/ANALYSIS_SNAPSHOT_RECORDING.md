@@ -438,7 +438,13 @@ claim inside a frame walks a store tree once per window
 (`Recorder::walked`: a published tree does not change; the record stored
 gets its manifest stat'ed again as before); and a source file the
 evaluation resolved is memoized for phase 2 only once its lookup's
-observations reached the recorder.
+observations reached the recorder. Since snapshot-miss-speed a frozen walk's native
+rule or aspect job that observed something is merged as published, its
+observations committed at its merge (discarded work's without their
+registrations; `observed_fs::redone` for a delta's recompute at its
+commit), the REPO records are indexed by root, and a captured set's events
+are dropped once they reached the recorder (docs/EVALUATOR.md,
+"snapshot-miss-speed").
 
 **Gates.** The record mode's dump prints `INPUTS-CANONICAL <blake3>`: the
 digest of the INPUTS a snapshot of the recording would hold (the policy's

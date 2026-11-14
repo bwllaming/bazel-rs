@@ -400,6 +400,12 @@ change announced to the other two workers; adding a helper is not.
   documented). The `ExecCfg` value marks an interning failure with
   `nodes::phase1::EXEC_INTERN_ERROR` (the consumer locates it at its
   rule).
+- 2026-11-14 (snapshot-miss-speed): `frozen::NativeMerge` and
+  `NativePublished` carry the worker's `observations` and tracker
+  `accesses`; `observed_fs::{redone, Observations::order_dependent}`;
+  `observed_fs::Captured::events` is a `Mutex` (emptied once recorded).
+  While recording: 8 frozen workers, the tail frozen, the sweep on
+  ("snapshot-miss-speed" below).
 - 2026-11-14 (eval-profile): `select::Fallback` and `Selected::Fallback`
   are gone (`select_engine` keeps its signature). `--profile` no longer
   changes the evaluator's scheduling: `lin.defer`, the speculative flag
@@ -2907,7 +2913,8 @@ memory purged (both engines: the walk's miss 9.86 → 9.7 GB); the tracker's
 key ids kept by hash; a purge before the snapshot's plan encoding; 4
 frozen workers while recording; while recording the planning tail after
 the deferred walk walks on the pipeline (−0.2 GB, ~+3 s;
-`BAZEL_RS_EVAL_RECORDING_TAIL=frozen` keeps it frozen).
+`BAZEL_RS_EVAL_RECORDING_TAIL=frozen` keeps it frozen). (Since
+snapshot-miss-speed: 8 workers, the tail frozen, the sweep on.)
 
 | ~/code `build --nobuild //src/...`, main `081325db` | walk | eval |
 |---|---|---|
@@ -4017,3 +4024,84 @@ Tests: `tests/eval_pass2.rs::the_profile_has_the_walks_targets_and_packages`
 (deferral and speculation happen with `--profile`; the walk's span
 multisets at 1, 8 and 32 threads, jitter, restarts, the workers'
 prepares), `tests/eval_default.rs::the_profile_plans_with_the_evaluator`.
+
+## snapshot-miss-speed: an analysis-snapshot miss on the evaluator
+
+A miss (the default `BAZEL_RS_SNAPSHOT=on` records, tracks and saves) took
+~46 s on ~/code (`80d6724f3a` private clone, `build --nobuild //src/...`)
+against ~17 s with the snapshot off. Where the ~29 s went (main `60720c18`,
+`BAZEL_RS_TIMING` marks, pprof of every thread, jemalloc heap profiles at
+the marks):
+
+| part | off | miss (before) | what | now |
+|---|---|---|---|---|
+| phase 1 (to the graph's drop) | 7.0 s | 11.3 s | the tracker's tape ops (pass 1 2.1 s vs 0.7, tape 2.4 s vs 0.4) | ~10.5 s (Fx tables, keys interned by reference) |
+| graph dropped → deferred walk | 0.14 s | 2.1 s | waiting for the recorder's background commits: every tree claim scanned every REPO record (8.9k × 8.8k path comparisons) | 0.4 s |
+| deferred frozen walk | 5.2 s | 14.5 s | 4 workers; natives committed at their turn (fast merges off with the tracker; a native whose worker observed was not published); 22 aspect jobs prepared at their turn (they observed); deltas built again (no sweep) | ~8.5 s |
+| planning tail | 1.5 s | 7.4 s | on the pipeline while recording | ~2.3 s (frozen, sweep) |
+| end of planning → exit | 0.4 s | 5.8 s | plan encoding on 8 threads; INPUTS, INDEX (one deflate thread) and DERIVE encoded after it on the writer, waited for at exit; derive coverage's `Path` comparisons; the index's label parsing | ~3 s |
+| peak RSS | 9.4 GB | 9.86 GB | the tracker's transcripts (phase 1), the recorder (+0.4 GB), REPO records held twice (frames' claims), the tracker (+0.25 GB) | 9.8-9.9 GB |
+
+What changed (each behind a diagnostics switch restoring the old path):
+
+- **Natives and observing jobs merge as published.** A native rule whose
+  frozen job observed something (source lookups while recording) is
+  published with its observations (committed at its merge; as discarded
+  work's, without its registrations, when its turn commits it again;
+  `BAZEL_RS_T3_OBSERVED=0|aspects|natives`). With the incremental tracker
+  a published native rule is merged too: the accesses its worker's run
+  recorded (`SharedRecord::accesses`) are replayed in its planning frame
+  (`BAZEL_RS_T3_TRACKED_NATIVES=0`; `BAZEL_RS_T3_VERIFY_NATIVE_ACCESSES=1`
+  commits it at its turn and checks the distinct accesses, in order,
+  against the commit's: clean on ~/code and the eval suites). An aspect
+  job whose prepare made only plain observations is placed without the
+  tracker; with it, it stays at its turn: a worker's aspect planning walks
+  applications the turn finds memoized (an earlier entry committed them),
+  so its accesses and `applying` keys are a superset of the turn's (tried,
+  the index differed: open).
+- **Registrations count once.** A worker's delta built again at its
+  commit (`stale`, `meets_producer`, `Consumed`) recomputes the target;
+  the worker's compute's registrations were already applied with its
+  effects, so the recompute's are dropped (`observed_fs::redone`). Before,
+  `map-each-deferred` could count 12 for 11 (now on ~/code whenever the
+  filegroups publish).
+- **The recorder.** REPO records indexed by root (a claim was a scan of
+  every record), Fx-hashed shards, a replayed set's observations compared
+  by reference; a captured set's events are dropped once they reached the
+  recorder (a replay after that is a no-op; kept while dropped frames are
+  audited: −0.25 GB at the peak — the frames' claims held their walked
+  REPO records a second time).
+- **The tracker.** Fx tables; the tape's key identities interned and
+  reached by reference (no clone per reach).
+- **While recording**: frozen walks on 8 workers (was 4), the planning
+  tail frozen too (`BAZEL_RS_EVAL_RECORDING_TAIL=pipeline`), the sweep on
+  (`BAZEL_RS_EVAL_SWEEP_RECORDING=0`). Peaks of the frozen tail measured:
+  4 workers 9.68 GB, 8 → 9.87, 12 → 10.36, 16 → 10.60 GB.
+- **The save**: INPUTS, INDEX and DERIVE encode on threads of their own
+  from the start of the save, beside the plan's encoding (now on up to 16
+  threads; decoding keeps 8) and the actions; the INDEX and DERIVE frames
+  deflate in parallel (the same bytes: `compress_plan`). `PERF-SNAPSHOT
+  save` (`BAZEL_RS_TIMING`) times them.
+
+Measured (fast non-LTO release builds, interleaved, host load 11–22):
+
+| `build --nobuild //src/...` | main `60720c18` | snapshot-miss-speed |
+|---|---|---|
+| miss (records, tracks, saves) | 45.4 / 46.8 s, 9.75 / 9.79 GB | 31.4 / 31.1 s, 9.81 / 9.90 GB |
+| `BAZEL_RS_SNAPSHOT=record` | 44.0 s, 9.47 GB | 31.7 s, 9.55 GB |
+| snapshot off | 17.1 s, 9.40 GB | 16.5 s, 9.49 GB |
+| hit | — | 0.85 s |
+
+Identical to main: the record mode's dump (520,098 observations; timings
+aside) walk and eval, the incremental index (`BAZEL_RS_SNAPSHOT_INDEX_DUMP`)
+walk and eval, the saved plan (`BAZEL_RS_SNAPSHOT_PLAN_OUT`, 469,253,848
+bytes) walk and eval, stderr with the action dump; a miss → strict verify →
+hit cycle clean for walk/eval, eval/walk, eval/eval, walk/walk.
+
+Left (by size): the tracker's events in phase 1's transcripts (an
+`Access(Label)` per lookup, cloned into the tape and interned there: ~2–3 s
+and ~1 GB at phase 1's end — interning them where they are recorded would
+cut both); the 22 aspect jobs at their turn under the tracker (~2.5 s of the
+cursor); the end of planning (the incremental index 0.6 s, the plan
+encoding ~0.8 s, `note_hidden_lockfile` 0.25 s on the main thread); the
+kernel time of a miss (~140 s against ~60 s off, not on the critical path).

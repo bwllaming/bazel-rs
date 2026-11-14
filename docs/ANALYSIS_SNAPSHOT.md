@@ -996,9 +996,13 @@ so the next derived lookup dropped the family marker — the `test` after a
 `a_refreshed_snapshot_keeps_serving_derived_hits`).
 
 The plan is encoded on the main
-thread before execution; the recording is taken, selected by the policy
-and encoded on the writer thread, which writes a temporary file while the
-actions run. Only when the command (for `test` and `run`: its build part)
+thread before execution (its chunks on up to 16 threads); the recording is
+taken, selected by the policy and encoded, and the INDEX and DERIVE
+sections encoded, on threads of their own started before it
+(snapshot-miss-speed: on ~/code they ran after the plan's encoding on the
+writer, and a `--nobuild` miss waited ~2.5 s for them at its exit); the
+writer thread joins them and writes a temporary file while the actions
+run. Only when the command (for `test` and `run`: its build part)
 succeeded is the file renamed into place. Failures are never saved.
 
 **A miss runs with the phase-1 prefetch** (W6R): the recording window is
