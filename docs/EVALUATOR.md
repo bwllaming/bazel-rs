@@ -404,7 +404,8 @@ change announced to the other two workers; adding a helper is not.
   `NativePublished` carry the worker's `observations` and tracker
   `accesses`; `observed_fs::{redone, Observations::order_dependent}`;
   `observed_fs::Captured::events` is a `Mutex` (emptied once recorded).
-  While recording: 6 frozen workers, the tail frozen, the sweep on
+  While recording: 6 frozen workers (the deferred walk 12), the tail
+  frozen, the sweep on
   ("snapshot-miss-speed" below).
 - 2026-11-14 (eval-profile): `select::Fallback` and `Selected::Fallback`
   are gone (`select_engine` keeps its signature). `--profile` no longer
@@ -4073,7 +4074,8 @@ What changed (each behind a diagnostics switch restoring the old path):
   REPO records a second time).
 - **The tracker.** Fx tables; the tape's key identities interned and
   reached by reference (no clone per reach).
-- **While recording**: frozen walks on 6 workers (was 4), the planning
+- **While recording**: frozen walks on 6 workers (was 4; since round 8
+  the deferred walk on 12), the planning
   tail frozen too (`BAZEL_RS_EVAL_RECORDING_TAIL=pipeline`), the sweep on
   (`BAZEL_RS_EVAL_SWEEP_RECORDING=0`). Peaks of the frozen tail measured
   (on main `60720c18`): 4 workers 9.68 GB, 8 → 9.87, 12 → 10.36, 16 →
@@ -4097,6 +4099,21 @@ Measured (fast non-LTO release builds, interleaved, host load 11–22):
 Rebased on main `a8062a5e`, LTO release: miss 31.2 s / 9.78 GB with 6
 workers (8 workers: 29.1 / 28.96 s, 9.99 / 9.97 GB); snapshot off 13.8 s,
 9.72 GB.
+
+Rebased on main `198236c5` (round 8: walk-specific worker counts), LTO
+release, interleaved with main's: miss 29.2 / 27.2 s, 9.85 / 9.89 GB
+(main 42.0 / 42.4 s, 9.78 / 9.82 GB); snapshot off 13.46 / 13.50 s, 9.58 /
+9.52 GB (main 13.44 / 13.07 s, 9.54 / 9.58 GB). While recording the
+deferred walk runs on 12 workers (`BAZEL_RS_T3_DEFERRED_WORKERS`; its peak
+9.70–9.77 GB) and the frozen tail on the recording's 6 (the miss's peak).
+
+**Memory margin.** A miss peaks at 9.78–9.90 GB against the 10 GB line
+(0.1–0.2 GB, in the planning tail's frozen walk). Fallbacks, each lowering
+the peak at a cost in time: `BAZEL_RS_EVAL_SWEEP_RECORDING=0` (deltas built
+again at the merge, ~−0.05 GB, +1.5 s), `BAZEL_RS_T3_WORKERS=4` (every
+frozen walk on 4 workers: ~9.7 GB, +3–5 s), and
+`BAZEL_RS_EVAL_RECORDING_TAIL=pipeline` (the tail on the pipeline, +3 s).
+Anything that raises the snapshot-off peak raises the miss's with it.
 
 Identical to main: the record mode's dump (520,098 observations; timings
 aside) walk and eval, the incremental index (`BAZEL_RS_SNAPSHOT_INDEX_DUMP`)
