@@ -1257,9 +1257,15 @@ pub(super) fn run_native(
             .map(|plain| (plain, registered))
         });
         let (effects, sentinel) = isolation.finish();
+        // What it observed (the analysis snapshot records: its source
+        // lookups) is committed at its merge, as its commit would observe
+        // it there (super::buffer::observed_jobs; the recorder is a set:
+        // only events whose effect depends on the order stay at the turn).
+        let observed = !effects.observations.is_empty();
         let quiet = effects.console.is_empty()
-            && effects.observations.is_empty()
-            && effects.roots.is_empty();
+            && effects.roots.is_empty()
+            && (!observed
+                || (super::buffer::observed_natives() && !effects.observations.order_dependent()));
         if sentinel || !quiet || cx.record.abort.is_some() {
             return None;
         }
@@ -1280,6 +1286,7 @@ pub(super) fn run_native(
                 .collect(),
             sources: std::mem::take(&mut cx.record.sources),
             owner: native_owner(engine, key, rule),
+            observations: effects.observations,
         }))
     }))
     .ok()
@@ -1302,6 +1309,7 @@ pub(super) fn publish_native_results(
         declared,
         sources,
         owner,
+        observations,
     } = published;
     for artifact in &registered {
         frozen.artifacts.publish_provisional(
@@ -1332,6 +1340,7 @@ pub(super) fn publish_native_results(
         registered,
         sources,
         owner,
+        observations,
     }
 }
 
@@ -1342,6 +1351,10 @@ pub(super) struct NativeMerge {
     pub(super) sources: Vec<(Label, PathBuf, bool, SourceSide)>,
     /// Its action owner and console owner (`Engine::prepare_target`'s).
     pub(super) owner: (String, crate::shared_path::SharedPath),
+    /// What its worker observed (order-free events: committed at its
+    /// merge, or without its registrations when its turn commits it
+    /// again, as discarded work's).
+    pub(super) observations: crate::observed_fs::Observations,
 }
 
 /// A native rule's action owner and console owner, as
@@ -1610,6 +1623,8 @@ pub(super) struct NativePublished {
     /// The source files it resolved itself ([`prepare::SharedRecord`]).
     pub(super) sources: Vec<(Label, PathBuf, bool, SourceSide)>,
     owner: (String, crate::shared_path::SharedPath),
+    /// What it observed ([`NativeMerge::observations`]).
+    observations: crate::observed_fs::Observations,
 }
 
 /// A native rule's results being computed on a worker (`None`: not
@@ -1726,6 +1741,7 @@ fn package_group_results(
         declared: Vec::new(),
         sources: Vec::new(),
         owner: native_owner(engine, key, rule),
+        observations: crate::observed_fs::Observations::default(),
     }))
 }
 
@@ -1855,7 +1871,9 @@ impl Engine {
         if state.dry.contains_key(key) || pipe.published.contains_key(key) {
             return;
         }
-        publish_native_results(frozen, index, key, published);
+        let merge = publish_native_results(frozen, index, key, published);
+        // (Committed again at its turn: as discarded work's.)
+        crate::observed_fs::commit(merge.observations.without_registrations());
         pipe.published.insert(key.clone(), index);
         pipe.newly_published.push(key.clone());
     }

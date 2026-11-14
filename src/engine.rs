@@ -9338,7 +9338,10 @@ impl Engine {
             let taken = snapshot
                 .take()
                 .expect("the snapshot is kept for the commit");
-            let (kept, again) = Engine::compute_target(taken);
+            // (The worker's compute registered the same actions, counted
+            // with its effects: the analysis snapshot's plan-dependent
+            // registrations count once.)
+            let (kept, again) = crate::observed_fs::redone(|| Engine::compute_target(taken));
             *snapshot = Some(kept);
             again
         };

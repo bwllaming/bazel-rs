@@ -538,6 +538,30 @@ pub(super) fn report() {
 
 /// `BAZEL_RS_T3_DEBUG=1`: the cursor's longest waits and entries at their
 /// turn, with what readied them.
+/// `BAZEL_RS_T3_OBSERVED=0` (a diagnostics switch): a frozen walk's job
+/// that observed something (the analysis snapshot records) is done again
+/// at its turn — an aspect job prepared there, a native rule committed
+/// there — as before snapshot-miss-speed. By default its observations are
+/// committed at its merge (the recorder is a set; discarded work's are
+/// committed too, without its registrations).
+pub(super) fn observed_jobs() -> bool {
+    static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling switch; the recording is the same either way.
+        std::env::var_os("BAZEL_RS_T3_OBSERVED")
+            .is_none_or(|value| value != "0" && value != "natives")
+    });
+    *ON
+}
+
+pub(super) fn observed_natives() -> bool {
+    static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling switch; the recording is the same either way.
+        std::env::var_os("BAZEL_RS_T3_OBSERVED")
+            .is_none_or(|value| value != "0" && value != "aspects")
+    });
+    *ON
+}
+
 pub(super) fn debug() -> bool {
     static DEBUG: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
         // snapshot-unrecorded: a diagnostics switch; the output is the same either way.
@@ -2456,6 +2480,13 @@ impl Engine {
                         registered => {
                             let started = std::time::Instant::now();
                             let published = registered.is_some();
+                            // Committed again here: what its worker
+                            // observed as discarded work's.
+                            if let Some(merge) = registered {
+                                crate::observed_fs::commit(
+                                    merge.observations.without_registrations(),
+                                );
+                            }
                             let result =
                                 self.plan_one_target(state, &key, &rule, configured, index as u64);
                             if published && result.is_ok() && matches!(rule.kind, RuleKind::Genrule)
@@ -2463,7 +2494,7 @@ impl Engine {
                                 adopt_published_genrule(state, &board.frozen, &key);
                             }
                             note_at_turn(
-                                if registered.is_some() {
+                                if published {
                                     "native_commit"
                                 } else {
                                     "native_unpublished"
@@ -2820,7 +2851,11 @@ impl Engine {
             && (prepared.is_err()
                 || worker.is_none()
                 || !effects.console.is_empty()
-                || !effects.observations.is_empty()
+                // (Only plain observations, committed at its merge: a
+                // taint — a registration its placement may count again —
+                // is the turn's.)
+                || (!effects.observations.is_empty()
+                    && (!observed_jobs() || effects.observations.order_dependent()))
                 || !effects.roots.is_empty()
                 || super::aspect_jobs::verify_mode())
         {
@@ -2979,7 +3014,9 @@ impl Engine {
             registered,
             sources,
             owner,
+            observations,
         } = merge;
+        crate::observed_fs::commit(observations);
         // The source lookups its commit would have made (Engine::target):
         // what they record, their memoized paths.
         for (label, path, stable, side) in sources {
@@ -3077,6 +3114,7 @@ impl Engine {
         merge: frozen::NativeMerge,
     ) -> Result<(), String> {
         debug_assert!(merge.registered.is_empty() && merge.sources.is_empty());
+        crate::observed_fs::commit(merge.observations);
         let results = frozen
             .results
             .get(key)

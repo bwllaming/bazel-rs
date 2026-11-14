@@ -1887,6 +1887,12 @@ impl Observations {
         self.0.is_empty()
     }
 
+    /// Whether they hold an event whose effect depends on the order the
+    /// recorder's commits come in ([`Events::order_dependent`]).
+    pub fn order_dependent(&self) -> bool {
+        self.0.order_dependent()
+    }
+
     /// Add `other`'s events after these.
     pub fn append(&mut self, other: Observations) {
         self.0.append(other.0);
@@ -2223,6 +2229,19 @@ pub fn capture_detached<R>(f: impl FnOnce() -> R) -> (R, Option<Arc<Captured>>) 
     let result = f();
     let events = frame.close();
     (result, (!events.is_empty()).then(|| Captured::new(events)))
+}
+
+/// Run `f` — work done again whose first run's observations reached the
+/// recording with its action registrations (a worker's compute whose delta
+/// is built again from a second, identical compute) — and commit what it
+/// observes without its registrations
+/// ([`Observations::without_registrations`]): a plan-dependent taint
+/// counts the plan's actions once.
+pub fn redone<R>(f: impl FnOnce() -> R) -> R {
+    let scope = unit_scope();
+    let result = f();
+    commit(scope.finish().without_registrations());
+    result
 }
 
 /// Run `f` dropping what it observes (a coordinator-side hint).
@@ -3304,6 +3323,29 @@ mod tests {
         let taints = lock(&window.recorder.taints).clone();
         assert_eq!(taints[&Taint::MapEach].count, 1);
         assert_eq!(taints[&Taint::Network].count, 1);
+    }
+
+    /// Work done again ([`redone`]) after its first run's registrations
+    /// were counted: what it observes is recorded, its registrations not.
+    #[test]
+    fn redone_work_does_not_count_its_registrations() {
+        let temp = tempfile::tempdir().unwrap();
+        let window = record_this_thread();
+        taint(Taint::MapEach, || "//:a (x)".to_owned());
+        let value = redone(|| {
+            taint(Taint::MapEach, || "//:a (x)".to_owned());
+            taint(Taint::Network, || "fetch".to_owned());
+            exists(temp.path().join("r"));
+            7
+        });
+        assert_eq!(value, 7);
+        let taints = lock(&window.recorder.taints).clone();
+        assert_eq!(taints[&Taint::MapEach].count, 1);
+        assert_eq!(taints[&Taint::Network].count, 1);
+        assert_eq!(
+            paths_of(&window.recorder.snapshot()),
+            [(temp.path().join("r").display().to_string(), "STAT")]
+        );
     }
 
     /// captures inside it, record nothing.
