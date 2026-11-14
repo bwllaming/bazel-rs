@@ -2151,6 +2151,9 @@ impl Engine {
             .frozen_walk
             .clone()
             .ok_or_else(|| "internal error: a buffered walk without its frozen view".to_owned())?;
+        // A deferred walk (phase 2 of the deferred flushes) on more workers
+        // than the others.
+        self.walk_workers(self.eval_pass2.is_some());
         let (jobs, cancelled) = match self.analysis_pool.as_ref() {
             Some(pool) => (Arc::clone(&pool.jobs), Arc::clone(&pool.cancelled)),
             None => (

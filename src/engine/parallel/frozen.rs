@@ -402,10 +402,32 @@ impl PlannedResults {
     /// The results committed since the last walk (`state.dry` only grows;
     /// the declarations by their journal).
     pub(super) fn catch_up(&self, state: &ActionPlanning, engine: &Engine) {
-        for key in state.dry.keys() {
-            if self.get(key).is_none() {
-                self.publish(key, state);
+        // Each key's lookup and publication is its own (sharded, keyed):
+        // a large planning state's on scoped threads (~/code: the planning
+        // tail's freeze looked up ~130k keys on one).
+        let keys: Vec<&ConfiguredTargetKey> = state.dry.keys().collect();
+        let publish_missing = |keys: &[&ConfiguredTargetKey]| {
+            for key in keys {
+                if self.get(key).is_none() {
+                    self.publish(key, state);
+                }
             }
+        };
+        const CHUNK: usize = 16_384;
+        if keys.len() <= CHUNK {
+            publish_missing(&keys);
+        } else {
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = keys
+                    .chunks(CHUNK)
+                    .map(|chunk| scope.spawn(move || publish_missing(chunk)))
+                    .collect();
+                for handle in handles {
+                    if let Err(panic) = handle.join() {
+                        std::panic::resume_unwind(panic);
+                    }
+                }
+            });
         }
         self.publish_declared(state, engine);
     }

@@ -77,6 +77,33 @@ fn frozen_workers(loading_phase_threads: usize, lowering: bool) -> usize {
     loading_phase_threads.min(cores).clamp(2, cap.max(2))
 }
 
+/// `BAZEL_RS_T3_DEFERRED_WORKERS=<n>`: the analysis workers of an evaluated
+/// build's deferred walk (24; the frozen walks' cap, 16, when not more or
+/// while the analysis snapshot records). That walk's jobs follow its
+/// dependency chains with workers to spare, but some stretches are
+/// throughput-bound (~/code: 24 workers 4.4 -> 4.1 s); its compute peak
+/// stays under the planning tail's, which keeps the cap (its peak rises
+/// with more workers: 9.7 -> 10.0 GB at 24).
+fn deferred_workers(loading_phase_threads: usize, lowering: bool) -> usize {
+    static DEFERRED: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling bound; the output is the same either way.
+        std::env::var("BAZEL_RS_T3_DEFERRED_WORKERS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(24)
+    });
+    let walk = frozen_workers(loading_phase_threads, lowering);
+    if worker_cap_overridden() || crate::observed_fs::recording() || *DEFERRED <= walk {
+        return walk;
+    }
+    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    let deferred = match *DEFERRED {
+        deferred if lowering => deferred + deferred / 4,
+        deferred => deferred,
+    };
+    loading_phase_threads.min(cores).clamp(walk, deferred)
+}
+
 /// Whether frozen walks merge through the T3 buffer (the sweep needs it:
 /// super::sweep::enabled).
 pub(super) fn buffered() -> bool {
@@ -379,6 +406,11 @@ struct JobState {
     queued: std::collections::BinaryHeap<Queued>,
     order: u64,
     closed: bool,
+    /// The jobs running now, and how many may (`0`: as many as there are
+    /// workers): a walk runs on fewer workers than the pool has
+    /// ([`deferred_workers`]).
+    running: usize,
+    limit: usize,
 }
 
 impl JobQueue {
@@ -395,18 +427,39 @@ impl JobQueue {
         Ok(())
     }
 
-    /// The next job (`None`: the queue is closed and empty).
+    /// The next job (`None`: the queue is closed and empty), counted
+    /// running until [`Self::done`].
     fn pop(&self) -> Option<Job> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         loop {
-            if let Some(queued) = state.queued.pop() {
+            if (state.limit == 0 || state.running < state.limit)
+                && let Some(queued) = state.queued.pop()
+            {
+                state.running += 1;
                 return Some(queued.job);
             }
-            if state.closed {
+            if state.closed && state.queued.is_empty() {
                 return None;
             }
             state = self.ready.wait(state).unwrap_or_else(|e| e.into_inner());
         }
+    }
+
+    /// A job [`Self::pop`] gave ended.
+    fn done(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.running -= 1;
+        let waiting = state.limit != 0 && !state.queued.is_empty();
+        drop(state);
+        if waiting {
+            self.ready.notify_one();
+        }
+    }
+
+    /// At most `limit` jobs at once from now on (`0`: no bound).
+    fn set_limit(&self, limit: usize) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).limit = limit;
+        self.ready.notify_all();
     }
 
     fn close(&self) {
@@ -431,7 +484,15 @@ impl AnalysisPool {
                 .stack_size(LOADING_WORKER_STACK)
                 .spawn(move || {
                     enter_worker_thread(coordinator_arena);
+                    /// The job's end counted (also when it unwinds).
+                    struct Done<'a>(&'a JobQueue);
+                    impl Drop for Done<'_> {
+                        fn drop(&mut self) {
+                            self.0.done();
+                        }
+                    }
                     while let Some(job) = queue.pop() {
+                        let _done = Done(&queue);
                         job();
                     }
                 });
@@ -1880,7 +1941,9 @@ impl Engine {
         // snapshot-unrecorded: a diagnostics override of the scheduling only; the output is the same either way.
         let overridden = std::env::var_os("BAZEL_RS_ANALYSIS_WORKERS").is_some();
         if self.eval_async_phase2 && !overridden && frozen::enabled() {
-            return frozen_workers(self.loading_phase_threads, self.keep_going_buffered());
+            // The deferred walk's (the most; the other walks bound to
+            // theirs: Self::walk_workers).
+            return deferred_workers(self.loading_phase_threads, self.keep_going_buffered());
         }
         // snapshot-unrecorded: a diagnostics override of the scheduling only; the output is the same either way.
         std::env::var("BAZEL_RS_ANALYSIS_WORKERS")
@@ -1890,11 +1953,29 @@ impl Engine {
             .clamp(1, self.loading_phase_threads.max(1))
     }
 
+    /// Bound the analysis workers' jobs to this walk's workers: the deferred
+    /// walk's ([`deferred_workers`]: `deferred`) or any other frozen walk's
+    /// ([`frozen_workers`]).
+    pub(super) fn walk_workers(&self, deferred: bool) {
+        let Some(pool) = &self.analysis_pool else {
+            return;
+        };
+        let lowering = self.keep_going_buffered();
+        let workers = if deferred {
+            deferred_workers(self.loading_phase_threads, lowering)
+        } else {
+            frozen_workers(self.loading_phase_threads, lowering)
+        };
+        pool.jobs
+            .set_limit(if workers >= pool.size { 0 } else { workers });
+    }
+
     /// Start the workers on the first compute dispatched to them (a small
     /// build, where nothing is ever ready ahead, starts none).
     fn ensure_analysis_pool(&mut self) {
         if self.analysis_pool.is_none() {
             self.analysis_pool = AnalysisPool::start(self.analysis_workers());
+            self.walk_workers(false);
         }
         self.ensure_lowering_pool();
     }
