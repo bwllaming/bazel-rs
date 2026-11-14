@@ -335,7 +335,8 @@ fn java_string_hash(text: &str) -> i32 {
 /// vfs/PathFragment.java:500-503): HashMap buckets `(h ^ h >>> 16) & (n - 1)`
 /// of the final table size `n` (16, doubled while the size exceeds 3/4 of
 /// it), each bucket in insertion order (resizes keep the relative order).
-fn java_hash_set_order(items: Vec<String>) -> Vec<String> {
+/// Also the key order of a `HashMap<String, _>` filled by `put`.
+pub(crate) fn java_hash_set_order(items: Vec<String>) -> Vec<String> {
     let mut unique: Vec<String> = Vec::new();
     let mut seen = BTreeSet::new();
     for item in items {

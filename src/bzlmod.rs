@@ -220,6 +220,22 @@ pub struct ExtensionUsage {
     pub declarations: Vec<ExtensionDeclaration>,
     pub tags: Vec<ExtensionTag>,
     pub imports: Vec<RepositoryImport>,
+    /// The root module's `inject_repo`/`override_repo` entries in call order
+    /// (ModuleThreadContext.ExtensionUsageBuilder.repoOverrides). Empty for
+    /// every module whose calls return early (dev dependencies ignored).
+    pub repo_overrides: Vec<RepoOverride>,
+}
+/// ModuleExtensionUsage.RepoOverride: the extension's repositories see the
+/// root module's repository `overriding` under the name `overridden`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RepoOverride {
+    pub overridden: String,
+    pub overriding: String,
+    /// `override_repo`: the extension must generate `overridden`;
+    /// `inject_repo`: it must not.
+    pub must_exist: bool,
+    /// The call's location, as [`ExtensionDeclaration::location`].
+    pub location: String,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExtensionTag {
@@ -593,6 +609,13 @@ pub(crate) fn evaluate_source_with_builtins(
     if let BuiltinInjection::AppendBazelTools | BuiltinInjection::ReserveBazelTools = injection {
         reserve_builtin(&state, "bazel_tools")?;
     }
+    check_repo_overrides(
+        &state,
+        matches!(
+            injection,
+            BuiltinInjection::AppendBazelTools | BuiltinInjection::ReserveBazelTools
+        ),
+    )?;
     if let BuiltinInjection::AppendBazelTools = injection {
         state.file.implicit_dependencies.push(Dependency {
             name: "bazel_tools".to_owned(),
@@ -797,8 +820,18 @@ fn invoke<'v>(
             "include() is unsupported until the resolver supplies include filesystem semantics"
         ),
         "Label" => bail!("Label() is unsupported in MODULE evaluation; use label strings"),
-        "inject_repo" | "override_repo" => {
-            bail!("{name}() is unsupported in MODULE evaluation")
+        // ModuleFileGlobals.overrideRepo/injectRepo (:723-728, :783-788) mark a
+        // non-module call and return early where dev dependencies are ignored:
+        // every non-root module (hermetic_launcher's inject_repo under
+        // rules_rs) and --ignore_dev_dependency. The root module's calls are
+        // recorded below.
+        "inject_repo" | "override_repo"
+            if collector
+                .evaluation_context
+                .effective_ignore_dev_dependencies() =>
+        {
+            collector.state.borrow_mut().non_module_called = true;
+            return Ok(Value::new_none());
         }
         _ => {}
     }
@@ -907,6 +940,55 @@ fn invoke<'v>(
             location: caller_location(eval),
         });
         return Ok(eval.heap().alloc(ExtensionProxy { usage, declaration }));
+    }
+    if matches!(name, "inject_repo" | "override_repo") {
+        // ModuleFileGlobals.injectRepo/overrideRepo for the root module: a
+        // positional name overrides the same name, a keyword its key, in call
+        // order (ModuleThreadContext.ExtensionUsageBuilder.addRepoOverride).
+        let mut pos = args.positions(eval.heap()).map_err(|e| anyhow!("{e}"))?;
+        let proxy = pos
+            .next()
+            .ok_or_else(|| anyhow!("{name} requires an extension proxy"))?;
+        let proxy = proxy
+            .downcast_ref::<ExtensionProxy>()
+            .ok_or_else(|| anyhow!("{name} requires an extension proxy"))?;
+        let mut overrides = Vec::new();
+        for v in pos {
+            let s = string(v, "repository name")?;
+            overrides.push((s.clone(), s));
+        }
+        drop(kwargs);
+        for (overridden, value) in args.names_map().map_err(|e| anyhow!("{e}"))?.iter() {
+            overrides.push((
+                overridden.as_str().to_owned(),
+                string(*value, "overriding repository name")?,
+            ));
+        }
+        let location = caller_location(eval);
+        let usage = &mut state.file.extension_usages[proxy.usage];
+        for (overridden, overriding) in overrides {
+            validate_repo_name(&overridden)?;
+            validate_repo_name(&overriding)?;
+            if let Some(previous) = usage
+                .repo_overrides
+                .iter()
+                .find(|previous| previous.overridden == overridden)
+            {
+                bail!(
+                    "The repo exported as '{overridden}' by module extension '{}' is already overridden with '{}' at {}",
+                    usage.identity.extension_name,
+                    previous.overriding,
+                    previous.location
+                );
+            }
+            usage.repo_overrides.push(RepoOverride {
+                overridden,
+                overriding,
+                must_exist: name == "override_repo",
+                location: location.clone(),
+            });
+        }
+        return Ok(Value::new_none());
     }
     if name == "use_repo" {
         let mut pos = args.positions(eval.heap()).map_err(|e| anyhow!("{e}"))?;
@@ -1353,6 +1435,68 @@ fn reserve_builtin(state: &State, name: &str) -> Result<(), String> {
             "The repo name '{name}' cannot be defined as a built-in dependency at <builtin> as it is already defined {how} at {location}, '{name}' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive"
         )),
     }
+}
+
+/// ModuleThreadContext.ExtensionUsageBuilder.buildUsage and buildModule
+/// (Bazel 9.3 :292-319, :411-427): an override names a repository the module
+/// can see (`bazel_tools` included when it is built in); an injected name is
+/// never also imported from its extension; and no overriding repository is
+/// itself overridden through an import. Errors carry the location of the call
+/// Bazel attaches them to.
+fn check_repo_overrides(state: &State, builtin_visible: bool) -> Result<(), String> {
+    let mut overridden_imports: BTreeMap<&str, &RepoOverride> = BTreeMap::new();
+    let mut overriding: Vec<(&str, &RepoOverride)> = Vec::new();
+    for usage in &state.file.extension_usages {
+        let extension = usage.identity.extension_name.as_str();
+        for repo_override in &usage.repo_overrides {
+            let visible = state.repo_names.contains_key(&repo_override.overriding)
+                || (builtin_visible && repo_override.overriding == "bazel_tools");
+            if !visible {
+                let mut names: Vec<&str> = state.repo_names.keys().map(String::as_str).collect();
+                if builtin_visible {
+                    names.push("bazel_tools");
+                }
+                return Err(format!(
+                    "{}: The repo exported as '{}' by module extension '{extension}' is overridden with '{}', but no repo is visible under this name{}",
+                    repo_override.location,
+                    repo_override.overridden,
+                    repo_override.overriding,
+                    crate::native_rules::did_you_mean(&repo_override.overriding, &names),
+                ));
+            }
+            if let Some(import) = usage
+                .imports
+                .iter()
+                .find(|import| import.exported_name == repo_override.overridden)
+            {
+                if !repo_override.must_exist {
+                    let import_location = state
+                        .repo_names
+                        .get(&import.local_name)
+                        .map_or("<unknown>", |(_, location)| location.as_str());
+                    return Err(format!(
+                        "{import_location}: Cannot import repo '{}' that has been injected into module extension '{extension}' at {}. Please refer to @{} directly.",
+                        repo_override.overridden, repo_override.location, repo_override.overriding,
+                    ));
+                }
+                overridden_imports.insert(import.local_name.as_str(), repo_override);
+            }
+            overriding.push((extension, repo_override));
+        }
+    }
+    for (extension, repo_override) in overriding {
+        if let Some(chained) = overridden_imports.get(repo_override.overriding.as_str()) {
+            return Err(format!(
+                "{}: The repo '{}' used as an override for '{}' in module extension '{extension}' is itself overridden with '{}' at {}, which is not supported.",
+                repo_override.location,
+                repo_override.overriding,
+                repo_override.overridden,
+                chained.overriding,
+                chained.location,
+            ));
+        }
+    }
+    Ok(())
 }
 fn string(value: Value<'_>, name: &str) -> anyhow::Result<String> {
     value
@@ -2502,6 +2646,104 @@ r(name="second",x=x,y=y,module=module,ys=ys,zs=zs,ws=[str(v) for v in ws],count=
             let error = in_context("x = type(print)\nprint(x)\nprint(x.foo)", context).unwrap_err();
             assert!(error.contains("foo"), "{error}");
         }
+    }
+
+    #[test]
+    fn repo_overrides_are_ignored_where_dev_dependencies_are() {
+        // hermetic_launcher 0.0.8 MODULE.bazel:84-90 (a rules_rs dependency).
+        let source = "bazel_dep(name='bzip2', version='1.0.8.bcr.3')\n\
+            crate=use_extension('//:ext.bzl','crate',dev_dependency=True)\n\
+            crate.annotation(crate='bzip2-sys', deps=['@bzip2//:bz2'])\n\
+            inject_repo(crate, 'bzip2')\n\
+            override_repo(crate, foo='bzip2')\n";
+        for context in contexts() {
+            let file = in_context(source, context).unwrap();
+            let usage = &file.extension_usages[0];
+            if context.effective_ignore_dev_dependencies() {
+                assert!(usage.tags.is_empty());
+                assert!(usage.repo_overrides.is_empty());
+                continue;
+            }
+            assert_eq!(usage.tags.len(), 1);
+            let recorded: Vec<_> = usage
+                .repo_overrides
+                .iter()
+                .map(|o| {
+                    (
+                        o.overridden.as_str(),
+                        o.overriding.as_str(),
+                        o.must_exist,
+                        o.location.as_str(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                recorded,
+                [
+                    ("bzip2", "bzip2", false, "MODULE.bazel:4:12"),
+                    ("foo", "bzip2", true, "MODULE.bazel:5:14"),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn root_repo_overrides_follow_bazel_validation() {
+        let prefix = "bazel_dep(name='dep', version='1.0')\nx=use_extension('//:ext.bzl','x')\n";
+        // A positional name overrides itself, a keyword its key, in call order.
+        let file = run(&format!(
+            "{prefix}inject_repo(x, 'dep', other='dep')\noverride_repo(x, gen='dep')"
+        ));
+        let recorded: Vec<_> = file.extension_usages[0]
+            .repo_overrides
+            .iter()
+            .map(|o| (o.overridden.as_str(), o.overriding.as_str(), o.must_exist))
+            .collect();
+        assert_eq!(
+            recorded,
+            [
+                ("dep", "dep", false),
+                ("other", "dep", false),
+                ("gen", "dep", true),
+            ]
+        );
+        // ModuleThreadContext.addRepoOverride (:244-261).
+        fails(
+            &format!("{prefix}inject_repo(x, 'dep')\ninject_repo(x, dep='dep')"),
+            "The repo exported as 'dep' by module extension 'x' is already overridden with 'dep' at MODULE.bazel:3:12",
+        );
+        fails(
+            &format!("{prefix}inject_repo(x, '@dep')"),
+            "invalid repository name",
+        );
+        fails(
+            &format!("{prefix}inject_repo('x')"),
+            "inject_repo requires an extension proxy",
+        );
+        fails(
+            &format!("{prefix}override_repo(x, gen=1)"),
+            "overriding repository name must be a string",
+        );
+        // ExtensionUsageBuilder.buildUsage (:292-319).
+        fails(
+            &format!("{prefix}inject_repo(x, 'nope')"),
+            "MODULE.bazel:3:12: The repo exported as 'nope' by module extension 'x' is overridden with 'nope', but no repo is visible under this name",
+        );
+        fails(
+            &format!("{prefix}use_repo(x, local='gen')\ninject_repo(x, gen='dep')"),
+            "MODULE.bazel:3:9: Cannot import repo 'gen' that has been injected into module extension 'x' at MODULE.bazel:4:12. Please refer to @dep directly.",
+        );
+        // An imported name can be overridden (the import then follows it), but
+        // an overridden import cannot override another repository (:411-427).
+        run(&format!(
+            "{prefix}use_repo(x, local='gen')\noverride_repo(x, gen='dep')"
+        ));
+        fails(
+            &format!(
+                "{prefix}use_repo(x, 'gen')\noverride_repo(x, gen='dep')\ny=use_extension('//:ext.bzl','y')\ninject_repo(y, z='gen')"
+            ),
+            "MODULE.bazel:6:12: The repo 'gen' used as an override for 'z' in module extension 'y' is itself overridden with 'dep' at MODULE.bazel:4:14, which is not supported.",
+        );
     }
 
     #[test]

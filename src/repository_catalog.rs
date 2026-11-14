@@ -52,6 +52,27 @@ pub struct OrdinaryGroup {
     /// (SingleExtensionEvalFunction.java:465-487); None if the root module
     /// does not use this extension.
     pub root_usage: Option<crate::extension_metadata::RootExtensionUsage>,
+    /// The root module's `inject_repo`/`override_repo` entries in call order,
+    /// resolved after every owner's imports are installed.
+    pub repo_overrides: Vec<GroupRepoOverride>,
+}
+
+/// A root module override of one extension's repository name
+/// (BazelDepGraphValue.getRepoOverrides, one table cell).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupRepoOverride {
+    /// The name the extension's repositories, and every importing module,
+    /// see the overriding repository under.
+    pub name: String,
+    /// The root module's apparent name of the overriding repository.
+    pub overriding: String,
+    /// Its canonical name through the root module's mapping before any
+    /// override (BazelDepGraphFunction.resolveRepoOverrides, :218-247).
+    pub canonical: String,
+    /// `override_repo` (the extension must generate `name`); false for
+    /// `inject_repo` (it must not).
+    pub must_exist: bool,
+    pub location: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -316,6 +337,42 @@ pub fn build(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<DirectCatal
         }
     }
 
+    // BazelDepGraphFunction.resolveRepoOverrides (:218-247) and
+    // BazelDepGraphValue.getRepositoryMapping (:130-159): a root override
+    // resolves through the root module's mapping before any override (an
+    // overriding repository is never itself overridden, bzlmod.rs
+    // check_repo_overrides), and every module's import of an overridden name
+    // follows it. Direct groups inherit the result below.
+    let root_mapping = catalog.owner_mappings.get("").cloned().unwrap_or_default();
+    for group in catalog.ordinary_groups.values_mut() {
+        for repo_override in &mut group.repo_overrides {
+            repo_override.canonical = root_mapping
+                .get(&repo_override.overriding)
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "The repo exported as '{}' by module extension '{}' is overridden with '{}', but no repo is visible under this name",
+                        repo_override.name, group.symbol, repo_override.overriding
+                    )
+                })?;
+        }
+        for participant in &group.participants {
+            let mapping = catalog
+                .owner_mappings
+                .get_mut(&participant.owner)
+                .expect("participant owners have mappings");
+            for import in &participant.imports {
+                if let Some(repo_override) = group
+                    .repo_overrides
+                    .iter()
+                    .find(|repo_override| repo_override.name == import.exported_name)
+                {
+                    mapping.insert(import.local_name.clone(), repo_override.canonical.clone());
+                }
+            }
+        }
+    }
+
     for group in catalog.ordinary_groups.values_mut() {
         for participant in &mut group.participants {
             participant.tags.sort_by_key(|tag| tag.ordinal);
@@ -427,6 +484,7 @@ fn record_ordinary(
                 participants: Vec::new(),
                 root_has_non_dev_dependency: false,
                 root_usage: None,
+                repo_overrides: Vec::new(),
             },
         );
     }
@@ -470,6 +528,29 @@ fn record_ordinary(
     };
     if owner.is_empty() {
         record_root_usage(group, module, usage, ignore_dev);
+        // Only the root module's calls record overrides (bzlmod.rs invoke);
+        // resolved once every owner's imports are installed (see build).
+        for repo_override in &usage.repo_overrides {
+            budget.string(&repo_override.overridden)?;
+            budget.string(&repo_override.overriding)?;
+            if group
+                .repo_overrides
+                .iter()
+                .any(|recorded| recorded.name == repo_override.overridden)
+            {
+                return Err(format!(
+                    "The repo exported as '{}' by module extension '{symbol}' is already overridden at {}",
+                    repo_override.overridden, repo_override.location
+                ));
+            }
+            group.repo_overrides.push(GroupRepoOverride {
+                name: repo_override.overridden.clone(),
+                overriding: repo_override.overriding.clone(),
+                canonical: String::new(),
+                must_exist: repo_override.must_exist,
+                location: repo_override.location.clone(),
+            });
+        }
     }
     let participant = &mut group.participants[participant_index];
     for tag in usage
@@ -1862,5 +1943,58 @@ r(name="direct")
         // Export visibility is a runtime preparation check unless it makes the
         // isolated namespace omission unsafe. No definition file is opened here.
         assert_eq!(build(&private, false).unwrap().ordinary_groups.len(), 1);
+    }
+
+    #[test]
+    fn root_repo_overrides_resolve_through_the_root_mapping_and_redirect_imports() {
+        let mut graph = graph(
+            r#"
+module(name="main")
+bazel_dep(name="ssl")
+bazel_dep(name="dep")
+e=use_extension("@dep//:ext.bzl", "crate")
+use_repo(e, "gen", local="other")
+inject_repo(e, b="ssl", q="ssl")
+override_repo(e, gen="ssl")
+"#,
+        );
+        dependency(&mut graph, "ssl", "ssl+", "module(name='ssl')");
+        dependency(
+            &mut graph,
+            "dep",
+            "dep+",
+            "module(name='dep')\ne=use_extension('//:ext.bzl','crate')\nuse_repo(e, mine='gen')",
+        );
+        let catalog = build(&graph, false).unwrap();
+        let group = catalog.ordinary_groups.values().next().unwrap();
+        let overrides: Vec<_> = group
+            .repo_overrides
+            .iter()
+            .map(|o| (o.name.as_str(), o.canonical.as_str(), o.must_exist))
+            .collect();
+        assert_eq!(
+            overrides,
+            [
+                ("b", "ssl+", false),
+                ("q", "ssl+", false),
+                ("gen", "ssl+", true),
+            ]
+        );
+        // BazelDepGraphValue.getRepositoryMapping: every module's import of an
+        // overridden name follows the override; other imports do not.
+        assert_eq!(catalog.owner_mappings[""]["gen"], "ssl+");
+        assert_eq!(catalog.owner_mappings["dep+"]["mine"], "ssl+");
+        assert_eq!(
+            catalog.owner_mappings[""]["local"],
+            format!("{}+other", group.prefix)
+        );
+        // The usages digest input lists them in the root's HashMap order
+        // (buckets of "q" and "gen" before that of "b"), not call order.
+        let usages = crate::lockfile_extensions::usages_value(group).unwrap();
+        let text = crate::lockfile_extensions::gson_compact(&usages);
+        assert!(
+            text.ends_with(r#""repoOverrides":{"q":"ssl+","gen":"ssl+","b":"ssl+"}}"#),
+            "{text}"
+        );
     }
 }
