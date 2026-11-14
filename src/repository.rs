@@ -21,12 +21,24 @@ use std::sync::{Arc, OnceLock};
 /// [`RepositorySet::shared_mapping`]'s copy of a mapping table entry.
 type SharedMapping = Arc<BTreeMap<String, String>>;
 
-/// A canonical root list of [`RepositorySet::link_policy`] and the roots
-/// (name, path) it was made of.
-#[derive(Debug)]
+/// The canonical root list of [`RepositorySet::link_policy`]
+/// ([`RepositorySet::link_others`]) and the roots (name, path) it was made
+/// of: those canonicalized (`names`) and those whose canonical form failed
+/// (retried), `visited` roots in all at the latest visit applied.
+#[derive(Debug, Default)]
 struct LinkOthers {
-    roots: Vec<(String, PathBuf)>,
-    others: Arc<Vec<(String, PathBuf)>>,
+    names: crate::fast_hash::FxHashMap<String, Vec<PathBuf>>,
+    failed: Vec<(String, PathBuf)>,
+    visited: usize,
+    others: Arc<crate::source_links::RootList>,
+}
+
+impl LinkOthers {
+    fn holds(&self, name: &str, root: &Path) -> bool {
+        self.names
+            .get(name)
+            .is_some_and(|roots| roots.iter().any(|known| known == root))
+    }
 }
 
 /// The canonical form of a root, the repository store or a blocked prefix
@@ -446,7 +458,7 @@ struct RepositoryState {
     shared_mappings: std::sync::Mutex<std::collections::HashMap<usize, SharedMapping>>,
     /// The last canonical `others` of [`RepositorySet::link_policy`] per
     /// root view (materialized, sequential) with the roots it was made of.
-    link_others: std::sync::Mutex<[Option<Arc<LinkOthers>>; 2]>,
+    link_others: std::sync::Mutex<[LinkOthers; 2]>,
     /// BUILD-phase `.bzl` modules evaluated in this invocation, shared by
     /// every package that loads them (BzlLoadValue; crate::loading).
     build_bzl: crate::loading::BzlCache,
@@ -4834,6 +4846,89 @@ impl RepositorySet {
         canonical
     }
 
+    /// The canonical materialized roots of [`Self::link_policy`] (`slot`:
+    /// those counting for the sequential engine or all), kept up to date
+    /// incrementally: a root that began to count since is canonicalized
+    /// and added as the shared list's next chunk; the earlier roots are
+    /// neither listed nor looked up again (thousands of roots, a policy per
+    /// package load). A root whose canonical form fails (it does not exist
+    /// yet) is retried at the next call. Roots only begin to count and
+    /// never change their path, so a list made of every root some visit
+    /// saw is the list of the latest such visit: a snapshot of the roots
+    /// as they were then.
+    fn link_others(&self, slot: usize, sequential: bool) -> Arc<crate::source_links::RootList> {
+        let lock = || {
+            self.state
+                .link_others
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        let count = self.roots_materialized_count(sequential);
+        // The roots to canonicalize (outside the lock): the ones not known
+        // when this call counted more roots than the last visit, and those
+        // that failed before.
+        let (visited, mut pending) = {
+            let mut cache = lock();
+            let known = &mut cache[slot];
+            if known.visited == count && known.failed.is_empty() {
+                return Arc::clone(&known.others);
+            }
+            let mut pending = known.failed.clone();
+            let mut visited = known.visited;
+            if known.visited != count {
+                visited = 0;
+                self.visit_roots_materialized(sequential, |name, root| {
+                    visited += 1;
+                    if !known.holds(name, root)
+                        && !known
+                            .failed
+                            .iter()
+                            .any(|(failed, path)| failed == name && path == root)
+                    {
+                        pending.push((name.to_owned(), root.to_path_buf()));
+                    }
+                });
+            }
+            (visited, pending)
+        };
+        let canonical = self.link_canonical_all(pending.iter().map(|(_, path)| path.as_path()));
+        let mut cache = lock();
+        let known = &mut cache[slot];
+        let mut added = Vec::new();
+        let mut failed = Vec::new();
+        for ((name, root), canonical) in pending.drain(..).zip(canonical) {
+            if known.holds(&name, &root) {
+                continue;
+            }
+            match canonical {
+                Some(canonical) => {
+                    known.names.entry(name.clone()).or_default().push(root);
+                    added.push((name, canonical));
+                }
+                None => failed.push((name, root)),
+            }
+        }
+        if !added.is_empty() {
+            let mut others = (*known.others).clone();
+            others.extend(added);
+            known.others = Arc::new(others);
+        }
+        // What a later visit found fails again only if it is still missing.
+        known.failed.retain(|(name, root)| {
+            !known
+                .names
+                .get(name)
+                .is_some_and(|roots| roots.contains(root))
+        });
+        for root in failed {
+            if !known.failed.contains(&root) {
+                known.failed.push(root);
+            }
+        }
+        known.visited = known.visited.max(visited);
+        Arc::clone(&known.others)
+    }
+
     /// The shared native link policy for reads of `repository`'s sources,
     /// `.bzl` files and globs (`source_links::LinkPolicy`): materialized roots
     /// and blocked store prefixes, plus host-path reads for repositories
@@ -4875,65 +4970,7 @@ impl RepositorySet {
         // without building the list (a `.bzl` load through a link asks for
         // a policy each time, while thousands of roots count).
         let slot = usize::from(sequential);
-        let last = self
-            .state
-            .link_others
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)[slot]
-            .clone();
-        let count = self.roots_materialized_count(sequential);
-        let known = last
-            .filter(|known| known.roots.len() == count)
-            .map(|known| {
-                // The count shortcut relies on roots only ever beginning
-                // to count, never changing their path: the full list (when
-                // no root began to count meanwhile) is the cached one.
-                #[cfg(debug_assertions)]
-                {
-                    let roots = self.roots_materialized(sequential);
-                    debug_assert!(
-                        roots.len() != count
-                            || roots.iter().zip(&known.roots).all(|((a, p), (b, q))| {
-                                a == b && p.as_os_str() == q.as_os_str()
-                            }),
-                        "link policy: {count} roots, not the cached ones"
-                    );
-                }
-                Arc::clone(&known.others)
-            });
-        let others = match known {
-            Some(others) => others,
-            None => {
-                let roots = self.roots_materialized(sequential);
-                let count = roots.len();
-                let others: Vec<(String, PathBuf)> = roots
-                    .iter()
-                    .zip(self.link_canonical_all(roots.iter().map(|(_, path)| path.as_path())))
-                    .filter_map(|((name, _), canonical)| canonical.map(|path| (name.clone(), path)))
-                    .collect();
-                let others = Arc::new(others);
-                // Roots only become ready: of two threads that computed
-                // lists concurrently, the one that saw more roots keeps
-                // its list (no ping-pong between an older and a newer set).
-                if others.len() == count {
-                    let mut last = self
-                        .state
-                        .link_others
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if last[slot]
-                        .as_ref()
-                        .is_none_or(|known| known.roots.len() <= count)
-                    {
-                        last[slot] = Some(Arc::new(LinkOthers {
-                            roots,
-                            others: Arc::clone(&others),
-                        }));
-                    }
-                }
-                others
-            }
-        };
+        let others = self.link_others(slot, sequential);
         let prefixes = self.link_blocked_prefixes();
         let store = self.source_cache_path().ok();
         let mut canonical =

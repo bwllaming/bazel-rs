@@ -185,10 +185,86 @@ impl std::hash::Hash for StoreTrees {
 pub struct LinkPolicy {
     /// Shared: the same materialized roots back every policy of a phase
     /// (thousands of npm package repositories).
-    pub others: Arc<Vec<(String, PathBuf)>>,
+    pub others: Arc<RootList>,
     pub blocked: Vec<PathBuf>,
     pub host_reads: bool,
     pub store: Option<StoreTrees>,
+}
+
+/// The materialized roots of a [`LinkPolicy`] (name, canonical root), in
+/// chunks shared between the policies of successive root sets: a root set
+/// that grew by a few roots shares the earlier chunks
+/// (`RepositorySet::link_policy` adds only the new roots' chunk). Only the
+/// set matters to the policy (the longest containing root, membership).
+#[derive(Clone, Default)]
+pub struct RootList {
+    chunks: Vec<Arc<[(String, PathBuf)]>>,
+    len: usize,
+}
+
+impl RootList {
+    pub fn new(roots: Vec<(String, PathBuf)>) -> Self {
+        let mut list = Self::default();
+        list.extend(roots);
+        list
+    }
+
+    /// The roots, chunk by chunk.
+    pub fn iter(&self) -> impl Iterator<Item = &(String, PathBuf)> {
+        self.chunks.iter().flat_map(|chunk| chunk.iter())
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The list with `roots` added as one more chunk (the chunks merged
+    /// into one now and then: lookups walk few chunks).
+    pub fn extend(&mut self, roots: Vec<(String, PathBuf)>) {
+        if roots.is_empty() {
+            return;
+        }
+        self.len += roots.len();
+        self.chunks.push(roots.into());
+        if self.chunks.len() > 32 {
+            let merged: Vec<(String, PathBuf)> = self.iter().cloned().collect();
+            self.chunks = vec![merged.into()];
+        }
+    }
+
+    pub fn push(&mut self, root: (String, PathBuf)) {
+        self.extend(vec![root]);
+    }
+}
+
+impl FromIterator<(String, PathBuf)> for RootList {
+    fn from_iter<I: IntoIterator<Item = (String, PathBuf)>>(roots: I) -> Self {
+        Self::new(roots.into_iter().collect())
+    }
+}
+
+impl From<Vec<(String, PathBuf)>> for RootList {
+    fn from(roots: Vec<(String, PathBuf)>) -> Self {
+        Self::new(roots)
+    }
+}
+
+impl PartialEq for RootList {
+    fn eq(&self, other: &Self) -> bool {
+        self.len == other.len && self.iter().eq(other.iter())
+    }
+}
+
+impl Eq for RootList {}
+
+impl std::fmt::Debug for RootList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
 }
 
 /// Hashes the shared `others` list by its length only: it holds every
@@ -1146,7 +1222,7 @@ mod tests {
         let gen_root = base.join("gen");
         let policy = |host_reads: bool| LinkPolicy {
             // The workspace contains the store (the default cache layout).
-            others: Arc::new(vec![(String::new(), base.clone())]),
+            others: Arc::new(vec![(String::new(), base.clone())].into()),
             blocked: vec![store.clone(), base.join("cache")],
             host_reads,
             store: Some(StoreTrees::new(store.clone(), Arc::default())),
