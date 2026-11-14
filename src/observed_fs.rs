@@ -1648,7 +1648,21 @@ impl Recorder {
         if captured.recorded.swap(true, Ordering::AcqRel) {
             return;
         }
-        for event in &captured.events.events {
+        let mut guard = lock(&captured.events);
+        if auditing() {
+            // (The audit of dropped frames reads them.)
+            self.apply_captured(&guard);
+            return;
+        }
+        // Recorded: what memo entries keep is freed (~/code: REPO records
+        // walked inside frames, held twice otherwise).
+        let events = std::mem::take(&mut *guard);
+        drop(guard);
+        self.apply_captured(&events);
+    }
+
+    fn apply_captured(&self, events: &Events) {
+        for event in &events.events {
             match event {
                 Event::Observe(path, op, outcome) => {
                     APPLIED_EVENTS.fetch_add(1, Ordering::Relaxed);
@@ -1657,7 +1671,7 @@ impl Recorder {
                 event => self.apply_event(event.clone()),
             }
         }
-        for child in &captured.events.children {
+        for child in &events.children {
             self.replay_captured(child);
         }
     }
@@ -1881,7 +1895,9 @@ impl Events {
 /// unit's frame, or into the recorder, where it lands at most once.
 #[derive(Debug)]
 pub struct Captured {
-    events: Events,
+    /// Its events, until they reached the recorder (then dropped: a later
+    /// replay is a no-op; kept while dropped frames are audited).
+    events: Mutex<Events>,
     /// Its events reached the recorder.
     recorded: AtomicBool,
     /// It holds events whose effect depends on the order they reach the
@@ -1902,7 +1918,7 @@ impl Captured {
         let order_dependent = events.order_dependent();
         let supersedes = events.supersedes();
         Arc::new(Self {
-            events,
+            events: Mutex::new(events),
             recorded: AtomicBool::new(false),
             order_dependent,
             supersedes,
@@ -2483,7 +2499,7 @@ pub fn audit_dropped(kind: &'static str, observations: &Observations) {
             }
         }
         for child in &events.children {
-            flatten(kind, &child.events, into);
+            flatten(kind, &lock(&child.events), into);
         }
     }
     flatten(kind, &observations.0, &mut lock(&AUDIT));
