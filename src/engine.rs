@@ -2451,8 +2451,14 @@ fn validate_declared_outputs(
     context: &dyn Fn() -> Result<(PathBuf, Arc<IgnoredSubdirectories>), String>,
 ) -> Result<(), String> {
     let mut resolved: Option<(PathBuf, Arc<IgnoredSubdirectories>)> = None;
+    let package_output = PathBuf::from(output_root).join(label.package_exec_path());
+    let package = label.package_id();
+    // The source directories on the outputs' ways, classified once per
+    // target (a target declaring thousands of files in a few directories
+    // stats each directory once); not while the analysis snapshot records
+    // (every lookup is an observation).
+    let mut directories = (!crate::observed_fs::recording()).then(DirectoryMemo::default);
     for file in declared {
-        let package_output = PathBuf::from(output_root).join(label.package_exec_path());
         let short_name = Path::new(&file.path)
             .strip_prefix(&package_output)
             .map_err(|_| format!("output outside declaring package: {}", file.path))?;
@@ -2461,21 +2467,45 @@ fn validate_declared_outputs(
             Some(resolved) => resolved,
             None => resolved.insert(context()?),
         };
-        validate_output_directory_in(
+        validate_output_directory_with(
             root,
-            &label.package_id(),
+            &package,
             &short_name.to_string_lossy(),
             ignored,
+            directories.as_mut(),
         )?;
     }
     Ok(())
 }
+
+/// What [`validate_output_directory_with`] found at a source directory on
+/// an output's way (a memo per target).
+#[derive(Clone, Copy)]
+enum DirectoryStep {
+    Symlink,
+    /// A regular file or a missing path: nothing below it is a subpackage.
+    Stop,
+    Subpackage,
+    Continue,
+}
+
+type DirectoryMemo = crate::fast_hash::FxHashMap<PathBuf, DirectoryStep>;
 
 fn validate_output_directory_in(
     root: &Path,
     package: &PackageId,
     out: &str,
     ignored: &IgnoredSubdirectories,
+) -> Result<(), String> {
+    validate_output_directory_with(root, package, out, ignored, None)
+}
+
+fn validate_output_directory_with(
+    root: &Path,
+    package: &PackageId,
+    out: &str,
+    ignored: &IgnoredSubdirectories,
+    mut memo: Option<&mut DirectoryMemo>,
 ) -> Result<(), String> {
     let mut directory = root.join(&package.package);
     let mut relative = package.package.clone();
@@ -2486,40 +2516,65 @@ fn validate_output_directory_in(
             relative.push('/');
         }
         relative.push_str(component);
-        match crate::observed_fs::symlink_metadata(&directory) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
+        let known = memo
+            .as_deref()
+            .and_then(|memo| memo.get(&directory).copied());
+        let step = match known {
+            Some(step) => step,
+            None => {
+                let step = match crate::observed_fs::symlink_metadata(&directory) {
+                    Ok(metadata) if metadata.file_type().is_symlink() => DirectoryStep::Symlink,
+                    // Generated outputs inhabit another tree. A regular source file
+                    // or missing path cannot contain a source subpackage boundary.
+                    Ok(metadata) if !metadata.is_dir() => DirectoryStep::Stop,
+                    Ok(_) => {
+                        // An ignored directory is a deleted package, never a subpackage
+                        // (ContainingPackageLookupFunction).
+                        // So is an invalid package name (PackageLookupFunction.java:91-96).
+                        let subpackage = ignored.matching_entry(&relative).is_none()
+                            && !crate::ignored::is_deleted_directory(&directory)
+                            && crate::label::is_valid_package_name(&relative)
+                            && (crate::observed_fs::is_file(directory.join("BUILD.bazel"))
+                                || crate::observed_fs::is_file(directory.join("BUILD")));
+                        // No nested repositories in Bazel 9.3
+                        // (LocalRepositoryLookupFunction.java:27-35).
+                        if subpackage {
+                            DirectoryStep::Subpackage
+                        } else {
+                            DirectoryStep::Continue
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        DirectoryStep::Stop
+                    }
+                    Err(error) => {
+                        return Err(format!(
+                            "cannot inspect output package boundary {}: {error}",
+                            directory.display()
+                        ));
+                    }
+                };
+                if let Some(memo) = memo.as_deref_mut() {
+                    memo.insert(directory.clone(), step);
+                }
+                step
+            }
+        };
+        match step {
+            DirectoryStep::Symlink => {
                 return Err(format!(
                     "output {out} has an unsupported symlink source-tree parent {}",
                     directory.display()
                 ));
             }
-            // Generated outputs inhabit another tree. A regular source file
-            // or missing path cannot contain a source subpackage boundary.
-            Ok(metadata) if !metadata.is_dir() => break,
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-            Err(error) => {
+            DirectoryStep::Stop => break,
+            DirectoryStep::Subpackage => {
                 return Err(format!(
-                    "cannot inspect output package boundary {}: {error}",
+                    "output {out} crosses a package boundary at {}",
                     directory.display()
                 ));
             }
-        }
-        // An ignored directory is a deleted package, never a subpackage
-        // (ContainingPackageLookupFunction).
-        // So is an invalid package name (PackageLookupFunction.java:91-96).
-        let subpackage = ignored.matching_entry(&relative).is_none()
-            && !crate::ignored::is_deleted_directory(&directory)
-            && crate::label::is_valid_package_name(&relative)
-            && (crate::observed_fs::is_file(directory.join("BUILD.bazel"))
-                || crate::observed_fs::is_file(directory.join("BUILD")));
-        // No nested repositories in Bazel 9.3
-        // (LocalRepositoryLookupFunction.java:27-35).
-        if subpackage {
-            return Err(format!(
-                "output {out} crosses a package boundary at {}",
-                directory.display()
-            ));
+            DirectoryStep::Continue => {}
         }
     }
     Ok(())
@@ -9385,9 +9440,9 @@ impl Engine {
             }
             None => self.build_delta(state, commit(analyzed, precomputed, outputs_checked)),
         };
-        if let Some(snapshot) = snapshot {
-            drop_elsewhere(snapshot);
-        }
+        // The kept analysis of a delta merged as built and the exec
+        // groups' table (the cursor's: ~8% of its time dropping them).
+        drop_elsewhere((snapshot, kept, action_execution));
         if order_audit::enabled() {
             order_audit::note_delta(reason);
         }
