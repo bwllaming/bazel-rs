@@ -404,7 +404,7 @@ change announced to the other two workers; adding a helper is not.
   `NativePublished` carry the worker's `observations` and tracker
   `accesses`; `observed_fs::{redone, Observations::order_dependent}`;
   `observed_fs::Captured::events` is a `Mutex` (emptied once recorded).
-  While recording: 8 frozen workers, the tail frozen, the sweep on
+  While recording: 6 frozen workers, the tail frozen, the sweep on
   ("snapshot-miss-speed" below).
 - 2026-11-14 (eval-profile): `select::Fallback` and `Selected::Fallback`
   are gone (`select_engine` keeps its signature). `--profile` no longer
@@ -2914,7 +2914,7 @@ key ids kept by hash; a purge before the snapshot's plan encoding; 4
 frozen workers while recording; while recording the planning tail after
 the deferred walk walks on the pipeline (−0.2 GB, ~+3 s;
 `BAZEL_RS_EVAL_RECORDING_TAIL=frozen` keeps it frozen). (Since
-snapshot-miss-speed: 8 workers, the tail frozen, the sweep on.)
+snapshot-miss-speed: 6 workers, the tail frozen, the sweep on.)
 
 | ~/code `build --nobuild //src/...`, main `081325db` | walk | eval |
 |---|---|---|
@@ -4073,10 +4073,12 @@ What changed (each behind a diagnostics switch restoring the old path):
   REPO records a second time).
 - **The tracker.** Fx tables; the tape's key identities interned and
   reached by reference (no clone per reach).
-- **While recording**: frozen walks on 8 workers (was 4), the planning
+- **While recording**: frozen walks on 6 workers (was 4), the planning
   tail frozen too (`BAZEL_RS_EVAL_RECORDING_TAIL=pipeline`), the sweep on
-  (`BAZEL_RS_EVAL_SWEEP_RECORDING=0`). Peaks of the frozen tail measured:
-  4 workers 9.68 GB, 8 → 9.87, 12 → 10.36, 16 → 10.60 GB.
+  (`BAZEL_RS_EVAL_SWEEP_RECORDING=0`). Peaks of the frozen tail measured
+  (on main `60720c18`): 4 workers 9.68 GB, 8 → 9.87, 12 → 10.36, 16 →
+  10.60 GB; rebased on main `a8062a5e` (whose snapshot-off peak is 9.72
+  GB): 6 → 9.78 GB, 8 → 9.97 GB and ~2 s faster (`BAZEL_RS_T3_WORKERS=8`).
 - **The save**: INPUTS, INDEX and DERIVE encode on threads of their own
   from the start of the save, beside the plan's encoding (now on up to 16
   threads; decoding keeps 8) and the actions; the INDEX and DERIVE frames
@@ -4091,6 +4093,10 @@ Measured (fast non-LTO release builds, interleaved, host load 11–22):
 | `BAZEL_RS_SNAPSHOT=record` | 44.0 s, 9.47 GB | 31.7 s, 9.55 GB |
 | snapshot off | 17.1 s, 9.40 GB | 16.5 s, 9.49 GB |
 | hit | — | 0.85 s |
+
+Rebased on main `a8062a5e`, LTO release: miss 31.2 s / 9.78 GB with 6
+workers (8 workers: 29.1 / 28.96 s, 9.99 / 9.97 GB); snapshot off 13.8 s,
+9.72 GB.
 
 Identical to main: the record mode's dump (520,098 observations; timings
 aside) walk and eval, the incremental index (`BAZEL_RS_SNAPSHOT_INDEX_DUMP`)

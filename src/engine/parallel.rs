@@ -140,7 +140,7 @@ pub(super) fn buffered() -> bool {
     buffer::enabled()
 }
 
-/// `BAZEL_RS_T3_WORKERS=<n>`: the frozen walk's analysis workers (8 while
+/// `BAZEL_RS_T3_WORKERS=<n>`: the frozen walk's analysis workers (6 while
 /// the analysis snapshot records; else 16, 8 with `BAZEL_RS_EVAL_SWEEP=0`).
 fn frozen_worker_cap() -> usize {
     static CAP: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
@@ -151,10 +151,11 @@ fn frozen_worker_cap() -> usize {
             .unwrap_or(if crate::observed_fs::recording() {
                 // While the analysis snapshot records (eval-record): the
                 // computes' peak memory beside the recording's (~/code,
-                // snapshot-miss-speed: the frozen planning tail peaks at
-                // 9.68 GB with 4 workers, 9.87 GB with 8, 10.36 GB with
-                // 12; the deferred walk 13.4 s with 4, 8.6 s with 8).
-                8
+                // snapshot-miss-speed, on main a8062a5e: the frozen
+                // planning tail peaks at 9.78 GB with 6 workers, 9.97 GB
+                // with 8 (2 s faster); before it 9.68 GB with 4, 10.36 GB
+                // with 12).
+                6
             } else if super::sweep::enabled() {
                 16
             } else {
