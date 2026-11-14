@@ -798,6 +798,21 @@ change announced to the other two workers; adding a helper is not.
   (`buffered_walk`) checks `keep_going_state.dependency_failed` before it
   classifies/claims an entry, and records a merge's error instead of
   returning it under `--keep_going`.
+- 2026-11-14 (eval-speed round 7; no frozen interface changed):
+  `source_links::LinkPolicy::others` is an `Arc<RootList>` (the roots in
+  shared chunks: `iter`, `len`, `push`/`extend`; set semantics only) and
+  `RepositorySet::link_others` keeps it incrementally (`LinkOthers`: the
+  roots known by name and path, the failed ones retried, the visit
+  count); `path_key::PathFilter` (a last-component prefilter of a path
+  set); `engine::reachable_positions` (the tail prune's lookups on
+  workers); `validate_output_directory_with` (a per-target
+  `DirectoryMemo` of the source directories on the declared outputs'
+  ways, off while the snapshot records); the eval interner's shards are
+  `HashTable`s with the key's hash (256 shards); `Engine::source_targets`,
+  `deferred_duplicates` and `configured_rules` are FxHash maps (the eval
+  verify compares `configured_rules`' keys sorted); new `BAZEL_RS_TIMING`
+  marks `plan.tail.toplevel.{requested,seen,runfiles}`,
+  `plan.tail.pruned.reached`, `plan.tail.inputs.{flagged,candidates}`.
 
 ## 4. Stages and gates
 
@@ -3778,6 +3793,82 @@ on a snapshot miss) and `test --nobuild` (vs main); `BAZEL_RS_T3_ASPECT_JOBS=ver
 with `BAZEL_RS_T3_ASPECT_HELPERS=all` (jitter, restarts; reverse with
 `PARITY_VERIFY`) and the walks ahead counted in
 `attribute_aspect_applications_analyzed_ahead_replay_in_order`.
+
+### Round 7: drops, the tail, link policies, publication (eval-speed)
+
+A fresh profile of `build --nobuild //src/...` (~/code, snapshot off;
+`pprof` with a per-thread wall-clock sampler of the sequential thread and
+the cursor) found the time in serial drops and a few quadratic or
+per-call costs rather than in one large stage:
+
+- **Publication of a job's shared outputs** (`publish_starlark_results`):
+  each output meeting an earlier entry's scanned the delta's ops for its
+  own artifact (`Path` equality): quadratic in large deltas (a third of
+  the walk workers' samples). The delta's artifacts are indexed by exec
+  path once per publication (the first in op order wins, as the scan's).
+- **Drops off the critical path** (the planning dropper thread): phase
+  1's coordinator store, CT1 tables and transition inputs (walk end →
+  phase 1 done 0.2 → 0.02 s), the node keys and published memo prefix at
+  the deferred walk's start, the frozen walks' results, sweep reads and
+  input memos at the tail's end, the top-level deduplication set,
+  `--nobuild`'s planned nodes (0.25 s in `execute`), and at each Starlark
+  merge the worker's kept analysis and the exec groups' table (~8 % of the
+  cursor).
+- **The planning tail**: the prune marks an id reached by its last node
+  (one lookup per edge) and looks the roots' and dependencies' positions
+  up on workers (`reachable_positions`; by id, as before, when one is
+  missing, for the same error); the executed runfiles manifests are found
+  there; the input checks prefilter paths by their last component
+  (`PathFilter`: 8 bytes of the last component, no full normal-form
+  hash); the hidden owners are a mask; `Runfiles::all_artifacts`
+  deduplicates by hash (a `BTreeSet` of `File`s before).
+- **Link policies** (`RepositorySet::link_policy`, one per package load
+  with a glob): the canonical materialized roots were listed and looked up
+  again whenever a root began to count (thousands of roots, all through
+  phase 1: 11 % of phase 1's samples). Only the roots new since are
+  listed and canonicalized, as the next chunk of the shared `RootList`; a
+  policy's roots are those of the latest visit (roots only begin to
+  count, so that is a snapshot of them). This also cut the speculations'
+  flag phase 2s on the scratch engines (their native commits'
+  `source_target`): phase 2 2.5 → 0.9 s in all, the slowest 1.0 → 0.26 s.
+- **Declared outputs** (`validate_declared_outputs`, on the workers): the
+  source directories on the outputs' ways are classified once per target
+  (`copy_to_bin` of thousands of files stat'ed every directory for every
+  file; ~20 % of the walk workers' samples), not while the analysis
+  snapshot records (each lookup is an observation there).
+- **The linearizer's publication**: `source_targets` (SipHash),
+  `deferred_duplicates` and `configured_rules` (BTreeMaps) are FxHash
+  maps; the interner hashes a key once (256 shards).
+
+Measured (2026-11-14, ~/code `80d6724f3a` private clone, non-LTO release,
+`build --nobuild //src/...`, snapshot off, warm, alternating, host load
+12–19; main = `f8a74027`):
+
+| | main | round 7 |
+|---|---|---|
+| `INFO: Elapsed time` | 16.80–17.40 s | 14.48–14.92 s |
+| graph dropped (plan.start-relative) | 6.55–6.69 s | 5.70–5.90 s |
+| walk end → phase 1 done | 0.21–0.25 s | 0.02 s |
+| tail walk (`BAZEL_RS_TIMING`) | 1.3 s | 1.0 s |
+| `plan.tail.status` → `execute.end` (`BAZEL_RS_TIMING`) | 1.48–1.63 s | 0.69 s |
+| max RSS | 9.48–9.57 GB | 9.66–9.74 GB |
+| snapshot miss (`on`, store emptied) | 46.5 / 47.0 s, 9.76–9.77 GB | 44.9 / 46.1 s, 9.76–9.79 GB |
+
+(RSS +0.15 GB: the tail walk starts while the dropper thread still frees
+phase 1's tables.) Identical: the action dumps of `build` and `test
+--nobuild` (vs main's walk), the record mode's dump (timings aside);
+`PARITY_VERIFY`+`REVERSE`, `VERIFY_DELTA`/`ARTIFACTS`, `EVAL_VERIFY`
+(`--memory-limit=40000`) clean.
+
+Not changed, measured: the deferred walk (~5 s) did not move with the
+workers' CPU cut above (its cursor's merges, `sweep::adopt` ~25 % and
+`merge_ops` ~13 % of the cursor, and the chains: `//src/python:web`'s
+~0.4 s job, `server_rustfmt`'s ~0.85 s aspect job); 24 walk workers
+−0.2 s at +0.2 GB. Left: the linearizer alone after the pool (~1 s:
+pass 1, `publish_ct1`'s `UnloadedToolchainContext` clones, the tape),
+the repository store's per-invocation tree verification on the
+sequential thread (`materialize_registry`/`tree_matches`, its file lock),
+the top-level runfiles listing (bound by the largest target, ~0.17 s).
 
 ### Effort
 
