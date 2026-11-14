@@ -3386,7 +3386,7 @@ pub struct Engine {
     /// Source-file targets already resolved: label -> path. A pure memo of
     /// [`Self::target`]; its filesystem side effects are recorded once
     /// (lookups only).
-    source_targets: Shared<HashMap<Label, PathBuf>>,
+    source_targets: Shared<crate::fast_hash::FxHashMap<Label, PathBuf>>,
     /// Rule targets already resolved, by the label's hash: a pure memo of
     /// [`Self::target`] (loaded packages never change), whose entry serves
     /// a label equal to its rule's (a hash collision takes the lookup).
@@ -3538,7 +3538,7 @@ pub struct Engine {
     toolchain_implementations: Shared<BTreeMap<ConfiguredTargetKey, Label>>,
     /// Duplicate-label attribute errors of Starlark rules, reported with
     /// their other prerequisite errors (Self::starlark_prerequisite_errors).
-    deferred_duplicates: Shared<BTreeMap<ConfiguredTargetKey, Vec<String>>>,
+    deferred_duplicates: Shared<crate::fast_hash::FxHashMap<ConfiguredTargetKey, Vec<String>>>,
     /// Source directories used as file targets (path -> label).
     /// Several labels (a directory and links to it, N28d) may name one.
     source_directories: Shared<BTreeMap<PathBuf, BTreeSet<Label>>>,
@@ -3567,7 +3567,7 @@ pub struct Engine {
     /// The select()-configured custom rules produced by phase 1, shared with
     /// the plan. Both aspect dependency analysis and implementation planning
     /// must walk these same resolved attributes, regardless of pending flushes.
-    configured_rules: Shared<BTreeMap<ConfiguredTargetKey, Arc<Rule>>>,
+    configured_rules: Shared<crate::fast_hash::FxHashMap<ConfiguredTargetKey, Arc<Rule>>>,
     /// The configuration of each label attribute of each aspect
     /// application (base configured target key, aspect identity), computed
     /// when phase 1 analyzes the application's own attribute dependencies

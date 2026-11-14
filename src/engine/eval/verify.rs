@@ -304,7 +304,10 @@ impl Engine {
             ));
         }
         let configured_rules = |engine: &Engine| -> Vec<ConfiguredTargetKey> {
-            engine.configured_rules.keys().cloned().collect()
+            let mut keys: Vec<ConfiguredTargetKey> =
+                engine.configured_rules.keys().cloned().collect();
+            keys.sort_unstable();
+            keys
         };
         if configured_rules(walk) != configured_rules(self) {
             return Some((
