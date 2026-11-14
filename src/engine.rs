@@ -18689,6 +18689,10 @@ trait RegistrationLoader {
     /// Look a target up (its existence).
     fn lookup(&mut self, label: &Label) -> Result<(), String>;
     fn warn(&mut self, warning: String);
+    /// The labels one pattern expanded to (scheduling only).
+    fn found(&mut self, labels: &[Label]) {
+        let _ = labels;
+    }
 }
 
 struct EngineLoader<'a>(&'a mut Engine);
@@ -18850,6 +18854,9 @@ fn expand_registration_patterns_in(
             loader.lookup(&label).map_err(invalid)?;
             vec![label]
         };
+        if kind == Registration::Toolchain {
+            loader.found(&found);
+        }
         for label in found {
             if !seen.contains(&label) {
                 seen.insert(label.clone());

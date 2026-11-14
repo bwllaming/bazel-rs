@@ -88,6 +88,11 @@ pub(crate) struct EvalHost<'c, 'e> {
     used_packages: crate::fast_hash::FxHashSet<PackageId>,
     /// The CT1 keys this attempt hinted (on the pool).
     hinted: Vec<NodeKey>,
+    /// The registered toolchains' configuration while this attempt
+    /// expands their patterns (the RegToolchains body): each registered
+    /// toolchain is hinted as soon as the expansion finds it
+    /// (`RegistrationHost::found`).
+    registration_hints: Option<ConfigId>,
 }
 
 impl<'c, 'e> EvalHost<'c, 'e> {
@@ -112,6 +117,7 @@ impl<'c, 'e> EvalHost<'c, 'e> {
             cycle_reports: Vec::new(),
             used_packages: Default::default(),
             hinted: Vec::new(),
+            registration_hints: None,
         }
     }
 
@@ -185,6 +191,68 @@ impl<'c, 'e> EvalHost<'c, 'e> {
     fn inline(&mut self) -> String {
         self.cx.missing_here();
         self.stop(Missing::Repo(super::bodies::INLINE.to_owned()))
+    }
+
+    /// Schedule `deps` on the pool ahead (their `Tgt` lookups, or their
+    /// CT1 keys when the rule is known); the CT1 keys hinted.
+    fn hint_keys(&mut self, deps: &[(Label, ConfigId)]) -> Vec<NodeKey> {
+        // On the pool, or in the sequential pass while the pool serves
+        // (its context schedules them; otherwise it ignores hints).
+        if deps.is_empty() || !(self.pooled() || self.shared.loading.serving()) {
+            return Vec::new();
+        }
+        let mut keys = Vec::new();
+        let mut rules = Vec::new();
+        for (label, config) in deps {
+            let rule = match self.cx.peek(&NodeKey::Tgt(label.clone())) {
+                Some(value) => match value.as_ref() {
+                    NodeValue::Tgt(Ok(Target::Rule(rule) | Target::Output(rule, _)), _) => {
+                        Some(Arc::clone(rule))
+                    }
+                    _ => None,
+                },
+                None => match self.cx.peek(&NodeKey::Pkg(label.package_id())) {
+                    Some(value) => super::loading::pkg_of(&value)
+                        .ok()
+                        .and_then(|pkg| pkg.rule_of(label)),
+                    None => {
+                        keys.push(NodeKey::Tgt(label.clone()));
+                        None
+                    }
+                },
+            };
+            if let Some(rule) = rule {
+                rules.push((rule, *config));
+            }
+        }
+        let mut no_config: Vec<(ConfigId, bool)> = Vec::new();
+        for (_, config) in &rules {
+            if !no_config.iter().any(|(known, _)| known == config) {
+                no_config.push((*config, self.configuration(*config).native.no_config));
+            }
+        }
+        let platform_tree = self.platform_tree;
+        let hinted: Vec<NodeKey> = rules
+            .iter()
+            .map(|(rule, config)| {
+                let no_config = no_config
+                    .iter()
+                    .find(|(known, _)| known == config)
+                    .is_some_and(|(_, no_config)| *no_config);
+                let key = ConfiguredTargetKey::new(rule.label.clone(), *config);
+                let forced_exec = self.forced_exec(&key);
+                NodeKey::Ct1(edge_ct_key(
+                    no_config,
+                    rule,
+                    key,
+                    platform_tree,
+                    forced_exec,
+                ))
+            })
+            .collect();
+        keys.extend(hinted.iter().cloned());
+        self.cx.hint(&keys);
+        hinted
     }
 
     fn memo_use(&mut self, key: &NodeKey) {
@@ -849,62 +917,7 @@ impl Host for EvalHost<'_, '_> {
     }
 
     fn hint_edges(&mut self, deps: &[(Label, ConfigId)]) {
-        // On the pool, or in the sequential pass while the pool serves
-        // (its context schedules them; otherwise it ignores hints).
-        if deps.is_empty() || !(self.pooled() || self.shared.loading.serving()) {
-            return;
-        }
-        let mut keys = Vec::new();
-        let mut rules = Vec::new();
-        for (label, config) in deps {
-            let rule = match self.cx.peek(&NodeKey::Tgt(label.clone())) {
-                Some(value) => match value.as_ref() {
-                    NodeValue::Tgt(Ok(Target::Rule(rule) | Target::Output(rule, _)), _) => {
-                        Some(Arc::clone(rule))
-                    }
-                    _ => None,
-                },
-                None => match self.cx.peek(&NodeKey::Pkg(label.package_id())) {
-                    Some(value) => super::loading::pkg_of(&value)
-                        .ok()
-                        .and_then(|pkg| pkg.rule_of(label)),
-                    None => {
-                        keys.push(NodeKey::Tgt(label.clone()));
-                        None
-                    }
-                },
-            };
-            if let Some(rule) = rule {
-                rules.push((rule, *config));
-            }
-        }
-        let mut no_config: Vec<(ConfigId, bool)> = Vec::new();
-        for (_, config) in &rules {
-            if !no_config.iter().any(|(known, _)| known == config) {
-                no_config.push((*config, self.configuration(*config).native.no_config));
-            }
-        }
-        let platform_tree = self.platform_tree;
-        let hinted: Vec<NodeKey> = rules
-            .iter()
-            .map(|(rule, config)| {
-                let no_config = no_config
-                    .iter()
-                    .find(|(known, _)| known == config)
-                    .is_some_and(|(_, no_config)| *no_config);
-                let key = ConfiguredTargetKey::new(rule.label.clone(), *config);
-                let forced_exec = self.forced_exec(&key);
-                NodeKey::Ct1(edge_ct_key(
-                    no_config,
-                    rule,
-                    key,
-                    platform_tree,
-                    forced_exec,
-                ))
-            })
-            .collect();
-        keys.extend(hinted.iter().cloned());
-        self.cx.hint(&keys);
+        let hinted = self.hint_keys(deps);
         self.hinted.extend(hinted);
     }
 
@@ -1585,6 +1598,7 @@ pub(crate) fn body(
         NodeKey::RegToolchains(config) => {
             let mut host = EvalHost::new(shared, cx, None, false);
             host.fresh_chain = true;
+            host.registration_hints = registration_hints().then_some(*config);
             let result = host.compute_registered_toolchains(*config);
             Ok(NodeValue::RegToolchains(host.finish(result)?))
         }
@@ -1807,4 +1821,29 @@ impl super::super::super::RegistrationLoader for RegistrationHost<'_, '_, '_> {
     fn warn(&mut self, warning: String) {
         self.0.emit(Event::Warn(warning));
     }
+
+    /// A registered toolchain the expansion found: its analysis is
+    /// scheduled on the pool now (the RegToolchains body analyzes the
+    /// registered toolchains after the whole expansion, which demands
+    /// every pattern's repository one after another; ~/code's first ones,
+    /// the zig toolchains, pull the 15,185-file `@zig_config` package).
+    /// Not waited for: the body's own hint after the expansion is.
+    fn found(&mut self, labels: &[Label]) {
+        let Some(config) = self.0.registration_hints else {
+            return;
+        };
+        let deps: Vec<(Label, ConfigId)> =
+            labels.iter().map(|label| (label.clone(), config)).collect();
+        self.0.hint_keys(&deps);
+    }
+}
+
+/// `BAZEL_RS_EVAL_REGISTRATION_HINTS` (on; `0` off): registered toolchains
+/// hinted as the expansion finds them ([`RegistrationHost::found`]).
+fn registration_hints() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        // snapshot-unrecorded: a scheduling switch; the analysis is the same.
+        std::env::var_os("BAZEL_RS_EVAL_REGISTRATION_HINTS").is_none_or(|value| value != "0")
+    })
 }
