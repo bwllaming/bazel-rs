@@ -206,10 +206,13 @@ type Segment = Box<[OnceLock<NodeKey>]>;
 /// The key ↔ id interner: a sharded index (key → id, one mutex per shard,
 /// taken once per new key and per lookup) and an append-only arena (id →
 /// key: segmented, lock-free reads).
+/// One shard of the [`Interner`]'s index: each key with its hash and id.
+type InternShard = hashbrown::HashTable<(u64, NodeKey, NodeId)>;
+
 pub(crate) struct Interner {
     /// Each key with its hash (hashed once per use: the shard is picked by
     /// the same hash).
-    shards: Box<[Mutex<hashbrown::HashTable<(u64, NodeKey, NodeId)>>]>,
+    shards: Box<[Mutex<InternShard>]>,
     segments: Box<[OnceLock<Segment>]>,
     next: AtomicU32,
 }
@@ -234,7 +237,7 @@ pub(super) fn slot_of(id: u32) -> (usize, usize) {
 }
 
 impl Interner {
-    fn shard(&self, key: &NodeKey) -> (u64, &Mutex<hashbrown::HashTable<(u64, NodeKey, NodeId)>>) {
+    fn shard(&self, key: &NodeKey) -> (u64, &Mutex<InternShard>) {
         use std::hash::BuildHasher;
         let hash = crate::fast_hash::FxBuildHasher::default().hash_one(key);
         (hash, &self.shards[crate::fast_hash::shard_of(hash, SHARDS)])
