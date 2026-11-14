@@ -1062,6 +1062,27 @@ impl ConcurrentArtifactIndex {
         stamp: u32,
         provisional: bool,
     ) {
+        // An entry visible to `reader` already, canonical: kept as it is
+        // (the write path below does only the check) — under the read lock
+        // (a dependency view's hit registers each of its artifacts again on
+        // every edge: the write lock showed on the walk workers; a merge's
+        // registrations are mostly new, locked once).
+        if provisional {
+            let shard = self.shard(hash).read().unwrap_or_else(|e| e.into_inner());
+            if let Some(entry) = shard.find(hash, |entry| entry.file == *file.borrow())
+                && !entry.provisional
+                && entry.stamp <= reader
+            {
+                if !entry
+                    .superseded
+                    .as_deref()
+                    .is_some_and(|stale| same_artifact(stale, artifact.borrow()))
+                {
+                    check_reregistered(&entry.file, &entry.artifact, artifact.borrow());
+                }
+                return;
+            }
+        }
         let mut shard = self.shard(hash).write().unwrap_or_else(|e| e.into_inner());
         match shard.entry(
             hash,
