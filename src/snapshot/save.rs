@@ -319,6 +319,19 @@ impl Save {
             .filter(|_| seed.is_none() && self.family.is_some());
         self.derivable = derive.is_some();
         let checked_at = started.elapsed();
+        // The recording is no input of execution, nor are the INDEX and
+        // DERIVE sections: taken, selected and encoded on threads of their
+        // own from here on, beside the plan's encoding below and the
+        // actions (the writer joins them).
+        let sections = Sections::start(
+            recorder,
+            seed,
+            records,
+            tables,
+            workspace_status,
+            index,
+            derive,
+        );
         // The plan's parts are compressed as they are encoded, on the
         // encoding threads: a plan of GBs is never held uncompressed while
         // the planned request and the analysis are still in memory (MEM4).
@@ -344,74 +357,28 @@ impl Save {
         // report sees a bazel-rs upgrade (every key moves with the binary).
         self.saved_counts = format!(
             "actions:{plan_nodes},replays:{},binary:{}",
-            records.len(),
+            sections.replay_records,
             observed_fs::hex(&self.key.binary[..8])
         );
-        // The recording is no input of execution: taken, selected and
-        // encoded on the writer thread while the actions run.
         Ok(store::write_with(&self.cache, &self.key, move || {
             let started = Instant::now();
-            let recording = recorder.take();
-            let policy = Policy::current();
-            // An incremental save merges two recordings the policy selected
-            // already (selecting again would drop what lies below the old
-            // trees' links: their selected entries keep no link).
-            let merged = seed.is_some();
-            let (recording, records, tables, workspace_status) = match seed {
-                None => (recording, records, tables, workspace_status),
-                Some(seed) => {
-                    let seed = *seed;
-                    let merged = crate::snapshot::incremental::merge_recordings(
-                        policy.select_owned(recording),
-                        seed.inputs.recording,
-                    );
-                    let records =
-                        crate::snapshot::incremental::merge_replay(records, seed.inputs.replay);
-                    let tables =
-                        crate::snapshot::incremental::merge_tables(tables, seed.inputs.tables);
-                    (
-                        merged,
-                        records,
-                        tables,
-                        workspace_status || seed.inputs.workspace_status,
-                    )
-                }
-            };
-            let window_us = recording
-                .window
-                .map_or(0, |window| window.as_micros() as u64);
-            let observations = recording.observations.len();
-            let integrity: usize = recording
-                .repositories
-                .iter()
-                .map(|repository| repository.entries.len())
-                .sum();
-            let selected = if merged {
-                recording
-            } else {
-                policy.select_owned(recording)
-            };
-            let inputs =
-                format::encode_inputs(&selected, &records, tables.as_ref(), workspace_status);
-            let stats = Stats {
-                observations: observations as u64,
-                validated: selected.observations.len() as u64,
-                env: selected.env.len() as u64,
-                trees: selected.repositories.len() as u64,
-                integrity_entries: integrity as u64,
-                replay_records: records.len() as u64,
-                window_stderr,
-                window_us,
-                plan_nodes,
-                plan_bytes: plan_len as u64,
-                inputs_bytes: inputs.len() as u64,
-                encode_us: started.elapsed().as_micros() as u64,
-                full_validation: policy == Policy::Full,
-            };
-            let inputs_ms = ms(started.elapsed());
             // P3: the plan is stored compressed (MEM4: its parts were
             // compressed as they were encoded, before execution).
             let stored = format::assemble_compressed(plan);
+            let assembled_ms = ms(started.elapsed());
+            let Encoded {
+                inputs,
+                mut stats,
+                index,
+                derive,
+                inputs_ms,
+                index_ms,
+                derive_ms,
+            } = sections.join()?;
+            stats.window_stderr = window_stderr;
+            stats.plan_nodes = plan_nodes;
+            stats.plan_bytes = plan_len as u64;
+            let joined_ms = ms(started.elapsed());
             let note = format!(
                 "{} observations validated of {}, {} trees, {} replayed local repositories; INPUTS {} bytes encoded in {:.1} ms on the writer; PLAN encoded and compressed to {} bytes in {:.1} ms",
                 stats.validated,
@@ -423,22 +390,22 @@ impl Save {
                 stored.len(),
                 compressed_ms,
             );
+            if crate::diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING")) {
+                crate::snapshot::diag::line_fmt(format_args!(
+                    "PERF-SNAPSHOT save inputs_ms={inputs_ms:.3} index_ms={index_ms:.3} derive_ms={derive_ms:.3} plan_ms={compressed_ms:.3} assemble_ms={assembled_ms:.3} writer_wait_ms={:.3}",
+                    joined_ms - assembled_ms
+                ));
+            }
             let mut sections = vec![
                 (Section::Inputs, inputs),
                 (Section::Events, events),
                 (Section::Plan, stored),
                 (Section::Stats, format::encode_stats(&stats)),
             ];
-            if let Some(index) = index
-                .as_ref()
-                .and_then(|index| crate::snapshot::incremental::encode_index(index).ok())
-            {
+            if let Some(index) = index {
                 sections.push((Section::Index, index));
             }
-            if let Some(derive) = derive
-                .as_ref()
-                .and_then(|derive| crate::snapshot::derive::encode(derive).ok())
-            {
+            if let Some(derive) = derive {
                 sections.push((Section::Derive, derive));
             }
             Ok((sections, note))
@@ -508,6 +475,152 @@ impl Drop for Save {
         if self.explain {
             observed_fs::diag(&format!("not saved: {reason}"));
         }
+    }
+}
+
+/// The sections a save encodes besides the plan and the window
+/// ([`Sections::start`]): INPUTS (with the STATS it counts), INDEX and
+/// DERIVE.
+struct Encoded {
+    inputs: Vec<u8>,
+    stats: Stats,
+    index: Option<Vec<u8>>,
+    derive: Option<Vec<u8>>,
+    inputs_ms: f64,
+    index_ms: f64,
+    derive_ms: f64,
+}
+
+/// The INPUTS section, its STATS counts and the encoding's milliseconds.
+type EncodedInputs = (Vec<u8>, Stats, f64);
+
+/// The threads encoding [`Encoded`]'s parts while the plan is encoded
+/// and the actions run.
+struct Sections {
+    replay_records: usize,
+    inputs: std::thread::JoinHandle<Result<EncodedInputs, String>>,
+    index: Option<std::thread::JoinHandle<(Option<Vec<u8>>, f64)>>,
+    derive: Option<std::thread::JoinHandle<(Option<Vec<u8>>, f64)>>,
+}
+
+impl Sections {
+    fn start(
+        recorder: &'static observed_fs::Recorder,
+        seed: Option<Box<Seed>>,
+        records: Vec<crate::snapshot::replay::ReplayRecord>,
+        tables: Option<crate::snapshot::replay::PinnedTables>,
+        workspace_status: bool,
+        index: Option<crate::snapshot::incremental::Index>,
+        derive: Option<crate::snapshot::derive::Coverage>,
+    ) -> Self {
+        let replay_records = records.len();
+        let inputs = std::thread::spawn(move || {
+            let started = Instant::now();
+            let recording = recorder.take();
+            let policy = Policy::current();
+            // An incremental save merges two recordings the policy selected
+            // already (selecting again would drop what lies below the old
+            // trees' links: their selected entries keep no link).
+            let merged = seed.is_some();
+            let (recording, records, tables, workspace_status) = match seed {
+                None => (recording, records, tables, workspace_status),
+                Some(seed) => {
+                    let seed = *seed;
+                    let merged = crate::snapshot::incremental::merge_recordings(
+                        policy.select_owned(recording),
+                        seed.inputs.recording,
+                    );
+                    let records =
+                        crate::snapshot::incremental::merge_replay(records, seed.inputs.replay);
+                    let tables =
+                        crate::snapshot::incremental::merge_tables(tables, seed.inputs.tables);
+                    (
+                        merged,
+                        records,
+                        tables,
+                        workspace_status || seed.inputs.workspace_status,
+                    )
+                }
+            };
+            let window_us = recording
+                .window
+                .map_or(0, |window| window.as_micros() as u64);
+            let observations = recording.observations.len();
+            let integrity: usize = recording
+                .repositories
+                .iter()
+                .map(|repository| repository.entries.len())
+                .sum();
+            let selected = if merged {
+                recording
+            } else {
+                policy.select_owned(recording)
+            };
+            let inputs =
+                format::encode_inputs(&selected, &records, tables.as_ref(), workspace_status);
+            let stats = Stats {
+                observations: observations as u64,
+                validated: selected.observations.len() as u64,
+                env: selected.env.len() as u64,
+                trees: selected.repositories.len() as u64,
+                integrity_entries: integrity as u64,
+                replay_records: records.len() as u64,
+                window_stderr: 0,
+                window_us,
+                plan_nodes: 0,
+                plan_bytes: 0,
+                inputs_bytes: inputs.len() as u64,
+                encode_us: started.elapsed().as_micros() as u64,
+                full_validation: policy == Policy::Full,
+            };
+            Ok((inputs, stats, started.elapsed().as_secs_f64() * 1000.0))
+        });
+        let timed = |encode: Box<dyn FnOnce() -> Option<Vec<u8>> + Send>| {
+            std::thread::spawn(move || {
+                let started = Instant::now();
+                let encoded = encode();
+                (encoded, started.elapsed().as_secs_f64() * 1000.0)
+            })
+        };
+        let index = index.map(|index| {
+            timed(Box::new(move || {
+                crate::snapshot::incremental::encode_index(&index).ok()
+            }))
+        });
+        let derive = derive.map(|derive| {
+            timed(Box::new(move || {
+                crate::snapshot::derive::encode(&derive).ok()
+            }))
+        });
+        Self {
+            replay_records,
+            inputs,
+            index,
+            derive,
+        }
+    }
+
+    fn join(self) -> Result<Encoded, String> {
+        let panicked =
+            |what: &str| format!("internal error: the snapshot's {what} encoding panicked");
+        let (inputs, stats, inputs_ms) = self.inputs.join().map_err(|_| panicked("INPUTS"))??;
+        let (index, index_ms) = match self.index {
+            Some(handle) => handle.join().map_err(|_| panicked("INDEX"))?,
+            None => (None, 0.0),
+        };
+        let (derive, derive_ms) = match self.derive {
+            Some(handle) => handle.join().map_err(|_| panicked("DERIVE"))?,
+            None => (None, 0.0),
+        };
+        Ok(Encoded {
+            inputs,
+            stats,
+            index,
+            derive,
+            inputs_ms,
+            index_ms,
+            derive_ms,
+        })
     }
 }
 

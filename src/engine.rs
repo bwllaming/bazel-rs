@@ -6715,8 +6715,13 @@ impl Engine {
             let reads = |node: &crate::scheduler::PlannedAction| {
                 (!checked && !node.action.extra.source_directories.is_empty())
                     || node.inputs().any(|(_, exec)| {
-                        exec == Path::new("bazel-out/stable-status.txt")
-                            || exec == Path::new("bazel-out/volatile-status.txt")
+                        // (A path equal to a status file by components
+                        // holds its name's bytes: most inputs are ruled
+                        // out without parsing their components.)
+                        memchr::memmem::find(exec.as_os_str().as_encoded_bytes(), b"-status.txt")
+                            .is_some()
+                            && (exec == Path::new("bazel-out/stable-status.txt")
+                                || exec == Path::new("bazel-out/volatile-status.txt"))
                     })
             };
             // Whether a node reads one, or depends on a node that does
