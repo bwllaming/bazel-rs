@@ -647,6 +647,7 @@ impl Engine {
             identities,
             output_groups,
             memos,
+            aspects,
             ..
         } = match Arc::try_unwrap(frozen) {
             Ok(frozen) => frozen,
@@ -659,6 +660,9 @@ impl Engine {
                 return;
             }
         };
+        // The walk's aspect table (its applications, single-flight): freed
+        // on the planning dropper thread (no engine table in it).
+        super::super::drop_elsewhere(aspects);
         state.views = views;
         state.target_identities = identities;
         state.native_output_groups = output_groups;

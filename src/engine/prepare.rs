@@ -898,36 +898,80 @@ impl Engine {
             output_groups,
         } = memos;
         let tracking = self.tracking();
-        let views = views.into_filled();
-        state.views.reserve(views.len());
-        for (key, fill) in views {
-            // Moved out when the memo holds the last reference (the walk's
-            // jobs are done): no copy and no drop of the original.
-            let ViewFill {
-                view,
-                artifacts,
-                accesses,
-            } = Arc::try_unwrap(fill).unwrap_or_else(|fill| (*fill).clone());
-            if ahead && let Some(artifacts) = artifacts {
-                self.view_artifacts.insert(key.clone(), artifacts);
+        let identities_into = |target_identities: &mut TargetIdentities| {
+            let identities = identities.into_filled();
+            target_identities.reserve(identities.len());
+            for (key, identity) in identities {
+                target_identities.entry(key).or_insert_with(|| {
+                    Arc::try_unwrap(identity).unwrap_or_else(|identity| (*identity).clone())
+                });
             }
-            if tracking && let Some(accesses) = accesses {
-                self.view_accesses.insert(key.clone(), accesses);
+        };
+        let output_groups_into = |native_output_groups: &mut BTreeMap<
+            ConfiguredTargetKey,
+            starlark::values::OwnedFrozenValue,
+        >| {
+            for (key, value) in output_groups.into_filled() {
+                native_output_groups.entry(key).or_insert_with(|| {
+                    Arc::try_unwrap(value).unwrap_or_else(|value| (*value).clone())
+                });
             }
-            state.views.insert(key, view);
-        }
-        let identities = identities.into_filled();
-        state.target_identities.reserve(identities.len());
-        for (key, identity) in identities {
-            state.target_identities.entry(key).or_insert_with(|| {
-                Arc::try_unwrap(identity).unwrap_or_else(|identity| (*identity).clone())
+        };
+        let ActionPlanning {
+            views: state_views,
+            target_identities,
+            native_output_groups,
+            ..
+        } = state;
+        let views_into = |engine: &mut Engine| {
+            let views = views.into_filled();
+            state_views.reserve(views.len());
+            // A walk's end: the views' artifacts are not kept (no later
+            // registration): freed on the planning dropper thread.
+            let mut unkept = Vec::new();
+            for (key, fill) in views {
+                // Moved out when the memo holds the last reference (the walk's
+                // jobs are done): no copy and no drop of the original.
+                let ViewFill {
+                    view,
+                    artifacts,
+                    accesses,
+                } = Arc::try_unwrap(fill).unwrap_or_else(|fill| (*fill).clone());
+                if let Some(artifacts) = artifacts {
+                    if ahead {
+                        engine.view_artifacts.insert(key.clone(), artifacts);
+                    } else {
+                        unkept.push(artifacts);
+                    }
+                }
+                if tracking && let Some(accesses) = accesses {
+                    engine.view_accesses.insert(key.clone(), accesses);
+                }
+                state_views.insert(key, view);
+            }
+            if !unkept.is_empty() {
+                super::drop_elsewhere(unkept);
+            }
+        };
+        if ahead {
+            // A prepare batch's fills (few): in place.
+            views_into(self);
+            identities_into(target_identities);
+            output_groups_into(native_output_groups);
+        } else {
+            // A frozen walk's thaw (every fill of the walk, on the critical
+            // path): the three tables at once (disjoint maps; each keyed
+            // insert is as before).
+            std::thread::scope(|scope| {
+                let identities = scope.spawn(|| identities_into(target_identities));
+                let output_groups = scope.spawn(|| output_groups_into(native_output_groups));
+                views_into(self);
+                for joined in [identities.join(), output_groups.join()] {
+                    if let Err(panic) = joined {
+                        std::panic::resume_unwind(panic);
+                    }
+                }
             });
-        }
-        for (key, value) in output_groups.into_filled() {
-            state
-                .native_output_groups
-                .entry(key)
-                .or_insert_with(|| Arc::try_unwrap(value).unwrap_or_else(|value| (*value).clone()));
         }
     }
 }
