@@ -1088,8 +1088,11 @@ fn create_cc_compile_action<'v>(
     // default) every action stages all_files; include scanning (which would
     // use compiler_files_without_includes) just failed explicitly above.
     let mut inputs = files_arg(7, "additional_compilation_inputs")?;
+    // (Membership by a set beside the ordered list: a toolchain's
+    // all_files of thousands scanned the list per file.)
+    let mut listed: crate::fast_hash::FxHashSet<File> = inputs.iter().cloned().collect();
     let mut push = |file: File| {
-        if !inputs.contains(&file) {
+        if listed.insert(file.clone()) {
             inputs.push(file);
         }
     };

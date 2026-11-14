@@ -3283,9 +3283,17 @@ fn analyze_inner(
     // StarlarkProviderValidationUtil.validateArtifacts
     // (analysis/StarlarkProviderValidationUtil.java:25-46): every orphan by its
     // root-relative path (Bazel iterates a HashMap; here declaration order).
+    // (The actions' outputs as a set: a scan of every action per declared
+    // file was quadratic in a target declaring thousands.)
+    let generated: crate::fast_hash::FxHashSet<&crate::starlark_types::File> =
+        if declared.is_empty() {
+            Default::default()
+        } else {
+            actions.iter().flat_map(|action| &action.outputs).collect()
+        };
     let orphans = declared
         .iter()
-        .filter(|file| !actions.iter().any(|action| action.outputs.contains(file)))
+        .filter(|file| !generated.contains(file))
         .map(|file| crate::runfiles::root_relative(file).to_owned())
         .collect::<Vec<_>>();
     if !orphans.is_empty() {

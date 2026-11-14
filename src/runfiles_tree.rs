@@ -130,9 +130,26 @@ pub type MappingLookup<'a, 'm> = &'a dyn Fn(&str) -> Result<&'m BTreeMap<String,
 /// The repository name a runfiles artifact's owner belongs to (`""` is the
 /// main repository; Artifact.getOwner().getRepository().getName()).
 fn owner_repository(owner: &str) -> Option<String> {
-    Label::parse_canonical(owner)
+    // Memoized per process (a pure function of the text): the planning
+    // tail's runfiles of thousands of test targets name the same owners
+    // (~/code: label parsing ~6% of its workers' time).
+    type Owners = std::sync::Mutex<crate::fast_hash::FxHashMap<Box<str>, Option<String>>>;
+    static OWNERS: std::sync::LazyLock<Box<[Owners]>> =
+        std::sync::LazyLock::new(|| (0..32).map(|_| Owners::default()).collect());
+    use std::hash::BuildHasher;
+    let hash = crate::fast_hash::FxBuildHasher::default().hash_one(owner);
+    let shard = &OWNERS[crate::fast_hash::shard_of(hash, OWNERS.len())];
+    if let Some(known) = shard.lock().unwrap_or_else(|e| e.into_inner()).get(owner) {
+        return known.clone();
+    }
+    let repository = Label::parse_canonical(owner)
         .ok()
-        .map(|label| label.repository)
+        .map(|label| label.repository);
+    shard
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(owner.into(), repository.clone());
+    repository
 }
 
 /// The segment-0 name a canonical repository has in runfiles paths.
