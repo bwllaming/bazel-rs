@@ -19,8 +19,9 @@ with `buildKeepingLast`, in this order:
    Module.java:49-68, BazelDepGraphValue.java:130-159);
 2. every repository the same extension generated, under its internal name
    (so a generated repo sees its siblings and itself);
-3. `override_repo`/`inject_repo` overrides (unsupported in native MODULE
-   evaluation: `override_repo() is unsupported`).
+3. `override_repo`/`inject_repo` overrides (unsupported in the root module's
+   native MODULE evaluation: `override_repo() is unsupported`; ignored like
+   Bazel in non-root modules and under `--ignore_dev_dependency`).
 
 A later entry wins: a generated name equal to an apparent name of the
 hosting module (e.g. an extension generating `platforms`) refers to the
@@ -135,7 +136,9 @@ key.
   only (docs/RUNFILES.md, N23f); no mapping content is written.
 - `query` prints canonical labels where Bazel prints the main-repository
   display form (pre-existing, docs/NATIVE_BUILD_RULES.md).
-- `override_repo`/`inject_repo`, isolated extension usages.
+- `override_repo`/`inject_repo` in the root module (non-root calls return
+  early as in ModuleFileGlobals.java:723-728/:783-788), isolated extension
+  usages.
 
 ## Paired receipt
 

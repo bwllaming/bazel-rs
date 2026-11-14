@@ -261,7 +261,8 @@ pub(crate) fn usages_value(group: &OrdinaryGroup) -> Result<Json, String> {
         ),
         ("abridgedModules".into(), Json::Array(modules)),
         ("repoMappings".into(), Json::Object(Vec::new())),
-        // Native MODULE evaluation rejects override_repo/inject_repo.
+        // Native MODULE evaluation rejects the root module's override_repo/inject_repo
+        // and ignores them elsewhere, as Bazel does.
         ("repoOverrides".into(), Json::Object(Vec::new())),
     ]))
 }
