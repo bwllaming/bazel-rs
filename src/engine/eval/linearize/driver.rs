@@ -809,12 +809,20 @@ impl Coord<'_> {
                 )
                 .flat_map(|point| point.chain.iter().copied())
                 .collect();
-            self.store.keys.retain(|node, _| chains.contains(node));
-            self.store.keys.shrink_to_fit();
+            // (The rest dropped on the planning dropper thread.)
+            let keys = std::mem::take(&mut self.store.keys);
+            self.store.keys = chains
+                .iter()
+                .filter_map(|node| keys.get(node).map(|key| (*node, key.clone())))
+                .collect();
+            super::super::super::drop_elsewhere(keys);
             // The memo values published already (the engine holds them;
             // those after them are published at the end).
-            self.store.published.drain(..lin.published_memos);
-            self.store.published.shrink_to_fit();
+            let published = self.store.published.split_off(lin.published_memos);
+            super::super::super::drop_elsewhere(std::mem::replace(
+                &mut self.store.published,
+                published,
+            ));
             lin.published_memos = 0;
             publish_sources(self.engine, shared, &mut lin);
             *shared
@@ -923,12 +931,21 @@ impl Coord<'_> {
             {
                 due = std::mem::take(&mut lin.pending);
             }
-            while lin
+            // The leading ops before `end`, moved as a whole (the rest
+            // stays pending).
+            let due_len = lin
                 .pending
-                .front()
-                .is_some_and(|(position, _)| *position < end)
-            {
-                due.extend(lin.pending.pop_front());
+                .iter()
+                .position(|(position, _)| *position >= end)
+                .unwrap_or(lin.pending.len());
+            if due_len > 0 {
+                let rest = lin.pending.split_off(due_len);
+                let leading = std::mem::replace(&mut lin.pending, rest);
+                if due.is_empty() {
+                    due = leading;
+                } else {
+                    due.extend(leading);
+                }
             }
             let track = lin.track.split_before(end);
             let replay = std::mem::replace(&mut lin.replay, TapeReplay::new(0));
