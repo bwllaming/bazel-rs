@@ -30,6 +30,7 @@
 //!   configured target is an edge, not only the first.
 
 use super::*;
+use crate::fast_hash::{FxHashMap, FxHashSet};
 use crate::snapshot::incremental::{Fingerprint, Index, IndexKey, IndexPackage};
 use std::cell::Cell;
 
@@ -126,14 +127,14 @@ type KeyIdentity = (Label, Option<ConfigId>, bool);
 /// one has is kept apart.
 #[derive(Clone, Default)]
 struct KeyIndex {
-    by_hash: HashMap<u64, u32>,
-    collided: HashMap<KeyIdentity, u32>,
+    by_hash: FxHashMap<u64, u32>,
+    collided: FxHashMap<KeyIdentity, u32>,
 }
 
 impl KeyIndex {
     fn hash(identity: &KeyIdentity) -> u64 {
         use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let mut hasher = crate::fast_hash::FxHasher::default();
         identity.hash(&mut hasher);
         hasher.finish()
     }
@@ -173,13 +174,13 @@ pub(super) struct Tracker {
     /// target planned while one runs, owns its lookups).
     frames: Vec<(u32, u32)>,
     edges: Vec<(u32, u32)>,
-    edge_set: HashSet<(u32, u32)>,
-    accesses: HashSet<(u32, u32)>,
+    edge_set: FxHashSet<(u32, u32)>,
+    accesses: FxHashSet<(u32, u32)>,
     /// (key, package, target name): the main-repository targets each
     /// key's analysis looked up.
-    label_accesses: HashSet<(u32, u32, String)>,
+    label_accesses: FxHashSet<(u32, u32, String)>,
     packages: Vec<PackageRecord>,
-    package_ids: HashMap<PackageId, u32>,
+    package_ids: FxHashMap<PackageId, u32>,
     shared_keys: BTreeSet<u32>,
     /// Keys whose analysis printed (`print()` in an implementation, an
     /// aspect or a transition while the key's frame was innermost).
@@ -189,7 +190,7 @@ pub(super) struct Tracker {
     roots: Vec<(u32, u32)>,
     requested: HashSet<Label>,
     /// (key, plan length when its analysis began, its plan position).
-    planned: HashMap<u32, (u32, u32)>,
+    planned: FxHashMap<u32, (u32, u32)>,
     /// Inside `analyze_requested`'s analysis of the requested label at
     /// this position (its first key is a root, not a shared one).
     root_analysis: Option<u32>,
@@ -213,7 +214,7 @@ pub(super) struct Tracker {
     suite_packages: BTreeSet<u32>,
     /// Each planned key's phase-2 time (its implementation and actions),
     /// microseconds.
-    costs: HashMap<u32, u32>,
+    costs: FxHashMap<u32, u32>,
     /// While the coordinator prepares a target ahead of its turn (P3,
     /// docs/PARALLEL_ANALYSIS.md): what the tracker would record, held
     /// with the thread-local context of each event and replayed at the
@@ -229,7 +230,7 @@ impl Tracker {
     /// more (the end of phase 2; memory): a key reached later gets a new
     /// id, an edge may repeat.
     pub(super) fn compact(&mut self) {
-        self.edge_set = HashSet::new();
+        self.edge_set = FxHashSet::default();
         self.compacted = true;
     }
 
@@ -506,17 +507,17 @@ pub(super) enum TrackOp {
 #[derive(Default)]
 struct TrackTables {
     keys: Vec<KeyIdentity>,
-    key_ids: HashMap<KeyIdentity, u32>,
+    key_ids: FxHashMap<KeyIdentity, u32>,
     labels: Vec<Label>,
-    label_ids: HashMap<Label, u32>,
+    label_ids: FxHashMap<Label, u32>,
     packages: Vec<PackageId>,
-    package_ids: HashMap<PackageId, u32>,
+    package_ids: FxHashMap<PackageId, u32>,
     scopes: Vec<&'static str>,
 }
 
 fn intern<T: Clone + Eq + std::hash::Hash>(
     values: &mut Vec<T>,
-    ids: &mut HashMap<T, u32>,
+    ids: &mut FxHashMap<T, u32>,
     value: &T,
 ) -> u32 {
     if let Some(id) = ids.get(value) {
@@ -543,9 +544,9 @@ impl TapeReplay {
     /// Drop the lookup side of the interned names (memory: the tape is
     /// through; a name interned later is added again, unshared).
     pub(super) fn forget_interned_ids(&mut self) {
-        self.tables.key_ids = HashMap::new();
-        self.tables.label_ids = HashMap::new();
-        self.tables.package_ids = HashMap::new();
+        self.tables.key_ids = FxHashMap::default();
+        self.tables.label_ids = FxHashMap::default();
+        self.tables.package_ids = FxHashMap::default();
     }
 
     /// The interned names' counts: keys, labels, packages (diagnostics).
