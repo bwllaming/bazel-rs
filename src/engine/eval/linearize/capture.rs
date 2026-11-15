@@ -77,7 +77,7 @@ pub(crate) fn scope_exit() {
 /// The engine looks up `label` (`Engine::target`).
 pub(crate) fn access(label: &Label) {
     if TRACKING.with(Cell::get) {
-        push(|| Event::Access(label.clone()));
+        push(|| Event::Access(label.clone().into()));
     }
 }
 

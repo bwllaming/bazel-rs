@@ -54,7 +54,7 @@ use super::super::nodes::eval_host::edge_ct_key;
 use super::super::nodes::loading::PkgValue;
 use super::super::scheduler::{EvalConfig, Evaluator, RepoLane};
 use super::super::shared::EvalShared;
-use super::super::transcript::{Event, SegmentKind, TapeOp, Transcript};
+use super::super::transcript::{Accessed, Event, SegmentKind, TapeOp, Transcript};
 use super::super::value::{Ct1Ok, Ct1Value, NodeValue};
 use super::cycles::Pass1Cycles;
 use super::pass1::{
@@ -152,6 +152,10 @@ pub(in crate::engine) enum Published {
 #[derive(Default)]
 pub(crate) struct Store {
     pub(crate) keys: DenseMap<NodeKey>,
+    /// The graph's interner while the graph lives (snapshot-miss2: the
+    /// tracker's `Access` of a `Tgt` node resolves its label here; after
+    /// the graph's drop, through `keys`).
+    pub(crate) interner: Option<Arc<super::super::key::Interner>>,
     pub(crate) transcripts: DenseMap<Transcript>,
     pub(crate) memo_ok: DenseMap<bool>,
     pub(crate) segments: Vec<(SegmentKind, Vec<Event>)>,
@@ -204,6 +208,15 @@ pub(crate) struct Store {
 }
 
 impl Store {
+    /// The key of `node`: the graph's (while it lives), else the one kept
+    /// for its attempt (every attempt began by then).
+    pub(crate) fn key_of(&self, node: NodeId) -> Option<&NodeKey> {
+        match &self.interner {
+            Some(interner) => Some(interner.key(node)),
+            None => self.keys.get(&node),
+        }
+    }
+
     /// Keep what a lookup in `package` observed for the tape's first use of
     /// the package (now if it was used already).
     pub(crate) fn defer_package_observations(
@@ -375,7 +388,7 @@ impl Linearizer {
     fn track_access(&mut self, label: Label) {
         if let Some(track) = self
             .replay
-            .compact(&TapeOp::Effect(Event::Access(label)), None)
+            .compact(&TapeOp::Effect(Event::Access(label.into())), |_| None)
         {
             self.track.push(self.position as u32, track);
         }
@@ -561,6 +574,14 @@ impl Coord<'_> {
                             }
                             _ => writeln!(file, "Reach {node:?} ? enter={enter}"),
                         },
+                        TapeOp::Effect(Event::Access(Accessed::Node(node))) => {
+                            match self.store.key_of(*node) {
+                                Some(NodeKey::Tgt(label)) => {
+                                    writeln!(file, "Effect(Access({label:?}))")
+                                }
+                                _ => writeln!(file, "Effect(Access({node:?}))"),
+                            }
+                        }
                         op => writeln!(file, "{op:?}"),
                     };
                 }
@@ -577,16 +598,7 @@ impl Coord<'_> {
             // it: after the phase 2 of the flushes before it (S3: kept by
             // position while a deferred flush's walk is pending).
             if lin.tracker.is_some()
-                && let Some(track) = lin.replay.compact(
-                    &op,
-                    match &op {
-                        TapeOp::Reach { node, .. } => match self.store.keys.get(node) {
-                            Some(NodeKey::Ct1(ct)) => Some(&ct.key),
-                            _ => None,
-                        },
-                        _ => None,
-                    },
-                )
+                && let Some(track) = lin.replay.compact(&op, |node| self.store.key_of(node))
             {
                 if lin.track.is_empty() && lin.segments.is_empty() {
                     if let Some(tracker) = lin.tracker.as_deref_mut() {
@@ -2195,6 +2207,7 @@ impl Engine {
                     shared.options.keep_going,
                 ),
             );
+            bodies.coord().store.interner = Some(Arc::clone(evaluator.graph().interner()));
             // S2: with more than one thread, the pool evaluates what the
             // requests need first (attempts only the sequential pass can
             // run park); the walk's order then drives the inline pass over
@@ -2442,6 +2455,7 @@ impl Engine {
             // (memory: the walks' peak).
             // (On the planning dropper thread, then the purge: the walks
             // do not wait for them.)
+            bodies.coord().store.interner = None;
             super::super::super::drop_elsewhere(evaluator.into_graph());
             for slot in &bodies.scratch {
                 super::super::super::drop_elsewhere(
@@ -3184,7 +3198,8 @@ fn drive(
             let mut coord = bodies.coord();
             coord.drain();
             if coord.tracking {
-                coord.push_event(Event::Access(label.clone()));
+                let id = evaluator.graph().intern(&NodeKey::Tgt(label.clone()));
+                coord.push_event(Event::Access(Accessed::Node(id)));
             }
             let package = label.package_id();
             if !shared.loading.preloaded.contains_key(&package) {

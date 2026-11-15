@@ -31,7 +31,7 @@ use super::super::key::{CtKey, NodeKey, Observes};
 use super::super::linearize::chains;
 use super::super::linearize::driver::Published;
 use super::super::shared::EvalShared;
-use super::super::transcript::{CqueryEdge, Event, ToolchainImpl, Transcript};
+use super::super::transcript::{Accessed, CqueryEdge, Event, ToolchainImpl, Transcript};
 use super::super::value::{Ct1Ok, Ct1Value, NodeValue, TransitionValue};
 use super::bodies::Phase1Cx;
 use super::host::Host;
@@ -560,11 +560,12 @@ impl Host for EvalHost<'_, '_> {
     }
 
     fn target(&mut self, label: &Label) -> Result<Target, String> {
+        let key = NodeKey::Tgt(label.clone());
         if self.cx.flags().tracking {
-            self.emit(Event::Access(label.clone()));
+            let id = self.cx.id_of(&key);
+            self.emit(Event::Access(Accessed::Node(id)));
         }
         self.use_package(&label.package_id());
-        let key = NodeKey::Tgt(label.clone());
         match self.need(key.clone()) {
             Ok(value) => match value.as_ref() {
                 value @ NodeValue::Tgt(..) => value.tgt(),

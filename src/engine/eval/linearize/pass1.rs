@@ -1452,7 +1452,7 @@ pub(crate) mod tests {
     #[test]
     fn first_visit_descends_and_later_reaches_are_memo_hits() {
         let mut f = Fixture::default();
-        let c = f.body("c", vec![Event::Access(ctk("c").label)]);
+        let c = f.body("c", vec![Event::Access(ctk("c").label.into())]);
         let b = f.body("b", vec![Event::Reach(c)]);
         let a = f.body("a", vec![Event::Reach(b), Event::Reach(c)]);
         let out = run(&f, &root(vec![Event::Reach(a)]), Options::default()).unwrap();
@@ -1725,7 +1725,10 @@ pub(crate) mod tests {
         let mut f = Fixture::default();
         let c = f.failing(
             "c",
-            vec![Event::Access(ctk("c").label), Event::Warn("w".into())],
+            vec![
+                Event::Access(ctk("c").label.into()),
+                Event::Warn("w".into()),
+            ],
         );
         let a = f.body("a", vec![Event::Reach(c)]);
         let b = f.body("b", vec![Event::Reach(c)]);
@@ -2184,7 +2187,10 @@ pub(crate) mod tests {
                     trimmed_root: None,
                 },
                 transcript: Transcript {
-                    events: vec![Event::Access(ctk("a").label), Event::Reach(nodes[root])],
+                    events: vec![
+                        Event::Access(ctk("a").label.into()),
+                        Event::Reach(nodes[root]),
+                    ],
                 },
             });
         }

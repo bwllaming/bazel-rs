@@ -43,7 +43,7 @@ use super::super::super::{
 use super::super::cx::Missing;
 use super::super::key::NodeKey;
 use super::super::shared::EvalShared;
-use super::super::transcript::Event;
+use super::super::transcript::{Accessed, Event};
 use super::super::value::NodeValue;
 use super::bodies::Phase1Cx;
 
@@ -805,15 +805,17 @@ pub(crate) fn target_lookup(
     cx: &mut dyn Phase1Cx<'_>,
     label: &Label,
 ) -> Result<Result<Target, String>, Missing> {
+    let key = NodeKey::Tgt(label.clone());
     if cx.flags().tracking {
-        cx.emit(Event::Access(label.clone()));
+        let id = cx.id_of(&key);
+        cx.emit(Event::Access(Accessed::Node(id)));
     }
     let package = label.package_id();
     if !shared.loading.preloaded.contains_key(&package) {
         let id = cx.id_of(&NodeKey::Pkg(package));
         cx.emit(Event::MemoUse(id));
     }
-    let value = cx.need_one(NodeKey::Tgt(label.clone()))?;
+    let value = cx.need_one(key)?;
     Ok(match value.as_ref() {
         value @ NodeValue::Tgt(..) => value.tgt(),
         _ => Err("internal error: a Tgt key with another value".to_owned()),

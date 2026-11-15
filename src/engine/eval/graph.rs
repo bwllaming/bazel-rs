@@ -204,14 +204,16 @@ const FIRST_SEGMENT: usize = 1024;
 
 /// The node arena with its interner.
 pub(crate) struct Graph {
-    interner: Interner,
+    /// Shared with the linearizer's store while the graph lives (the
+    /// tracker's `Access` events name `Tgt` nodes: their labels).
+    interner: std::sync::Arc<Interner>,
     segments: Box<[OnceLock<Box<[Entry]>>]>,
 }
 
 impl Default for Graph {
     fn default() -> Self {
         Self {
-            interner: Interner::default(),
+            interner: std::sync::Arc::default(),
             segments: (0..SEGMENTS).map(|_| OnceLock::new()).collect(),
         }
     }
@@ -247,6 +249,11 @@ impl Graph {
     /// The key of `id`.
     pub(crate) fn key(&self, id: NodeId) -> &NodeKey {
         self.interner.key(id)
+    }
+
+    /// The interner (ids to keys), shared.
+    pub(crate) fn interner(&self) -> &std::sync::Arc<Interner> {
+        &self.interner
     }
 
     /// The entry of `id` (lock-free).

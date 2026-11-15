@@ -32,8 +32,11 @@ pub(crate) enum Event {
     /// `forced_exec` (when kept by normalization) pass 1 checks against
     /// its own first-visit state.
     Reach(NodeId),
-    /// An incremental-tracker target access (`track_access`).
-    Access(Label),
+    /// An incremental-tracker target access (`track_access`): the looked
+    /// up label, by its `Tgt` node where the body has one (snapshot-miss2:
+    /// millions are held, cloned into the tape and interned by the
+    /// tracker; a node id is one copy and one dense lookup).
+    Access(Accessed),
     /// A source file reached (`track_source`).
     Source(Label),
     /// A package first committed here (its load prints, `generated`,
@@ -110,6 +113,22 @@ pub(crate) enum Event {
     /// sequential engine emits them (`Engine::emit_load_prints`: a
     /// module's lines once, at the first linearized emission).
     LoadPrints(std::sync::Arc<[crate::loading::LoadPrintEvent]>),
+}
+
+/// [`Event::Access`]'s label.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Accessed {
+    /// The label of this `Tgt(label)` node (the lookup's own node).
+    Node(NodeId),
+    /// A lookup the engine's services made (`capture::access`) or one
+    /// outside a body.
+    Label(Box<Label>),
+}
+
+impl From<Label> for Accessed {
+    fn from(label: Label) -> Self {
+        Accessed::Label(Box::new(label))
+    }
 }
 
 /// [`Event::CqueryEdge`]'s payload.

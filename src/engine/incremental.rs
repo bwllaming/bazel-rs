@@ -530,6 +530,9 @@ struct TrackTables {
     key_ids: hashbrown::HashTable<u32>,
     labels: Vec<Label>,
     label_ids: FxHashMap<Label, u32>,
+    /// The ids of the nodes the tape names (snapshot-miss2): a `Tgt`
+    /// node's label id, a `Ct1` node's key id (`u32::MAX`: not yet).
+    by_node: Vec<u32>,
     packages: Vec<PackageId>,
     package_ids: FxHashMap<PackageId, u32>,
     scopes: Vec<&'static str>,
@@ -603,6 +606,7 @@ impl TapeReplay {
         self.tables.key_ids = hashbrown::HashTable::new();
         self.tables.label_ids = FxHashMap::default();
         self.tables.package_ids = FxHashMap::default();
+        self.tables.by_node = Vec::new();
     }
 
     /// The interned names' counts: keys, labels, packages (diagnostics).
@@ -645,14 +649,36 @@ impl TapeReplay {
     }
 
     /// The tracker's part of a tape op (`None`: the tracker ignores it);
-    /// `reached`: a `Reach`'s configured key.
-    pub(super) fn compact(
+    /// `key_of`: the key of a node the op names (a `Reach`'s `Ct1`, an
+    /// `Access`'s `Tgt`).
+    pub(super) fn compact<'k>(
         &mut self,
         op: &super::eval::transcript::TapeOp,
-        reached: Option<&ConfiguredTargetKey>,
+        key_of: impl Fn(super::eval::key::NodeId) -> Option<&'k super::eval::key::NodeKey>,
     ) -> Option<TrackOp> {
-        use super::eval::transcript::{Event, SegmentKind, TapeOp};
+        use super::eval::key::NodeKey;
+        use super::eval::transcript::{Accessed, Event, SegmentKind, TapeOp};
         let tables = &mut self.tables;
+        // A node's id once interned (looked up by the node, not hashed).
+        fn by_node(
+            tables: &mut TrackTables,
+            node: super::eval::key::NodeId,
+            intern: impl FnOnce(&mut TrackTables) -> Option<u32>,
+        ) -> Option<u32> {
+            let index = node.0 as usize;
+            if let Some(id) = tables.by_node.get(index)
+                && *id != u32::MAX
+            {
+                return Some(*id);
+            }
+            let id = intern(tables)?;
+            if tables.by_node.len() <= index {
+                let len = (index + 1).max(tables.by_node.len() * 2).max(1024);
+                tables.by_node.resize(len, u32::MAX);
+            }
+            tables.by_node[index] = id;
+            Some(id)
+        }
         Some(match op {
             TapeOp::Effect(Event::ScopeEnter(name)) => {
                 let id = match tables.scopes.iter().position(|known| known == name) {
@@ -670,25 +696,36 @@ impl TapeReplay {
             TapeOp::Segment(SegmentKind::Setup | SegmentKind::TopLevelAspects { .. }) => {
                 TrackOp::Segment
             }
-            TapeOp::Reach { enter, .. } => TrackOp::Reach {
-                key: {
-                    let key = reached?;
-                    intern_key(
+            TapeOp::Reach { node, enter } => TrackOp::Reach {
+                key: by_node(tables, *node, |tables| match key_of(*node) {
+                    Some(NodeKey::Ct1(ct)) => Some(intern_key(
                         tables,
-                        &key.label,
-                        Some(key.config),
-                        key.apply_rule_transition,
-                    )
-                },
+                        &ct.key.label,
+                        Some(ct.key.config),
+                        ct.key.apply_rule_transition,
+                    )),
+                    _ => None,
+                })?,
                 enter: *enter,
             },
             TapeOp::Leave => TrackOp::Leave,
             TapeOp::Plan { position, .. } => TrackOp::Plan {
                 position: *position,
             },
-            TapeOp::Effect(Event::Access(label)) => {
+            TapeOp::Effect(Event::Access(Accessed::Label(label))) => {
                 TrackOp::Access(intern(&mut tables.labels, &mut tables.label_ids, label))
             }
+            TapeOp::Effect(Event::Access(Accessed::Node(node))) => TrackOp::Access(
+                by_node(tables, *node, |tables| match key_of(*node) {
+                    Some(NodeKey::Tgt(label)) => {
+                        Some(intern(&mut tables.labels, &mut tables.label_ids, label))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| {
+                    panic!("internal error: the tracker's access of {node:?} has no Tgt key")
+                }),
+            ),
             TapeOp::Effect(Event::PkgCommit(package, printed)) => TrackOp::PkgCommit {
                 package: intern(&mut tables.packages, &mut tables.package_ids, package),
                 printed: *printed,
