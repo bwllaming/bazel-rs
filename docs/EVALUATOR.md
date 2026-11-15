@@ -2831,7 +2831,15 @@ What changed:
    walk (`Engine::eval_pass2_track`; no lowering drain), so the tracker
    sees phase 2 and the tape in the walk's order (key ids, package ids and
    first reasons depend on it). ~/code: 6.8M ops pending at the end of
-   phase 1 (~110 MB).
+   phase 1 (~110 MB). The requested target's compatibility check (the
+   driver's, on the published nodes) looks targets up outside the tape:
+   while ops are pending (`Linearizer::tracker_paused`) its lookups are
+   held (`Engine::track_collect_accesses`) and queued as tape `Access` ops
+   at the current position, so they land outside every frame as the
+   walk's do (index-parity, 2026-11-15: before, the tracker was still in
+   the frames of the pending ops — on the eval_pass2 fixture `//p3:other`
+   "looked up" `//:all`, an access the walk does not have; over-invalidation,
+   not a stale reuse).
 3. **T3 frozen walks with the tracker**: a worker's prepare records its
    accesses, replayed in the entry's planning frame at its turn; the
    coordinator's frozen dependency views capture and replay their lookups
