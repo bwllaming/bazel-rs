@@ -113,11 +113,11 @@ impl StoreTrees {
     /// it in this invocation) or passes its first-crossing verification.
     /// When `owner` already is the containing tree (a link within one store
     /// tree), nothing is checked: the lexical test needs no I/O.
-    pub fn anchor<'a>(
+    pub fn anchor(
         &self,
         path: &Path,
         owner: Option<&Path>,
-        mut materialized: impl Iterator<Item = &'a Path>,
+        materialized: impl Fn(&Path) -> bool,
     ) -> Option<PathBuf> {
         let tree = crate::repository_store::store_tree_of(&self.root, path)?;
         if owner.is_some_and(|owner| owner.components().count() >= tree.root.components().count())
@@ -125,7 +125,7 @@ impl StoreTrees {
         {
             return None;
         }
-        if materialized.any(|root| root == tree.root) {
+        if materialized(&tree.root) {
             return Some(tree.root);
         }
         let accepted = *self
@@ -200,6 +200,8 @@ pub struct LinkPolicy {
 pub struct RootList {
     chunks: Vec<Arc<[(String, PathBuf)]>>,
     len: usize,
+    /// The roots' paths, built at the first lookup ([`Self::contains`]).
+    index: std::sync::OnceLock<std::collections::HashSet<PathBuf>>,
 }
 
 impl RootList {
@@ -222,6 +224,13 @@ impl RootList {
         self.len == 0
     }
 
+    /// Whether `path` is one of the roots.
+    pub fn contains(&self, path: &Path) -> bool {
+        self.index
+            .get_or_init(|| self.iter().map(|(_, root)| root.clone()).collect())
+            .contains(path)
+    }
+
     /// The list with `roots` added as one more chunk (the chunks merged
     /// into one now and then: lookups walk few chunks).
     pub fn extend(&mut self, roots: Vec<(String, PathBuf)>) {
@@ -229,6 +238,7 @@ impl RootList {
             return;
         }
         self.len += roots.len();
+        self.index = std::sync::OnceLock::new();
         self.chunks.push(roots.into());
         if self.chunks.len() > 32 {
             let merged: Vec<(String, PathBuf)> = self.iter().cloned().collect();
@@ -290,13 +300,12 @@ impl LinkPolicy {
     /// it. `None` when the policy refuses the link. `others`, `blocked` and
     /// the store must be canonical (`RepositorySet::link_policy`).
     pub fn anchor(&self, start_root: &Path, real: &Path) -> Option<PathBuf> {
-        let owner = self
-            .others
-            .iter()
-            .map(|(_, root)| root.as_path())
-            .chain(std::iter::once(start_root))
-            .filter(|root| real.starts_with(root))
-            .max_by_key(|root| root.components().count());
+        // The longest of `others` and `start_root` containing `real`: its
+        // deepest ancestor that is one (`real` is canonical: its ancestors
+        // are exactly its component prefixes).
+        let owner = real
+            .ancestors()
+            .find(|ancestor| *ancestor == start_root || self.others.contains(ancestor));
         if let Some(tree) = self.store_tree(start_root, real, owner) {
             return Some(tree);
         }
@@ -318,14 +327,9 @@ impl LinkPolicy {
     /// The published store tree containing `path` that anchors a link from
     /// `start_root` instead of `owner` ([`StoreTrees::anchor`]).
     fn store_tree(&self, start_root: &Path, path: &Path, owner: Option<&Path>) -> Option<PathBuf> {
-        self.store.as_ref()?.anchor(
-            path,
-            owner,
-            self.others
-                .iter()
-                .map(|(_, root)| root.as_path())
-                .chain(std::iter::once(start_root)),
-        )
+        self.store.as_ref()?.anchor(path, owner, |root| {
+            root == start_root || self.others.contains(root)
+        })
     }
 
     /// Which taint of the analysis snapshot, if any, a symlink hop from the
@@ -482,14 +486,9 @@ fn resolve_across_inner(
             .filter(|candidate| path.starts_with(candidate))
             .max_by_key(|candidate| candidate.components().count());
         if let Some(store) = store
-            && let Some(tree) = store.anchor(
-                path,
-                found.copied(),
-                candidates
-                    .iter()
-                    .copied()
-                    .chain(std::iter::once(origin.as_path())),
-            )
+            && let Some(tree) = store.anchor(path, found.copied(), |root| {
+                root == origin.as_path() || candidates.contains(&root)
+            })
         {
             return Some(tree);
         }
