@@ -242,7 +242,7 @@ pub(crate) fn lane_quiet(quiet: std::time::Duration) -> bool {
 /// prepared side by side, not one at a time as the lane or the sequential
 /// pass reaches each. Requesting is idempotent; the waits and what they
 /// commit are unchanged.
-fn lane_ahead_enabled() -> bool {
+pub(crate) fn lane_ahead_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
         // snapshot-unrecorded: a scheduling switch; the lane's commits are the same.

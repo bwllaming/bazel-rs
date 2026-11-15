@@ -631,7 +631,10 @@ impl Host for EvalHost<'_, '_> {
         self.shared.repositories.warm_registrations(patterns);
         // The packages the expansion loads one after another: on the pool
         // all at once (their repositories' lane blockers side by side).
-        if self.registration_hints.is_some() && (self.pooled() || self.shared.loading.serving()) {
+        if self.registration_hints.is_some()
+            && super::loading::lane_ahead_enabled()
+            && (self.pooled() || self.shared.loading.serving())
+        {
             let keys: Vec<NodeKey> = self
                 .shared
                 .repositories
