@@ -534,6 +534,12 @@ struct RepositoryState {
     /// speculative preparation of their extension group, and execute even
     /// when local ([`RepositorySet::eval_local_blocker`]).
     eval_local: std::sync::Mutex<BTreeSet<String>>,
+    /// Local repositories a parked pool load requested ahead
+    /// ([`RepositorySet::request_eval_local`]): speculated like
+    /// `eval_local`'s, but a later load parked on one still waits for it on
+    /// the lane ([`RepositorySet::eval_local_blocker`] looks at
+    /// `eval_local` only).
+    eval_local_ahead: std::sync::Mutex<BTreeSet<String>>,
     /// Those whose speculative execution called `execute()` (left to the
     /// sequential pass, never queued again).
     eval_local_refused: std::sync::Mutex<BTreeSet<String>>,
@@ -1399,6 +1405,7 @@ impl RepositorySet {
                 eval_group_flight: Default::default(),
                 eval_used: Default::default(),
                 eval_local: Default::default(),
+                eval_local_ahead: Default::default(),
                 eval_local_refused: Default::default(),
                 extension_speculation_armed: Default::default(),
             }),
@@ -4004,8 +4011,14 @@ impl RepositorySet {
     /// speculative execution of the local repository `canonical` a queued
     /// blocker waits for, requested now (once).
     pub(crate) fn request_eval_local(&self, canonical: &str) {
-        if lock_ignoring_poison(&self.state.eval_local_refused).contains(canonical)
-            || !lock_ignoring_poison(&self.state.eval_local).insert(canonical.to_owned())
+        debug_assert!(
+            !self.replay_capturing(),
+            "a local rule requested ahead while local executions are captured for replay"
+        );
+        if self.replay_capturing()
+            || lock_ignoring_poison(&self.state.eval_local_refused).contains(canonical)
+            || self.eval_local_requested(canonical)
+            || !lock_ignoring_poison(&self.state.eval_local_ahead).insert(canonical.to_owned())
         {
             return;
         }
@@ -4041,7 +4054,7 @@ impl RepositorySet {
                 // A local repository (or one of a group used
                 // speculatively): executed ahead as for a pool load.
                 let eligible = self.eval_local_blocker(&blocked).is_some()
-                    || lock_ignoring_poison(&self.state.eval_local).contains(canonical);
+                    || self.eval_local_requested(canonical);
                 if !eligible {
                     return None;
                 }
@@ -4419,8 +4432,8 @@ impl RepositorySet {
         // finished speculative preparation of its extension group, as the
         // load does (crate::repository's `EvalAdoption`; the load's commit
         // prepares the group before the root counts).
-        let adoption = lock_ignoring_poison(&self.state.eval_local)
-            .contains(canonical)
+        let adoption = self
+            .eval_local_requested(canonical)
             .then(EvalAdoption::start);
         let slot = match self.speculation_slot(canonical) {
             // The coordinator evaluates it now (a local rule it executes
@@ -4557,6 +4570,7 @@ impl RepositorySet {
     /// runs) instead of executing the rule a second time.
     fn eval_local_requested(&self, canonical: &str) -> bool {
         lock_ignoring_poison(&self.state.eval_local).contains(canonical)
+            || lock_ignoring_poison(&self.state.eval_local_ahead).contains(canonical)
     }
 
     /// A local rule's speculative execution, only for an evaluator's pool
@@ -4564,9 +4578,7 @@ impl RepositorySet {
     /// local executions are captured for replay (crate::snapshot::replay):
     /// [`EVAL_LOCAL`] while the guard lives.
     fn eval_local_scope(&self, canonical: &str) -> Result<EvalLocalGuard, String> {
-        if self.replay_capturing()
-            || !lock_ignoring_poison(&self.state.eval_local).contains(canonical)
-        {
+        if self.replay_capturing() || !self.eval_local_requested(canonical) {
             return Err("a local repository rule is never speculated".to_owned());
         }
         Ok(EvalLocalGuard(EVAL_LOCAL.with(|local| local.replace(true))))
