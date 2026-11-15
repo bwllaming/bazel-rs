@@ -4090,7 +4090,22 @@ What changed:
   ~0.45 s. local_jdk (it calls `execute()`, never speculated) stays the
   sequential pass's (~0.09 s after round 1). Repository order: only the
   speculations' start moves (they were requested by the same waits a few
-  hundred ms later); flagged for review.
+  hundred ms later). A rule requested ahead is kept apart from the lane's
+  (`eval_local_ahead`): a later pool load parked on it still waits for it
+  on the lane, not on the sequential pass. Residuals (review): local
+  speculation's stale workspace reads are wider now — the rules start at
+  the expansion's start, possibly before a repository earlier in the
+  walk's order runs (local rule A `execute()`s and writes `//gen:cfg`,
+  local rule B reads it: B's speculation may read the old file; the
+  commit does not re-check workspace reads, as for every local
+  speculation); and the lane ahead may execute local rules or fetch
+  non-local repositories of a group the sequential run would not reach
+  (an invalid registration before a valid one without `--keep_going`):
+  invisible in the output, the lockfile and the recording (the
+  speculation is never committed), like genuine Bazel's batched
+  expansion. `BAZEL_RS_EVAL_LANE_AHEAD=0` turns off both the parked
+  loads' requests and the registration packages' hints;
+  tests/eval_lane_ahead.rs compares on and off.
 - **`LinkPolicy::anchor`** finds the longest materialized root containing
   a link target by its ancestors in an index of the roots (it compared
   every root, ~4,000, per symlink): `@zig_config` −30 ms.
@@ -4103,7 +4118,15 @@ dropped 4.98–5.25 → 4.59–4.93 s, `INFO: Elapsed time` (with
 `BAZEL_RS_TIMING`) 13.52–13.71 → 12.91–13.19 s; RSS unchanged. Identical:
 the action dumps (`build`, `PARITY_REVERSE`, `test --nobuild`), the
 record dump, the miss dump; the verify modes clean; the lockfiles
-untouched (warm).
+untouched (warm). Cold (fresh cache, a fresh clone and a private copy of
+its `MODULE.bazel.lock`, main's installed binary vs round 10, action dump
+and record mode): the hidden lockfile and the private lockfile identical
+(the private one unchanged), stderr and the action dump identical but for
+the rules_python toolchain's store tree hash (its fetch compiles `.pyc`
+files with timestamps: a new hash on every cold fetch) and the record
+summary's timing and racy counts; the record dump identical with tree
+hashes, stat keys and the fetch's random `/tmp/rules_python_pycache/<n>`
+directory masked; cold wall 226.8 s (main) vs 229.1 s.
 
 Left: round 1 ends with `@zig_config` (~0.55 s of BUILD evaluation: label
 conversion and globs); the linearizer alone after the pool (~1 s: pass 1's
