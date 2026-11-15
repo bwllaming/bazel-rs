@@ -700,7 +700,9 @@ impl Coord<'_> {
         // the ops not applied yet.
         if !leftover.is_empty() {
             super::super::timeline::add_us("linearizer step yielded in the tape", 0);
-            lin.ops = leftover;
+            // (In the buffer drained: its capacity is the largest step's.)
+            ops.append(&mut leftover);
+            lin.ops = ops;
         } else if lin.ops.is_empty() {
             lin.ops = ops;
         }

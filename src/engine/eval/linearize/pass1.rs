@@ -50,6 +50,7 @@ use crate::configuration::ConfigId;
 use crate::label::{Label, PackageId};
 
 use super::super::super::ConfiguredTargetKey;
+use super::super::dense::DenseSet;
 use super::super::key::{CtKey, NodeId, NodeKey};
 #[cfg(test)]
 use super::super::transcript::ToolchainImpl;
@@ -277,6 +278,58 @@ pub(crate) enum Blocker {
     Node(NodeId),
 }
 
+/// The complete configured keys and their canonical node, each key
+/// hashed once per entry (pass 1 looks a key up when it is first reached
+/// and inserts it at its `Done`, with the same hash).
+#[derive(Default)]
+struct Visited {
+    table: hashbrown::HashTable<(u64, ConfiguredTargetKey, NodeId)>,
+}
+
+impl Visited {
+    fn hash(key: &ConfiguredTargetKey) -> u64 {
+        use std::hash::BuildHasher;
+        crate::fast_hash::FxBuildHasher::default().hash_one(key)
+    }
+
+    fn get(&self, hash: u64, key: &ConfiguredTargetKey) -> Option<NodeId> {
+        self.table
+            .find(hash, |entry| entry.0 == hash && entry.1 == *key)
+            .map(|entry| entry.2)
+    }
+
+    /// Set `key`'s node; the old one.
+    fn insert(&mut self, hash: u64, key: ConfiguredTargetKey, node: NodeId) -> Option<NodeId> {
+        match self
+            .table
+            .find_mut(hash, |entry| entry.0 == hash && entry.1 == key)
+        {
+            Some(entry) => Some(std::mem::replace(&mut entry.2, node)),
+            None => {
+                self.table
+                    .insert_unique(hash, (hash, key, node), |entry| entry.0);
+                None
+            }
+        }
+    }
+
+    fn remove(&mut self, hash: u64, key: &ConfiguredTargetKey) {
+        if let Ok(entry) = self
+            .table
+            .find_entry(hash, |entry| entry.0 == hash && entry.1 == *key)
+        {
+            entry.remove();
+        }
+    }
+
+    fn reserve(&mut self, count: usize) {
+        if self.table.capacity() < count {
+            self.table
+                .reserve(count - self.table.len(), |entry| entry.0);
+        }
+    }
+}
+
 /// One replay in progress.
 enum Frame {
     Segment {
@@ -286,6 +339,8 @@ enum Frame {
     Body {
         node: NodeId,
         ct: CtKey,
+        /// `ct.key`'s hash ([`Visited`]).
+        hash: u64,
         pos: usize,
         /// Its `Done` passed: never replayed again (its transcript can go).
         done: bool,
@@ -303,7 +358,7 @@ enum Frame {
 pub(crate) struct Pass1 {
     out: Linearized,
     /// Complete configured keys and their canonical node (`configured`).
-    visited: FxHashMap<ConfiguredTargetKey, NodeId>,
+    visited: Visited,
     /// `visited` by the node reached (its variant): the canonical node of
     /// the node's key once complete, read without hashing the key.
     canonical_by_node: Vec<Option<NodeId>>,
@@ -318,7 +373,7 @@ pub(crate) struct Pass1 {
     tape_plan: bool,
     /// The active chains, innermost (a memo's fresh chain) last.
     chains: Vec<Vec<ConfiguredTargetKey>>,
-    memos: FxHashSet<NodeId>,
+    memos: DenseSet,
     packages: FxHashSet<PackageId>,
     consoles: FxHashSet<u32>,
     warned: FxHashSet<String>,
@@ -443,14 +498,14 @@ impl Pass1 {
     pub(crate) fn new(options: Options) -> Self {
         Self {
             out: Linearized::default(),
-            visited: FxHashMap::default(),
+            visited: Visited::default(),
             canonical_by_node: Vec::new(),
             by_node: false,
             same_by_node: Vec::new(),
             planned: 0,
             tape_plan: false,
             chains: Vec::new(),
-            memos: FxHashSet::default(),
+            memos: DenseSet::default(),
             packages: FxHashSet::default(),
             consoles: FxHashSet::default(),
             no_edges: options.no_edges,
@@ -560,16 +615,14 @@ impl Pass1 {
 
     /// Room for `count` complete configured keys in all.
     pub(crate) fn reserve(&mut self, count: usize) {
-        if self.visited.capacity() < count {
-            self.visited.reserve(count - self.visited.len());
-        }
+        self.visited.reserve(count);
     }
 
     /// A configured key the walk analyzed outside phase 1's transcripts
     /// (a deferred target platform's tree planned by a flush's phase 2):
     /// complete from now on, and in the plan where the flush put it.
     pub(crate) fn external(&mut self, key: ConfiguredTargetKey, node: NodeId, planned: bool) {
-        self.visit(key.clone(), node);
+        self.visit(Visited::hash(&key), key.clone(), node);
         if planned {
             self.planned += 1;
             if !self.tape_plan {
@@ -834,14 +887,14 @@ impl Pass1 {
                         source.key(node)
                     ));
                 };
-                let canonical = self.canonical(node, &ct.key);
+                let (canonical, hash) = self.canonical(node, &ct.key);
                 if let Some(blocker) = self.reach_blocker(source, node, ct, canonical) {
                     return Ok(Some(blocker));
                 }
                 if self.in_fresh_memo() {
                     self.chain().clear();
                 }
-                self.reach(source, sink, node, ct, canonical)?;
+                self.reach(source, sink, node, ct, canonical, hash)?;
             }
             Event::PkgCommit(ref package, _) => {
                 if self.packages.insert(package.clone()) {
@@ -916,11 +969,20 @@ impl Pass1 {
                 });
             }
             Event::Done => {
-                if let Some((node, ct)) = self.owner() {
+                if let Some(Frame::Body { node, ct, hash, .. }) = self.frames.last() {
+                    let (node, key, hash) = (*node, ct.key.clone(), *hash);
                     // The walk pops the top of the chain (the key's own
                     // entry unless a caught failure left more).
                     self.chain().pop();
-                    self.visit(ct.key, node);
+                    self.visit(hash, key, node);
+                    // (Its later reaches find it without hashing the key.)
+                    if self.by_node {
+                        let slot = node.0 as usize;
+                        if self.canonical_by_node.len() <= slot {
+                            self.canonical_by_node.resize(slot + 1, None);
+                        }
+                        self.canonical_by_node[slot] = Some(node);
+                    }
                     self.canonical.push(node);
                     // Its delegation is recorded when the frame ends (the
                     // value is complete there).
@@ -955,13 +1017,22 @@ impl Pass1 {
                 // analysis after the configured node is published): the
                 // key is not complete, a later reach replays it again (the
                 // walk's `unpublish_node`; it failed: never planned).
-                if let Some(Frame::Body { node, ct, done, .. }) = self.frames.last_mut()
+                if let Some(Frame::Body {
+                    node,
+                    ct,
+                    hash,
+                    done,
+                    ..
+                }) = self.frames.last_mut()
                     && *done
                 {
                     *done = false;
-                    let (node, key) = (*node, ct.key.clone());
-                    if self.visited.get(&key) == Some(&node) {
-                        self.visited.remove(&key);
+                    let (node, hash) = (*node, *hash);
+                    if self.visited.get(hash, &ct.key) == Some(node) {
+                        self.visited.remove(hash, &ct.key);
+                        // (Nodes that cached it as their key's canonical
+                        // node look the key up again.)
+                        self.canonical_by_node.clear();
                     }
                     self.canonical.retain(|canonical| *canonical != node);
                 }
@@ -1006,10 +1077,10 @@ impl Pass1 {
     }
 
     /// `key` complete as `node` (its canonical node, or [`EXTERNAL`]).
-    fn visit(&mut self, key: ConfiguredTargetKey, node: NodeId) {
+    fn visit(&mut self, hash: u64, key: ConfiguredTargetKey, node: NodeId) {
         if self
             .visited
-            .insert(key, node)
+            .insert(hash, key, node)
             .is_some_and(|old| old != node)
         {
             // (A key's canonical node does not change; if it did, the
@@ -1020,21 +1091,25 @@ impl Pass1 {
     }
 
     /// The canonical node of `node`'s key `key` once complete
-    /// (`visited`), cached by `node`.
-    fn canonical(&mut self, node: NodeId, key: &ConfiguredTargetKey) -> Option<NodeId> {
+    /// (`visited`), cached by `node`; and the key's hash when it was
+    /// looked up (0 for a cached hit).
+    fn canonical(&mut self, node: NodeId, key: &ConfiguredTargetKey) -> (Option<NodeId>, u64) {
         let slot = node.0 as usize;
         if let Some(Some(canonical)) = self.canonical_by_node.get(slot) {
-            return Some(*canonical);
+            return (Some(*canonical), 0);
         }
-        let canonical = self.visited.get(key).copied()?;
+        let hash = Visited::hash(key);
+        let Some(canonical) = self.visited.get(hash, key) else {
+            return (None, hash);
+        };
         if !self.by_node {
-            return Some(canonical);
+            return (Some(canonical), hash);
         }
         if self.canonical_by_node.len() <= slot {
             self.canonical_by_node.resize(slot + 1, None);
         }
         self.canonical_by_node[slot] = Some(canonical);
-        Some(canonical)
+        (Some(canonical), hash)
     }
 
     /// What a reach of `node` must wait for before it is replayed: the
@@ -1069,6 +1144,7 @@ impl Pass1 {
         node: NodeId,
         ct: &CtKey,
         canonical: Option<NodeId>,
+        hash: u64,
     ) -> Result<(), String> {
         let key = &ct.key;
         if !self.no_edges {
@@ -1157,6 +1233,7 @@ impl Pass1 {
         self.frames.push(Frame::Body {
             node,
             ct: ct.clone(),
+            hash,
             pos: 0,
             done: false,
         });
