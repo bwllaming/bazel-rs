@@ -863,6 +863,14 @@ change announced to the other two workers; adding a helper is not.
   `label::displayed_source` (a per-package memo of `java_call_stack`'s
   paths); `.bzl` helpers stop at their unit's end (`Loader::stop`) and
   release abandoned labels (`BzlCache::unhelp`).
+- 2026-11-15 (eval-speed round 12; no frozen interface changed): the
+  linearizer's `Store` per-node tables (`keys`, `transcripts`, `memo_ok`,
+  `carry`, `released`, `replayed`) and `Coord::ct1_by_node` are
+  `eval::dense::{DenseMap, DenseSet}` (indexed by `NodeId`; same lookup
+  API); pass 1's `visited` is a `Visited` table hashed once per first
+  visit (`Frame::Body` carries the key's hash to its `Done`);
+  `label::plain_relative_label` (the native converter's fast path for a
+  plain relative target name, `BAZEL_RS_PLAIN_LABELS=0` off).
 
 ## 4. Stages and gates
 
@@ -4132,6 +4140,57 @@ Left: round 1 ends with `@zig_config` (~0.55 s of BUILD evaluation: label
 conversion and globs); the linearizer alone after the pool (~1 s: pass 1's
 lookups in the store's hash maps, tape growth); the deferred walk's last
 ~1.5 s on the cursor's CPU (`merge_starlark`); `cc_build_info`'s fallbacks.
+
+### Round 12: the linearizer's lookups, plain label texts (eval-speed)
+
+Measured first (~/code `build --nobuild //src/...`, snapshot off, main
+`84ec336d`, non-LTO): after the pool ends (~3.3 s of phase 1) the
+linearizer runs alone for ~1–1.3 s on one core (pass 1, the tape,
+publication: ~0.73, ~0.35, ~0.39 s over the whole phase); round 1 ends
+with `@zig_config`'s BUILD evaluation (~0.55 s on one pool thread, the
+pool idle behind it), most of it converting the label texts of its
+filegroups' globs (each file's text in several filegroups).
+
+What changed:
+
+- **Pass 1's lookups**: the store's tables by node (keys, transcripts,
+  memo results, carried events, the released and replayed sets) and the
+  CT1 values by node are vectors indexed by node id (ids are dense: the
+  interner's arena), not hash maps. A configured key is hashed once per
+  first visit (looked up at its first reach, inserted at its `Done` with
+  the same hash), a canonical node is cached by node at its `Done`, the
+  memo set is a bit set, the toolchain implementations are looked up in a
+  hashed copy of the ordered output map, the chain is scanned for a cycle
+  only when the reached node has no transcript yet, and the tape's buffer
+  keeps its capacity across steps that yield. A failure past a body's
+  `Done` that unpublishes its key also clears the canonical cache (a
+  variant that cached the key's node looks it up again).
+- **Plain label texts**: the native converter resolves a plain relative
+  target name (`lib/std/a.zig`: no `@`, `:`, `//` or `/.`, ASCII letters,
+  digits and `_-.+/=,~#`, not starting with `/` or `.`, not ending with
+  `/` or `.`) in its package directly — the canonical text and the
+  resolution size bound the full parse gives (tested against it over a
+  corpus of edge cases and 20,000 random texts) — without the per-package
+  memo and the repository mapping (`BAZEL_RS_PLAIN_LABELS=0` off).
+
+Measured (2026-11-15, non-LTO, alternating, host load 14–26): pass 1's
+total 704–731 → 421–471 ms; graph dropped 4.37–4.70 → 3.96–4.27 s;
+`@zig_config`'s BUILD evaluation 518–607 → 452–497 ms. Identical: the
+action dumps (`build`, `PARITY_REVERSE`, `test --nobuild`), the warm
+record dump, the snapshot miss's dump; `PARITY_VERIFY`+`REVERSE`,
+`VERIFY_DELTA`/`ARTIFACTS`, `EVAL_VERIFY` (`--memory-limit=40000`) clean.
+
+Tried, not kept: publishing a large batch's configured targets table by
+table on scoped threads (configured-target publication 256 → 237 ms).
+
+Left: the deferred walk ends at its last job (the cursor is not its
+bound); its cursor still commits the 936 genrules at their turn (~0.45 s
+of its CPU: the tools' runfiles trees and their input groups);
+`cc_build_info`'s deltas fall back (`delta_workspace_status`, then its
+build-info actions) and the chains through `cc-compiler-k8` wait for its
+merge (~0.14 s of the cursor's 0.39 s of waits); `@zig_config`'s store
+verification (~12 % of its load) and the canonical label parses of its
+targets' inputs (~19 %).
 
 ### Effort
 
