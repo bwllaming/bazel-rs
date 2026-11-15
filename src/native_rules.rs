@@ -853,6 +853,16 @@ pub struct Instance<'v> {
     pub target: NativeTarget,
 }
 
+/// `BAZEL_RS_PLAIN_LABELS=0` turns off [`crate::label::plain_relative_label`]
+/// in the converter (every label text takes the full resolution).
+fn plain_labels() -> bool {
+    static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a switch between two paths with the same results; it changes nothing the analysis computes.
+        std::env::var_os("BAZEL_RS_PLAIN_LABELS").is_none_or(|value| value != "0")
+    });
+    *ON
+}
+
 struct Converter<'a> {
     repositories: &'a RepositorySet,
     package: &'a PackageId,
@@ -919,6 +929,18 @@ impl Converter<'_> {
             );
         };
         self.charge(text)?;
+        // A plain relative target name: the same canonical text and size
+        // bound as the full resolution below, without its lookups.
+        if plain_labels()
+            && let Some((canonical, bound)) = crate::label::plain_relative_label(
+                text,
+                &self.package.repository,
+                &self.package.package,
+            )
+        {
+            self.budget.bytes(bound).map_err(anyhow::Error::msg)?;
+            return Ok(canonical);
+        }
         // The resolution is a function of the text in this package
         // (memoized while the package evaluates); the budget is charged
         // on every use.

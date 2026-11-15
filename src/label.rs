@@ -637,9 +637,184 @@ pub(crate) fn is_valid_package_name(package: &str) -> bool {
     crate::bazel_label::validate_package_name(package).is_none()
 }
 
+/// A plain relative target name (`foo.c`, `lib/std/a.zig`) resolved in
+/// `repository`'s `package` without the repository mapping or the memo:
+/// its canonical text and its [`Label::resolution_size_bound`], or `None`
+/// for any other text (the caller's full parse decides those). Only texts
+/// whose parse cannot fail and leaves the name as written qualify: no `@`
+/// or `:`, no `//`, no `/.` (`.`/`..` segments, the stripped `/.`), not
+/// starting with `/` or `.`, not ending with `/` or `.`, and only ASCII
+/// letters, digits and `_-.+/=,~#` (every one a target-name character);
+/// the context repository and package must be valid (the parse checks
+/// them too).
+pub(crate) fn plain_relative_label(
+    text: &str,
+    repository: &str,
+    package: &str,
+) -> Option<(String, usize)> {
+    let bytes = text.as_bytes();
+    let (&first, &last) = (bytes.first()?, bytes.last()?);
+    if matches!(first, b'/' | b'.') || matches!(last, b'/' | b'.') {
+        return None;
+    }
+    let mut previous = 0u8;
+    for &byte in bytes {
+        let plain = byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'_' | b'-' | b'.' | b'+' | b'/' | b'=' | b',' | b'~' | b'#'
+            );
+        if !plain || (previous == b'/' && matches!(byte, b'/' | b'.')) {
+            return None;
+        }
+        previous = byte;
+    }
+    if text.ends_with("...") {
+        return None;
+    }
+    if validate_repository_name(repository).is_err() || validate_package_path(package).is_err() {
+        return None;
+    }
+    let mut canonical = String::with_capacity(repository.len() + package.len() + text.len() + 5);
+    if !repository.is_empty() {
+        canonical.push_str("@@");
+        canonical.push_str(repository);
+    }
+    canonical.push_str("//");
+    canonical.push_str(package);
+    canonical.push(':');
+    canonical.push_str(text);
+    let bound = text
+        .len()
+        .saturating_mul(2)
+        .saturating_add(repository.len())
+        .saturating_add(package.len())
+        .saturating_add(5);
+    Some((canonical, bound))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The full parse (no repository mapping: the text has no `@`) of what
+    /// [`plain_relative_label`] answers.
+    fn slow_plain(text: &str, repository: &str, package: &str) -> Option<(String, usize)> {
+        crate::bazel_label::Parts::parse(text).ok()?;
+        let empty = BTreeMap::new();
+        let bound = Label::resolution_size_bound(text, repository, package, &empty);
+        let label = Label::parse_in(text, repository, package, &empty).ok()?;
+        Some((label.to_string(), bound))
+    }
+
+    #[test]
+    fn plain_relative_labels_resolve_as_the_full_parse() {
+        let contexts = [
+            ("", ""),
+            ("", "src/a"),
+            ("hermetic_cc_toolchain++toolchains+zig_config", ""),
+            ("rules_python+", "python/private"),
+            ("bad repo", "p"),
+            ("r", "/p"),
+            ("r", "p//q"),
+            ("r", "p/"),
+            ("", "visibility"),
+        ];
+        let mut corpus: Vec<String> = [
+            "a",
+            "foo.c",
+            "lib/std/a.zig",
+            "a+b",
+            "a=b,c~d#e",
+            "x-y_z",
+            "a.b.c",
+            "a/b/c.h",
+            ".",
+            "..",
+            "...",
+            "a/...",
+            "a/..",
+            "a/.",
+            "a/./b",
+            "a/../b",
+            "./a",
+            "../a",
+            "/a",
+            "a/",
+            "a//b",
+            "a:b",
+            ":a",
+            "//a",
+            "@a",
+            "@@a//b:c",
+            "a/.b",
+            "a.",
+            ".a",
+            "a b",
+            "a\r",
+            "a\\b",
+            "visibility",
+            "conditions",
+            "a@b",
+            "a$b",
+            "a%b",
+            "é",
+            "a\u{7f}",
+            "a\tb",
+            "a..b",
+            "a/b.",
+            "a/b..",
+            "a/.../b",
+            "a\"b",
+            "",
+        ]
+        .iter()
+        .map(|text| text.to_string())
+        .collect();
+        // Random texts over every interesting byte.
+        let alphabet: Vec<char> = "ab0/.:@+-_=,~#!$%&'()*;<>?[]^`{|} \"\\\r\té"
+            .chars()
+            .collect();
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        for _ in 0..20_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let len = 1 + (state % 7) as usize;
+            let mut text = String::new();
+            let mut bits = state;
+            for _ in 0..len {
+                text.push(alphabet[(bits % alphabet.len() as u64) as usize]);
+                bits /= alphabet.len() as u64;
+                if bits == 0 {
+                    bits = state.rotate_left(29);
+                }
+            }
+            corpus.push(text);
+        }
+        let mut fast = 0;
+        for (repository, package) in contexts {
+            for text in &corpus {
+                if let Some(answer) = plain_relative_label(text, repository, package) {
+                    fast += 1;
+                    assert_eq!(
+                        Some(answer),
+                        slow_plain(text, repository, package),
+                        "{text:?} in @@{repository}//{package}"
+                    );
+                }
+            }
+        }
+        assert!(fast > 1000, "the fast path answered {fast} texts");
+        for text in ["a", "foo.c", "lib/std/a.zig", "a+b", "a=b,c~d#e", "a..b"] {
+            assert!(plain_relative_label(text, "r+", "p/q").is_some(), "{text}");
+        }
+        for text in ["a/.b", "a:b", "@a", "a/.", ".", "a b", "a/", "a//b", "..."] {
+            assert!(plain_relative_label(text, "r+", "p/q").is_none(), "{text}");
+        }
+        assert!(plain_relative_label("a", "bad repo", "p").is_none());
+        assert!(plain_relative_label("a", "r", "p//q").is_none());
+    }
 
     #[test]
     fn package_parse_memo_returns_the_uncached_results_and_ends_with_its_scope() {

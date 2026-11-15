@@ -2661,7 +2661,8 @@ fn duplicate_label_errors(rule: &Rule) -> Vec<String> {
         let mut duplicates: Vec<&String> = Vec::new();
         for list in lists {
             // Membership only (the duplicates keep list order).
-            let mut seen = std::collections::HashSet::with_capacity(list.len());
+            let mut seen = crate::fast_hash::FxHashSet::default();
+            seen.reserve(list.len());
             for label in list {
                 if !seen.insert(label) && !duplicates.contains(&label) {
                     duplicates.push(label);

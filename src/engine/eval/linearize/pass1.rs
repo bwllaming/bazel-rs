@@ -1130,9 +1130,14 @@ impl Pass1 {
                 .then_some(Blocker::Node(node)),
             None => {
                 let chain = self.chains.last()?;
+                // (A node with a transcript never waits: the chain's scan
+                // only for one without.)
+                if source.ct1(node).is_some() {
+                    return None;
+                }
                 let fails = !self.in_fresh_memo()
                     && (chain.contains(&ct.key) || chain.len() >= DEPTH_LIMIT);
-                (!fails && source.ct1(node).is_none()).then_some(Blocker::Node(node))
+                (!fails).then_some(Blocker::Node(node))
             }
         }
     }
