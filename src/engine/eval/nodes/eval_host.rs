@@ -629,6 +629,21 @@ impl Host for EvalHost<'_, '_> {
 
     fn warm_toolchain_patterns(&mut self, patterns: &[(String, String)]) {
         self.shared.repositories.warm_registrations(patterns);
+        // The packages the expansion loads one after another: on the pool
+        // all at once (their repositories' lane blockers side by side).
+        if self.registration_hints.is_some() && (self.pooled() || self.shared.loading.serving()) {
+            let keys: Vec<NodeKey> = self
+                .shared
+                .repositories
+                .registration_packages(patterns)
+                .into_iter()
+                .filter(|package| !self.shared.loading.preloaded.contains_key(package))
+                .map(NodeKey::Pkg)
+                .collect();
+            if !keys.is_empty() {
+                self.cx.hint(&keys);
+            }
+        }
     }
 
     fn module_execution_platforms(

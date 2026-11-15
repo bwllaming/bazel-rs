@@ -236,6 +236,20 @@ pub(crate) fn lane_quiet(quiet: std::time::Duration) -> bool {
         .is_none_or(|at| at.elapsed() >= quiet)
 }
 
+/// `BAZEL_RS_EVAL_LANE_AHEAD` (on; `0` off): a pool load parked on an
+/// extension group or a local repository rule requests its speculative
+/// preparation (execution) at once, so the parked loads' blockers are
+/// prepared side by side, not one at a time as the lane or the sequential
+/// pass reaches each. Requesting is idempotent; the waits and what they
+/// commit are unchanged.
+fn lane_ahead_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        // snapshot-unrecorded: a scheduling switch; the lane's commits are the same.
+        std::env::var_os("BAZEL_RS_EVAL_LANE_AHEAD").is_none_or(|value| value != "0")
+    })
+}
+
 pub(crate) fn lane_fetch(shared: &EvalShared, blocker: &str) {
     struct Fetched;
     impl Drop for Fetched {
@@ -396,6 +410,11 @@ pub(crate) fn package_body(
                 if let Some(group) =
                     sentinel.and_then(|error| repositories.eval_group_blocker(error))
                 {
+                    // Prepared ahead now, beside the other parked loads'
+                    // (the lane or the sequential pass waits for it).
+                    if lane_ahead_enabled() {
+                        repositories.request_eval_group(group);
+                    }
                     let blocker = format!("{EXTENSION_BLOCKER}{group}");
                     lock(&shared.loading.pending_blockers)
                         .entry(id.clone())
@@ -407,6 +426,10 @@ pub(crate) fn package_body(
                 if let Some(canonical) =
                     sentinel.and_then(|error| repositories.eval_local_blocker(error))
                 {
+                    // Executed ahead now, beside the other parked loads'.
+                    if lane_ahead_enabled() {
+                        repositories.request_eval_local(canonical);
+                    }
                     let blocker = format!("{LOCAL_BLOCKER}{canonical}");
                     lock(&shared.loading.pending_blockers)
                         .entry(id.clone())

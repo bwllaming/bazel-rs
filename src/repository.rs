@@ -3437,6 +3437,37 @@ impl RepositorySet {
         self.state.root_warmer.request(self, files);
     }
 
+    /// The packages registration `patterns` name directly (a label's or a
+    /// `:all` pattern's; not `/...`), parsed as [`Self::warm_registrations`]
+    /// parses them (nothing observed, nothing demanded; an unparsable
+    /// pattern names none): the evaluator loads them ahead on its pool.
+    pub(crate) fn registration_packages(
+        &self,
+        patterns: &[(String, String)],
+    ) -> Vec<crate::label::PackageId> {
+        crate::observed_fs::discard(|| {
+            let _guard = crate::repository_demand::no_demand();
+            let mut packages: Vec<crate::label::PackageId> = Vec::new();
+            for (repository, pattern) in patterns {
+                if pattern.starts_with('-') || pattern.ends_with("...") || pattern.contains("/...:")
+                {
+                    continue;
+                }
+                let base = pattern
+                    .rsplit_once(':')
+                    .map_or(pattern.as_str(), |(base, _)| base);
+                let Ok(label) = self.parse(&format!("{base}:BUILD"), repository, "") else {
+                    continue;
+                };
+                let package = label.package_id();
+                if !packages.contains(&package) {
+                    packages.push(package);
+                }
+            }
+            packages
+        })
+    }
+
     /// Whether [`Self::warm_root`] can know `repository`'s root: the main
     /// repository, a local_path module, or a registry module (not the
     /// built-in `@bazel_tools`).
@@ -3967,6 +3998,24 @@ impl RepositorySet {
             EVAL_ADOPTIONS[3].fetch_add(1, Ordering::Relaxed);
         }
         blocked
+    }
+
+    /// The pool's lane, ahead of [`Self::wait_eval_local`]: the
+    /// speculative execution of the local repository `canonical` a queued
+    /// blocker waits for, requested now (once).
+    pub(crate) fn request_eval_local(&self, canonical: &str) {
+        if lock_ignoring_poison(&self.state.eval_local_refused).contains(canonical)
+            || !lock_ignoring_poison(&self.state.eval_local).insert(canonical.to_owned())
+        {
+            return;
+        }
+        self.state.speculation.request_again(canonical);
+    }
+
+    /// The pool's lane, ahead of [`Self::wait_eval_group`]: the speculative
+    /// preparation of the group `id` a queued blocker waits for.
+    pub(crate) fn request_eval_group(&self, id: &str) {
+        self.state.extension_speculation.request(id);
     }
 
     /// The pool's lane: wait (at most a few seconds) for the speculative
