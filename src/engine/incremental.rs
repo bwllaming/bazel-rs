@@ -178,9 +178,11 @@ pub(super) struct Tracker {
     accesses: FxHashSet<(u32, u32)>,
     /// (key, package, target name): the main-repository targets each
     /// key's analysis looked up.
-    label_accesses: FxHashSet<(u32, u32, String)>,
+    label_accesses: hashbrown::HashSet<(u32, u32, String), crate::fast_hash::FxBuildHasher>,
     packages: Vec<PackageRecord>,
-    package_ids: FxHashMap<PackageId, u32>,
+    /// (hashbrown: looked up by a label's parts, no `PackageId` built per
+    /// access.)
+    package_ids: hashbrown::HashMap<PackageId, u32, crate::fast_hash::FxBuildHasher>,
     shared_keys: BTreeSet<u32>,
     /// Keys whose analysis printed (`print()` in an implementation, an
     /// aspect or a transition while the key's frame was innermost).
@@ -375,9 +377,23 @@ impl Tracker {
     }
 
     fn package(&mut self, package: &PackageId) -> u32 {
-        if let Some(id) = self.package_ids.get(package) {
+        self.package_of(&package.repository, &package.package)
+    }
+
+    /// [`Self::package`] by its parts (the id of a known package without
+    /// building its `PackageId`).
+    fn package_of(&mut self, repository: &str, package: &str) -> u32 {
+        let parts = PackageParts {
+            repository,
+            package,
+        };
+        if let Some(id) = self.package_ids.get(&parts) {
             return *id;
         }
+        let package = PackageId {
+            repository: repository.to_owned(),
+            package: package.to_owned(),
+        };
         let id = self.packages.len() as u32;
         self.packages.push(PackageRecord {
             id: Some(package.clone()),
@@ -443,8 +459,7 @@ impl Tracker {
     }
 
     fn access(&mut self, label: &Label) {
-        let package = label.package_id();
-        let id = self.package(&package);
+        let id = self.package_of(&label.repository, &label.package);
         let inner = self.frames.last().copied();
         if SUITE_DEPTH.with(Cell::get) > 0 {
             self.suite_packages.insert(id);
@@ -456,7 +471,10 @@ impl Tracker {
         {
             self.accesses.insert((frame, id));
             if label.repository.is_empty() {
-                self.label_accesses.insert((frame, id, label.name.clone()));
+                self.label_accesses
+                    .get_or_insert_with(&LabelAccess(frame, id, &label.name), |access| {
+                        (access.0, access.1, access.2.to_owned())
+                    });
             }
         } else if shared() {
             self.make_global(id, || {
@@ -465,6 +483,29 @@ impl Tracker {
         } else if !self.requested.contains(label) {
             self.make_global(id, || format!("{label} looked up outside every target"));
         }
+    }
+}
+
+/// A [`PackageId`] by its parts (hashes as it: the fields in order).
+#[derive(Hash)]
+struct PackageParts<'a> {
+    repository: &'a str,
+    package: &'a str,
+}
+
+impl hashbrown::Equivalent<PackageId> for PackageParts<'_> {
+    fn equivalent(&self, key: &PackageId) -> bool {
+        self.repository == key.repository && self.package == key.package
+    }
+}
+
+/// A `label_accesses` entry by reference (hashes as the tuple).
+#[derive(Hash)]
+struct LabelAccess<'a>(u32, u32, &'a str);
+
+impl hashbrown::Equivalent<(u32, u32, String)> for LabelAccess<'_> {
+    fn equivalent(&self, key: &(u32, u32, String)) -> bool {
+        self.0 == key.0 && self.1 == key.1 && self.2 == key.2
     }
 }
 
@@ -1748,4 +1789,41 @@ fn rule_modules(
             Some((*key, modules))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod lookup_tests {
+    use super::*;
+    use std::hash::BuildHasher;
+
+    /// The by-reference lookups hash as the stored keys (else a known
+    /// package or access would be missed and recorded twice).
+    #[test]
+    fn by_reference_keys_hash_as_the_stored_ones() {
+        let hasher = crate::fast_hash::FxBuildHasher::default();
+        for (repository, package) in [("", ""), ("", "a/b"), ("r+", ""), ("ab", "c")] {
+            let id = PackageId {
+                repository: repository.to_owned(),
+                package: package.to_owned(),
+            };
+            let parts = PackageParts {
+                repository,
+                package,
+            };
+            assert_eq!(hasher.hash_one(&id), hasher.hash_one(&parts));
+            assert!(hashbrown::Equivalent::equivalent(&parts, &id));
+            let stored = (3u32, 7u32, format!("{repository}{package}"));
+            let access = LabelAccess(3, 7, &stored.2);
+            assert_eq!(hasher.hash_one(&stored), hasher.hash_one(&access));
+            assert!(hashbrown::Equivalent::equivalent(&access, &stored));
+        }
+        let mut tracker = Tracker::default();
+        let a = tracker.package(&PackageId {
+            repository: String::new(),
+            package: "a".to_owned(),
+        });
+        assert_eq!(tracker.package_of("", "a"), a);
+        assert_ne!(tracker.package_of("", "b"), a);
+        assert_eq!(tracker.packages.len(), 2);
+    }
 }
