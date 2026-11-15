@@ -41,10 +41,15 @@ impl Workspace {
     }
 
     fn run(&self, args: &[&str]) -> Output {
+        self.run_env(&[], args)
+    }
+
+    fn run_env(&self, env: &[(&str, &str)], args: &[&str]) -> Output {
         let output = Command::new("timeout")
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", "--cache-dir=private-cache"])
             .args(args)
+            .envs(env.iter().copied())
             .current_dir(self.path())
             .explicit_modules()
             .output()
@@ -1244,4 +1249,39 @@ many(name = "many")
     );
     // Many string-keyed accesses in one implementation.
     assert_eq!(ws.built(&["//esc:many"]), "300 300 linux\n");
+}
+
+/// The evaluator hints each registered toolchain to its pool as the
+/// expansion finds it (`BAZEL_RS_EVAL_REGISTRATION_HINTS`): an invalid
+/// pattern after a valid one fails the same way, with the same output,
+/// with hints as without.
+#[test]
+fn registration_hints_keep_errors_after_valid_registrations() {
+    for invalid in ["//nothere:all", "//nothere/...", "//tc:nothere"] {
+        let ws = Workspace::new(
+            &format!("module(name = 'main')\nregister_toolchains('//tc:linux', '{invalid}')\n"),
+            &[],
+        );
+        let mut reference: Option<(Option<i32>, Vec<u8>, String)> = None;
+        for hints in ["1", "0", "1"] {
+            let output = ws.run_env(
+                &[
+                    ("BAZEL_RS_ANALYSIS", "eval"),
+                    ("BAZEL_RS_EVAL_REGISTRATION_HINTS", hints),
+                ],
+                &["build", "--host_platform=//p:linux", "//u:o"],
+            );
+            let diagnostic =
+                normalize_config(&errors(&output).replace(&ws.path().display().to_string(), "WS"));
+            assert!(
+                diagnostic.contains(&format!("invalid registered toolchain '{invalid}'")),
+                "{invalid}: {diagnostic}"
+            );
+            let run = (output.status.code(), output.stdout.clone(), diagnostic);
+            match &reference {
+                None => reference = Some(run),
+                Some(reference) => assert_eq!(&run, reference, "{invalid}: hints={hints}"),
+            }
+        }
+    }
 }

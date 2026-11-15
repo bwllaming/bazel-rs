@@ -1245,3 +1245,88 @@ good = module_extension(implementation = _good_impl)\n",
     assert!(failure.contains("a fails early"), "{failure}");
     assert!(!failure.contains("good extension runs"), "{failure}");
 }
+
+/// A wide `.bzl` fan-out (the pattern workers' `.bzl` helpers,
+/// `BAZEL_RS_BZL_HELPERS`) one of whose loads is in a repository not
+/// fetched yet (the no-demand sentinel on the workers and their helpers):
+/// cold and warm, the output is the same with helpers as without.
+#[test]
+fn bzl_helpers_keep_output_with_an_unfetched_leaf_repository() {
+    let ws = Workspace::new();
+    ws.file("registry/bazel_registry.json", "{\"mirrors\": []}\n");
+    ws.file(
+        "registry/modules/ext/1.0/MODULE.bazel",
+        "module(name='ext', version='1.0')\n",
+    );
+    ws.file(
+        "registry/modules/ext/1.0/source.json",
+        &format!(
+            "{{\"type\": \"local_path\", \"path\": {}}}\n",
+            json_string(&ws.0.join("ext_src"))
+        ),
+    );
+    ws.file("ext_src/MODULE.bazel", "module(name='ext')\n");
+    ws.file("ext_src/BUILD", "");
+    ws.file("ext_src/leaf.bzl", "print('ext leaf')\nvalue = 100\n");
+    ws.file(
+        "MODULE.bazel",
+        "module(name='main')\nbazel_dep(name = 'ext', version = '1.0')\n",
+    );
+    ws.file("hub/BUILD", "");
+    let mut hub = String::new();
+    let mut sum = Vec::new();
+    for i in 0..48 {
+        if i == 30 {
+            hub.push_str(&format!("load('@ext//:leaf.bzl', v{i} = 'value')\n"));
+        } else {
+            ws.file(
+                &format!("hub/leaf{i}.bzl"),
+                &format!("print('leaf {i}')\nvalue = {i}\n"),
+            );
+            hub.push_str(&format!("load('//hub:leaf{i}.bzl', v{i} = 'value')\n"));
+        }
+        sum.push(format!("v{i}"));
+    }
+    hub.push_str(&format!(
+        "total = {}\ndef _impl(ctx):\n    return DefaultInfo()\nmy_rule = rule(implementation = _impl)\n",
+        sum.join(" + ")
+    ));
+    ws.file("hub/hub.bzl", &hub);
+    for name in ["a", "b", "c", "d", "e", "f"] {
+        ws.file(
+            &format!("{name}/BUILD"),
+            "load('//hub:hub.bzl', 'my_rule', 'total')\nmy_rule(name = 'r')\nprint(total)\n",
+        );
+    }
+    let registry = format!("--registry=file://{}", ws.0.join("registry").display());
+    let args = [
+        "build",
+        registry.as_str(),
+        "--lockfile_mode=off",
+        "--loading_phase_threads=8",
+        "//...",
+    ];
+    let mut reference: Option<Vec<(Vec<u8>, String)>> = None;
+    for helpers in ["8", "0", "8"] {
+        let _ = sealed_trees::remove_tree(ws.0.join("cache"));
+        let env = [("BAZEL_RS_BZL_HELPERS", helpers)];
+        let runs: Vec<(Vec<u8>, String)> = (0..2)
+            .map(|_| {
+                let run = ws.run_env(&env, &args);
+                assert!(run.status.success(), "helpers={helpers}: {}", stderr(&run));
+                (run.stdout.clone(), stderr(&run))
+            })
+            .collect();
+        assert_eq!(runs[0].1.matches("ext leaf").count(), 1, "{}", runs[0].1);
+        assert_eq!(runs[0].1.matches("leaf 47").count(), 1, "{}", runs[0].1);
+        match &reference {
+            None => reference = Some(runs),
+            Some(reference) => assert_eq!(&runs, reference, "helpers={helpers}"),
+        }
+    }
+    // The helpers took part (cold: some of them on the unfetched leaf).
+    let _ = sealed_trees::remove_tree(ws.0.join("cache"));
+    let timed = ws.run_env(&[("BAZEL_RS_TIMING", "1")], &args);
+    let timed = String::from_utf8_lossy(&timed.stderr);
+    assert!(timed.contains("PERF-BZL-HELPERS"), "{timed}");
+}

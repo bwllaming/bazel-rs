@@ -3531,6 +3531,102 @@ scalar = 42
         );
     }
 
+    /// A wide fan-out whose loads fail (a leaf failing after a print, a
+    /// leaf loading the hub: a cycle) loads to the same error and printed
+    /// lines with `.bzl` helpers as without.
+    #[test]
+    fn bzl_helpers_keep_failures_and_cycles_of_wide_fan_outs() {
+        let mut builder = GlobalsBuilder::standard().with(test_globals);
+        crate::debug_print::install(&mut builder);
+        let globals = builder.build();
+        let package = root_package();
+        let width = bzl_helpers::MIN_FANOUT + 8;
+        for (case, odd) in [
+            (
+                "failing leaf",
+                "print('before the failure')\nfail('boom')\nvalue = 0\n",
+            ),
+            ("cycle", "load(':hub.bzl', 'total')\nvalue = total\n"),
+        ] {
+            let temp = Temp::new();
+            temp.file("BUILD", "");
+            temp.file("common.bzl", "print('common')\nc = 1\n");
+            let mut hub = String::new();
+            let mut sum = Vec::new();
+            for i in 0..width {
+                let text = if i == width / 2 {
+                    odd.to_owned()
+                } else {
+                    format!("load(':common.bzl', 'c')\nprint('leaf {i}')\nvalue = {i} + c\n")
+                };
+                temp.file(&format!("leaf{i}.bzl"), &text);
+                hub.push_str(&format!("load(':leaf{i}.bzl', v{i} = 'value')\n"));
+                sum.push(format!("v{i}"));
+            }
+            hub.push_str(&format!("total = {}\n", sum.join(" + ")));
+            temp.file("hub.bzl", &hub);
+            let source = "load(':hub.bzl', 'total')\ntotal\n";
+            let run = |helpers: bool| {
+                let repositories = Arc::new(RepositorySet::new(temp.0.clone()));
+                let prints = LoadPrints::default();
+                let result = {
+                    let _allow = helpers.then(bzl_helpers::allow);
+                    let _guard = crate::repository_demand::no_demand();
+                    let _reuse = crate::repository_demand::reuse_only();
+                    let _committed = crate::repository_demand::committed_unit();
+                    assert_eq!(bzl_helpers::allowed_here(), helpers);
+                    load_build_modules_in(
+                        repositories.clone(),
+                        &package,
+                        &parse(source),
+                        &globals,
+                        &prints,
+                    )
+                };
+                let mut seen = std::collections::HashSet::new();
+                let mut lines = Vec::new();
+                for event in prints.take() {
+                    match event {
+                        LoadPrintEvent::Module { label, line } => {
+                            seen.insert(label);
+                            lines.push(line);
+                        }
+                        LoadPrintEvent::Cached(label) => {
+                            if seen.insert(label.clone()) {
+                                lines.extend(repositories.build_bzl_cache().prints(&label));
+                            }
+                        }
+                        LoadPrintEvent::Build(line) => lines.push(line),
+                    }
+                }
+                let helped = repositories.build_bzl_cache().helped.lock().unwrap().len();
+                let Err(error) = result else {
+                    panic!("{case}: the load succeeded");
+                };
+                (error, lines, helped)
+            };
+            let (plain_error, plain_lines, _) = run(false);
+            let (helped_error, helped_lines, helped) = run(true);
+            assert!(helped > 0, "{case}: the helpers took part");
+            assert_eq!(helped_error, plain_error, "{case}");
+            assert_eq!(helped_lines, plain_lines, "{case}");
+            assert!(
+                !crate::repository_demand::is_inline_rerun_sentinel(&plain_error),
+                "{case}: {plain_error}"
+            );
+            if case == "failing leaf" {
+                assert!(
+                    plain_lines
+                        .iter()
+                        .any(|line| line.contains("before the failure")),
+                    "{plain_lines:?} {plain_error}"
+                );
+            } else {
+                assert!(plain_error.contains("load cycle"), "{plain_error}");
+            }
+        }
+    }
+
     #[test]
     fn shared_build_loads_keep_cycle_depth_and_failure_semantics() {
         let temp = Temp::new();
