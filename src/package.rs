@@ -724,18 +724,20 @@ pub(crate) fn java_call_stack(eval: &Evaluator<'_, '_, '_>) -> Vec<(String, Stri
             .file
             .resolve_span(starlark::codemap::Span::new(position, position));
         let filename = span.filename();
-        let path = Label::parse_canonical(filename)
-            .ok()
-            .and_then(|label| {
-                let root = repositories.as_ref()?.root(&label.repository).ok()?;
-                let path = root.join(&label.package).join(&label.name);
-                Some(
-                    crate::debug_print::displayed_path(&label.repository, root, &path)
-                        .to_string_lossy()
-                        .into_owned(),
-                )
-            })
-            .unwrap_or_else(|| filename.to_owned());
+        let path = crate::label::displayed_source(filename, || {
+            Label::parse_canonical(filename)
+                .ok()
+                .and_then(|label| {
+                    let root = repositories.as_ref()?.root(&label.repository).ok()?;
+                    let path = root.join(&label.package).join(&label.name);
+                    Some(
+                        crate::debug_print::displayed_path(&label.repository, root, &path)
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+                })
+                .unwrap_or_else(|| filename.to_owned())
+        });
         stack.push((
             std::mem::replace(&mut caller, frame.name.clone()),
             format!(

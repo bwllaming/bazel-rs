@@ -27,6 +27,32 @@ thread_local! {
     /// (By package, then by text: a lookup copies neither.)
     static CONVERTED_MEMO: std::cell::RefCell<Option<ConvertedMemo>> =
         const { std::cell::RefCell::new(None) };
+    /// The displayed paths of the source files a rule instantiation's call
+    /// stack names, by module name, while a package evaluates on this
+    /// thread ([`displayed_source`]).
+    static DISPLAYED_MEMO: std::cell::RefCell<Option<crate::fast_hash::FxHashMap<String, String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The memoized displayed path of the module `filename` (crate::package's
+/// `java_call_stack`), computed by `compute` on a miss (memoized only
+/// inside a [`PackageParseMemo`] scope: the modules a package evaluation
+/// names are loaded, their repositories' roots obtained).
+pub(crate) fn displayed_source(filename: &str, compute: impl FnOnce() -> String) -> String {
+    if let Some(cached) = DISPLAYED_MEMO.with(|memo| {
+        memo.borrow()
+            .as_ref()
+            .and_then(|memo| memo.get(filename).cloned())
+    }) {
+        return cached;
+    }
+    let computed = compute();
+    DISPLAYED_MEMO.with(|memo| {
+        if let Some(memo) = memo.borrow_mut().as_mut() {
+            memo.insert(filename.to_owned(), computed.clone());
+        }
+    });
+    computed
 }
 
 type ConvertedMemo =
@@ -96,6 +122,9 @@ pub(crate) fn package_parse_memo() -> PackageParseMemo {
             CONVERTED_MEMO.with(|converted| {
                 *converted.borrow_mut() = Some(Default::default());
             });
+            DISPLAYED_MEMO.with(|displayed| {
+                *displayed.borrow_mut() = Some(Default::default());
+            });
         }
         PackageParseMemo { owner }
     })
@@ -110,6 +139,11 @@ impl Drop for PackageParseMemo {
                 }
             });
             let _ = CONVERTED_MEMO.try_with(|memo| {
+                if let Ok(mut memo) = memo.try_borrow_mut() {
+                    *memo = None;
+                }
+            });
+            let _ = DISPLAYED_MEMO.try_with(|memo| {
                 if let Ok(mut memo) = memo.try_borrow_mut() {
                     *memo = None;
                 }
