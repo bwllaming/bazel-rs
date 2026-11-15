@@ -814,7 +814,7 @@ fn load_build_file_modules(
     if shared && bzl_helpers::allowed_here() {
         let queue = bzl_helpers::Queue::default();
         let width = bzl_helpers::width();
-        return std::thread::scope(|scope| {
+        let loaded = std::thread::scope(|scope| {
             let queue = &queue;
             let shared_repositories = &repositories;
             let spawn = || bzl_helpers::spawn(scope, queue, shared_repositories, globals, width);
@@ -833,16 +833,19 @@ fn load_build_file_modules(
                 Some(helpers),
             );
             queue.stop();
-            if crate::plan_timings::enabled() && queue.taken_by_helpers() > 0 {
-                crate::snapshot::diag::line_fmt(format_args!(
-                    "PERF-BZL-HELPERS package=@@{}//{} helped={}",
-                    package.repository,
-                    package.package,
-                    queue.taken_by_helpers()
-                ));
-            }
             loaded
         });
+        // The helpers joined: their counts are final.
+        if crate::plan_timings::enabled() && queue.taken_by_helpers() > 0 {
+            crate::snapshot::diag::line_fmt(format_args!(
+                "PERF-BZL-HELPERS package=@@{}//{} helped={} sentinels={}",
+                package.repository,
+                package.package,
+                queue.taken_by_helpers(),
+                queue.sentinels()
+            ));
+        }
+        return loaded;
     }
     load_build_file_modules_with(
         repositories,
@@ -1062,6 +1065,14 @@ impl BzlCache {
             .unwrap_or(false)
     }
 
+    /// A helper abandoned `label` without publishing it (a sentinel, a
+    /// cycle, its unit's stop): other units' helpers may take it again.
+    fn unhelp(&self, label: &Label) {
+        if let Ok(mut helped) = self.helped.lock() {
+            helped.remove(label);
+        }
+    }
+
     /// Keep the first evaluation of a label (a later concurrent one is not
     /// published), like a Skyframe value.
     fn insert(&self, label: Label, result: Result<CachedBzl, CachedFailure>) -> Result<(), String> {
@@ -1107,6 +1118,10 @@ impl BzlCache {
         drop(modules);
         if let Ok(mut graphs) = self.load_graphs.lock() {
             graphs.clear();
+        }
+        // Evicted modules may be helped again.
+        if let Ok(mut helped) = self.helped.lock() {
+            helped.retain(|label| !evicted.contains(label));
         }
     }
 
@@ -1687,6 +1702,9 @@ struct Loader<'a> {
     /// A pattern unit's `.bzl` helpers ([`bzl_helpers`]): wide fan-outs
     /// are loaded ahead into the shared cache on helper threads.
     helpers: Option<bzl_helpers::Helpers<'a>>,
+    /// A helper's loader: its unit's traversal is done, stop before the
+    /// next module (never published: [`bzl_helpers::STOPPED`]).
+    stop: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
 enum Work {
@@ -1731,6 +1749,7 @@ impl<'a> Loader<'a> {
             entered_mappings: HashMap::new(),
             entered_lookups: HashMap::new(),
             helpers: None,
+            stop: None,
         }
     }
 
@@ -1822,6 +1841,12 @@ impl<'a> Loader<'a> {
                 Work::Enter(label) => {
                     if self.cache.contains_key(&label) {
                         continue;
+                    }
+                    if self
+                        .stop
+                        .is_some_and(|stop| stop.load(std::sync::atomic::Ordering::Acquire))
+                    {
+                        return Err(bzl_helpers::STOPPED.to_owned());
                     }
                     if active.contains(&label) {
                         return Err(format!("load cycle: {}", chain(&active, &label)));

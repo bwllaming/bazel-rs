@@ -34,6 +34,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
+/// A helper's load stopped because its unit's traversal is done (an
+/// inline-rerun sentinel: never published, like a wait-cycle abort).
+pub(super) const STOPPED: &str = "\u{1}parallel-bzl-cycle: the unit's .bzl helpers stopped";
+
 /// Helpers per unit by default.
 const DEFAULT_WIDTH: usize = 8;
 
@@ -107,7 +111,11 @@ pub(super) struct Queue {
     state: Mutex<State>,
     work: Condvar,
     spawned: AtomicBool,
+    /// Set by [`Queue::stop`]: helpers stop before their next module.
+    stopped: AtomicBool,
     taken_by_helpers: std::sync::atomic::AtomicU64,
+    /// Helper loads that ended in an inline-rerun sentinel.
+    sentinels: std::sync::atomic::AtomicU64,
 }
 
 impl Queue {
@@ -177,12 +185,17 @@ impl Queue {
     /// The unit's traversal is done: helpers finish the label they are on
     /// and exit.
     pub(super) fn stop(&self) {
+        self.stopped.store(true, Ordering::Release);
         self.lock().stop = true;
         self.work.notify_all();
     }
 
     pub(super) fn taken_by_helpers(&self) -> u64 {
         self.taken_by_helpers.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn sentinels(&self) -> u64 {
+        self.sentinels.load(Ordering::Relaxed)
     }
 }
 
@@ -225,6 +238,7 @@ fn helper(queue: &Queue, repositories: &Arc<RepositorySet>, globals: &Globals) {
     let roots = crate::repository::UnitRoots::record();
     let prints = LoadPrints::default();
     let mut loader = Loader::shared_build_phase(Arc::clone(repositories), globals, &prints);
+    loader.stop = Some(&queue.stopped);
     while let Some(label) = queue.next() {
         let cache = repositories.build_bzl_cache();
         if matches!(cache.get(&label), Ok(Some(_))) || !cache.help(&label) {
@@ -232,7 +246,21 @@ fn helper(queue: &Queue, repositories: &Arc<RepositorySet>, globals: &Globals) {
         }
         // Its outcome is the shared cache's: a failure there is the one
         // any worker publishes, a sentinel or a cycle is left to the unit.
-        let _ = loader.load(label);
+        if let Err(error) = loader.load(label.clone())
+            && crate::repository_demand::is_inline_rerun_sentinel(&error)
+        {
+            queue.sentinels.fetch_add(1, Ordering::Relaxed);
+        }
+        match cache.get(&label) {
+            Ok(Some(Err(failure))) => debug_assert!(
+                !crate::repository_demand::is_inline_rerun_sentinel(&failure.error),
+                "a helper published a sentinel for {label}: {}",
+                failure.error
+            ),
+            Ok(Some(Ok(_))) => {}
+            // Abandoned: another unit's helper may take it again.
+            _ => cache.unhelp(&label),
+        }
         prints.take();
     }
     drop(roots.finish());
