@@ -853,6 +853,16 @@ change announced to the other two workers; adding a helper is not.
   compatibility check collects its lookups (`Engine::track_collect_accesses`,
   `Tracker::collected`) and queues them as tape `Access` ops at the current
   position, outside every frame, in the walk's order.
+- 2026-11-15 (eval-speed round 10; no frozen interface changed):
+  `RepositorySet::{registration_packages, request_eval_local,
+  request_eval_group}` (the RegToolchains body hints the registration
+  packages as `Pkg` nodes; a pool load parked on a group or a local rule
+  requests its speculation at once, `BAZEL_RS_EVAL_LANE_AHEAD`);
+  `RootList::contains` (an index of the roots, built at the first lookup;
+  `StoreTrees::anchor` takes a membership predicate);
+  `label::displayed_source` (a per-package memo of `java_call_stack`'s
+  paths); `.bzl` helpers stop at their unit's end (`Loader::stop`) and
+  release abandoned labels (`BzlCache::unhelp`).
 
 ## 4. Stages and gates
 
@@ -4049,6 +4059,56 @@ rule instantiation (~14 % of BUILD evaluation: a per-file path memo);
 `LinkPolicy::anchor` scanning every materialized root per symlink in a
 glob (~10 % of `@zig_config`); the linearizer alone after the pool and
 the `cc_build_info` fallbacks as before.
+
+### Round 10: the registered toolchains' local rules side by side (eval-speed)
+
+Review follow-ups first: a `.bzl` helper's traversal stops before its
+next module once its unit's own traversal is done (`Loader::stop`, an
+unpublished sentinel), a label a helper abandoned (not published) or that
+was evicted may be helped again, a published failure is never a sentinel
+(debug assertion), `PERF-BZL-HELPERS` counts helper loads that ended in a
+sentinel. Tests: a failing leaf, a cycle through the hub (unit, helpers
+on/off), an unfetched leaf repository (tests/parallel_loading.rs, cold and
+warm), an invalid registration after a valid one (tests/toolchains.rs,
+hints on/off).
+
+Measured first: the ~45 `toolchain_config_repo` local rules of
+rules_java's registrations executed one after another (~5 ms each, 0.45
+→ 0.8 s of phase 1) — not on the lane (its queue held one blocker at a
+time) but because each was requested only when the sequential pass
+reached its package (`wait_eval_local` from the inline driver).
+
+What changed:
+
+- **Parked loads request their blocker at once**
+  (`BAZEL_RS_EVAL_LANE_AHEAD`, `0` off): a pool package load parked on an
+  extension group or a local repository rule requests that group's
+  speculative preparation (the rule's speculative execution) right away;
+  the lane and the sequential pass wait for it as before and commit it
+  where they did. With the registration packages hinted as `Pkg` nodes
+  at the expansion's start, the local rules execute side by side at
+  ~0.45 s. local_jdk (it calls `execute()`, never speculated) stays the
+  sequential pass's (~0.09 s after round 1). Repository order: only the
+  speculations' start moves (they were requested by the same waits a few
+  hundred ms later); flagged for review.
+- **`LinkPolicy::anchor`** finds the longest materialized root containing
+  a link target by its ancestors in an index of the roots (it compared
+  every root, ~4,000, per symlink): `@zig_config` −30 ms.
+- **`java_call_stack`** resolves each module's displayed path once per
+  package evaluation: `//src/ts`'s BUILD evaluation 0.25 → 0.22 s.
+
+Measured (2026-11-15, non-LTO, alternating, load 14–20, main + the
+follow-ups vs round 10): requested #0 1.58–1.70 → 1.23–1.38 s, graph
+dropped 4.98–5.25 → 4.59–4.93 s, `INFO: Elapsed time` (with
+`BAZEL_RS_TIMING`) 13.52–13.71 → 12.91–13.19 s; RSS unchanged. Identical:
+the action dumps (`build`, `PARITY_REVERSE`, `test --nobuild`), the
+record dump, the miss dump; the verify modes clean; the lockfiles
+untouched (warm).
+
+Left: round 1 ends with `@zig_config` (~0.55 s of BUILD evaluation: label
+conversion and globs); the linearizer alone after the pool (~1 s: pass 1's
+lookups in the store's hash maps, tape growth); the deferred walk's last
+~1.5 s on the cursor's CPU (`merge_starlark`); `cc_build_info`'s fallbacks.
 
 ### Effort
 
