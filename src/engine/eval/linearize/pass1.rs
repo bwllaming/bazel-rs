@@ -331,6 +331,9 @@ pub(crate) struct Pass1 {
     roots: Vec<(Label, ConfiguredTargetKey)>,
     /// The toolchain implementations added since the driver last took them.
     new_implementations: Vec<ConfiguredTargetKey>,
+    /// [`Linearized::toolchain_implementations`] hashed (pass 1's lookups;
+    /// the ordered map is the output).
+    implementations: FxHashMap<ConfiguredTargetKey, Label>,
     /// At most this many events per [`Pass1::resume`] (then it returns
     /// `Blocked` with no blocker: the caller resumes later).
     budget: Option<usize>,
@@ -454,6 +457,7 @@ impl Pass1 {
             root_pending: None,
             roots: Vec::new(),
             new_implementations: Vec::new(),
+            implementations: FxHashMap::default(),
             budget: None,
             yield_to: None,
             paused: false,
@@ -868,7 +872,7 @@ impl Pass1 {
             Event::ToolchainImpl(ref needed) => {
                 let (implementation, exec_platform) =
                     (&needed.implementation, &needed.exec_platform);
-                match self.out.toolchain_implementations.get(implementation) {
+                match self.implementations.get(implementation) {
                     Some(existing) if existing != exec_platform => {
                         // The walk's `toolchain_implementation` fails here
                         // (at the consumer's location) and the build stops.
@@ -884,6 +888,8 @@ impl Pass1 {
                     None => {
                         self.out
                             .toolchain_implementations
+                            .insert(implementation.clone(), exec_platform.clone());
+                        self.implementations
                             .insert(implementation.clone(), exec_platform.clone());
                         self.new_implementations.push(implementation.clone());
                     }
@@ -1104,11 +1110,11 @@ impl Pass1 {
             ));
         }
         if let Some(forced) = &ct.forced_exec
-            && self.out.toolchain_implementations.get(key) != Some(forced)
+            && self.implementations.get(key) != Some(forced)
         {
             self.out.divergences.push(format!(
                 "{key}: analyzed with the forced execution platform {forced}, the first-visit one is {:?}",
-                self.out.toolchain_implementations.get(key)
+                self.implementations.get(key)
             ));
         }
         let chain = self.chains.last().expect("a segment's chain");

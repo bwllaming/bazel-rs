@@ -47,6 +47,7 @@ use super::super::super::{
     ResolutionError, RuleKind, Target, TransitionDetails, forwards,
 };
 use super::super::cycles::{CycleHandler, Resolution, WaitGraph};
+use super::super::dense::{DenseMap, DenseSet};
 use super::super::key::{CtKey, NodeId, NodeKey};
 use super::super::nodes::bodies::{Coord, Phase1Bodies, Running, push_running, with_running};
 use super::super::nodes::eval_host::edge_ct_key;
@@ -150,22 +151,22 @@ pub(in crate::engine) enum Published {
 /// The finished transcripts, the segments and the captured console writes.
 #[derive(Default)]
 pub(crate) struct Store {
-    pub(crate) keys: FxHashMap<NodeId, NodeKey>,
-    pub(crate) transcripts: FxHashMap<NodeId, Transcript>,
-    pub(crate) memo_ok: FxHashMap<NodeId, bool>,
+    pub(crate) keys: DenseMap<NodeKey>,
+    pub(crate) transcripts: DenseMap<Transcript>,
+    pub(crate) memo_ok: DenseMap<bool>,
     pub(crate) segments: Vec<(SegmentKind, Vec<Event>)>,
     pub(crate) segments_done: bool,
     pub(crate) consoles: Vec<Option<crate::ui::Deferred>>,
     /// What an abandoned attempt captured that happened anyway (console
     /// writes, warnings): its rerun's.
-    pub(crate) carry: FxHashMap<NodeId, Vec<Event>>,
+    pub(crate) carry: DenseMap<Vec<Event>>,
     /// The engine's warnings already accounted for.
     pub(crate) warnings_seen: usize,
     /// Memo values to publish, in completion order.
     pub(crate) published: Vec<Published>,
     /// Transcripts pass 1 has replayed for the last time, freed (eval's
     /// memory stays near the walk's: ~/code emits millions of events).
-    pub(crate) released: FxHashSet<NodeId>,
+    pub(crate) released: DenseSet,
     /// A rerun emitted other events than its abandoned attempt (an internal
     /// error: pass 1 may have replayed them).
     pub(crate) rerun_mismatch: Option<String>,
@@ -188,7 +189,7 @@ pub(crate) struct Store {
     pub(crate) roots: FxHashMap<NodeId, Vec<String>>,
     /// The nodes the tape replayed (entered or first used) already: what
     /// they observe once done is committed at once.
-    pub(crate) replayed: FxHashSet<NodeId>,
+    pub(crate) replayed: DenseSet,
     /// The packages whose Pkg node the tape used already.
     pub(crate) replayed_packages: FxHashSet<crate::label::PackageId>,
     /// Source-file lookups' missing inputs and source directories (Tgt
@@ -534,12 +535,17 @@ impl Coord<'_> {
                 .filter(|op| matches!(op, TapeOp::Plan { .. }))
                 .count();
         self.store.release(&mut lin.pass, planned);
+        lin.plan.reserve(planned.saturating_sub(lin.plan.len()));
         // The walk fails at pass 1's stop: what precedes it is applied.
         let stopped = lin.pass.stopped().map(str::to_owned);
         let started = std::time::Instant::now();
         let mut ops = std::mem::take(&mut lin.ops);
-        // snapshot-unrecorded: a diagnostics dump of the tape; it changes nothing the analysis computes.
-        if let Some(path) = std::env::var_os("BAZEL_RS_EVAL_TAPE_DUMP") {
+        static TAPE_DUMP: std::sync::LazyLock<Option<std::ffi::OsString>> =
+            std::sync::LazyLock::new(|| {
+                // snapshot-unrecorded: a diagnostics dump of the tape; it changes nothing the analysis computes.
+                std::env::var_os("BAZEL_RS_EVAL_TAPE_DUMP")
+            });
+        if let Some(path) = TAPE_DUMP.as_ref() {
             use std::io::Write as _;
             // snapshot-unrecorded: writes the diagnostics dump requested above.
             if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -1969,7 +1975,7 @@ struct View<'a> {
     store: &'a Store,
     stack: &'a [Running],
     /// The done CT1 values by node (`Coord::ct1_by_node`).
-    ct1_values: &'a FxHashMap<NodeId, Arc<Ct1Value>>,
+    ct1_values: &'a DenseMap<Arc<Ct1Value>>,
 }
 
 impl View<'_> {
@@ -2802,8 +2808,11 @@ fn linearizer_times() -> String {
 
 /// BAZEL_RS_EVAL_STATS=1.
 fn stats_enabled() -> bool {
-    // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
-    std::env::var_os("BAZEL_RS_EVAL_STATS").is_some()
+    static STATS_ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
+        std::env::var_os("BAZEL_RS_EVAL_STATS").is_some()
+    });
+    *STATS_ON
 }
 
 /// Pass 1's events per step while the pool serves.

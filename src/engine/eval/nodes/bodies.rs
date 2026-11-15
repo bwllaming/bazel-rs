@@ -46,7 +46,7 @@ pub(crate) struct Coord<'e> {
     /// configured target).
     pub(crate) ct1_values: FxHashMap<CtKey, Arc<Ct1Value>>,
     /// The same values by node (pass 1's reads: no key hashed or compared).
-    pub(crate) ct1_by_node: FxHashMap<NodeId, Arc<Ct1Value>>,
+    pub(crate) ct1_by_node: crate::engine::eval::dense::DenseMap<Arc<Ct1Value>>,
     /// The source files whose analysis succeeded (`analyzed_sources`).
     pub(crate) sources: FxHashSet<Label>,
     /// BAZEL_RS_EVAL_RESTARTS: the needs answered `Missing` once.
@@ -587,7 +587,7 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
                 lin: None,
                 ct1_done: Arc::clone(&ct1_done),
                 ct1_values: FxHashMap::default(),
-                ct1_by_node: FxHashMap::default(),
+                ct1_by_node: Default::default(),
                 sources: FxHashSet::default(),
                 restarted: FxHashSet::default(),
                 speculated: Vec::new(),
@@ -1134,7 +1134,7 @@ impl Coord<'_> {
     /// An attempt of `id` begins: its key is known (its carried events
     /// are the [`Inbox`]'s).
     pub(crate) fn begin_attempt(&mut self, id: NodeId, key: &NodeKey) {
-        self.store.keys.entry(id).or_insert_with(|| key.clone());
+        self.store.keys.get_or_insert_with(id, || key.clone());
         // The abandoned attempt's events stay visible to pass 1 while the
         // rerun runs (on a pool thread nothing else shows them; the rerun
         // re-emits them first): replaced when it finishes or stops.
