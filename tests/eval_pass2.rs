@@ -680,11 +680,11 @@ filegroup(name = "all", srcs = [":everything", ":picked", ":named"])
             .unwrap_or_else(|error| panic!("the index dump: {error}: {}", stable(&output)));
         (dumped, String::from_utf8_lossy(&output.stderr).into_owned())
     };
-    // (The natives committed at their turn, as before snapshot-miss-speed.
-    // Not the walk's index: on this fixture main's evaluator records one
-    // label access the walk does not — `//p3:other` looking up `//:all` —
-    // whatever the natives do; reported as an open item.)
-    let (walk, _) = tracked("eval", &[("BAZEL_RS_T3_TRACKED_NATIVES", "0")]);
+    // The walk's index; the natives committed at their turn (as before
+    // snapshot-miss-speed) record it too.
+    let (walk, _) = tracked("walk", &[]);
+    let (committed, _) = tracked("eval", &[("BAZEL_RS_T3_TRACKED_NATIVES", "0")]);
+    assert_eq!(committed, walk, "the committed natives' index");
     let (merged, stderr) = tracked("eval", &[]);
     assert_eq!(merged, walk, "the merged natives' index");
     // (The buffer's PERF line: natives merged as published.)
@@ -1094,6 +1094,65 @@ fn the_profile_has_the_walks_targets_and_packages() {
         }
         if threads > 1 {
             assert!(got.categories.contains("skyframe evaluator"), "{what}");
+        }
+    }
+}
+
+/// The incremental index of an evaluation whose requested targets end in
+/// a deferred flush (a config_setting with Starlark `flag_values`, its
+/// phase 2 pending at the requested target's compatibility check) is the
+/// walk's: the check's lookup of the requested target is recorded outside
+/// every frame, as the walk records it (not as the pending flush's
+/// config_setting's lookup: an access the walk does not have).
+#[test]
+fn the_compatibility_checks_lookups_are_the_walks_with_a_flush_pending() {
+    // (An incompatible target the wildcards skip: its check looks up more.)
+    let ws = Workspace::new(
+        2,
+        r#"printing(name = "nope", text = "nope", deps = ["//p1:top"], target_compatible_with = ["@@platforms//:incompatible"])"#,
+    );
+    let index = ws.path().join("tmp/index.txt");
+    let tracked = |mode: &str, threads: usize, env: &[(&str, &str)], target: &str| {
+        let _ = fs::remove_file(&index);
+        let mut all: Vec<(&str, &str)> = vec![
+            ("BAZEL_RS_SNAPSHOT", "on"),
+            ("BAZEL_RS_SNAPSHOT_INDEX_DUMP", index.to_str().unwrap()),
+        ];
+        all.extend_from_slice(env);
+        let output = ws.build(
+            mode,
+            threads,
+            &all,
+            &[target, "--experimental-builtin-modules=true"],
+        );
+        assert!(
+            output.status.success(),
+            "{mode} {env:?}: {}",
+            stable(&output)
+        );
+        fs::read_to_string(&index).unwrap_or_else(|error| {
+            panic!(
+                "{mode} {threads} {env:?} {target}: the index dump: {error}: {}",
+                stable(&output)
+            )
+        })
+    };
+    for target in [
+        "//p0:top",
+        "//p1:leaf",
+        "//:everything",
+        "//...",
+        "//p0:all",
+    ] {
+        let walk = tracked("walk", 1, &[], target);
+        for (threads, env) in [
+            (8, &[][..]),
+            (8, &[("BAZEL_RS_EVAL_FROZEN_PREPARES", "all")][..]),
+            (2, &[][..]),
+            (32, &[("BAZEL_RS_EVAL_RESTARTS", "5")][..]),
+        ] {
+            let eval = tracked("eval", threads, env, target);
+            assert_eq!(eval, walk, "{target} at {threads} threads {env:?}");
         }
     }
 }

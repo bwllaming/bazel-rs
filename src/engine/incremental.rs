@@ -221,6 +221,10 @@ pub(super) struct Tracker {
     /// target's turn ([`Engine::track_replay`]), so the recording is the
     /// sequential engine's.
     deferred: Option<Vec<Deferred>>,
+    /// While [`Engine::track_collect_accesses`] runs: the target lookups,
+    /// held instead of recorded (the caller records them where the walk
+    /// does).
+    collected: Option<Vec<Label>>,
     /// The lookup tables were dropped ([`Self::compact`]).
     compacted: bool,
 }
@@ -275,6 +279,7 @@ impl Tracker {
             suite_packages: self.suite_packages.clone(),
             costs: self.costs.clone(),
             deferred: None,
+            collected: None,
             compacted: self.compacted,
         }
     }
@@ -968,13 +973,38 @@ impl Engine {
             capture.push(label.clone());
         }
         if let Some(tracker) = self.incremental.as_mut() {
-            if tracker.deferred.is_none() {
+            if let Some(collected) = tracker.collected.as_mut() {
+                collected.push(label.clone());
+            } else if tracker.deferred.is_none() {
                 tracker.access(label);
             } else {
                 let label = label.clone();
                 self.track_with(move |tracker| tracker.access(&label));
             }
         }
+    }
+
+    /// Run `f` with its target lookups ([`Self::track_access`]) held, not
+    /// recorded: returned in order, for the caller to record where the
+    /// walk's tracker does (BAZEL_RS_ANALYSIS=eval: the requested target's
+    /// compatibility check while a deferred flush's tracker ops are
+    /// pending, the tracker still inside the frames they leave).
+    pub(super) fn track_collect_accesses<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> (R, Vec<Label>) {
+        let outer = self
+            .incremental
+            .as_mut()
+            .map(|tracker| tracker.collected.replace(Vec::new()));
+        let result = f(self);
+        let collected = match (self.incremental.as_mut(), outer) {
+            (Some(tracker), Some(outer)) => {
+                std::mem::replace(&mut tracker.collected, outer).unwrap_or_default()
+            }
+            _ => Vec::new(),
+        };
+        (result, collected)
     }
 
     /// Print a line an analysis printed (`print()`), noting the configured

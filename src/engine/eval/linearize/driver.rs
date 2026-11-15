@@ -361,6 +361,24 @@ impl Linearizer {
             None => f(self),
         }
     }
+
+    /// The tape's tracker ops wait for a deferred flush's walk: the
+    /// tracker is behind the tape (still in the frames they leave).
+    fn tracker_paused(&self) -> bool {
+        !(self.track.is_empty() && self.segments.is_empty())
+    }
+
+    /// A target lookup made outside the tape (the requested target's
+    /// compatibility) recorded as the tape's access at the current
+    /// position, after the tracker ops pending before it.
+    fn track_access(&mut self, label: Label) {
+        if let Some(track) = self
+            .replay
+            .compact(&TapeOp::Effect(Event::Access(label)), None)
+        {
+            self.track.push(self.position as u32, track);
+        }
+    }
 }
 
 impl Coord<'_> {
@@ -3302,7 +3320,22 @@ fn drive(
             };
             coord.publish(&mut lin, shared, false);
             let checked = coord.with_engine(&mut lin, shared, |engine, lin| {
-                engine.check_requested_compatibility(&lin.configured, label, top)
+                // The walk checks after the requested target's analysis,
+                // its tracker outside every frame: while a deferred
+                // flush's tracker ops are pending (the tracker still in
+                // the frames they leave) the check's lookups wait behind
+                // them, as tape accesses at this position.
+                if lin.tracker_paused() {
+                    let (checked, accesses) = engine.track_collect_accesses(|engine| {
+                        engine.check_requested_compatibility(&lin.configured, label, top)
+                    });
+                    for label in accesses {
+                        lin.track_access(label);
+                    }
+                    checked
+                } else {
+                    engine.check_requested_compatibility(&lin.configured, label, top)
+                }
             });
             coord.lin = Some(lin);
             // A deferred flush before it that fails is the walk's error
