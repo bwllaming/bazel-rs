@@ -847,6 +847,12 @@ change announced to the other two workers; adding a helper is not.
   `BzlCache::helped`), allowed only on a pattern-loading worker's thread
   (`loading::allow_bzl_helpers`) in its no-demand, reuse-only,
   committed-unit mode.
+- 2026-11-15 (index-parity; no frozen interface changed):
+  `Linearizer::{tracker_paused, track_access}` (beside `direct`): while
+  deferred tracker ops are queued, the driver's requested-target
+  compatibility check collects its lookups (`Engine::track_collect_accesses`,
+  `Tracker::collected`) and queues them as tape `Access` ops at the current
+  position, outside every frame, in the walk's order.
 
 ## 4. Stages and gates
 
