@@ -515,7 +515,7 @@ fn recorded_input_paths_are_genuine_repo_cache_friendly_keys() {
     // which the pre-i20 lockfile keys were not genuine's (receipt).
     let receipt = receipt();
     // The genuine marker keys of @@+reader+reader, in recording order (the
-    // native probes do not model REPO_MAPPING lines).
+    // REPO_MAPPING lines are the native probes' `mappings`, below).
     let genuine: Vec<&str> = receipt["genuine"]["cold"]["marker_lines"]
         .as_array()
         .unwrap()
@@ -527,6 +527,20 @@ fn recorded_input_paths_are_genuine_repo_cache_friendly_keys() {
             key.split_once(':').unwrap().1
         })
         .collect();
+    // REPO_MAPPING:<from>,<apparent> <canonical> (RepoRecordedInput
+    // .RecordedRepoMapping): the `Label()` lookups while the rule ran.
+    let genuine_mappings: Vec<Value> = receipt["genuine"]["cold"]["marker_lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|line| line.as_str().unwrap().strip_prefix("REPO_MAPPING:"))
+        .map(|line| {
+            let (key, canonical) = line.split_once(' ').unwrap();
+            let (from, apparent) = key.split_once(',').unwrap();
+            serde_json::json!([from, apparent, canonical])
+        })
+        .collect();
+    assert!(!genuine_mappings.is_empty());
     for inside in [false, true] {
         let ws = Workspace::new();
         let outside = outside_cache();
@@ -537,7 +551,13 @@ fn recorded_input_paths_are_genuine_repo_cache_friendly_keys() {
         };
         ws.query(&cache, &[]);
         let (_, recorded) = reader(&cache);
-        assert_eq!(recorded["version"], 2);
+        // Version 5: the probes record the rule's mapping lookups.
+        assert_eq!(recorded["version"], 5);
+        assert_eq!(
+            recorded["mappings"].as_array().unwrap(),
+            &genuine_mappings,
+            "cache inside the workspace: {inside}"
+        );
         let native: Vec<&str> = recorded["files"]
             .as_array()
             .unwrap()

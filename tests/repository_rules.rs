@@ -182,7 +182,11 @@ fn label_template_repositories_keep_their_pre_n21_publication_identity() {
     // the built-in @bazel_tools entry (Bazel 9.3 ModuleThreadContext.java:383-401).
     // Sealed trees intentionally rekeyed both again: the identity covers the
     // published (sealed) modes, without write bits (docs/REPOSITORY_SLOTS.md;
-    // the previous direct pin was 8cc88f0f…).
+    // the previous direct pin was 8cc88f0f…). repo-mapping-key rekeyed both
+    // once more: the provenance frames the definition closure's digests and
+    // used mapping entries instead of every source and whole mappings
+    // (docs/REPO_CONTENTS_CACHE.md "Keys and repository mappings"; the
+    // previous direct pin was bd52c6d6…).
     let f = Fixture::new();
     f.file("MODULE.bazel", "module(name='main')\nmake = use_repo_rule('//:defs.bzl','make')\nmake(name='made', source='//:data.tpl')\n");
     f.file("BUILD.bazel", "genrule(name='copy',srcs=['@made//:data.txt','@made//:tool.sh'],outs=['copy.txt'],cmd='cat $(SRCS) > $@')\n");
@@ -202,7 +206,7 @@ fn label_template_repositories_keep_their_pre_n21_publication_identity() {
     if golden {
         assert_eq!(
             identity(&f),
-            "bd52c6d6bcba7803d5d78e6409c3937e37e19a9ffe3c7da0bb342b6f0d5bdaf6"
+            "824c6404a28734411504beb24b9cfece641b059b184d8c4bc1e531d10c38b085"
         );
     }
     // Template content changes still rekey through the templates entry.
@@ -235,9 +239,12 @@ fn label_template_repositories_keep_their_pre_n21_publication_identity() {
         // siblings' and the group's mapping (ordinary-file-template-v2;
         // the previous pin was d0e5e900…). Re-pinned for sealed trees: the
         // identity covers the sealed modes (the previous pin was b82a1530…).
+        // Re-pinned for repo-mapping-key: the closure as digests and used
+        // mapping entries, no imports (ordinary-file-template-v3; the
+        // previous pin was c415af2d…).
         assert_eq!(
             identity(&f),
-            "c415af2d48446aa4b3ab8e049ab356e0a64fd284352aa2ab8d97679850ee65e9"
+            "189b2f2409b3c4990e00fe7222830402d79d335054f7456470eb88132d2813f9"
         );
     }
 }
