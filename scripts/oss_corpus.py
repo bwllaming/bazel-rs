@@ -355,12 +355,20 @@ def clone(project, src):
     dest = os.path.join(src, project["name"])
     if os.path.isdir(os.path.join(dest, ".git")):
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=dest, capture_output=True, text=True).stdout.strip()
-        if head == project["commit"]:
+        if head == project["commit"] and not (
+            project.get("submodules") and not os.listdir(dest)
+        ):
+            if project.get("submodules"):
+                git(["submodule", "update", "-q", "--init", "--recursive", "--depth", "1"], dest)
             return dest
     os.makedirs(dest, exist_ok=True)
     git(["init", "-q"], dest)
-    git(["fetch", "-q", "--depth", "1", project["git"], project["commit"]], dest)
+    # An origin remote resolves relative submodule URLs.
+    subprocess.run(["git", "remote", "add", "origin", project["git"]], cwd=dest, stderr=subprocess.DEVNULL)
+    git(["fetch", "-q", "--depth", "1", "origin", project["commit"]], dest)
     git(["checkout", "-q", "--force", "FETCH_HEAD"], dest)
+    if project.get("submodules"):
+        git(["submodule", "update", "-q", "--init", "--recursive", "--depth", "1"], dest)
     return dest
 
 
