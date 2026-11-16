@@ -60,6 +60,7 @@ static MISSES: std::sync::Mutex<Vec<(String, &'static str)>> = std::sync::Mutex:
 
 /// Notes why `canonical` was not served (`verbose` statistics only).
 pub fn note_miss(canonical: &str, reason: &'static str) {
+    // snapshot-unrecorded: a diagnostics switch; no result depends on it.
     if std::env::var_os("BAZEL_RS_REMOTE_REPO_CACHE_STATS").is_some_and(|value| value == "verbose")
     {
         MISSES
@@ -763,6 +764,8 @@ fn upload_pack(
         .filter(|entry| !entry.directory && entry.symlink.is_none())
     {
         let path = tree.join(&entry.path);
+        // snapshot-unrecorded: uploading a published tree (each file checked
+        // against its manifest digest); no result depends on the read.
         let mut file = std::fs::File::open(&path).map_err(|error| {
             CacheError::Other(format!("cannot read {}: {error}", path.display()))
         })?;
@@ -800,6 +803,7 @@ fn upload_pack(
 
 /// `BAZEL_RS_REMOTE_REPO_CACHE_STATS=1`: one stderr line with the counters.
 pub fn report() {
+    // snapshot-unrecorded: a diagnostics switch; no result depends on it.
     if std::env::var_os("BAZEL_RS_REMOTE_REPO_CACHE_STATS").is_none() {
         return;
     }
