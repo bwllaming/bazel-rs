@@ -2434,8 +2434,22 @@ fn remote_hit(
         else {
             continue;
         };
-        if !validate(slot, &outside).unwrap_or(false) {
-            crate::remote_repo_cache::note_miss(stage_key, "recorded inputs changed");
+        let holds = validate(slot, &outside);
+        // A check that needs a repository this thread may not fetch (a
+        // speculation worker: crate::repository_demand) decides nothing:
+        // the attempt aborts like an execution demanding it would, and is
+        // retried where the demand can be made — never a miss followed by
+        // an execution of the rule.
+        if let Err(error) = &holds
+            && crate::repository_demand::is_needs_repository(error)
+        {
+            return Err(error.clone());
+        }
+        if !holds.as_ref().is_ok_and(|holds| *holds) {
+            crate::remote_repo_cache::note_miss(
+                stage_key,
+                &changed_reason("recorded inputs changed", &holds),
+            );
             continue;
         }
         let downloaded = {
@@ -2443,11 +2457,20 @@ fn remote_hit(
             let _fetching = crate::progress::fetching_repository(stage_key);
             crate::remote_repo_cache::download(&candidate, slot)
         };
+        let holds = match downloaded {
+            Ok(true) => validate(slot, &candidate.recorded),
+            _ => Ok(false),
+        };
+        if let Err(error) = &holds
+            && crate::repository_demand::is_needs_repository(error)
+        {
+            return Err(error.clone());
+        }
         match downloaded {
             // The whole record — with the probes of files inside the tree
             // itself (`stage:`) — holds for the downloaded tree, as a warm
             // reuse checks it; else a miss.
-            Ok(true) if validate(slot, &candidate.recorded).unwrap_or(false) => {
+            Ok(true) if holds == Ok(true) => {
                 return Ok(Some(Executed {
                     inputs: candidate.inputs,
                     recorded: candidate.recorded,
@@ -2455,11 +2478,21 @@ fn remote_hit(
                     reproducible: true,
                 }));
             }
-            Ok(true) => crate::remote_repo_cache::warn(
-                stage_key,
-                "Remote repo contents cache lookup failed",
-                "the recorded inputs do not hold for the cached tree",
-            ),
+            Ok(true) => {
+                if crate::remote_repo_cache::verbose()
+                    && let Some(change) = crate::repository_warm::take_last_change()
+                {
+                    crate::remote_repo_cache::note_miss(
+                        stage_key,
+                        &format!("recorded inputs do not hold for the cached tree: {change}"),
+                    );
+                }
+                crate::remote_repo_cache::warn(
+                    stage_key,
+                    "Remote repo contents cache lookup failed",
+                    "the recorded inputs do not hold for the cached tree",
+                )
+            }
             Ok(false) => crate::remote_repo_cache::note_miss(stage_key, "missing blob"),
             Err(error) => crate::remote_repo_cache::warn(
                 stage_key,
@@ -2471,6 +2504,20 @@ fn remote_hit(
         *slot = writer.fresh()?;
     }
     Ok(None)
+}
+
+/// `what` with the first changed recorded input of a `validate` answer
+/// (`holds`) when the `verbose` statistics name it
+/// (crate::repository_warm::take_last_change; an error names itself).
+fn changed_reason(what: &str, holds: &Result<bool, String>) -> String {
+    if !crate::remote_repo_cache::verbose() {
+        return what.to_owned();
+    }
+    match (holds, crate::repository_warm::take_last_change()) {
+        (Err(error), _) => format!("{what}: error: {error}"),
+        (Ok(_), Some(change)) => format!("{what}: {change}"),
+        (Ok(_), None) => what.to_owned(),
+    }
 }
 
 /// Upload the publication `destination` of a reproducible rule's
@@ -2488,27 +2535,34 @@ fn upload_publication(
     inputs: &[u8],
     validate: Validate<'_>,
 ) {
+    let skip = |reason: &str| crate::remote_repo_cache::note_not_uploaded(stage_key, reason);
     if recorded_workspace(recorded).is_some() {
-        return;
+        return skip("depends on the workspace");
     }
     let Some(manifest) = read_stable(manifest_path)
         .ok()
         .and_then(|bytes| parse_manifest(&bytes))
     else {
-        return;
+        return skip("unreadable manifest");
     };
-    if manifest.self_ref == Some(true)
-        || !manifest.refs.is_empty()
-        || !crate::remote_repo_cache::links_within(
-            &manifest
-                .files
-                .iter()
-                .filter_map(|(path, entry)| Some((path.as_str(), entry.symlink.as_deref()?)))
-                .collect(),
-        )
-        || !validate(destination, recorded).unwrap_or(false)
-    {
-        return;
+    if manifest.self_ref == Some(true) || !manifest.refs.is_empty() {
+        return skip("names a store path");
+    }
+    if !crate::remote_repo_cache::links_within(
+        &manifest
+            .files
+            .iter()
+            .filter_map(|(path, entry)| Some((path.as_str(), entry.symlink.as_deref()?)))
+            .collect(),
+    ) {
+        return skip("a symlink leaves the tree");
+    }
+    let holds = validate(destination, recorded);
+    if !holds.as_ref().is_ok_and(|holds| *holds) {
+        return skip(&changed_reason(
+            "recorded inputs do not hold after the execution",
+            &holds,
+        ));
     }
     let entries = manifest
         .files

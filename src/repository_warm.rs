@@ -526,12 +526,58 @@ pub(crate) fn unchanged(
     tree: &Path,
     recorded: &[u8],
 ) -> Result<bool, String> {
+    let change = first_change(repositories, workspace, tree, recorded);
+    if diagnosing() {
+        LAST_CHANGE.with(|last| {
+            *last.borrow_mut() = match &change {
+                Ok(None) => None,
+                Ok(Some(change)) => Some(change.clone()),
+                Err(error) => Some(format!("error: {error}")),
+            }
+        });
+    }
+    change.map(|change| change.is_none())
+}
+
+thread_local! {
+    /// The first recorded input [`unchanged`] last found changed on this
+    /// thread, kept only while [`diagnosing`] (the remote repo contents
+    /// cache's `verbose` statistics name it, [`take_last_change`]).
+    static LAST_CHANGE: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Whether [`unchanged`] keeps the reason of its last `false` answer
+/// (`BAZEL_RS_REMOTE_REPO_CACHE_STATS=verbose`).
+fn diagnosing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    // snapshot-unrecorded: a diagnostics switch; no result depends on it.
+    *ON.get_or_init(|| {
+        std::env::var_os("BAZEL_RS_REMOTE_REPO_CACHE_STATS").is_some_and(|value| value == "verbose")
+    })
+}
+
+/// The first changed recorded input of this thread's last [`unchanged`]
+/// call that answered `false` (or failed), when [`diagnosing`]; cleared.
+pub(crate) fn take_last_change() -> Option<String> {
+    LAST_CHANGE.with(|last| last.borrow_mut().take())
+}
+
+/// [`unchanged`]'s check, naming the first recorded input that does not
+/// hold (`None`: every one holds). The order of the checks is
+/// [`unchanged`]'s; the text is for diagnostics only.
+fn first_change(
+    repositories: &RepositorySet,
+    workspace: &Path,
+    tree: &Path,
+    recorded: &[u8],
+) -> Result<Option<String>, String> {
     let recorded: RecordedInputs = serde_json::from_slice(recorded)
         .map_err(|error| format!("cannot parse recorded repository inputs: {error}"))?;
     let resolve = match recorded.version {
         1 => resolve_v1,
         2..=5 => resolve_friendly,
-        _ => return Ok(false),
+        version => return Ok(Some(format!("probe version {version} unknown"))),
     };
     // Version 3 (and 4 with one): the publication of the workspace it names
     // only (as written: a probe of version 2 or 1 with a workspace is
@@ -541,27 +587,38 @@ pub(crate) fn unchanged(
         if !matches!(recorded.version, 3..=5)
             || recorded.workspace.as_deref() != Some(current.as_str())
         {
-            return Ok(false);
+            return Ok(Some(format!(
+                "workspace {:?} (now {current:?})",
+                recorded.workspace.as_deref().unwrap_or("")
+            )));
         }
     }
     // Version 4: each repository whose tree the published bytes name still
     // resolves to that tree (written only as version 4).
     if recorded.version == 4 || !recorded.trees.is_empty() {
         if !matches!(recorded.version, 4 | 5) || recorded.trees.is_empty() {
-            return Ok(false);
+            return Ok(Some(format!(
+                "trees in a version {} probe",
+                recorded.version
+            )));
         }
         let source_cache = repositories.source_cache_path()?;
         let store = crate::observed_fs::canonicalize(source_cache)
             .unwrap_or_else(|_| source_cache.to_path_buf());
         for (name, tree) in &recorded.trees {
-            let Ok(root) = repositories.root(name) else {
-                return Ok(false);
-            };
-            let Ok(current) = crate::observed_fs::canonicalize(root) else {
-                return Ok(false);
-            };
-            if current.strip_prefix(&store).ok().and_then(Path::to_str) != Some(tree.as_str()) {
-                return Ok(false);
+            let current = repositories
+                .root(name)
+                .ok()
+                .and_then(|root| crate::observed_fs::canonicalize(root).ok());
+            let current = current
+                .as_deref()
+                .and_then(|current| current.strip_prefix(&store).ok())
+                .and_then(Path::to_str);
+            if current != Some(tree.as_str()) {
+                return Ok(Some(format!(
+                    "tree of @@{name}: {tree} (now {})",
+                    current.unwrap_or("unresolved")
+                )));
             }
         }
     }
@@ -592,19 +649,26 @@ pub(crate) fn unchanged(
             .chain(recorded.files.iter().map(|file| &file.path))
             .any(|recorded| in_store(recorded))
         {
-            return Ok(false);
+            return Ok(Some(
+                "a version 1 probe into the repository store".to_owned(),
+            ));
         }
     }
     // Version 5: every recorded `Label()` mapping lookup resolves as it did
     // (RepoRecordedInput.RecordedRepoMapping.isOutdated).
     if (recorded.version == 5) == recorded.mappings.is_empty() {
-        return Ok(false);
+        return Ok(Some(format!(
+            "{} mapping lookups in a version {} probe",
+            recorded.mappings.len(),
+            recorded.version
+        )));
     }
     for (from, apparent, canonical) in &recorded.mappings {
-        if crate::loading::current_repo_mapping(repositories, from, apparent).as_ref()
-            != Some(canonical)
-        {
-            return Ok(false);
+        let current = crate::loading::current_repo_mapping(repositories, from, apparent);
+        if current.as_ref() != Some(canonical) {
+            return Ok(Some(format!(
+                "mapping @{apparent} from @@{from}: {canonical:?} (now {current:?})"
+            )));
         }
     }
     if let Some(watched) = &recorded.watched_env {
@@ -616,23 +680,31 @@ pub(crate) fn unchanged(
             .ok()
             .flatten();
         if digest.as_deref() != Some(watched.sha256.as_str()) {
-            return Ok(false);
+            return Ok(Some(format!(
+                "watched environment {}",
+                watched.names.join(",")
+            )));
         }
     }
     for template in &recorded.templates {
         let Some(path) = resolve(repositories, workspace, tree, &template.source)? else {
-            return Ok(false);
+            return Ok(Some(format!("template {} (unresolvable)", template.source)));
         };
-        let Ok(bytes) = crate::observed_fs::read(&path) else {
-            return Ok(false);
-        };
-        if sha256(&bytes) != template.sha256 {
-            return Ok(false);
+        let current = crate::observed_fs::read(&path)
+            .map(|bytes| sha256(&bytes))
+            .unwrap_or_else(|_| "unreadable".to_owned());
+        if current != template.sha256 {
+            return Ok(Some(format!(
+                "template {} at {}: {} (now {current})",
+                template.source,
+                path.display(),
+                template.sha256
+            )));
         }
     }
     for file in &recorded.files {
         let Some(path) = resolve(repositories, workspace, tree, &file.path)? else {
-            return Ok(false);
+            return Ok(Some(format!("{} {} (unresolvable)", file.kind, file.path)));
         };
         let state = match file.kind.as_str() {
             "dirents" => crate::repository_ctx::recorded_dirents_state(&path),
@@ -640,10 +712,17 @@ pub(crate) fn unchanged(
             _ => crate::repository_ctx::recorded_file_state(&path),
         };
         if state.as_deref() != Some(file.state.as_str()) {
-            return Ok(false);
+            return Ok(Some(format!(
+                "{} {} at {}: {} (now {})",
+                file.kind,
+                file.path,
+                path.display(),
+                file.state,
+                state.as_deref().unwrap_or("unobservable")
+            )));
         }
     }
-    Ok(true)
+    Ok(None)
 }
 
 /// Resolve one version-2 recorded spelling to a current path: a
@@ -753,6 +832,35 @@ mod tests {
     }
 
     use super::*;
+
+    /// The verbose statistics' reason: the first recorded input that does
+    /// not hold, with its recorded and current state.
+    #[test]
+    fn the_first_changed_input_is_named() {
+        let workspace = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
+        std::fs::write(workspace.path().join("a.txt"), "a\n").unwrap();
+        std::fs::write(workspace.path().join("b.txt"), "changed\n").unwrap();
+        let repositories = RepositorySet::new(workspace.path().to_path_buf());
+        let tree = workspace.path().join("tree");
+        let recorded = format!(
+            r#"{{"version":2,"files":[{{"path":"@@//a.txt","kind":"file","state":"file:{}"}},{{"path":"@@//b.txt","kind":"file","state":"file:{}"}},{{"path":"@@//c.txt","kind":"file","state":"missing"}}]}}"#,
+            sha256(b"a\n"),
+            sha256(b"b\n")
+        );
+        let change = first_change(&repositories, workspace.path(), &tree, recorded.as_bytes());
+        assert_eq!(
+            change,
+            Ok(Some(format!(
+                "file @@//b.txt at {}: file:{} (now file:{})",
+                workspace.path().join("b.txt").display(),
+                sha256(b"b\n"),
+                sha256(b"changed\n")
+            )))
+        );
+        std::fs::write(workspace.path().join("b.txt"), "b\n").unwrap();
+        let unchanged = first_change(&repositories, workspace.path(), &tree, recorded.as_bytes());
+        assert_eq!(unchanged, Ok(None));
+    }
 
     /// Keep-but-never-trust (review i20): probes of a version this binary
     /// does not know — a newer binary's — never validate, so the rule

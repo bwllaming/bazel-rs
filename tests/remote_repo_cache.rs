@@ -361,6 +361,19 @@ use_repo(gen, "watched", "plain", "local_repo", "abs_link")
         verb: &str,
         args: &[&str],
     ) -> Output {
+        self.run_env(ws, cache, startup, verb, args, &[])
+    }
+
+    /// [`Self::run_command`] with the environment variables `envs` too.
+    fn run_env(
+        &self,
+        ws: &Path,
+        cache: &str,
+        startup: &[&str],
+        verb: &str,
+        args: &[&str],
+        envs: &[(&str, &str)],
+    ) -> Output {
         let cache_dir = format!("--cache-dir={}", self.root.join(cache).display());
         let registry = builtin_registry_flag();
         let mut command = Command::new(env!("CARGO_BIN_EXE_bazel-rs"));
@@ -378,7 +391,8 @@ use_repo(gen, "watched", "plain", "local_repo", "abs_link")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.root.join("home"))
             .env("BAZEL_RS_REMOTE_REPO_CACHE_STATS", "1")
-            .env("BAZEL_RS_DUMP_ACTIONS", "1");
+            .env("BAZEL_RS_DUMP_ACTIONS", "1")
+            .envs(envs.iter().copied());
         command.seeded_archives().output().unwrap()
     }
 
@@ -999,5 +1013,134 @@ fn test_commands_report_the_statistics_too() {
         "hits=3 uploads=0",
         "{}",
         String::from_utf8_lossy(&hit.stderr)
+    );
+}
+
+/// The go_deps pattern (gazelle's go_repository watching the `go.env` of
+/// `go_repository_cache`, a repository the cache never stores): many
+/// reproducible repositories each watch a file of one non-reproducible,
+/// slow repository by its host path. On a cold cache in another checkout,
+/// the parallel fetch's workers look them up before the coordinator has
+/// fetched that repository; such a check needs a repository a worker may
+/// not fetch, so the attempt aborts and is retried where the demand is
+/// made — every repository is a hit, none is a `recorded inputs changed`
+/// miss followed by an execution of its rule (the CI diagnosis of
+/// docs/REPO_CONTENTS_CACHE.md "Keys and repository mappings"). Files read
+/// by host path in the workspace and in another repository are recorded
+/// relative to their repository, so the other checkout's path changes
+/// nothing. The `verbose` statistics name the first changed input of a
+/// real change.
+#[test]
+fn inputs_of_an_unfetched_repository_never_turn_a_hit_into_a_miss() {
+    const COUNT: usize = 12;
+    let f = Fixture::new();
+    let remote = f.remote();
+    let workspace = |name: &str, env: &str| {
+        let ws = f.root.join(name);
+        fs::create_dir_all(&ws).unwrap();
+        let names: Vec<String> = (0..COUNT).map(|index| format!("dep{index}")).collect();
+        fs::write(
+            ws.join("MODULE.bazel"),
+            format!(
+                "module(name = \"gocache\")\ngen = use_extension(\"//:rules.bzl\", \"gen\")\nuse_repo(gen, \"cache\", \"slow\", {})\n",
+                names
+                    .iter()
+                    .map(|name| format!("\"{name}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )
+        .unwrap();
+        fs::write(
+            ws.join("rules.bzl"),
+            format!(
+                r#"def _cache(ctx):
+    ctx.execute(["sleep", "1"])
+    ctx.file("BUILD.bazel", "exports_files(['go.env'])\n")
+    ctx.file("go.env", ctx.read(Label("@@//:env.txt")))
+
+cache = repository_rule(_cache)
+
+def _slow(ctx):
+    ctx.execute(["sleep", "2"])
+    ctx.file("BUILD.bazel", "exports_files(['value.txt'])\n")
+    ctx.file("value.txt", "slow\n")
+
+slow = repository_rule(_slow)
+
+def _dep(ctx):
+    env = str(ctx.path(Label("@cache//:go.env")))
+    ctx.watch(env)
+    ctx.file("BUILD.bazel", "exports_files(['value.txt'])\n")
+    shared = ctx.read(str(ctx.path(Label("@@//:shared.txt"))))
+    ctx.file("value.txt", ctx.name + " " + shared)
+    return ctx.repo_metadata(reproducible = True)
+
+dep = repository_rule(_dep)
+
+def _gen(mctx):
+    cache(name = "cache")
+    slow(name = "slow")
+    for index in range({COUNT}):
+        dep(name = "dep%d" % index)
+
+gen = module_extension(_gen)
+"#
+            ),
+        )
+        .unwrap();
+        fs::write(ws.join("env.txt"), env).unwrap();
+        fs::write(ws.join("shared.txt"), "shared\n").unwrap();
+        fs::write(
+            ws.join("BUILD.bazel"),
+            format!(
+                "genrule(\n    name = \"use\",\n    srcs = [{}],\n    outs = [\"out.txt\"],\n    cmd = \"cat $(SRCS) > $@\",\n    tags = [\"no-remote\"],\n)\n",
+                std::iter::once(&"slow".to_owned())
+                    .chain(&names)
+                    .map(|name| format!("\"@{name}//:value.txt\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )
+        .unwrap();
+        ws
+    };
+    let threads = "--loading_phase_threads=8";
+    // The walk's phase-1 prefetch speculates the repositories this build
+    // demands (crate::repository_speculation): the workers look them up
+    // while the coordinator fetches `slow` (without the sentinel's
+    // propagation, eleven of the twelve were `recorded inputs changed`).
+    let envs = [
+        ("BAZEL_RS_REMOTE_REPO_CACHE_STATS", "verbose"),
+        ("BAZEL_RS_ANALYSIS", "walk"),
+    ];
+    let ws1 = workspace("ws-1", "GOPATH=/fixed");
+    let uploaded = f.run_env(&ws1, "c1", &[FLAG], "build", &[&remote, threads], &envs);
+    assert_success(&uploaded);
+    assert_eq!(stats(&uploaded), format!("hits=0 uploads={COUNT}"));
+    // Another checkout (another path), a cold cache of the same path as
+    // the first one's (removed): every repository is a hit.
+    sealed_trees::remove_tree(f.root.join("c1")).unwrap();
+    let ws2 = workspace("ws-2", "GOPATH=/fixed");
+    let hit = f.run_env(&ws2, "c1", &[FLAG], "build", &[&remote, threads], &envs);
+    assert_success(&hit);
+    let stderr = String::from_utf8_lossy(&hit.stderr);
+    assert_eq!(stats(&hit), format!("hits={COUNT} uploads=0"), "{stderr}");
+    assert!(!stderr.contains("recorded inputs changed"), "{stderr}");
+    // A real change: the misses name the input that changed.
+    let ws3 = workspace("ws-3", "GOPATH=/other");
+    let changed = f.run_env(&ws3, "c3", &[FLAG], "build", &[&remote, threads], &envs);
+    assert_success(&changed);
+    let stderr = String::from_utf8_lossy(&changed.stderr);
+    assert_eq!(
+        stats(&changed),
+        format!("hits=0 uploads={COUNT}"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "REMOTE-REPO-CACHE miss +gen+dep0: recorded inputs changed: file @@+gen+cache//go.env at "
+        ),
+        "{stderr}"
     );
 }

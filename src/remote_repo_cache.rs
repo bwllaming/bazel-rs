@@ -67,19 +67,35 @@ pub static DOWNLOADED_BYTES: AtomicU64 = AtomicU64::new(0);
 pub static UPLOADS: AtomicU64 = AtomicU64::new(0);
 pub static UPLOADED_BYTES: AtomicU64 = AtomicU64::new(0);
 /// Per-repository misses (`BAZEL_RS_REMOTE_REPO_CACHE_STATS=verbose`).
-static MISSES: std::sync::Mutex<Vec<(String, &'static str)>> = std::sync::Mutex::new(Vec::new());
+static MISSES: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// Whether the statistics list each miss (`BAZEL_RS_REMOTE_REPO_CACHE_STATS=verbose`).
+pub fn verbose() -> bool {
+    // snapshot-unrecorded: a diagnostics switch; no result depends on it.
+    std::env::var_os("BAZEL_RS_REMOTE_REPO_CACHE_STATS").is_some_and(|value| value == "verbose")
+}
 
 /// Notes why `canonical` was not served (`verbose` statistics only).
-pub fn note_miss(canonical: &str, reason: &'static str) {
-    // snapshot-unrecorded: a diagnostics switch; no result depends on it.
-    if std::env::var_os("BAZEL_RS_REMOTE_REPO_CACHE_STATS").is_some_and(|value| value == "verbose")
-    {
+pub fn note_miss(canonical: &str, reason: &str) {
+    if verbose() {
         MISSES
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push((canonical.to_owned(), reason));
+            .push((canonical.to_owned(), reason.to_owned()));
     }
 }
+
+/// Notes why the execution of `canonical` was not uploaded (`verbose`
+/// statistics only; listed as `REMOTE-REPO-CACHE not uploaded`).
+pub fn note_not_uploaded(canonical: &str, reason: &str) {
+    if verbose() && writing().is_some() {
+        NOT_UPLOADED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((canonical.to_owned(), reason.to_owned()));
+    }
+}
+static NOT_UPLOADED: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
 
 /// `--[no]experimental_remote_repo_contents_cache` (a startup option,
 /// RemoteStartupOptions; the last value wins).
@@ -964,6 +980,11 @@ pub fn report() {
     misses.sort();
     for (canonical, reason) in misses {
         eprintln!("REMOTE-REPO-CACHE miss {canonical}: {reason}");
+    }
+    let mut skipped = std::mem::take(&mut *NOT_UPLOADED.lock().unwrap_or_else(|e| e.into_inner()));
+    skipped.sort();
+    for (canonical, reason) in skipped {
+        eprintln!("REMOTE-REPO-CACHE not uploaded {canonical}: {reason}");
     }
 }
 
