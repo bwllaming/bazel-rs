@@ -1,6 +1,6 @@
 [package]
 name = "bazel-rs"
-version = "0.4.23"
+version = "0.4.24"
 edition = "2024"
 rust-version = "1.99"
 publish = false
