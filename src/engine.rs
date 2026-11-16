@@ -6736,6 +6736,14 @@ impl Engine {
             let coverage = self.derive_coverage(&request, spec.build, spec.trees);
             crate::snapshot::derive::set_planned(coverage);
         }
+        // BAZEL_RS_SNAPSHOT_INDEX_DUMP: the index made by now (its dump
+        // written also when no save takes it).
+        // snapshot-unrecorded: a hidden diagnostics dump of the index being saved; it changes nothing the analysis computes.
+        if std::env::var_os("BAZEL_RS_SNAPSHOT_INDEX_DUMP").is_some()
+            && let Some(pending) = crate::snapshot::incremental::take_planned()
+        {
+            crate::snapshot::incremental::set_planned_index(pending.wait());
+        }
         crate::perf_mark("plan.end");
         Ok(request)
     }
