@@ -2400,6 +2400,160 @@ impl RemoteCache {
         }
     }
 
+    /// The remote repository contents cache's read policy
+    /// (RemoteRepoContentsCacheImpl.buildContext): `--remote_accept_cached`
+    /// reads the disk cache, then the remote cache (`ANY_CACHE`).
+    pub fn repo_contents_readable(&self) -> bool {
+        self.accept_cached && (self.has_remote() || self.has_disk())
+    }
+
+    /// Its upload policy: `--remote_upload_local_results`, the remote cache
+    /// only (`REMOTE_CACHE_ONLY`: the local repo contents cache is the
+    /// better local cache, so nothing is uploaded to the disk cache).
+    pub fn repo_contents_writable(&self) -> bool {
+        self.upload_local_results && self.has_remote()
+    }
+
+    /// An Action Cache entry for the remote repository contents cache: the
+    /// disk cache, then the remote cache, whose hit enters the disk cache
+    /// (a download writes through, `ANY_CACHE`). Undecoded.
+    pub fn repo_contents_result(&self, key: &Digest) -> Result<Option<Vec<u8>>, CacheError> {
+        if !self.repo_contents_readable() {
+            return Ok(None);
+        }
+        let policy = CachePolicy {
+            remote: self.has_remote(),
+            disk: self.has_disk(),
+        };
+        if let Backend::Grpc(grpc) = &self.backend {
+            grpc.capabilities().map_err(capability_failure)?;
+        }
+        Ok(self
+            .action_result_from(key, policy, policy)?
+            .map(|(bytes, _)| bytes))
+    }
+
+    /// One CAS blob for the remote repository contents cache, verified
+    /// against `digest`: the disk cache, then the remote cache (written
+    /// through to the disk cache). `Ok(None)` when no cache has it; a blob
+    /// whose contents do not match is an error.
+    pub fn repo_contents_blob(
+        &self,
+        digest: &Digest,
+        key: &Digest,
+    ) -> Result<Option<Vec<u8>>, CacheError> {
+        if digest.size == 0 {
+            return Ok(Some(Vec::new()));
+        }
+        let Some(bytes) = self.read(digest, key)? else {
+            return Ok(None);
+        };
+        let actual = Digest::of(&bytes);
+        if actual != *digest {
+            return Err(CacheError::Other(format!(
+                "Expected digest '{digest}' does not match received digest '{actual}'."
+            )));
+        }
+        Ok(Some(bytes))
+    }
+
+    /// Writes the blobs `sources` (bytes or files, each verified against
+    /// its digest as it is read), then the Action Cache entry `result`
+    /// under `key`, to the remote cache only. HTTP PUTs every non-empty
+    /// blob not yet uploaded in this invocation; gRPC asks
+    /// FindMissingBlobs first.
+    pub fn repo_contents_store(
+        &self,
+        key: &Digest,
+        sources: &[(Digest, BlobSource<'_>)],
+        result: &[u8],
+    ) -> Result<(), CacheError> {
+        if let Backend::Grpc(grpc) = &self.backend {
+            grpc.capabilities().map_err(capability_failure)?;
+        }
+        let load = |digest: &Digest, source: &BlobSource<'_>| -> Result<Vec<u8>, CacheError> {
+            let bytes = match source {
+                BlobSource::Bytes(bytes) => bytes.to_vec(),
+                BlobSource::File(path) => std::fs::read(path).map_err(|error| {
+                    CacheError::Other(format!("cannot read {}: {error}", path.display()))
+                })?,
+            };
+            if Digest::of(&bytes) != *digest {
+                return Err(CacheError::Other(format!(
+                    "{} changed while it was uploaded (expected digest {digest})",
+                    match source {
+                        BlobSource::Bytes(_) => "a blob".to_owned(),
+                        BlobSource::File(path) => path.display().to_string(),
+                    }
+                )));
+            }
+            Ok(bytes)
+        };
+        let missing: Vec<&(Digest, BlobSource<'_>)> = match &self.backend {
+            Backend::Grpc(grpc) => {
+                let mut unique: Vec<Digest> = sources
+                    .iter()
+                    .map(|(digest, _)| digest.clone())
+                    .filter(|digest| digest.size != 0)
+                    .collect();
+                unique.sort_by(|a, b| a.hash.cmp(&b.hash));
+                unique.dedup();
+                let missing: HashSet<Digest> =
+                    grpc.find_missing(&unique, &key.hash)?.into_iter().collect();
+                let mut seen = HashSet::new();
+                sources
+                    .iter()
+                    .filter(|(digest, _)| missing.contains(digest) && seen.insert(digest.clone()))
+                    .collect()
+            }
+            _ => sources.iter().collect(),
+        };
+        let upload_one = |(digest, source): &&(Digest, BlobSource<'_>)| -> Result<(), CacheError> {
+            if digest.size == 0
+                || self
+                    .uploaded
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains(digest)
+            {
+                return Ok(());
+            }
+            let lock = self
+                .uploading
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(digest.clone())
+                .or_default()
+                .clone();
+            let _uploading = lock.lock().unwrap_or_else(|e| e.into_inner());
+            if self
+                .uploaded
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(digest)
+            {
+                return Ok(());
+            }
+            let bytes = load(digest, source)?;
+            match &self.backend {
+                Backend::Http(http) => http.put(true, &digest.hash, &bytes)?,
+                Backend::Grpc(grpc) => grpc.write_blob(digest, &bytes, &key.hash)?,
+                Backend::None => return Ok(()),
+            }
+            self.uploaded
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(digest.clone());
+            Ok(())
+        };
+        parallel(&missing, upload_one)?;
+        match &self.backend {
+            Backend::Http(http) => http.put(false, &key.hash, result),
+            Backend::Grpc(grpc) => Ok(grpc.update_action_result(key, result)?),
+            Backend::None => Ok(()),
+        }
+    }
+
     /// Writes `blobs` and then the Action Cache entry `result` under `key`
     /// to the remote cache only (never the disk cache), whatever
     /// `--remote_upload_local_results` says (the caller decides).
@@ -2676,7 +2830,7 @@ static TREE_FETCH_THREADS: AtomicUsize = AtomicUsize::new(0);
 /// `fetch` over `items` in up to [`TREE_FETCHES`] threads (fewer, but at
 /// least [`MIN_TREE_FETCHES`], while other trees download), results in
 /// item order; the first error wins.
-fn parallel<I: Sync, T: Send>(
+pub(crate) fn parallel<I: Sync, T: Send>(
     items: &[I],
     fetch: impl Fn(&I) -> Result<T, CacheError> + Sync,
 ) -> Result<Vec<T>, CacheError> {

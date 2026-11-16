@@ -744,6 +744,16 @@ pub fn unrecognized_option(arg: &str) -> Option<String> {
     if name.trim().is_empty() {
         return None;
     }
+    // The remote repository contents cache's option is a startup option
+    // (RemoteStartupOptions) that no command's parser knows (paired capture:
+    // `build --experimental_remote_repo_contents_cache :: Unrecognized
+    // option: --experimental_remote_repo_contents_cache`, exit 2).
+    if matches!(
+        name,
+        "experimental_remote_repo_contents_cache" | "noexperimental_remote_repo_contents_cache"
+    ) {
+        return Some(invalid_argument(arg, format!("Unrecognized option: {arg}")));
+    }
     let known = |name: &str| crate::bazel_options::ALL_OPTION_NAMES.contains(&name);
     if known(name) || name.strip_prefix("no").is_some_and(known) {
         return None;

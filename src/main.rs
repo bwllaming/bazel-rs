@@ -6015,6 +6015,7 @@ fn evaluate_rc(
             }
         };
     bazel_rs::ui::set_quiet(startup.quiet);
+    bazel_rs::remote_repo_cache::set_requested(startup.remote_repo_contents_cache);
     if let Some(path) = startup.output_base {
         bazel_rs::worktree::install_output_base(cwd, &path)?;
     }

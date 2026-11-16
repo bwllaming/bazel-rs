@@ -110,6 +110,26 @@ pub(crate) fn with_trees(recorded: &[u8], trees: Vec<(String, String)>) -> Resul
     serde_json::to_vec(&probes).map_err(|error| format!("cannot record repository inputs: {error}"))
 }
 
+/// `recorded` without the probes of files inside the publication itself
+/// (`stage:` spellings): what can be checked before a tree of the remote
+/// repository contents cache is downloaded (crate::remote_repo_cache; the
+/// tree's verified contents decide the others, and an upload requires all
+/// probes to hold for the published tree). `None` when the bytes are no
+/// probes this binary reads.
+pub(crate) fn without_stage_probes(recorded: &[u8]) -> Option<Vec<u8>> {
+    let mut probes: RecordedInputs = serde_json::from_slice(recorded).ok()?;
+    if !(1..=4).contains(&probes.version) {
+        return None;
+    }
+    probes
+        .templates
+        .retain(|probe| !probe.source.starts_with("stage:"));
+    probes
+        .files
+        .retain(|probe| !probe.path.starts_with("stage:"));
+    serde_json::to_vec(&probes).ok()
+}
+
 fn sha256(bytes: &[u8]) -> String {
     use sha2::Digest;
     format!("{:x}", sha2::Sha256::digest(bytes))

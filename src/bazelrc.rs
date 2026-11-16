@@ -970,6 +970,9 @@ pub struct StartupState {
     pub quiet: bool,
     /// Last rc/command-line value, resolved against the client cwd by the CLI.
     pub output_base: Option<String>,
+    /// `--[no]experimental_remote_repo_contents_cache` (RemoteStartupOptions;
+    /// the last value wins, rc files included): crate::remote_repo_cache.
+    pub remote_repo_contents_cache: bool,
 }
 
 /// StartupOptions::ProcessArgs (startup_options.cc:419-445) over the rc
@@ -1058,7 +1061,7 @@ fn process_startup_flags(
                 "unsupported startup option {arg:?} from rc file {file}:{line}; startup options are never silently ignored"
             ),
             None => format!(
-                "unsupported startup option {arg:?}; the native client models only --[no]system_rc, --[no]workspace_rc, --[no]home_rc, --ignore_all_rc_files, --[no]quiet, --bazelrc and --output_base"
+                "unsupported startup option {arg:?}; the native client models only --[no]system_rc, --[no]workspace_rc, --[no]home_rc, --ignore_all_rc_files, --[no]quiet, --[no]experimental_remote_repo_contents_cache, --bazelrc and --output_base"
             ),
         };
         if check_valid_nullary(arg)? {
@@ -1070,6 +1073,9 @@ fn process_startup_flags(
             match key {
                 "ignore_all_rc_files" => state.ignore_all_rc_files = enabled,
                 "quiet" => state.quiet = enabled,
+                "experimental_remote_repo_contents_cache" => {
+                    state.remote_repo_contents_cache = enabled;
+                }
                 "home_rc" | "system_rc" | "workspace_rc" => {
                     if enabled {
                         explicit.insert(key.to_owned());

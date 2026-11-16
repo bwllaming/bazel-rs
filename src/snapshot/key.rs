@@ -327,12 +327,14 @@ pub fn compute(inputs: &Inputs<'_>, binary: [u8; 32]) -> Key {
         relative_directory: inputs.relative_directory,
         current_package: inputs.current_package,
         // `--[no]quiet` is console-only (crate::ui), like Bazel's: it never
-        // restarts the server, and a snapshot replays filtered.
+        // restarts the server, and a snapshot replays filtered; the remote
+        // repository contents cache never changes a result
+        // ([`console_or_cache_only`]).
         startup: inputs
             .startup
             .iter()
             .map(String::as_str)
-            .filter(|arg| !matches!(*arg, "--quiet" | "--noquiet"))
+            .filter(|arg| !console_or_cache_only(arg))
             .collect(),
         options: inputs
             .options
@@ -409,7 +411,7 @@ pub fn family(inputs: &Inputs<'_>, binary: [u8; 32]) -> Option<[u8; 32]> {
             .startup
             .iter()
             .map(String::as_str)
-            .filter(|arg| !matches!(*arg, "--quiet" | "--noquiet"))
+            .filter(|arg| !console_or_cache_only(arg))
             .collect(),
         options: inputs
             .options
@@ -448,6 +450,20 @@ pub fn test_hook() -> Option<String> {
             || name.starts_with("BAZEL_RS_DEBUG_"))
         .then(|| name.into_owned())
     })
+}
+
+/// Startup options that never change what a command computes: `--[no]quiet`
+/// (console only) and `--[no]experimental_remote_repo_contents_cache` (a
+/// repository it serves is published exactly as its rule's execution would
+/// publish it, crate::remote_repo_cache).
+fn console_or_cache_only(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--quiet"
+            | "--noquiet"
+            | "--experimental_remote_repo_contents_cache"
+            | "--noexperimental_remote_repo_contents_cache"
+    )
 }
 
 #[cfg(test)]

@@ -4935,6 +4935,10 @@ pub struct ExecutedRepository {
     /// path the published bytes embed, which tree that was
     /// (crate::repository_store::Executed::resolved).
     pub resolved: BTreeSet<String>,
+    /// The implementation returned `repository_ctx.repo_metadata(reproducible
+    /// = True)` (RepoMetadata.Reproducibility.YES): the remote repository
+    /// contents cache may store the result (crate::remote_repo_cache).
+    pub reproducible: bool,
 }
 
 /// A repository rule execution's print handler ([`Context::print_line`]).
@@ -5069,6 +5073,7 @@ fn execute_with(
             mentions,
         };
         context.state.borrow_mut().label_siblings = label_siblings(attrs);
+        let reproducible_cell = std::cell::Cell::new(false);
         let evaluated = Module::with_temp_heap(|module| -> anyhow::Result<()> {
             let heap = module.heap();
             let host = context.repositories.host().map_err(anyhow::Error::msg)?;
@@ -5127,6 +5132,7 @@ fn execute_with(
             // Bazel's repo contents cache; the native store keys publications
             // by specification, so it has no effect here.
             let reproducibility = if let Some(metadata) = RepoMetadata::from_value(returned) {
+                reproducible_cell.set(metadata.reproducible);
                 Some(metadata.attrs.to_value())
             } else if DictRef::from_value(returned).is_some() {
                 if let Some(error) = dict_cast_error(returned, "return value") {
@@ -5177,6 +5183,7 @@ fn execute_with(
             output,
             environ_read,
             resolved,
+            reproducible: reproducible_cell.get(),
         })
     };
     run().map_err(|error| {

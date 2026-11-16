@@ -211,6 +211,7 @@ fn newly_reusable_current_winner_rejects_the_prepared_historical_candidate() {
                 inputs: b"runtime".to_vec(),
                 recorded,
                 resolved: Vec::new(),
+                reproducible: false,
             })
         },
     )

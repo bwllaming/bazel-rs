@@ -5735,6 +5735,7 @@ impl RepositorySet {
                 inputs,
                 recorded,
                 resolved,
+                reproducible: executed.reproducible,
             })
         };
         if local {
@@ -6507,6 +6508,7 @@ impl RepositorySet {
                 inputs,
                 recorded,
                 resolved,
+                reproducible: executed.reproducible,
             })
         };
         if local {
@@ -8710,6 +8712,7 @@ mod tests {
                         inputs: bytes.to_vec(),
                         recorded: Vec::new(),
                         resolved: Vec::new(),
+                        reproducible: false,
                     })
                 },
             )

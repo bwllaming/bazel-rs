@@ -440,6 +440,7 @@ pub mod timing {
     /// recorded-check phases are pure reads of disjoint trees, so on an
     /// N-worker reuse pool they divide by N; manifest reads likewise.
     pub fn report(threads: usize) {
+        crate::remote_repo_cache::report();
         if !enabled() {
             return;
         }
@@ -545,6 +546,11 @@ pub struct Executed {
     /// siblings', so a sibling fetched anew would otherwise leave links
     /// into its old tree.
     pub resolved: Vec<(String, PathBuf)>,
+    /// The rule declared its result reproducible (`repository_ctx.repo_metadata(
+    /// reproducible = True)`, RepositoryFetchFunction.java:317): the published
+    /// tree may enter the remote repository contents cache
+    /// (crate::remote_repo_cache).
+    pub reproducible: bool,
 }
 
 /// Whether a call ran the repository rule or reused a publication.
@@ -2063,19 +2069,36 @@ where
     // Bazel deletes the marker before a fetch (RepositoryFetchFunction.java
     // :311): the slot is incomplete from now on until it is marked again.
     writer.unmark()?;
-    let slot = writer.fresh()?;
+    let mut slot = writer.fresh()?;
     // Removes the slot's directory on every early return below.
     let scratch = crate::repository_slots::SlotScratch::new(&writer);
     let started = std::time::Instant::now();
     // A non-local execution's downloads taint with it ([`ExecutedTaint`]).
     let network = matches!(probe, Probe::Warm { .. })
         .then(|| std::sync::Arc::new(crate::observed_fs::NetworkSink::default()));
-    let executed = {
-        let _m = timing::mark(&timing::PHASES.execute);
-        let _tainted = crate::observed_fs::tainted_section();
-        // `Fetching repository @@name` in the progress display (when on).
-        let _fetching = crate::progress::fetching_repository(stage_key);
-        crate::observed_fs::with_network_sink(network.clone(), || execute(&slot))
+    // The remote repository contents cache (crate::remote_repo_cache): a
+    // tree another fetch of this specification uploaded, whose recorded
+    // inputs hold here, is published below exactly as if the rule had
+    // produced it (RepositoryFetchFunction.java:282-299).
+    let remote = match &probe {
+        Probe::Warm { validate, .. }
+            if !FORCE_FETCH.load(std::sync::atomic::Ordering::Relaxed)
+                && crate::remote_repo_cache::lookups() =>
+        {
+            remote_hit(stage_key, spec_key, &writer, &mut slot, *validate)?
+        }
+        _ => None,
+    };
+    let from_remote = remote.is_some();
+    let executed = match remote {
+        Some(executed) => Ok(executed),
+        None => {
+            let _m = timing::mark(&timing::PHASES.execute);
+            let _tainted = crate::observed_fs::tainted_section();
+            // `Fetching repository @@name` in the progress display (when on).
+            let _fetching = crate::progress::fetching_repository(stage_key);
+            crate::observed_fs::with_network_sink(network.clone(), || execute(&slot))
+        }
     };
     // A local rule's execution is recorded for replay by the caller instead.
     // A non-local one taints the analysis snapshot unless the warm probe,
@@ -2092,6 +2115,10 @@ where
         Probe::Local(_) => None,
     };
     let executed = executed?;
+    // What an upload to the remote repository contents cache needs once
+    // the tree is published (a reproducible rule's execution only).
+    let upload = (!from_remote && executed.reproducible && crate::remote_repo_cache::uploads())
+        .then(|| (executed.recorded.clone(), executed.inputs.clone()));
     // A publication that depends on where the workspace is gets the
     // workspace's own pointer; every other one the specification's.
     let pointer = match recorded_workspace(&executed.recorded) {
@@ -2333,9 +2360,132 @@ where
     // The tree's last use (an existing equal tree is not published again;
     // docs/CACHE_GC.md).
     crate::cache_gc::note_tree_used(&destination);
+    if from_remote {
+        crate::remote_repo_cache::note_hit();
+        return Ok((destination, Publication::Reused));
+    }
+    if let (Some((recorded, inputs)), Probe::Warm { validate, .. }) = (upload, &probe) {
+        upload_publication(
+            stage_key,
+            spec_key,
+            &destination,
+            &manifest_path,
+            &recorded,
+            &inputs,
+            *validate,
+        );
+    }
     // This call ran the repository rule even when the tree it produced
     // already existed under the same content identity.
     Ok((destination, Publication::Executed))
+}
+
+/// A tree of the remote repository contents cache for `spec_key`
+/// (crate::remote_repo_cache), written into the slot of `stage_key`: the
+/// first candidate (newest first) whose recorded inputs hold — checked
+/// before its download, without the probes of files inside the tree
+/// itself (`stage:`), which the tree's verified contents decide — and
+/// whose blobs are all there. What the publication needs then is what the
+/// rule's execution returned on the machine that uploaded it. `None`: a
+/// miss (the rule executes in the fresh slot).
+fn remote_hit(
+    stage_key: &str,
+    spec_key: &str,
+    writer: &crate::repository_slots::SlotWriter,
+    slot: &mut PathBuf,
+    validate: Validate<'_>,
+) -> Result<Option<Executed>, String> {
+    for recorded_digest in crate::remote_repo_cache::candidates(stage_key, spec_key) {
+        let Some(candidate) =
+            crate::remote_repo_cache::fetch(stage_key, spec_key, &recorded_digest)
+        else {
+            continue;
+        };
+        // A workspace-dependent publication is never uploaded (nor taken).
+        if recorded_workspace(&candidate.recorded).is_some() {
+            continue;
+        }
+        let Some(outside) = crate::repository_warm::without_stage_probes(&candidate.recorded)
+        else {
+            continue;
+        };
+        if !validate(slot, &outside).unwrap_or(false) {
+            continue;
+        }
+        let downloaded = {
+            let _span = crate::timeline::span("remote-repo-cache", || stage_key.to_owned());
+            let _fetching = crate::progress::fetching_repository(stage_key);
+            crate::remote_repo_cache::download(&candidate, slot)
+        };
+        match downloaded {
+            Ok(true) => {
+                return Ok(Some(Executed {
+                    inputs: candidate.inputs,
+                    recorded: candidate.recorded,
+                    resolved: Vec::new(),
+                    reproducible: true,
+                }));
+            }
+            Ok(false) => {}
+            Err(error) => crate::note!(
+                "WARNING: Remote repo contents cache lookup failed for {stage_key}: {error}"
+            ),
+        }
+        // A partial download: the slot is made again.
+        *slot = writer.fresh()?;
+    }
+    Ok(None)
+}
+
+/// Upload the publication `destination` of a reproducible rule's
+/// execution to the remote repository contents cache when it is eligible
+/// (RepositoryFetchFunction.java:317-349): it depends on no workspace,
+/// names no store path (its own slot, another tree), every link stays
+/// inside it (`safeForRemoteCache`), and its recorded inputs hold for the
+/// published tree (a later reuse would take it).
+fn upload_publication(
+    stage_key: &str,
+    spec_key: &str,
+    destination: &Path,
+    manifest_path: &Path,
+    recorded: &[u8],
+    inputs: &[u8],
+    validate: Validate<'_>,
+) {
+    if recorded_workspace(recorded).is_some() {
+        return;
+    }
+    let Some(manifest) = read_stable(manifest_path)
+        .ok()
+        .and_then(|bytes| parse_manifest(&bytes))
+    else {
+        return;
+    };
+    if manifest.self_ref == Some(true)
+        || !manifest.refs.is_empty()
+        || manifest.files.iter().any(|(path, entry)| {
+            entry
+                .symlink
+                .as_deref()
+                .is_some_and(|target| !crate::remote_repo_cache::link_within(path, target))
+        })
+        || !validate(destination, recorded).unwrap_or(false)
+    {
+        return;
+    }
+    let entries = manifest
+        .files
+        .into_iter()
+        .map(|(path, entry)| crate::remote_repo_cache::TreeEntry {
+            path,
+            directory: entry.directory,
+            mode: entry.unsealed.unwrap_or(entry.mode),
+            size: entry.size,
+            sha256: entry.sha256,
+            symlink: entry.symlink,
+        })
+        .collect();
+    crate::remote_repo_cache::upload(stage_key, spec_key, destination, entries, recorded, inputs);
 }
 
 /// A pointer file's exact bytes for `identity` (kept canonical for equality).
@@ -3957,6 +4107,7 @@ mod tests {
                             inputs: intent.as_bytes().to_vec(),
                             recorded: recorded.clone(),
                             resolved: Vec::new(),
+                            reproducible: false,
                         })
                     },
                 )
@@ -4050,6 +4201,7 @@ mod tests {
                     inputs: b"inputs".to_vec(),
                     recorded: br#"{"version":2}"#.to_vec(),
                     resolved: Vec::new(),
+                    reproducible: false,
                 })
             },
         )
@@ -4098,6 +4250,7 @@ mod tests {
                         inputs: inputs.to_vec(),
                         recorded: recorded.clone(),
                         resolved: Vec::new(),
+                        reproducible: false,
                     })
                 },
             )
@@ -4315,6 +4468,7 @@ mod tests {
                     inputs,
                     recorded: br#"{"version":1}"#.to_vec(),
                     resolved: Vec::new(),
+                    reproducible: false,
                 })
             },
         )
@@ -4339,6 +4493,7 @@ mod tests {
                     inputs,
                     recorded: br#"{"version":1}"#.to_vec(),
                     resolved: Vec::new(),
+                    reproducible: false,
                 })
             },
         )
@@ -4362,6 +4517,7 @@ mod tests {
                     inputs,
                     recorded: recorded.to_vec(),
                     resolved: Vec::new(),
+                    reproducible: false,
                 })
             },
         )
@@ -4396,6 +4552,7 @@ mod tests {
                     }
                     .into_bytes(),
                     resolved: Vec::new(),
+                    reproducible: false,
                 })
             }
         };
@@ -4650,6 +4807,7 @@ mod tests {
                         inputs,
                         recorded: recorded.clone().into_bytes(),
                         resolved: Vec::new(),
+                        reproducible: false,
                     })
                 },
             )
@@ -4756,6 +4914,7 @@ mod tests {
                 inputs: b"inputs".to_vec(),
                 recorded: br#"{"version":1}"#.to_vec(),
                 resolved: Vec::new(),
+                reproducible: false,
             })
         };
         let first = materialize(
@@ -5083,6 +5242,7 @@ mod tests {
                     inputs,
                     recorded: br#"{"version":1}"#.to_vec(),
                     resolved: Vec::new(),
+                    reproducible: false,
                 })
             },
         )
@@ -5119,6 +5279,7 @@ mod tests {
                     inputs: b"inputs".to_vec(),
                     recorded: Vec::new(),
                     resolved: Vec::new(),
+                    reproducible: false,
                 })
             };
             let (root, execution) = materialize_local(
@@ -5317,6 +5478,7 @@ mod tests {
                     inputs,
                     recorded: br#"{"version":1}"#.to_vec(),
                     resolved: Vec::new(),
+                    reproducible: false,
                 })
             },
         )
@@ -5508,6 +5670,7 @@ mod tests {
                             inputs: Vec::new(),
                             recorded: br#"{"version":1}"#.to_vec(),
                             resolved: Vec::new(),
+                            reproducible: false,
                         })
                         .unwrap();
                     panic!("callback panic");
@@ -5772,6 +5935,7 @@ mod tests {
                         inputs,
                         recorded: UPGRADED.to_vec(),
                         resolved: Vec::new(),
+                        reproducible: false,
                     })
                 },
             )
@@ -5830,6 +5994,7 @@ mod tests {
                             inputs,
                             recorded: br#"{"version":2}"#.to_vec(),
                             resolved: Vec::new(),
+                            reproducible: false,
                         })
                     },
                 )
@@ -5931,6 +6096,7 @@ mod tests {
                                 inputs,
                                 recorded: br#"{"version":1}"#.to_vec(),
                                 resolved: Vec::new(),
+                                reproducible: false,
                             })
                         },
                     )
@@ -5977,6 +6143,7 @@ mod tests {
                                 inputs,
                                 recorded: br#"{"version":1}"#.to_vec(),
                                 resolved: Vec::new(),
+                                reproducible: false,
                             })
                         },
                     )

@@ -501,6 +501,7 @@ fn replay_one(
                 inputs,
                 recorded: Vec::new(),
                 resolved: Vec::new(),
+                reproducible: false,
             })
         },
     );

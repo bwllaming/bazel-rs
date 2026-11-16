@@ -1235,6 +1235,7 @@ mod tests {
                     inputs: key.as_bytes().to_vec(),
                     recorded: br#"{"version":1}"#.to_vec(),
                     resolved: Vec::new(),
+                    reproducible: false,
                 })
             },
         )
@@ -1384,6 +1385,7 @@ mod tests {
                 inputs: b"runtime inputs".to_vec(),
                 recorded: br#"{"version":1}"#.to_vec(),
                 resolved: Vec::new(),
+                reproducible: false,
             })
         };
         let (local_root, execution) = crate::repository_store::materialize_local(

@@ -1188,6 +1188,7 @@ mod tests {
                     inputs: Vec::new(),
                     recorded: Vec::new(),
                     resolved: Vec::new(),
+                    reproducible: false,
                 })
             },
         )
