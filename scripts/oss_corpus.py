@@ -355,9 +355,7 @@ def clone(project, src):
     dest = os.path.join(src, project["name"])
     if os.path.isdir(os.path.join(dest, ".git")):
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=dest, capture_output=True, text=True).stdout.strip()
-        if head == project["commit"] and not (
-            project.get("submodules") and not os.listdir(dest)
-        ):
+        if head == project["commit"]:
             if project.get("submodules"):
                 subprocess.run(["git", "remote", "add", "origin", project["git"]], cwd=dest, stderr=subprocess.DEVNULL)
                 git(["submodule", "sync", "-q", "--recursive"], dest)
