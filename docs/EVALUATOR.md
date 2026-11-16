@@ -4455,5 +4455,25 @@ What changed:
 Identical to main: the incremental index (`BAZEL_RS_SNAPSHOT_INDEX_DUMP`),
 the saved plan (`BAZEL_RS_SNAPSHOT_PLAN_OUT`, 468,167,650 bytes), the DERIVE
 coverage, stderr with the action dump, walk and eval; the record mode's
-dump (954,241 lines; timings aside) walk and eval.
+dump (954,241 lines; timings aside) walk and eval; a miss → strict
+verify → hit cycle clean for walk/eval, eval/walk, eval/eval, walk/walk.
+
+Measured (2026-11-16, LTO release, interleaved, host load 10–19; main =
+the installed 0.4.22):
+
+| `build --nobuild //src/...` | main | snapshot-miss2 |
+|---|---|---|
+| miss (records, tracks, saves) | 26.87 / 26.47 / 26.38 s, 9.91 / 9.86 / 9.90 GB | 21.46 / 21.48 / 21.29 s, 9.79 / 9.86 / 9.87 GB |
+| snapshot off | 12.33 / 11.82 s, 9.71 / 9.57 GB | 11.91 / 12.32 s, 9.66 / 9.70 GB |
+| hit | — | 0.72 s |
+
+The peak is now the deferred walk's thaw (~9.8 GB; the tail ~9.65 GB).
+Left (by size): the pool's tree walks for the recording (each reused
+store tree walked once more for its INTEGRITY entries, beside the
+store's own verification walk: ~25 % of the pool's CPU while recording;
+the pool ends ~1.7 s after the snapshot-off pool), the deferred walk
+(5.7 s against 4.0: the tracker's op replay, the cursor), the tail on 6
+workers (2.6 s against 1.4; 8 workers −0.6 s when the margin allows: the
+recorder's and the tracker's residency), the linearizer's remaining
+tracker work (~0.7 s), the save (plan encoding ~0.8 s, INPUTS ~1 s).
 
