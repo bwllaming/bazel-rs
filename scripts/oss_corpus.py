@@ -59,6 +59,7 @@ TEST_STATUS_RE = re.compile(
     r"^(?P<label>(?:@@?[\w.~+-]*)?//\S*)\s+(?:\(cached\)\s+)?"
     r"(?P<status>PASSED|FAILED TO BUILD|FAILED|TIMEOUT|FLAKY|NO STATUS|SKIPPED|INCOMPLETE)\b"
 )
+PARAMS_RE = re.compile(r"-\d+\.params$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 # ---------------------------------------------------------------- pure parts
@@ -302,7 +303,7 @@ def run_cmd(argv, cwd, env, log_prefix, timeout):
                 v = proc_hwm_kb(proc.pid)
                 if v:
                     hwm[0] = max(hwm[0], v)
-                done.wait(0.1)
+                done.wait(0.05)
 
         th = threading.Thread(target=poll, daemon=True)
         th.start()
@@ -341,7 +342,7 @@ def wait_timeout(proc, timeout):
             return pid, status, ru
         if time.monotonic() > deadline:
             raise TimeoutError
-        time.sleep(0.2)
+        time.sleep(0.05)
 
 
 def git(args, cwd):
@@ -426,7 +427,8 @@ class ProjectRun:
         print(f"  [{self.p['name']}] {tool} {tag or phase}: {' '.join(argv[1:])}", flush=True)
         rec = run_cmd(argv, self.ws(tool), self.env(tool), log, self.args.timeout)
         rec["log"] = log
-        print(f"    exit={rec['exit']} wall={rec['wall']}s rss={fmt_mb(rec)}MB", flush=True)
+        if tag != "server2":
+            print(f"    exit={rec['exit']} wall={rec['wall']}s rss={fmt_mb(rec)}MB", flush=True)
         return rec
 
     def server_hwm(self):
@@ -459,6 +461,7 @@ class ProjectRun:
                 self.run("genuine", phase, "build", nb + flags, targets, batch=False, tag="server1")
                 rec = self.run("genuine", phase, "build", nb + flags, targets, batch=False, tag="server2")
                 rec["rss_kb"] = self.server_hwm()
+                print(f"    exit={rec['exit']} wall={rec['wall']}s server rss={fmt_mb(rec)}MB", flush=True)
                 self.res["tools"]["genuine"][phase] = rec
                 self.run("genuine", phase, "shutdown", [], [], batch=False, tag="shutdown")
             elif phase == "query":
@@ -494,12 +497,17 @@ class ProjectRun:
             root = self.bazel_bin(tool)
             roots[tool] = root
             lists[tool] = list_outputs(root) if root and os.path.isdir(root) else []
+        params = {t: [p for p in lists[t] if PARAMS_RE.search(p)] for t in TOOLS}
+        for t in TOOLS:
+            lists[t] = [p for p in lists[t] if not PARAMS_RE.search(p)]
         cmp_ = compare_sets(lists["genuine"], lists["rs"])
+        cmp_["params_files"] = {t: len(params[t]) for t in TOOLS}
         cmp_["roots"] = roots
         common = sorted(set(lists["genuine"]) & set(lists["rs"]))
         mism = []
         for rel in sample_paths(common):
-            hg, hr = sha256_file(os.path.join(roots["genuine"], rel)), sha256_file(os.path.join(roots["rs"], rel))
+            hg = output_digest(os.path.join(roots["genuine"], rel))
+            hr = output_digest(os.path.join(roots["rs"], rel))
             if hg != hr:
                 mism.append(rel)
         cmp_["sampled"] = min(len(common), SAMPLE_SIZE)
@@ -518,6 +526,25 @@ def list_outputs(root):
             if os.path.isfile(full):
                 out.append(os.path.relpath(full, root))
     return sorted(out)
+
+
+def normalize_manifest(data):
+    """A runfiles manifest's runfiles paths (the targets are absolute paths
+    into each tool's own output tree, so they always differ)."""
+    keys = []
+    for line in data.decode("utf-8", "replace").splitlines():
+        keys.append(line.split(" ", 1)[0] if line.strip() else line)
+    return "\n".join(sorted(keys)).encode()
+
+
+def output_digest(path):
+    if path.endswith((".runfiles_manifest", "/MANIFEST")) or os.path.basename(path) == "MANIFEST":
+        try:
+            with open(path, "rb") as fh:
+                return hashlib.sha256(normalize_manifest(fh.read())).hexdigest()
+        except OSError as exc:
+            return f"error:{exc.errno}"
+    return sha256_file(path)
 
 
 def sha256_file(path):
@@ -584,7 +611,7 @@ def main(argv=None):
     if not os.path.isdir(install):
         os.makedirs(args.work, exist_ok=True)
         subprocess.run([args.genuine, f"--install_base={install}", "--output_user_root=" + os.path.join(args.work, "genuine-version-root"),
-                        "--batch", "--ignore_all_rc_files", "version"], cwd=args.work, check=True, capture_output=True)
+                        "--batch", "--ignore_all_rc_files", "version"], cwd="/", check=True, capture_output=True)
     phases = [ph for ph in args.phases.split(",") if ph]
     for ph in phases:
         if ph not in PHASES:
@@ -597,6 +624,10 @@ def main(argv=None):
         results = load_results(results_path)
         results[p["name"]] = merge_result(results.get(p["name"]), res)
         save_results(results_path, results)
+        logs = os.path.join(args.work, "logs", p["name"])
+        rmtree_force(logs)
+        for tool in TOOLS:
+            shutil.copytree(os.path.join(run.state(tool), "logs"), os.path.join(logs, tool))
         if not args.keep:
             rmtree_force(run.base)
     print(render_table(load_results(results_path)))
