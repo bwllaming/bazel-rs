@@ -219,11 +219,28 @@ server was idle `--repo_contents_cache_gc_idle_delay` (5m).
 * **Laziness**: none. Genuine keeps hit repositories in an overlay file
   system and downloads a file when it is read; bazel-rs's store publishes
   complete, sealed, verified trees, so a hit downloads the whole tree.
+* **Speculation workers**: a lookup on a parallel-fetch worker
+  (crate::repository_speculation) whose recorded-input check needs a
+  repository the worker may not fetch (the no-demand sentinel, e.g. the
+  `go.env` of gazelle's `go_repository_cache`, which the cache never
+  stores) decides nothing: the attempt aborts like an execution demanding
+  that repository and is retried once it is fetched — it is neither a miss
+  nor followed by an execution of the rule. (Before, it was counted as
+  `recorded inputs changed` and the rule started on the worker until it hit
+  the same demand: on ~/code's CI the ~152 such `go_deps` lines per run
+  were these aborted attempts, the retries hit.)
 * `BAZEL_RS_REMOTE_REPO_CACHE_STATS=1` prints `REMOTE-REPO-CACHE hits=…
   downloaded_bytes=… uploads=… uploaded_bytes=…` (compressed bytes);
   `=verbose` adds one `REMOTE-REPO-CACHE miss <repo>: <reason>` line per
-  miss (`no entry`, `recorded inputs changed`, `incomplete entry`,
-  `missing blob`).
+  miss (`no entry`, `recorded inputs changed: <input>`, `incomplete
+  entry`, `missing blob`, `skipped (download-dominated)`) — a changed
+  recorded input is named with its recorded and current state, e.g.
+  `file @@<repo>//go.env at <path>: file:<sha256> (now file:<sha256>)`,
+  `mapping @<name> from @@<repo>: …`, `watched environment <names>` — and
+  one `REMOTE-REPO-CACHE not uploaded <repo>: <reason>` line per eligible
+  execution that was not uploaded (`depends on the workspace`, `names a
+  store path`, `a symlink leaves the tree`, `recorded inputs do not hold
+  after the execution: <input>`).
 
 ### Keys and repository mappings
 
@@ -272,6 +289,16 @@ example a top-level `select()` whose apparent-label keys a rule writes out
 via `repr`). Upgrading re-executes every repository once (new keys and
 identities; the old trees are collected by the cache GC) and re-populates
 the remote cache once.
+
+Keys never depend on the bazel-rs binary (its version, build or an
+unrelated change): only the store's profiles and formats, which an
+intended rekey bumps and documents (tests/repository_rules.rs
+`repository_keys_are_independent_of_the_binary` pins a direct and a
+generated repository's key). Checked on ~/code (`build --nobuild
+//src/beyondwork.ai/...`, ~5,100 repositories, one cache): 0.4.21 → 0.4.22
+and 0.4.23 → later main builds reuse every repository; 0.4.22 → 0.4.23
+re-executes every one once (this section's rekey). A CI runner whose cache
+was last used by 0.4.21 therefore re-fetched everything under 0.4.23 once.
 
 ### Skipped repositories
 

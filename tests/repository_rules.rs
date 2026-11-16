@@ -695,3 +695,52 @@ ext = module_extension(_ext)
         .count();
     assert_eq!(current, 1, "{wheres:?}");
 }
+
+/// Repository keys (the specification pointers' names, the remote repo
+/// contents cache's keys) depend on what the repository is, never on the
+/// bazel-rs binary: its version, its build or an unrelated change keep
+/// them, so an upgrade keeps every local publication and remote entry
+/// (docs/REPO_CONTENTS_CACHE.md "Keys and repository mappings"). Pinned for
+/// a direct and an extension-generated repository; a pin changes only with
+/// an intended, documented rekey (a profile bump in crate::repository /
+/// crate::repository_store), whose commit re-pins it here. Checked against
+/// the release binaries: 0.4.21 and 0.4.22 give 0c1bccea… / a2b4d237…,
+/// 0.4.23 (repo-mapping-key, the last intended rekey) gives these.
+#[test]
+fn repository_keys_are_independent_of_the_binary() {
+    let specs = |f: &Fixture| {
+        let mut names: Vec<String> =
+            fs::read_dir(f.0.path().join("cache/repositories/direct/specs"))
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| !name.starts_with('.'))
+                .collect();
+        names.sort();
+        names
+    };
+    let golden = cfg!(all(target_os = "linux", target_arch = "x86_64"));
+    let direct = Fixture::new();
+    assert_eq!(bytes(&direct.build("//:copy")[0].1), b"hello Ada\n");
+    let generated = Fixture::new();
+    generated.file(
+        "MODULE.bazel",
+        "module(name='main')\next = use_extension('//:ext.bzl','ext')\nuse_repo(ext,'made')\n",
+    );
+    generated.file(
+        "ext.bzl",
+        "load(':defs.bzl','make')\ndef _impl(ctx):\n    make(name='made', text='Ada')\next = module_extension(_impl)\n",
+    );
+    assert_eq!(bytes(&generated.build("//:copy")[0].1), b"hello Ada\n");
+    if golden {
+        assert_eq!(
+            specs(&direct),
+            ["148583fc2d4ea4d01e1f82299b70aa5c04a5965f1f2f5d58435f6f5ba1401b9a"],
+            "direct"
+        );
+        assert_eq!(
+            specs(&generated),
+            ["cce1f61b8a7054094809a330f4d5cd8a32fa06cb800ce6c3f5c80002678b07d2"],
+            "generated"
+        );
+    }
+}
