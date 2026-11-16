@@ -931,6 +931,17 @@ impl Engine {
     /// Apply held events where the sequential engine records them (the
     /// target's turn, its planning frame innermost), each in the scopes it
     /// was recorded in.
+    /// [`Self::track_replay`] of [`TrackLog::accesses`] in the current
+    /// scopes: each applied here (no closure per access).
+    pub(super) fn track_replay_accesses(&mut self, labels: &[Label]) {
+        if let Some(tracker) = self.incremental.as_mut() {
+            debug_assert!(tracker.deferred.is_none());
+            for label in labels {
+                tracker.access(label);
+            }
+        }
+    }
+
     pub(super) fn track_replay(&mut self, log: TrackLog) {
         if let Some(tracker) = self.incremental.as_mut() {
             debug_assert!(tracker.deferred.is_none());

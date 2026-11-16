@@ -2512,7 +2512,7 @@ impl Engine {
                         // With the tracker its planning frame records
                         // the accesses its worker's run made (the
                         // commit's: `tracked_natives`).
-                        Some(mut merge)
+                        Some(merge)
                             if fast_natives()
                                 && (!self.tracking() || tracked_natives())
                                 && (native_results::plain(&rule)
@@ -2524,10 +2524,7 @@ impl Engine {
                             let started = self.tracking().then(std::time::Instant::now);
                             if started.is_some() {
                                 self.track_planning(&key);
-                                self.track_replay(incremental::TrackLog::accesses(
-                                    std::mem::take(&mut merge.accesses),
-                                    incremental::ScopeContext::current(),
-                                ));
+                                self.track_replay_accesses(&merge.accesses);
                             }
                             let merged = self.merge_published_native(
                                 state,
@@ -3081,10 +3078,7 @@ impl Engine {
         }
         let started = self.tracking().then(std::time::Instant::now);
         if self.tracking() && !tracked {
-            self.track_replay(incremental::TrackLog::accesses(
-                accesses,
-                incremental::ScopeContext::current(),
-            ));
+            self.track_replay_accesses(&accesses);
         }
         let result = self.buffered_commit(state, configured, key, rule, index, *parts, worker);
         if let Some(started) = started {

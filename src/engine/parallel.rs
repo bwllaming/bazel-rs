@@ -90,9 +90,23 @@ fn tail_workers(loading_phase_threads: usize, lowering: bool) -> usize {
             .and_then(|value| value.parse().ok())
             .unwrap_or(14)
     });
+    // While the analysis snapshot records: `BAZEL_RS_T3_RECORDING_TAIL_WORKERS`
+    // (snapshot-miss2), the recording's frozen walks' cap by default.
+    static RECORDING: std::sync::LazyLock<Option<usize>> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling bound; the output is the same either way.
+        std::env::var("BAZEL_RS_T3_RECORDING_TAIL_WORKERS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+    });
     let walk = frozen_workers(loading_phase_threads, lowering);
     if worker_cap_overridden() {
         return walk;
+    }
+    if crate::observed_fs::recording()
+        && let Some(wanted) = *RECORDING
+    {
+        let cores = std::thread::available_parallelism().map_or(1, usize::from);
+        return loading_phase_threads.min(cores).clamp(2, wanted.max(2));
     }
     walk.min((*TAIL).max(2))
 }
