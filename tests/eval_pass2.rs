@@ -825,9 +825,34 @@ user = rule(implementation = _user_impl, attrs = {"deps": attr.label_list(aspect
         counter(&stderr, "placed_rules=") > 0 && counter(&stderr, "track_fallbacks=") == 0,
         "no aspect job placed with its derived events: {stderr}"
     );
-    let (verified, stderr) = tracked("eval", &[("BAZEL_RS_T3_VERIFY_ASPECT_ACCESSES", "1")]);
-    assert_eq!(verified, walk, "the verified aspect jobs' index");
-    assert_eq!(counter(&stderr, "track_fallbacks="), 0, "{stderr}");
+    // Checked against the turn's, also where an application another job
+    // planned is replayed from the walk's table (the workers' order varied
+    // by their number until one is; a test hook would keep the snapshot
+    // from tracking).
+    let mut table_replays = 0;
+    for workers in ["2", "3", "4", "6", "8", "12", "16"] {
+        let (verified, stderr) = tracked(
+            "eval",
+            &[
+                ("BAZEL_RS_T3_VERIFY_ASPECT_ACCESSES", "1"),
+                ("BAZEL_RS_T3_WORKERS", workers),
+            ],
+        );
+        assert_eq!(
+            verified, walk,
+            "the verified aspect jobs' index ({workers} workers)"
+        );
+        assert_eq!(counter(&stderr, "track_fallbacks="), 0, "{stderr}");
+        eprintln!(
+            "DBG workers {workers}: {}",
+            counter(&stderr, "track_table_replays=")
+        );
+        table_replays += counter(&stderr, "track_table_replays=");
+    }
+    assert!(
+        table_replays > 0,
+        "no application replayed from the walk's table"
+    );
 }
 
 /// S3 with the analysis snapshot's recording and the incremental tracker
