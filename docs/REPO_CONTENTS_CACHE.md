@@ -1,0 +1,276 @@
+# Repository contents caches (`--repo_contents_cache`, `--experimental_remote_repo_contents_cache`)
+
+A CI runner with an empty local cache re-fetches every repository of a
+workspace from the network (on ~/code: ~210 s of a cold
+`build --nobuild //src/...` on this host, 8.75 GB downloaded, 8,851
+repository trees). Bazel 9.3.1 can instead take the contents of reproducible
+repositories from the remote cache the CI already uses. bazel-rs implements
+that remote repository contents cache with genuine's option and semantics,
+adapted to its content-addressed repository store. Implementation:
+`src/remote_repo_cache.rs` (keys, entries, transfers),
+`src/repository_store.rs` (`remote_hit`, `upload_publication`, the hook in
+`materialize_inner`), the `RemoteCache::repo_contents_*` methods of
+`src/remote_cache.rs`, the startup option in `src/bazelrc.rs`. Tests:
+`tests/remote_repo_cache.rs` (a local fake HTTP cache, a paired genuine
+capture in `tests/fixtures/remote_repo_cache/`). Pinned source:
+`/tmp/opencode/bazel-9.3.1-reference`, paths below relative to
+`src/main/java/com/google/devtools/build/lib/`.
+
+## Genuine Bazel 9.3.1
+
+### When a cache is consulted (`bazel/repository/RepositoryFetchFunction.java`)
+
+`computeInternal` (:213-420) for a repository defined by a Starlark rule:
+
+1. `shouldUseCachedRepoContents` (:502-525): false for a `local = True` rule
+   while fetching is enabled, and under `bazel fetch --force` (and
+   `--configure` for configure rules). Otherwise:
+2. the marker file `external/@<name>.marker` is consistent (the
+   predeclared inputs hash and every recorded input still current): the
+   existing `external/<name>` is used;
+3. the local repo contents cache (below), then
+4. the remote repo contents cache: `lookupCache(repo, repoRoot,
+   predeclaredInputHash, env)`; an `IOException` is a warning `Remote repo
+   contents cache lookup failed for <repo>: <message>` and the repository is
+   fetched.
+5. Otherwise the rule runs. After it, the marker file is written and, when
+   the result is `Reproducibility.YES` **and** the rule is not local
+   (:317), the repository's symlinks are replanted (`RepositoryUtils
+   .replantSymlinks`, :98-220) and the repository is added to the remote
+   cache when `safeForRemoteCache` (every symlink resolves inside the
+   repository: no absolute link out of it, no link into another repository
+   or the main repository) and moved into the local contents cache when
+   `safeForLocalCache`.
+
+`Reproducibility.YES` means the implementation function returned
+`repository_ctx.repo_metadata(reproducible = True)` (:670-695,
+`starlark/RepoMetadata.java`); a dict return value or `None` is
+`NONREPRODUCIBLE`. `http_archive`, `http_file` and `http_jar` return it
+whenever a `sha256`/`integrity` is given (`tools/build_defs/repo/http.bzl`
+:174, :191); many rule sets do too (rules_js `npm_import`, rules_python
+`whl_library` for wheels, gazelle `go_repository`, rules_rust toolchains,
+...).
+
+### The key: the predeclared inputs hash and the recorded inputs
+
+`DigestWriter.computePredeclaredInputHash` (:170-210) fingerprints the
+marker file version, the Starlark semantics, the rule's `.bzl` label, name
+and transitive `.bzl` digest, the repository name, its attribute values
+(JSON), the host OS and architecture, the values of the rule's `environ`
+variables and its recorded repository-mapping entries. The marker file is
+that hash on its first line, then one `RepoRecordedInput.WithValue` per line
+(`FILE:`, `DIRENTS:`, `DIRTREE:`, `ENV:`, `REPO_MAPPING:` ... with the value
+observed during the fetch; :76-89).
+
+### The local repo contents cache (`bazel/repository/cache/LocalRepoContentsCache.java`)
+
+`--repo_contents_cache=PATH` (old name `--repository_contents_cache`;
+default `<repository_cache>/contents`, empty disables it;
+`RepositoryOptions.java:56-72`). Layout `<cache>/<predeclared hash>/<uuid>`
+(the repository) + `<uuid>.recorded_inputs`. A lookup tries every candidate
+of the hash whose recorded inputs are current, then links
+`external/<name>` to it (`setupOverride`) and touches the recorded inputs
+file; collection after `--repo_contents_cache_gc_max_age` (14d) once the
+server was idle `--repo_contents_cache_gc_idle_delay` (5m).
+
+### The remote repo contents cache (`remote/RemoteRepoContentsCacheImpl.java`)
+
+* **Option**: the *startup* option `--[no]experimental_remote_repo_contents_cache`
+  (`remote/options/RemoteStartupOptions.java:27-39`, default false). It
+  installs `RemoteExternalOverlayFileSystem` over `<output_base>/external`
+  (`RemoteModule.getFileSystemForBuildArtifacts`); the cache exists when the
+  command has a `CombinedCache` (a `--remote_cache` and/or `--disk_cache`,
+  `RemoteModule.initRepoHelpersAndOverlayFs`).
+* **Policies** (`buildContext`): reads use `ANY_CACHE` (the disk cache,
+  then the remote cache) under `--remote_accept_cached`, else none; a
+  download writes through the disk cache; uploads use `REMOTE_CACHE_ONLY`
+  under `--remote_upload_local_results` ("the local repo contents cache is
+  a better alternative for local caching").
+* **Entries**: Action Cache entries of a synthetic action that is never
+  executed: a fixed `Command` (argument: a GUID; outputs `.recorded_inputs`
+  and the directory `repo_contents`), the empty input root, and the key
+  hash as the `Action.salt`.
+  * An *intermediate* entry (exit code 0, no outputs, a stdout blob) lists,
+    one line per alternative, a batch of space-separated `RepoRecordedInput`
+    keys (`RepoRecordedInput.WithValue.splitIntoBatches`: a new batch starts
+    at an input that cannot be requested unconditionally). The next key is
+    the rolling hash `Fingerprint(previous hash, input + " " + value)` over
+    the batch with the *current* values; lines are added newest first,
+    unbounded (a racy read-modify-write).
+  * A *final* entry has one output file (the marker file, inlined when the
+    server agrees) and one output directory (the repository's `Tree`).
+* **Lookup** (`lookupCache`/`fetchFinalCacheEntry`): from the predeclared
+  inputs hash, follow intermediate entries with the current values of the
+  listed inputs until a final entry; read its marker file, check every
+  recorded input again (`isAnyValueOutdated`: a warning `Unexpectedly
+  outdated cached repo …` and a fetch when one changed), then inject the
+  `Tree` into the overlay file system: file metadata only, contents
+  downloaded when Bazel or a local action reads them, files read-only
+  (`RemoteExternalOverlayFileSystem.java:327-331`).
+* **Upload** (`addToCache`): the intermediate entries for the recorded
+  input batches, then the final entry through `UploadManifest` (the marker
+  file and every file of the repository as CAS blobs, the `Tree`), only for
+  a repository fetched into the overlay file system; failures are warnings
+  `Failed to upload repo contents to remote cache for repo …`.
+
+## bazel-rs
+
+### What is implemented
+
+* `--[no]experimental_remote_repo_contents_cache` is a modelled startup
+  option (command line or rc `startup` line, the last value wins). As a
+  command option it is `Unrecognized option` (exit 2), with a value it is
+  genuine's `does not take a value` error (exit 1 here, 2 in genuine: a
+  native difference shared by every `OptionProcessor::SplitCommandLine`
+  failure). It is part of neither the analysis snapshot's key
+  (`snapshot::key::console_or_cache_only`) nor `bazel affected`'s digests
+  key (`affected::digests_key_of`): it never changes a result, so runs with
+  and without it share snapshots and remote base digests.
+* With a `--remote_cache` (HTTP(S) or gRPC, with the configured headers,
+  credentials and credential helper) and/or a `--disk_cache`, under the
+  same policies as genuine: lookups under `--remote_accept_cached` (disk
+  cache first, a download writes through it), uploads under
+  `--remote_upload_local_results` to the remote cache only.
+* **Eligibility**, as genuine: non-local rules only (a local rule never
+  reaches the lookup, `repository_store::materialize_local`), never under
+  `bazel fetch --force`. Uploaded are executions whose rule returned
+  `repo_metadata(reproducible = True)` and whose publication is portable:
+  no workspace dependence (recorded probes without `workspace`,
+  docs/WORKTREES.md), not self-referencing and naming no other store tree
+  (docs/REPOSITORY_SLOTS.md), every symlink relative and inside the tree
+  (genuine's `safeForRemoteCache`), and its recorded inputs hold for the
+  published tree (a later warm reuse would take it). Built-in, registry and
+  Git module trees (`trees/`, `git/trees/`) are not repository-rule
+  publications and are not cached (they are downloads the repository
+  cache already covers).
+* **Key**: the repository's native specification key (`spec_key`: rule
+  definition and its `.bzl` closure, attributes, mappings, host markers,
+  declared environment values — the counterpart of the predeclared inputs
+  hash, docs/REPOSITORY_RULES.md), never the workspace path: checkouts in
+  other directories share entries.
+* **Recorded inputs**: bazel-rs records a repository's watched inputs as
+  one opaque probe record (`repository_warm::RecordedInputs`), not as
+  genuine's ordered list. An intermediate entry (salt `spec:<spec_key>`)
+  therefore lists, newest first and at most 8, the SHA-256 of each stored
+  record; each names a final entry (salt `final:<spec_key>:<sha256>`). A
+  lookup tries them in order and takes the first whose probes hold now
+  (`repository_warm::unchanged`, the warm reuse's own check; probes of
+  files inside the tree itself, `stage:`, are decided by the tree's
+  verified contents) and whose blobs are all there.
+* **Final entry**: output files `manifest.json` (every entry of the tree:
+  path, directory/file/link, the mode the rule left before the store sealed
+  it, size, SHA-256, link target; and the pack's chunks),
+  `recorded_inputs`, `runtime_inputs` (the execution's runtime input
+  provenance, part of the tree identity) and the pack chunks
+  `repo_contents/NNNNNN`. The **pack** is the regular files' contents
+  concatenated in manifest order, cut every 16 MiB and stored as zstd frames
+  (one CAS blob each): one request per 16 MiB instead of one per file (a
+  per-file layout needed 895k requests for ~/code, which latency makes
+  unusable over a WAN) and compressed. bazel-rs's GUID salts every key;
+  entries are never shared with genuine's (different keys and recorded
+  inputs).
+* **Hit**: under the repository's slot writer lock, after the warm probes
+  missed (the same place genuine looks up), the tree is written into the
+  slot `<cache>/repositories/external/<name>` with the modes the rule left,
+  every chunk verified as a CAS blob and every file against its SHA-256 as
+  it is written; then the store publishes it exactly as if the rule had
+  produced that tree with those runtime inputs: the same snapshot, sealing,
+  identity (local provenance + runtime inputs + snapshot), manifest,
+  specification pointer and slot binding, and the same post-publication
+  re-probe that lets the analysis snapshot record the publication as a
+  reuse. The lockfile, the hidden lockfile, stderr (with the action graph)
+  and every tree identity are byte-identical to a real fetch (tests, and
+  ~/code below). A missing chunk falls back to the fetch silently; a
+  corrupt one, or any transfer failure, with a warning `Remote repo
+  contents cache lookup failed for <repo>: …`; after 5 failures the cache
+  is off for the rest of the command (no warning per repository when the
+  cache is down).
+* **Upload**: synchronous after the publication, like genuine's (its
+  `TODO: Consider uploading asynchronously`); each file is verified against
+  the manifest as it is packed. Failures warn `Failed to upload repo
+  contents to remote cache for <repo>: …`.
+* **Concurrency**: lookups run wherever a repository is materialized —
+  the coordinator, repository speculation and extension speculation
+  workers — under the per-repository slot lock; transfers of different
+  repositories run in parallel (16 MiB chunks bound the memory of each:
+  one chunk downloads while the previous one is written).
+* **Laziness**: none. Genuine keeps hit repositories in an overlay file
+  system and downloads a file when it is read; bazel-rs's store publishes
+  complete, sealed, verified trees, so a hit downloads the whole tree.
+* `BAZEL_RS_REMOTE_REPO_CACHE_STATS=1` prints `REMOTE-REPO-CACHE hits=…
+  downloaded_bytes=… uploads=… uploaded_bytes=…` (compressed bytes);
+  `=verbose` adds one `REMOTE-REPO-CACHE miss <repo>: <reason>` line per
+  miss (`no entry`, `recorded inputs changed`, `incomplete entry`,
+  `missing blob`).
+
+### The local `--repo_contents_cache`
+
+Unchanged (docs/REPOSITORY_CACHE.md "Repo contents cache"): accepted with
+genuine's checks; bazel-rs's own content-addressed store, shared by every
+worktree of a cache, plays its role.
+
+## Measurements (~/code)
+
+Private clone at 80d6724f3a, private lockfile copy, fresh `--cache-dir`
+(the snapshot.debian.org packages seeded into its download cache as in
+docs/COLD_FETCH.md), cold `build --nobuild //src/...`, release build without
+LTO, `nice -n 10`, a local HTTP cache server (`/ac/`, `/cas/`, a small
+threaded Rust server on loopback), fixed checkout and cache paths (as on a
+CI runner), one run each, seconds:
+
+| run | wall | eth0 received | cache traffic | hits / uploads |
+| --- | ---: | ---: | --- | --- |
+| plain cold fetch (no remote cache) | 207.9 | 8,754 MB | — | — |
+| populating (`--remote_upload_local_results`) | 242.4 | 8,759 MB | 14.1 GB up, 52k PUTs | 0 / 8,726 |
+| cold with the populated cache (read-only) | **98.3** | 501 MB | 14.8 GB down, 35k AC + 45k CAS GETs | 8,726 / 0 |
+
+* The fetch phase ends at 189 s (plain) vs 81 s (hit); analysis is ~18 s
+  in both. stderr (6.5M lines with the action graph), the lockfile and the
+  hidden lockfile are byte-identical between the plain and the hit run.
+* 8,726 of 8,851 repositories were uploaded and served; 91 others have no
+  entry (non-reproducible rules: pip sdists built locally, the Python
+  interpreter, local_config_*, toolchain hubs, `zig_config`, ...) and run as
+  before; the remaining 34 are local rules, never looked up.
+* The trees are 22.1 GB uncompressed (12.0 GB pip wheels — torch and the
+  CUDA libraries —, 4.7 GB npm packages, 1.7 GB Go modules, 1.3 GB Rust
+  toolchains); the pack is 14.7 GB (the wheels' shared objects hardly
+  compress), more bytes than the 8.75 GB of original (xz/gzip) downloads.
+  An earlier per-file layout (no compression, 895k requests) took 102 s
+  against the fast local server and 260 s against a single-threaded Python
+  server: request count, not bandwidth, dominates small files.
+* Populating costs +35 s (synchronous upload, ~390 CPU-s of zstd
+  compression) once per new repository version.
+* With per-run cache directories the 500 `go_repository` repositories miss
+  (`recorded inputs changed`): they watch the `go.env` of
+  `go_repository_cache`, a self-referencing repository whose contents name
+  the cache directory. A CI whose runners use one cache path
+  (`~/.cache/bazel-rs/ci-cache`) shares them.
+
+## What ~/code's CI needs (bazel-rs only)
+
+The PR's bazel-rs invocations already pass the remote cache (`--remote_cache`
+from `.bazelrc` with the storagebox credentials) for the action cache and
+the base digests. Add the startup option to bazel-rs's invocations only
+(genuine 9.3.1 would accept it too, but its lazy overlay is a different
+trade-off and a server restart):
+
+* in the workflow, for bazel-rs: `bazel --experimental_remote_repo_contents_cache affected …`
+  / `… build …` (a startup option: before the command), or a `startup`
+  line in an rc file only bazel-rs reads, e.g. the CI's
+  `--bazelrc=…/ci.bazelrc` with `startup --experimental_remote_repo_contents_cache`;
+* keep `--remote_upload_local_results` on (the default) on the jobs that
+  should populate the cache (main-branch and PR jobs alike: every miss is
+  uploaded once per repository version); jobs that must not write keep
+  `--noremote_upload_local_results` (lookups only);
+* use one cache path on every runner (it is already
+  `~/.cache/bazel-rs/ci-cache`) so `go_repository` entries are shared;
+* optionally `BAZEL_RS_REMOTE_REPO_CACHE_STATS=1` (or `=verbose`) to log
+  hits, misses and bytes.
+
+`bazel affected` passes its startup options to the planning processes, so
+the option given before `affected` covers both revisions' plannings. Expect
+~15 GB of downloads per cold runner from the storagebox (14.7 GB pack for
+this revision) instead of ~8.8 GB from the public CDNs, registries and
+snapshot.debian.org: the win on CI depends on the runner–storagebox
+bandwidth (the debian snapshot archive's 10–40 s per package and the
+registries' latency disappear; the bytes grow).

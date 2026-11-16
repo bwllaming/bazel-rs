@@ -1332,8 +1332,17 @@ fn digests_key_of(binary: &Digest32, startup: &[String], options: &Options) -> S
     }
     for arg in startup
         .iter()
-        // The cache location changes no digest.
-        .filter(|arg| !arg.starts_with("--cache-dir="))
+        // The cache location changes no digest, nor the remote repository
+        // contents cache (a repository it serves is published as its
+        // rule's execution would publish it, docs/REPO_CONTENTS_CACHE.md).
+        .filter(|arg| {
+            !arg.starts_with("--cache-dir=")
+                && !matches!(
+                    arg.as_str(),
+                    "--experimental_remote_repo_contents_cache"
+                        | "--noexperimental_remote_repo_contents_cache"
+                )
+        })
         .chain([&options.command])
         .chain(&options.forwarded)
         .chain([&"--".to_owned()])
@@ -2790,6 +2799,15 @@ mod tests {
         assert_ne!(
             digests_key_of(&binary, &[], &plain),
             digests_key_of(&binary, &[], &manual)
+        );
+        // The remote repository contents cache changes no digest.
+        assert_eq!(
+            digests_key_of(
+                &binary,
+                &["--experimental_remote_repo_contents_cache".to_owned()],
+                &plain
+            ),
+            digests_key_of(&binary, &[], &plain)
         );
     }
 }

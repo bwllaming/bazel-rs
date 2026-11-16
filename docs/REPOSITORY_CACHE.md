@@ -15,6 +15,7 @@ paths below are relative to `src/main/java/com/google/devtools/build/lib/`.
 | --- | --- | --- |
 | `--repository_cache=PATH` (old name `--experimental_repository_cache`) | `bazel/repository/RepositoryOptions.java:40-54`, `BazelRepositoryModule.java:322-330`; the empty value disables it; default `<output_user_root>/cache/repos/v1` | the shared download cache below; the empty value disables it; unset: no shared cache (see "Default") |
 | `--repo_contents_cache=PATH` (old name `--repository_contents_cache`) | `RepositoryOptions.java:56-72`; default `<repository_cache>/contents`; checked at command start (`BazelRepositoryModule.java:338-401`) | accepted, the checks are genuine's (below); nothing is written there (see "Repo contents cache") |
+| `--[no]experimental_remote_repo_contents_cache` (startup) | `remote/options/RemoteStartupOptions.java:27-39`, `remote/RemoteRepoContentsCacheImpl.java` | implemented: docs/REPO_CONTENTS_CACHE.md |
 | `--experimental_repository_cache_hardlinks` | `RepositoryOptions.java:155-163`, `DownloadCache.get`: a hit is hard-linked instead of copied, to save disk space | accepted; hits are copied (see "Hard links") |
 | `--experimental_repository_downloader_retries=N` | `RepositoryOptions.java:179-188` (default 5), `DownloadManager.shouldRetryDownload`: whole-download retries after `SocketException`, `UnknownHostException`, `ContentLengthMismatchException` | validated (`Converters.IntegerConverter`: `'x' is not an int`) and accepted; see "Known differences" |
 | `--experimental_remote_downloader` | `remote/options/RemoteOptions.java:145-155`, a Remote Asset API download proxy | the empty (default) value is accepted; any other value fails explicitly (it changes where downloads come from) |
@@ -112,6 +113,8 @@ output base inside the contents cache (`The output base [B] is inside the repo
 contents cache [C]. …`), and the contents cache — `--repo_contents_cache`, or
 `<repository_cache>/contents` when only `--repository_cache` is set — inside the
 workspace (`The repo contents cache [C] is inside the main repo [W]. …`).
+The remote variant (`--experimental_remote_repo_contents_cache`) is
+implemented: docs/REPO_CONTENTS_CACHE.md.
 
 ## The disk cache
 
