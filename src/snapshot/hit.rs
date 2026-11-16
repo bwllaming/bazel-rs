@@ -81,6 +81,15 @@ pub struct Attempt<'a> {
     /// A derived hit (crate::snapshot::derive): the decoded plan becomes
     /// the request's before the workspace status is computed.
     pub derive: Option<Derivation<'a>>,
+    /// The snapshot's INPUTS as [`prevalidate`] decoded and validated them
+    /// just before (a derived hit): neither is done again.
+    pub prevalidated: Option<Prevalidated>,
+}
+
+/// What [`prevalidate`] decoded and found valid.
+pub struct Prevalidated {
+    pub inputs: format::Inputs,
+    pub validated: Validated,
 }
 
 /// [`Attempt::derive`]: the saved plan to the derived request's.
@@ -141,11 +150,13 @@ fn miss(reason: impl Into<String>) -> Result<Box<Hit>, Miss> {
 /// Validate the recorded inputs of the snapshot of `key` only (no replay,
 /// no decoding, no stderr capture): what a derived hit checks before it
 /// gives up the save of the command it serves (crate::snapshot::derive).
+/// The hit that follows takes the decoded inputs and the validation from it
+/// ([`Attempt::prevalidated`]) instead of doing both again.
 pub fn prevalidate(
     cache: &Path,
     key: &Key,
     environment: &[(OsString, OsString)],
-) -> Result<(), Miss> {
+) -> Result<Prevalidated, Miss> {
     let reader = match Reader::open(cache, key) {
         Ok(Some(reader)) => reader,
         Ok(None) => return Err("no snapshot for this key".to_owned()),
@@ -155,8 +166,9 @@ pub fn prevalidate(
         .section(Section::Inputs)
         .and_then(|bytes| format::decode_inputs(&bytes))
         .map_err(|error| format!("unreadable snapshot: {error}"))?;
-    validate::validate_for_hit(&inputs.recording, &validate::Environment::new(environment))
-        .map(|_| ())
+    let validated =
+        validate::validate_for_hit(&inputs.recording, &validate::Environment::new(environment))?;
+    Ok(Prevalidated { inputs, validated })
 }
 
 /// Try the snapshot of `attempt.key`. A miss with
@@ -183,8 +195,15 @@ fn attempt_keeping(
         Ok(None) => return miss("no snapshot for this key"),
         Err(error) => return miss(format!("unreadable snapshot: {error}")),
     };
+    let (prevalidated, prevalidation) = match attempt.prevalidated.take() {
+        Some(Prevalidated { inputs, validated }) => (Some(inputs), Some(validated)),
+        None => (None, None),
+    };
     let decoded = crate::internal_error::recoverable_asserted(|| {
-        let inputs = format::decode_inputs(&reader.section(Section::Inputs)?)?;
+        let inputs = match prevalidated {
+            Some(inputs) => inputs,
+            None => format::decode_inputs(&reader.section(Section::Inputs)?)?,
+        };
         let window = format::decode_events(&reader.section(Section::Events)?)?;
         Ok::<_, String>((inputs, window))
     });
@@ -314,10 +333,13 @@ fn attempt_keeping(
                     }
                 })
             });
-            let validation = validate::validate_for_hit(
-                &inputs.recording,
-                &validate::Environment::new(&attempt.replay.environment),
-            );
+            let validation = match prevalidation {
+                Some(validated) => Ok(validated),
+                None => validate::validate_for_hit(
+                    &inputs.recording,
+                    &validate::Environment::new(&attempt.replay.environment),
+                ),
+            };
             // Incremental analysis: what changed, and whether it lies in
             // packages (decided while the plan decodes and the replay
             // runs; a change it cannot attribute cancels them as before).

@@ -222,13 +222,19 @@ impl Coverage {
 }
 
 /// The candidates of `family`: each saved snapshot key with its coverage,
-/// the most recently saved first. Unreadable ones are skipped.
-pub fn candidates(cache: &Path, family: &[u8; 32], binary: [u8; 32]) -> Vec<(Key, Coverage)> {
+/// the most recently saved first, read and decoded one at a time as the
+/// caller asks for the next (a lookup stops at the first that serves it:
+/// a family's markers accumulate, and each coverage names every target of
+/// its snapshot). Unreadable ones are skipped, their markers removed.
+pub fn candidates(
+    cache: &Path,
+    family: &[u8; 32],
+    binary: [u8; 32],
+) -> impl Iterator<Item = (Key, Coverage)> {
     let directory = family_directory(cache, family);
-    let Ok(entries) = std::fs::read_dir(&directory) else {
-        return Vec::new();
-    };
-    let mut markers: Vec<(std::time::SystemTime, PathBuf)> = entries
+    let mut markers: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(&directory)
+        .into_iter()
+        .flatten()
         .flatten()
         .filter_map(|entry| {
             let modified = entry.metadata().ok()?.modified().ok()?;
@@ -236,35 +242,37 @@ pub fn candidates(cache: &Path, family: &[u8; 32], binary: [u8; 32]) -> Vec<(Key
         })
         .collect();
     markers.sort_by_key(|marker| std::cmp::Reverse(marker.0));
-    let mut found = Vec::new();
-    for (_, marker) in markers {
-        let Some(g) = std::fs::read_to_string(&marker)
-            .ok()
-            .and_then(|text| parse_hex(text.trim()))
-        else {
-            let _ = std::fs::remove_file(&marker);
-            continue;
-        };
-        let key = Key { g, binary };
-        let reader = match crate::snapshot::store::Reader::open(cache, &key) {
-            Ok(Some(reader)) => reader,
-            // Evicted, damaged or of another binary: the marker goes.
-            _ => {
-                let _ = std::fs::remove_file(&marker);
-                continue;
-            }
-        };
-        match reader
+    let cache = cache.to_path_buf();
+    markers
+        .into_iter()
+        .filter_map(move |(_, marker)| candidate(&cache, &marker, binary))
+}
+
+/// The snapshot `marker` names, with its coverage; `None` (the marker
+/// removed) when it is unreadable, evicted, damaged or of another binary.
+fn candidate(cache: &Path, marker: &Path, binary: [u8; 32]) -> Option<(Key, Coverage)> {
+    let Some(g) = std::fs::read_to_string(marker)
+        .ok()
+        .and_then(|text| parse_hex(text.trim()))
+    else {
+        let _ = std::fs::remove_file(marker);
+        return None;
+    };
+    let key = Key { g, binary };
+    let coverage = match crate::snapshot::store::Reader::open(cache, &key) {
+        Ok(Some(reader)) => reader
             .stored_section(crate::snapshot::format::Section::Derive)
             .and_then(decode)
-        {
-            Ok(coverage) => found.push((key, coverage)),
-            Err(_) => {
-                let _ = std::fs::remove_file(&marker);
-            }
+            .ok(),
+        _ => None,
+    };
+    match coverage {
+        Some(coverage) => Some((key, coverage)),
+        None => {
+            let _ = std::fs::remove_file(marker);
+            None
         }
     }
-    found
 }
 
 fn parse_hex(text: &str) -> Option<[u8; 32]> {
@@ -651,6 +659,53 @@ pub enum Outcome {
     Failed,
 }
 
+/// Where a derived lookup's time went (`PERF-SNAPSHOT derive` under
+/// `BAZEL_RS_TIMING`).
+#[derive(Default)]
+struct Tally {
+    /// Candidates read (their coverage decoded).
+    candidates: usize,
+    /// Covering candidates whose inputs were validated, and the stale ones.
+    prevalidated: usize,
+    stale: usize,
+    prevalidate: std::time::Duration,
+    /// The whole lookup, the prevalidations included.
+    lookup: std::time::Duration,
+}
+
+impl Tally {
+    fn report(&self, hit: Option<&crate::snapshot::hit::Timings>) {
+        if !crate::diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING")) {
+            return;
+        }
+        let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1000.0;
+        let hit = hit.map_or_else(
+            || " no hit".to_owned(),
+            |timings| {
+                format!(
+                    " hit inputs_ms={:.3} validate_ms={:.3} replay_ms={:.3} local_ms={:.3} decode_ms={:.3} map_each_ms={:.3} status_ms={:.3} attempt_ms={:.3}",
+                    ms(timings.inputs),
+                    ms(timings.validation),
+                    ms(timings.replay),
+                    ms(timings.local_trees),
+                    ms(timings.decode),
+                    ms(timings.mappers),
+                    ms(timings.status),
+                    ms(timings.total),
+                )
+            },
+        );
+        eprintln!(
+            "PERF-SNAPSHOT derive candidates={} prevalidated={} stale={} prevalidate_ms={:.3} lookup_ms={:.3}{hit}",
+            self.candidates,
+            self.prevalidated,
+            self.stale,
+            ms(self.prevalidate),
+            ms(self.lookup),
+        );
+    }
+}
+
 /// Look for a snapshot of `save`'s family covering `request` and derive it.
 pub fn attempt(
     lookup: &Lookup,
@@ -662,21 +717,35 @@ pub fn attempt(
         return Outcome::Uncovered(save);
     };
     let key = save.key();
+    let started = std::time::Instant::now();
     // The most recent covering candidate whose recorded inputs hold — checked
     // while this command can still save its own analysis: a stale one
-    // leaves its family.
+    // leaves its family. Candidates are decoded only until one is chosen.
+    let mut tally = Tally::default();
     let mut chosen = None;
     for (candidate, coverage) in candidates(&lookup.cache, &family, key.binary) {
+        tally.candidates += 1;
         if candidate == key {
             continue;
         }
         let checked = coverage.covers(&request).and_then(|()| {
-            crate::snapshot::hit::prevalidate(&lookup.cache, &candidate, &lookup.replay.environment)
-                .inspect_err(|_| unmark(&lookup.cache, &family, &candidate))
+            tally.prevalidated += 1;
+            let prevalidating = std::time::Instant::now();
+            let prevalidated = crate::snapshot::hit::prevalidate(
+                &lookup.cache,
+                &candidate,
+                &lookup.replay.environment,
+            )
+            .inspect_err(|_| {
+                tally.stale += 1;
+                unmark(&lookup.cache, &family, &candidate);
+            });
+            tally.prevalidate += prevalidating.elapsed();
+            prevalidated
         });
         match checked {
-            Ok(()) => {
-                chosen = Some((candidate, coverage));
+            Ok(prevalidated) => {
+                chosen = Some((candidate, coverage, prevalidated));
                 break;
             }
             Err(reason) => {
@@ -690,7 +759,9 @@ pub fn attempt(
             }
         }
     }
-    let Some((candidate, coverage)) = chosen else {
+    tally.lookup = started.elapsed();
+    let Some((candidate, coverage, prevalidated)) = chosen else {
+        tally.report(None);
         return Outcome::Uncovered(save);
     };
     let log = save.log();
@@ -710,7 +781,9 @@ pub fn attempt(
         log,
         incremental: false,
         derive: Some(Box::new(move |source| derive(source, &coverage, request))),
+        prevalidated: Some(prevalidated),
     });
+    tally.report(outcome.as_ref().ok().map(|hit| &hit.timings));
     match outcome {
         Ok(hit) => {
             if explain {

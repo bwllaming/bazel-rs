@@ -386,6 +386,7 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
         log: log.clone(),
         incremental: inputs.incremental && incremental::enabled(),
         derive: None,
+        prevalidated: None,
     });
     let timing = crate::diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING"));
     let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1000.0;
