@@ -1,0 +1,40 @@
+### build //:all --show_progress_rate_limit=3
+rc=0
+  0.00 | OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.
+  1.16 | Computing main repo mapping: 
+  1.53 | Loading: 
+  1.53 | Loading: 0 packages loaded
+  1.63 | WARNING: The target pattern '//:all' is ambiguous: ':all' is both a wildcard, and the name of an existing filegroup rule; using the latter interpretation
+  2.08 | Analyzing: target //:all (5 packages loaded, 6 targets configured)
+  2.09 | Analyzing: target //:all (5 packages loaded, 6 targets configured)
+  2.09 | 
+  2.18 | INFO: Analyzed target //:all (27 packages loaded, 33 targets configured).
+  6.25 | INFO: Found 1 target...
+  6.26 | Target //:all up-to-date:
+  6.26 |   bazel-bin/chain.txt
+  6.26 |   bazel-bin/slow1.txt
+  6.26 |   bazel-bin/slow2.txt
+  6.26 |   bazel-bin/external/+slow_repo+slow/r.txt
+  6.26 |   bazel-bin/p0/g.txt
+  6.26 |   bazel-bin/p1/g.txt
+  6.26 |   bazel-bin/p2/g.txt
+  6.26 |   bazel-bin/p3/g.txt
+  6.26 |   bazel-bin/p4/g.txt
+  6.26 |   bazel-bin/p5/g.txt
+  6.26 |   bazel-bin/p6/g.txt
+  6.26 |   bazel-bin/p7/g.txt
+  6.26 |   bazel-bin/p8/g.txt
+  6.26 |   bazel-bin/p9/g.txt
+  6.26 |   bazel-bin/p10/g.txt
+  6.26 |   bazel-bin/p11/g.txt
+  6.26 |   bazel-bin/p12/g.txt
+  6.26 |   bazel-bin/p13/g.txt
+  6.26 |   bazel-bin/p14/g.txt
+  6.26 |   bazel-bin/p15/g.txt
+  6.26 |   bazel-bin/p16/g.txt
+  6.26 |   bazel-bin/p17/g.txt
+  6.26 |   bazel-bin/p18/g.txt
+  6.26 |   bazel-bin/p19/g.txt
+  6.28 | INFO: Elapsed time: 5.468s, Critical Path: 4.04s
+  6.28 | INFO: 26 processes: 1 internal, 25 processwrapper-sandbox.
+  6.28 | INFO: Build completed successfully, 26 total actions

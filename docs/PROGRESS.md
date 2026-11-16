@@ -3,9 +3,11 @@
 On a terminal, `bazel-rs build`, `test` and `run` keep a status area at the
 bottom of the screen, like Bazel's curses mode (runtime/UiEventHandler.java,
 UiStateTracker.java). Everything else prints exactly as before, above it.
-Implementation: `src/progress.rs` (hooks, counters, options),
-`src/progress/render.rs` (the text), `src/progress/terminal.rs` (the thread
-that owns the terminal).
+Off a terminal they print Bazel's plain progress lines instead ([Without a
+terminal](#without-a-terminal)). Implementation: `src/progress.rs` (hooks,
+counters, options), `src/progress/render.rs` (the text),
+`src/progress/terminal.rs` (the thread that owns the terminal),
+`src/progress/plain.rs` (the plain lines).
 
 ## What it shows
 
@@ -160,12 +162,16 @@ checksum is the native ConfigId.
   (UiVerbosity.QUIET: UiEventHandler.addProgressBar shows no progress bar), or
   `BAZEL_RS_PROGRESS=0`/`off` — these win over `--curses=yes`.
 
-Off, nothing of the display runs: the engine hooks only bump relaxed atomic
-counters (for the `INFO:` lines above), and the output is byte for byte the
-plain one (tests/progress_ui.rs checks it on a pseudo-terminal with
-`--curses=no`, `--noshow_progress` and `CI`). Tests and A/B comparisons that
-compare whole stderr streams normalize the `INFO: Elapsed time:` value
-(tests/support/console.rs).
+Off, nothing of the display runs; the plain lines below print instead,
+unless `--noshow_progress`, the startup option `--quiet` or
+`BAZEL_RS_PROGRESS=0` — then nothing of either runs: the engine hooks only
+bump relaxed atomic counters (for the `INFO:` lines above), and the output
+is byte for byte the plain one (tests/progress_ui.rs checks it on a
+pseudo-terminal with `--curses=no`, `--noshow_progress` and `CI`). Tests and
+A/B comparisons that compare whole stderr streams normalize the `INFO:
+Elapsed time:` value (tests/support/console.rs); the test suite
+(`.cargo/config.toml`) and scripts/ab_bench.py set `BAZEL_RS_PROGRESS=0`, as
+the plain lines follow the clock.
 
 UI options (UiOptions.java; before, they were rejected as unsupported):
 `--curses=yes|no|auto`, `--color=yes|no|auto`, `--[no]show_progress`,
@@ -173,6 +179,78 @@ UI options (UiOptions.java; before, they were rejected as unsupported):
 `--[no]progress_in_terminal_title` (the status line in the title),
 `--ui_actions_shown=N` (`--experimental_ui_actions_shown`). They are left
 out of the analysis snapshot key (`snapshot::key::EXCLUDED`).
+
+## Without a terminal
+
+When the display does not run — stderr or stdout is not a terminal (a pipe,
+a file, a wrapper that tees stderr), `--curses=no`, `CI` — `build`, `test`
+and `run` print Bazel's progress bar one plain line at a time on stderr, as
+genuine Bazel does without cursor control (UiEventHandler with
+`cursorControl` false: `writeProgressBar(…, shortVersion = true)`; genuine
+captures in tests/fixtures/progress_lines, tests/progress_lines.rs). Bazel
+has no CI rule of its own: its non-curses output in CI is this one.
+
+```
+Computing main repo mapping: 
+Loading: 
+Loading: 0 packages loaded
+WARNING: The target pattern '//:all' is ambiguous: …
+Analyzing: target //:all (1 packages loaded, 0 targets configured)
+Analyzing: target //:all (22 packages loaded, 26 targets configured)
+
+INFO: Analyzed target //:all (22 packages loaded, 26 targets configured).
+INFO: Found 1 target...
+[23 / 27] Executing genrule //:slow0; 1s processwrapper-sandbox ... (3 actions running)
+[24 / 27] Executing genrule //:slow1; 2s processwrapper-sandbox ... (3 actions running)
+[25 / 27] Executing genrule //:slow2; 3s processwrapper-sandbox ... (2 actions running)
+Target //:all up-to-date:
+…
+```
+
+* **When.** A phase start prints at once, whatever the rate
+  (ignoreRefreshLimitOnce): `Computing main repo mapping: ` when the command
+  starts, `Loading: ` and `Loading: N packages loaded` when target patterns
+  are evaluated, `Analyzing: …` when analysis starts. The next analysis line
+  also ignores the rate, followed by an empty line (Skymeld's
+  ANALYSIS_AND_EXECUTION state once the execution progress receiver is
+  announced), at the latest just before `INFO: Analyzed …`. After that, at
+  most one line per `max(--show_progress_rate_limit, 1s)`
+  (NO_CURSES_MINIMAL_PROGRESS_RATE_LIMIT), only when something happened —
+  no time-based refresh: an event that starts something (a package, a
+  configured target, an action starting or starting its spawn, a fetch in
+  flight) prints at once if the rate allows, a completion waits for the
+  update thread's next wake (every rate interval from the start;
+  refreshSoon). The inactivity watchdog (ActionExecutionInactivityWatchdog)
+  adds a line when no action completed for 11 s, then 30 s more, then
+  every 60 s: a single long action shows `…; 1s …` and `…; 11s …`. No line
+  after analysis while nothing runs, none once the command prints its
+  results.
+* **What.** `STATUS: MESSAGE` (writeBaseProgress); analysis counts as
+  AnalysisProgressReceiver says them (`N targets configured`, `, N aspect
+  applications`), `target //x` for one requested target else `N targets`.
+  Execution: `[done / total]` (thousands separators; the test actions
+  count), `N / M tests[, F failed];` once a test completed, then the oldest
+  running action — else the oldest one — by its progress message
+  (AbstractAction.getProgressMessage, crate::action_console::describe:
+  `Executing genrule //x`, `Compiling a.cc`, `Testing //x:t`), `[Prepa] `
+  before its spawn started, `; Ns STRATEGY` once it did (the time alone past
+  3 s), never cut; with several, ` ... (N actions running)` or ` ... (N
+  actions, R running)`. No `Fetching …` lines (the short bar has none: a
+  fetch only repeats the phase's line every rate interval). The leads are
+  green with `--color=yes` (or `auto` on a terminal with `--curses=no`).
+* **Where.** Through the diagnostics stream (crate::snapshot::diag): never
+  part of an analysis snapshot's window, so a hit replays exactly what it
+  replayed before. A line written while planning's stderr is captured
+  first lets the capture forward the whole lines it holds (bounded,
+  crate::snapshot::capture::settle), so it keeps its place after them. An
+  analysis snapshot hit prints no `Analyzing:` line (nothing is analyzed).
+* **Off** with `--noshow_progress`, the startup option `--quiet` or
+  `BAZEL_RS_PROGRESS=0`; `query`, `cquery`, `fetch`, `mod` and the other
+  commands print none (genuine `query` prints `Loading:` lines: a declared
+  difference).
+* **Cost.** The hooks of the display (relaxed atomics, the running-action
+  slots, whose description is the progress message here); one thread
+  sampling them every 50 ms.
 
 ## How
 

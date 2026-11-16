@@ -124,6 +124,9 @@ impl DrainState {
 struct Drained {
     state: Mutex<DrainState>,
     finished: Condvar,
+    /// The reader holds a chunk it read and has not forwarded yet
+    /// ([`settle`]).
+    busy: AtomicBool,
 }
 
 impl Drained {
@@ -238,6 +241,7 @@ fn spawn_reader(
                 match reader.read(&mut chunk) {
                     Ok(0) => break,
                     Ok(count) => {
+                        drained.busy.store(true, Ordering::SeqCst);
                         let chunk = &chunk[..count];
                         let forward = {
                             let mut state = drained.lock();
@@ -271,6 +275,7 @@ fn spawn_reader(
                         if forward {
                             forward_pending(&drained, &original, false, line_limit);
                         }
+                        drained.busy.store(false, Ordering::SeqCst);
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(_) => break,
@@ -510,6 +515,31 @@ pub fn promote_to_tee() -> bool {
 /// marked into it).
 pub fn is_active() -> bool {
     REDIRECTED.load(Ordering::Relaxed)
+}
+
+/// Let a [`Mode::Tee`] capture forward the whole lines written into it so
+/// far (waiting at most `bound`), so a line written to the original stderr
+/// next (crate::progress's plain lines) lands after them, as it would
+/// without the capture. Nothing to wait for without one.
+pub(crate) fn settle(bound: Duration) {
+    if !REDIRECTED.load(Ordering::Relaxed) {
+        return;
+    }
+    let drained = match &*active() {
+        Some(active) if active.mode == Mode::Tee => active.drained.clone(),
+        _ => return,
+    };
+    let started = std::time::Instant::now();
+    loop {
+        let queued = rustix::io::ioctl_fionread(io::stderr().as_fd()).unwrap_or(0);
+        let settled = queued == 0
+            && !drained.busy.load(Ordering::SeqCst)
+            && !drained.lock().pending.contains(&b'\n');
+        if settled || started.elapsed() >= bound {
+            return;
+        }
+        std::thread::sleep(Duration::from_micros(200));
+    }
 }
 
 /// The mode of the active capture, if any.

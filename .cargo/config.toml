@@ -2,5 +2,13 @@
 # result lines (crate::build_results): every process cargo starts (`cargo
 # test`, `cargo run`) gets them in addition to Bazel's `Target … up-to-date:`
 # lines. Tests of the genuine console text remove the variable.
+#
+# Off a terminal bazel-rs prints Bazel's plain progress lines (`Loading: …`,
+# `Analyzing: …`, `[N / M] …`, crate::progress), timed by the clock: the
+# suite turns them off so the many tests that compare whole stderr streams
+# (and analysis snapshot hits with their misses) stay deterministic. The
+# tests of the progress output (tests/progress_ui.rs,
+# tests/progress_lines.rs) remove the variable.
 [env]
 BAZEL_RS_RESULT_LINES = "1"
+BAZEL_RS_PROGRESS = "0"

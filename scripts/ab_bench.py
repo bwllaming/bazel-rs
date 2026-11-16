@@ -231,9 +231,11 @@ def run_one(bin_, cache, out, args, extra_env, tag, workspace, timeout):
     tmp.mkdir(parents=True, exist_ok=True)
     # BAZEL_RS_RESULT_LINES: the native `LABEL<TAB>PATH` result lines on
     # stdout (crate::build_results), compared like the rest.
+    # BAZEL_RS_PROGRESS=0: no plain progress lines (`Loading: …`, `[N / M]
+    # …`); they follow the clock, so the sides' stderr would differ.
     env = {'PATH': '/usr/bin:/bin', 'HOME': str(home), 'TMPDIR': str(tmp),
            'BAZEL_RS_DUMP_ACTIONS': '1', 'BAZEL_RS_TIMING': '1',
-           'BAZEL_RS_RESULT_LINES': '1'}
+           'BAZEL_RS_RESULT_LINES': '1', 'BAZEL_RS_PROGRESS': '0'}
     env.update(extra_env)
     argv = [bin_, '--ignore_all_rc_files', f'--cache-dir={cache}', 'build'] + args
     with open(out / f'{tag}.out', 'wb') as stdout, open(out / f'{tag}.err', 'wb') as stderr:

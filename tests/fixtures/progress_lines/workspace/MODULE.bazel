@@ -1,0 +1,5 @@
+module(name = "progress_lines")
+
+slow_repo = use_repo_rule("//:repo.bzl", "slow_repo")
+
+slow_repo(name = "slow")

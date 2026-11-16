@@ -76,6 +76,8 @@ struct Emitter {
     analyzed: bool,
     /// The state the last tick saw.
     signature: Option<Signature>,
+    /// The update thread's next wake (every rate interval).
+    next_wake: Instant,
     /// Something happened since the last line (progressBarNeedsRefresh).
     pending: bool,
     /// The inactivity watchdog: when it fires next, the interval after it.
@@ -149,6 +151,7 @@ pub(super) fn start(rate: Duration, color: bool) -> std::io::Result<()> {
             receiver: false,
             analyzed: false,
             signature: None,
+            next_wake: Instant::now() + rate,
             pending: false,
             watchdog: None,
             watched_done: 0,
@@ -256,6 +259,9 @@ impl Emitter {
             bytes.extend_from_slice(line.as_bytes());
             bytes.push(b'\n');
         }
+        // What the process printed into an analysis snapshot's capture
+        // before this line goes out before it.
+        crate::snapshot::capture::settle(Duration::from_millis(20));
         crate::snapshot::diag::write(&bytes);
         self.last = Some(now);
         self.force = false;
@@ -267,7 +273,25 @@ impl Emitter {
         let view = super::sample();
         let aspects = COUNTERS.aspects.load(Ordering::Relaxed);
         let signature = Signature::of(&view, aspects);
-        let changed = self.signature.as_ref() != Some(&signature);
+        // Bazel refreshes at once (if the rate allows) on the events that
+        // start something — a phase, a package, a configured target, an
+        // action starting or starting its spawn — and leaves a completion
+        // (refreshSoon) to its update thread's next wake.
+        let (started, completed) = match &self.signature {
+            None => (true, false),
+            Some(previous) => (
+                previous.phase != signature.phase
+                    || previous.packages != signature.packages
+                    || previous.configured != signature.configured
+                    || previous.aspects != signature.aspects
+                    || previous.actions_total != signature.actions_total
+                    || signature
+                        .active
+                        .iter()
+                        .any(|active| !previous.active.contains(active)),
+                previous != &signature,
+            ),
+        };
         self.signature = Some(signature);
         let executing = view.phase == Phase::Executing;
         // The inactivity watchdog (ActionExecutionInactivityWatchdog):
@@ -296,11 +320,21 @@ impl Emitter {
         } else {
             self.watchdog = None;
         }
-        self.pending |= changed || inactive || !view.fetches.is_empty();
-        if !self.pending {
+        // A fetch in flight reports progress events; the watchdog's
+        // reminder is a progress event too.
+        let direct = started || inactive || !view.fetches.is_empty();
+        self.pending |= direct || completed;
+        // The update thread wakes every rate interval from the start.
+        let wake = now >= self.next_wake;
+        while self.next_wake <= now {
+            self.next_wake += self.rate;
+        }
+        if !self.pending || !(direct || wake || self.force) {
             return;
         }
-        let allowed = self.force || self.last.is_none_or(|last| now >= last + self.rate);
+        // At most one line per rate interval (a tick's slack: the thread's
+        // consecutive wakes are one interval apart).
+        let allowed = self.force || self.last.is_none_or(|last| now + TICK >= last + self.rate);
         if !allowed {
             return;
         }

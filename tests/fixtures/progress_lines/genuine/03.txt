@@ -1,0 +1,18 @@
+### build //:long
+rc=0
+  0.00 | OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.
+  1.15 | Computing main repo mapping: 
+  1.47 | Loading: 
+  1.47 | Loading: 0 packages loaded
+  1.94 | Analyzing: target //:long (5 packages loaded, 6 targets configured)
+  1.95 | Analyzing: target //:long (5 packages loaded, 6 targets configured)
+  1.95 | 
+  2.00 | INFO: Analyzed target //:long (6 packages loaded, 8 targets configured).
+  3.15 | [1 / 2] Executing genrule //:long; 1s processwrapper-sandbox
+ 13.95 | [1 / 2] Executing genrule //:long; 11s processwrapper-sandbox
+ 15.05 | INFO: Found 1 target...
+ 15.06 | Target //:long up-to-date:
+ 15.06 |   bazel-bin/long.txt
+ 15.08 | INFO: Elapsed time: 14.337s, Critical Path: 13.03s
+ 15.08 | INFO: 2 processes: 1 internal, 1 processwrapper-sandbox.
+ 15.08 | INFO: Build completed successfully, 2 total actions
