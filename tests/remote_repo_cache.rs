@@ -20,6 +20,7 @@ include!("support/verify_env.rs");
 include!("support/explicit_modules.rs");
 include!("support/sealed_trees.rs");
 include!("support/module_archives.rs");
+include!("support/grpc_cache_server.rs");
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -730,4 +731,32 @@ fn the_option_parses_like_genuine() {
         }
     }
     let _ = sealed_trees::remove_tree(&root);
+}
+
+/// A gRPC cache (FindMissingBlobs, ByteStream, the Action Cache): the
+/// same round trip as over HTTP.
+#[test]
+fn a_grpc_cache_serves_and_stores_repositories() {
+    let f = Fixture::new();
+    let grpc = grpc_cache_server::Server::new();
+    let remote = format!("--remote_cache={}", grpc.url());
+    let ws_a = f.workspace("ws-a", "one\n");
+    let uploaded = f.run(&ws_a, "a", &[FLAG], &[&remote]);
+    assert_success(&uploaded);
+    assert_eq!(stats(&uploaded), "hits=0 uploads=3");
+    assert_eq!(Server::fetches(&f.server.take_log()), 2);
+    let methods = grpc.method_counts(&grpc.take_log());
+    assert!(
+        methods
+            .keys()
+            .any(|method| method.contains("UpdateActionResult")),
+        "{methods:?}"
+    );
+    let ws_b = f.workspace("ws-b", "one\n");
+    let hit = f.run(&ws_b, "b", &[FLAG], &[&remote]);
+    assert_success(&hit);
+    assert_eq!(stats(&hit), "hits=3 uploads=0");
+    assert_eq!(Server::fetches(&f.server.take_log()), 0);
+    assert_eq!(f.trees("b"), f.trees("a"));
+    assert_eq!(f.out("b"), f.out("a"));
 }
