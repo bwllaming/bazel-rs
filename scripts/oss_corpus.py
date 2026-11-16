@@ -373,7 +373,43 @@ def clone(project, src):
     return dest
 
 
-def apply_edits(project, ws):
+def integrity_to_sha256(integrity):
+    """`sha256-<base64>` (SRI) to a hex digest."""
+    import base64
+
+    algo, _, b64 = integrity.partition("-")
+    if algo != "sha256":
+        raise ValueError(f"unsupported integrity {integrity}")
+    return base64.b64decode(b64).hex()
+
+
+def vendor_archive(spec, ws, dest):
+    """Download, verify, extract and patch an archive_override's archive into
+    `dest`, for a local_path_override replacing it (workaround edits)."""
+    import tarfile
+    import urllib.request
+
+    archive = dest + ".tar.gz"
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    if not os.path.exists(archive):
+        urllib.request.urlretrieve(spec["url"], archive + ".tmp")
+        os.replace(archive + ".tmp", archive)
+    digest = sha256_file(archive)
+    if digest != integrity_to_sha256(spec["integrity"]):
+        raise ValueError(f"{spec['url']}: sha256 {digest} does not match {spec['integrity']}")
+    rmtree_force(dest)
+    tmp = dest + ".extract"
+    rmtree_force(tmp)
+    with tarfile.open(archive) as tf:
+        tf.extractall(tmp, filter="tar")
+    shutil.move(os.path.join(tmp, spec["strip_prefix"]), dest)
+    rmtree_force(tmp)
+    for patch in spec.get("patches", []):
+        with open(os.path.join(ws, patch), "rb") as fh:
+            subprocess.run(["patch", "-s", f"-p{spec.get('patch_strip', 0)}"], cwd=dest, stdin=fh, check=True)
+
+
+def apply_edits(project, ws, state):
     for rel in project.get("delete", []):
         path = os.path.join(ws, rel)
         if os.path.isdir(path):
@@ -388,6 +424,17 @@ def apply_edits(project, ws):
             raise ValueError(f"{project['name']}: {rep['file']} lacks {rep['old']!r}")
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(text.replace(rep["old"], rep["new"]))
+    for spec in project.get("vendor_archives", []):
+        dest = os.path.join(state, "vendor", spec["module"])
+        vendor_archive(spec, ws, dest)
+        path = os.path.join(ws, spec["file"])
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        start = text.index(spec["start"])
+        end = text.index("\n)\n", start) + 3
+        repl = f'local_path_override(\n    module_name = "{spec["module"]}",\n    path = "{dest}",\n)\n'
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text[:start] + repl + text[end:])
     for com in project.get("comment_out", []):
         path = os.path.join(ws, com["file"])
         with open(path, encoding="utf-8") as fh:
@@ -445,7 +492,7 @@ class ProjectRun:
             rmtree_force(self.state(tool))
             shutil.copytree(src, os.path.join(self.state(tool), "ws"), symlinks=True,
                             ignore=shutil.ignore_patterns(".git"))
-            apply_edits(self.p, self.ws(tool))
+            apply_edits(self.p, self.ws(tool), self.state(tool))
             os.makedirs(os.path.join(self.state(tool), "logs"), exist_ok=True)
 
     def run(self, tool, phase, command, flags, targets, batch=True, tag=None):
