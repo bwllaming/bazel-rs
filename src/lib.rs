@@ -167,6 +167,7 @@ pub mod repository_store;
 pub mod repository_text;
 mod repository_warm;
 pub mod request;
+pub mod resource_limits;
 mod rule_declarations;
 mod rule_errors;
 pub mod run_command;

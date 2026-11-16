@@ -6765,6 +6765,10 @@ fn main() {
         let args: Vec<String> = raw.map(|arg| arg.to_string_lossy().into_owned()).collect();
         std::process::exit(bazel_rs::coverage::output_generator_main(&args));
     }
+    // Bazel's client raises the soft RLIMIT_NOFILE/RLIMIT_NPROC limits to
+    // the hard ones first thing (UnlimitResources, blaze.cc:1650); every
+    // spawn inherits them (crate::resource_limits).
+    bazel_rs::resource_limits::unlimit_resources();
     // A panic from here on is an internal error: exit code 37 at once,
     // whichever thread panicked (crate::internal_error).
     bazel_rs::internal_error::install();
