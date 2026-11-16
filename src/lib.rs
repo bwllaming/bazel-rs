@@ -76,6 +76,7 @@ mod extension_io;
 pub mod extension_metadata;
 mod extension_speculation;
 pub(crate) mod fast_hash;
+pub mod fd_budget;
 pub mod feature_flags;
 pub mod flag_alias;
 pub mod git_process;

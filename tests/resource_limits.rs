@@ -105,3 +105,23 @@ fn actions_inherit_soft_limits_raised_to_hard() {
         "action limits (soft/hard nofile, soft/hard nproc)"
     );
 }
+
+/// A hard RLIMIT_NOFILE of 256 (nothing to raise) with far more parallel
+/// actions than it affords at the old cost of about six descriptors each:
+/// the build succeeds (crate::fd_budget: the spawn holds the logs' only
+/// descriptors, executing actions are capped to what the limit affords, and
+/// a descriptor exhaustion is retried) and no action fails with EMFILE.
+#[test]
+fn many_parallel_actions_fit_a_hard_limit_of_256() {
+    let ws = Workspace::new(&[(
+        "pkg/BUILD.bazel",
+        "[genrule(name = 'g%d' % i, outs = ['g%d.txt' % i], \
+         cmd = 'sleep 0.3; echo %d > $@' % i) for i in range(160)]\n\
+         filegroup(name = 'all', srcs = [':g%d' % i for i in range(160)])\n",
+    )]);
+    let output = ws.run_limited("-n 256", &["build", "//pkg:all", "--jobs=120"]);
+    let err = stderr(&output);
+    assert!(output.status.success(), "{err}");
+    assert!(!err.contains("Too many open files"), "{err}");
+    assert!(err.contains("160 processwrapper-sandbox"), "{err}");
+}

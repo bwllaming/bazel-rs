@@ -1669,7 +1669,8 @@ fn hash_file_from(
     }
     crate::digest_memo::count_hashed(crate::digest_memo::Use::Action, before.size());
     let start = SystemTime::now();
-    let mut file = File::open(path).map_err(|e| io_error("cannot read", path, e))?;
+    let mut file =
+        crate::fd_budget::open_reader(path).map_err(|e| io_error("cannot read", path, e))?;
     let mut hash = Sha256::new();
     // No larger than the file needs (plus one byte to see its end): a fresh
     // zeroed BUFFER_BYTES buffer per small file costs more than hashing it.
@@ -5790,13 +5791,23 @@ fn read_log(file: &mut File, path: &Path, name: &str, id: &str) -> io::Result<Ve
     Ok(bytes)
 }
 
+/// Creates an action log (`create_new`: a retry after descriptor exhaustion
+/// finds nothing, as the failed open created nothing).
 fn create_log(path: &Path) -> Result<File, String> {
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|e| io_error("cannot create action log", path, e))
+    crate::fd_budget::retry(|| {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path)
+    })
+    .map_err(|e| io_error("cannot create action log", path, e))
+}
+
+/// An action log the spawn wrote, opened again for reading: the executor
+/// hands its own descriptors to the spawn and keeps none while it runs.
+fn reopen_log(path: &Path) -> io::Result<crate::fd_budget::Reader> {
+    crate::fd_budget::open_reader(path)
 }
 
 // On Linux an executable can transiently remain open for writing in another
@@ -6359,13 +6370,15 @@ fn ensure_cache(cache_root: &Path) -> Result<Arc<CacheDirectories>, String> {
 /// Open (creating it) an action's lock file, never through a symlink.
 fn open_lock(path: &Path) -> io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt as _;
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(path)
+    crate::fd_budget::retry(|| {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(path)
+    })
 }
 
 /// Whether opening a lock failed because something other than a regular
@@ -6808,7 +6821,7 @@ fn symlink_upload(path: &Path) -> Result<Option<crate::remote_cache::Output>, St
     match fs::metadata(path) {
         Err(_) => as_symlink(),
         Ok(metadata) if metadata.is_file() => Ok(Some(crate::remote_cache::Output::File(
-            fs::read(path).map_err(|e| io_error("cannot read output", path, e))?,
+            crate::fd_budget::read(path).map_err(|e| io_error("cannot read output", path, e))?,
         ))),
         Ok(_) => Ok(None),
     }
@@ -6868,8 +6881,8 @@ pub(crate) fn tree_upload(
                     return Ok(false);
                 }
             } else if kind.is_file() {
-                let bytes =
-                    fs::read(&child).map_err(|e| io_error("cannot read output", &child, e))?;
+                let bytes = crate::fd_budget::read(&child)
+                    .map_err(|e| io_error("cannot read output", &child, e))?;
                 tree.files.push((child_relative, bytes, true));
             } else {
                 return Ok(false);
@@ -7349,6 +7362,9 @@ pub fn execute_with_remote(
         return Ok(result(listings, true, false));
     }
     count_check(3, &mut clock);
+    // Released after the lock (declared before it): the descriptors this
+    // action holds from here on fit the open-file limit (crate::fd_budget).
+    let _slot = crate::fd_budget::action_slot();
     let lock_path = locks.join(format!("{key}.lock"));
     let lock = match open_lock(&lock_path) {
         // The cache was removed since this process ensured its directories
@@ -7820,8 +7836,10 @@ pub fn execute_with_remote(
             logs = (Vec::new(), response.output.into_bytes());
         }
     } else {
-        let mut stdout = create_log(&work.0.join("stdout.log"))?;
-        let mut stderr = create_log(&work.0.join("stderr.log"))?;
+        let stdout_path = work.0.join("stdout.log");
+        let stderr_path = work.0.join("stderr.log");
+        let stdout = create_log(&stdout_path)?;
+        let stderr = create_log(&stderr_path)?;
         let argv = arguments(action);
         let (strategy, execution_info) = spawn_strategy
             .take()
@@ -7887,36 +7905,35 @@ pub fn execute_with_remote(
         command.envs(&environment);
         command
             .env("TMPDIR", &tmp)
-            .stdout(Stdio::from(stdout.try_clone().map_err(|e| e.to_string())?))
-            .stderr(Stdio::from(stderr.try_clone().map_err(|e| e.to_string())?));
-        let mut child = retry_spawn(|| launch.start(), std::thread::sleep)
-            .map_err(|e| format!("cannot execute action '{}': {e}", action.id))?;
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr));
+        // A start that failed did not run the command: retried after
+        // descriptor exhaustion (crate::fd_budget) as after ETXTBSY.
+        let mut child =
+            crate::fd_budget::retry(|| retry_spawn(|| launch.start(), std::thread::sleep))
+                .map_err(|e| format!("cannot execute action '{}': {e}", action.id))?;
+        // The command holds the only descriptors of the logs: the running
+        // spawn costs this process no descriptor for them (like Bazel's
+        // server, whose subprocess opens its redirections itself).
+        drop(launch);
         let status = child
             .wait()
             .map_err(|e| format!("cannot wait for action '{}': {e}", action.id))?;
         crate::sandbox::count(strategy);
         if remote_spec.is_some() {
             logs = (
-                fs::read(work.0.join("stdout.log"))
+                crate::fd_budget::read(&stdout_path)
                     .map_err(|e| format!("cannot read action stdout: {e}"))?,
-                fs::read(work.0.join("stderr.log"))
+                crate::fd_budget::read(&stderr_path)
                     .map_err(|e| format!("cannot read action stderr: {e}"))?,
             );
         }
-        let stdout = read_log(
-            &mut stdout,
-            &work.0.join("stdout.log"),
-            "stdout",
-            &action.id,
-        )
-        .map_err(|e| format!("cannot read action stdout: {e}"))?;
-        let stderr = read_log(
-            &mut stderr,
-            &work.0.join("stderr.log"),
-            "stderr",
-            &action.id,
-        )
-        .map_err(|e| format!("cannot read action stderr: {e}"))?;
+        let stdout = reopen_log(&stdout_path)
+            .and_then(|mut file| read_log(&mut file, &stdout_path, "stdout", &action.id))
+            .map_err(|e| format!("cannot read action stdout: {e}"))?;
+        let stderr = reopen_log(&stderr_path)
+            .and_then(|mut file| read_log(&mut file, &stderr_path, "stderr", &action.id))
+            .map_err(|e| format!("cannot read action stderr: {e}"))?;
         // A sandbox setup failure is an infrastructure failure of the
         // strategy (AbstractSandboxSpawnRunner.runSpawn:
         // sandbox.createFileSystem -> "Could not copy inputs into sandbox"),
@@ -8318,7 +8335,8 @@ pub fn execute_with_remote(
                     tree.map(crate::remote_cache::Output::Directory)
                 } else {
                     Some(crate::remote_cache::Output::File(
-                        fs::read(&path).map_err(|e| io_error("cannot read output", &path, e))?,
+                        crate::fd_budget::read(&path)
+                            .map_err(|e| io_error("cannot read output", &path, e))?,
                     ))
                 };
                 Ok(output.map(|output| (crate::remote_cache::path_string(name), output)))

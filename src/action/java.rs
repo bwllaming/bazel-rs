@@ -445,8 +445,10 @@ fn spawn(
     strategy: crate::sandbox::Strategy,
     info: &BTreeSet<String>,
 ) -> Result<AttemptResult, String> {
-    let mut stdout = create_log(&work.join("stdout.log"))?;
-    let mut stderr = create_log(&work.join("stderr.log"))?;
+    let stdout_path = work.join("stdout.log");
+    let stderr_path = work.join("stderr.log");
+    let stdout = create_log(&stdout_path)?;
+    let stderr = create_log(&stderr_path)?;
     let environment = resolved_environment(action);
     let argv = arguments(action);
     let sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
@@ -478,18 +480,24 @@ fn spawn(
         .env_clear()
         .envs(&environment)
         .env("TMPDIR", tmp)
-        .stdout(Stdio::from(stdout.try_clone().map_err(|e| e.to_string())?))
-        .stderr(Stdio::from(stderr.try_clone().map_err(|e| e.to_string())?));
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
     let started = SystemTime::now();
     let clock = std::time::Instant::now();
-    let mut child = retry_spawn(|| launch.start(), std::thread::sleep)
+    let mut child = crate::fd_budget::retry(|| retry_spawn(|| launch.start(), std::thread::sleep))
         .map_err(|e| format!("cannot execute action '{}': {e}", action.id))?;
+    // The command holds the logs' only descriptors (see the generic spawn).
+    drop(launch);
     let status = child
         .wait()
         .map_err(|e| format!("cannot wait for action '{}': {e}", action.id))?;
     crate::sandbox::count(strategy);
-    let stdout = log_tail(&mut stdout).map_err(|e| e.to_string())?;
-    let stderr = log_tail(&mut stderr).map_err(|e| e.to_string())?;
+    let stdout = reopen_log(&stdout_path)
+        .and_then(|mut file| log_tail(&mut file))
+        .map_err(|e| e.to_string())?;
+    let stderr = reopen_log(&stderr_path)
+        .and_then(|mut file| log_tail(&mut file))
+        .map_err(|e| e.to_string())?;
     if sandboxed
         && let Ok(error) = fs::read_to_string(work.join("sandbox-setup-error"))
         && !error.is_empty()
@@ -502,8 +510,8 @@ fn spawn(
         ));
     }
     let logs = (
-        fs::read(work.join("stdout.log")).unwrap_or_default(),
-        fs::read(work.join("stderr.log")).unwrap_or_default(),
+        crate::fd_budget::read(&stdout_path).unwrap_or_default(),
+        crate::fd_budget::read(&stderr_path).unwrap_or_default(),
     );
     Ok(AttemptResult {
         stdout,
