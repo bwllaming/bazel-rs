@@ -359,6 +359,7 @@ def clone(project, src):
             project.get("submodules") and not os.listdir(dest)
         ):
             if project.get("submodules"):
+                subprocess.run(["git", "remote", "add", "origin", project["git"]], cwd=dest, stderr=subprocess.DEVNULL)
                 git(["submodule", "update", "-q", "--init", "--recursive", "--depth", "1"], dest)
             return dest
     os.makedirs(dest, exist_ok=True)
