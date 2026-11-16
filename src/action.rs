@@ -4481,27 +4481,43 @@ fn declared_input(
         })
 }
 
+/// Removes the directory tree at `path` (made writable first: an action may
+/// leave read-only directories) holding at most one directory descriptor at
+/// a time: `fs::remove_dir_all` keeps one open per level of the tree, about
+/// ten for an action's work directory, for every action cleaning up at once
+/// (crate::fd_budget).
 fn remove_directory(path: &Path) -> io::Result<()> {
+    if !fs::symlink_metadata(path)?.is_dir() {
+        return fs::remove_dir_all(path);
+    }
     let mut pending = vec![path.to_path_buf()];
+    // Every directory in visiting order: each after its parent.
+    let mut directories = Vec::new();
     while let Some(directory) = pending.pop() {
         let metadata = fs::symlink_metadata(&directory)?;
-        if !metadata.is_dir() {
-            continue;
-        }
         if metadata.permissions().mode() & 0o700 != 0o700 {
             fs::set_permissions(
                 &directory,
                 fs::Permissions::from_mode(metadata.permissions().mode() | 0o700),
             )?;
         }
-        for entry in fs::read_dir(&directory)? {
-            let entry = entry?;
+        // Listed completely (its descriptor closed) before anything below
+        // it is opened.
+        let entries = crate::fd_budget::retry(|| fs::read_dir(&directory))?
+            .collect::<io::Result<Vec<_>>>()?;
+        for entry in entries {
             if entry.file_type()?.is_dir() {
                 pending.push(entry.path());
+            } else {
+                fs::remove_file(entry.path())?;
             }
         }
+        directories.push(directory);
     }
-    fs::remove_dir_all(path)
+    for directory in directories.iter().rev() {
+        fs::remove_dir(directory)?;
+    }
+    Ok(())
 }
 
 /// Store blob permission bits: read-only, with the keyed executable bits.
