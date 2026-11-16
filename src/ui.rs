@@ -152,6 +152,11 @@ pub fn set_color(color: bool) {
     COLOR.store(color, Ordering::Relaxed);
 }
 
+/// [`set_color`]'s value.
+pub fn color() -> bool {
+    COLOR.load(Ordering::Relaxed)
+}
+
 /// AnsiStrippingOutputStream: `bytes` without the ANSI control sequences
 /// `ESC [ [0-9;]* [A-Za-z]` (an unterminated or illegal one, or one of 128
 /// bytes and more, is kept).

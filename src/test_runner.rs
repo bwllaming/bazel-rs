@@ -1652,6 +1652,19 @@ impl Runner<'_> {
         } else {
             strategy.runner_name()
         });
+        // The progress lines' strategy of the running test.
+        crate::progress::spawn_started(if remote_cached {
+            crate::progress::Strategy::RemoteCache
+        } else {
+            match strategy {
+                crate::sandbox::Strategy::Remote => crate::progress::Strategy::Remote,
+                crate::sandbox::Strategy::Sandboxed => crate::sandbox::sandboxed_progress(),
+                crate::sandbox::Strategy::ProcessWrapper => {
+                    crate::progress::Strategy::ProcessWrapperSandbox
+                }
+                _ => crate::progress::Strategy::Local,
+            }
+        });
         let (millis, exit_code, timed_out) = if let Some(done) = remote_done {
             drop((log, err));
             done

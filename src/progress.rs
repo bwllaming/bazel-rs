@@ -2,11 +2,13 @@
 //! status area (runtime/UiEventHandler.java, UiStateTracker.java) for
 //! `build`, `test` and `run` on a terminal.
 //!
-//! Off — the default whenever stderr and stdout are not both a terminal
-//! (Bazel's client `--isatty`), `TERM` is dumb, `CI` is set, or with
-//! `--curses=no`, `--noshow_progress` or `BAZEL_RS_PROGRESS=0` — nothing
-//! here runs: every hook below is one relaxed atomic load, and the output is
-//! byte for byte what it is without this module.
+//! Without it — stderr and stdout are not both a terminal (Bazel's client
+//! `--isatty`), `TERM` is dumb, `CI` is set, or `--curses=no` — Bazel's
+//! plain progress lines print instead ([`plain`]: one line at a time, at
+//! most once per second). Off — `--noshow_progress`, the startup option
+//! `--quiet` or `BAZEL_RS_PROGRESS=0` — nothing here runs: every hook below
+//! is one relaxed atomic load, and the output is byte for byte what it is
+//! without this module.
 //!
 //! On ([`start`]), file descriptor 2 — and 1 when stdout is the same
 //! terminal — is redirected into a pipe whose reader thread
@@ -34,6 +36,7 @@
 //! `INFO: Build completed successfully, N total actions`); a SIGINT, SIGTERM
 //! or SIGHUP erases the area before the signal ends the process.
 
+mod plain;
 mod render;
 mod terminal;
 
@@ -46,10 +49,16 @@ use std::time::Instant;
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// Whether the progress display is on (every hook's first check).
+/// Whether the progress display or the plain lines are on (every hook's
+/// first check).
 #[inline]
 pub fn enabled() -> bool {
     ACTIVE.load(Ordering::Relaxed)
+}
+
+/// Whether the interactive display (not the plain lines) is on.
+fn display() -> bool {
+    enabled() && !plain::on()
 }
 
 /// The process start, the origin of every timestamp here ([`process_start`]).
@@ -135,9 +144,9 @@ static COUNTERS: Counters = Counters {
 };
 
 /// Advance the phase (never backwards: a verify-mode shadow analysis after a
-/// hit keeps showing execution once it started).
-fn advance(phase: Phase) {
-    COUNTERS.phase.fetch_max(phase as u8, Ordering::Relaxed);
+/// hit keeps showing execution once it started); whether it moved.
+fn advance(phase: Phase) -> bool {
+    COUNTERS.phase.fetch_max(phase as u8, Ordering::Relaxed) < phase as u8
 }
 
 /// A crate::perf_mark: the phase transitions, and the interactive-only
@@ -151,15 +160,40 @@ pub(crate) fn mark(name: &str) {
     if !enabled() {
         return;
     }
+    if plain::on() {
+        let phase = match name {
+            "select.start" => Phase::Loading,
+            "plan.start" => Phase::Analyzing,
+            "snapshot.hit" => Phase::SnapshotHit,
+            _ => return,
+        };
+        // A phase starts once (a second `select.start` prints nothing).
+        if advance(phase) {
+            plain::phase_started(Some(phase));
+        }
+        return;
+    }
     match name {
-        "select.start" => advance(Phase::Loading),
-        "plan.start" => advance(Phase::Analyzing),
+        "select.start" => {
+            advance(Phase::Loading);
+        }
+        "plan.start" => {
+            advance(Phase::Analyzing);
+        }
         "plan.phase1_analysis_done" => COUNTERS.phase1_done.store(true, Ordering::Relaxed),
         "snapshot.hit" if COUNTERS.phase.load(Ordering::Relaxed) < Phase::SnapshotHit as u8 => {
             advance(Phase::SnapshotHit);
             info_line("Analysis snapshot hit: loading and analysis skipped.");
         }
         _ => {}
+    }
+}
+
+/// Target patterns are about to be evaluated where no `select.start` mark
+/// says so (`test`, an incremental analysis): the plain lines' `Loading:`.
+pub fn loading_started() {
+    if plain::on() && advance(Phase::Loading) {
+        plain::phase_started(Some(Phase::Loading));
     }
 }
 
@@ -177,6 +211,7 @@ static SUMMARY: AtomicBool = AtomicBool::new(false);
 /// printed in every UI mode. Notes written while planning's stderr is
 /// captured: an analysis snapshot hit replays them as they were.
 pub(crate) fn analysis_report(labels: &[crate::label::Label], tests: Option<usize>) {
+    plain::analysis_reported();
     for line in analysis_lines(
         labels,
         tests,
@@ -260,7 +295,7 @@ fn plain_summary(exit_code: i32) {
 /// (BuildSummaryStatsModule.buildComplete). Without the display only (the
 /// display prints its summary when it ends).
 pub fn failed_build_summary() {
-    if enabled() || !take_summary() {
+    if display() || !take_summary() {
         return;
     }
     for line in render::summary(
@@ -335,10 +370,28 @@ pub(crate) fn aspect_applied() {
     }
 }
 
-/// Analysis of `count` requested targets starts.
+/// Analysis of the requested `labels` starts.
 #[inline]
-pub(crate) fn analysis_targets(count: usize) {
-    COUNTERS.targets.store(count, Ordering::Relaxed);
+pub(crate) fn analysis_targets(labels: &[crate::label::Label]) {
+    COUNTERS.targets.store(labels.len(), Ordering::Relaxed);
+    if let [label] = labels
+        && plain::on()
+    {
+        *SUBJECT.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(format!("target {}", crate::test_runner::label_print(label)));
+    }
+}
+
+/// The plain lines' `target //x` of a one-target analysis.
+static SUBJECT: Mutex<Option<String>> = Mutex::new(None);
+
+/// What an analysis of `count` targets analyzes (`target //x` or `N
+/// targets`, SkymeldUiStateTracker.loadingComplete).
+fn analysis_subject(count: usize) -> String {
+    match &*SUBJECT.lock().unwrap_or_else(PoisonError::into_inner) {
+        Some(subject) if count == 1 => subject.clone(),
+        _ => format!("{count} targets"),
+    }
 }
 
 /// Phase 1 of analysis has found `count` targets to configure.
@@ -392,7 +445,7 @@ pub(crate) fn test_finished(passed: bool) {
 /// still counted through the claimed slots).
 const SLOTS: usize = 64;
 /// Bytes of a slot's description (longer ones are cut).
-const TEXT_WORDS: usize = 24;
+const TEXT_WORDS: usize = 48;
 const TEXT_BYTES: usize = TEXT_WORDS * 8;
 
 /// The kinds of a slot's work.
@@ -549,14 +602,25 @@ pub struct Running {
 }
 
 impl Running {
-    /// An action starts: `mnemonic` and its primary output show while it
-    /// runs. None when the display is off (or all slots are taken).
+    /// An action starts: the display shows its mnemonic and primary
+    /// output while it runs, the plain lines its progress message
+    /// (AbstractAction.getProgressMessage, crate::action_console::describe).
+    /// None when both are off (or all slots are taken).
     #[inline]
-    pub fn action(mnemonic: &str, output: &std::path::Path) -> Option<Running> {
+    pub fn action(action: &crate::action::Action) -> Option<Running> {
         if !enabled() {
             return None;
         }
-        let output = output.to_str().unwrap_or("");
+        if plain::on() {
+            let description = crate::action_console::describe(action);
+            return Self::claim(KIND_ACTION, &[&description]);
+        }
+        let mnemonic = action.extra.mnemonic.as_str();
+        let output = action
+            .outputs
+            .first()
+            .and_then(|output| output.to_str())
+            .unwrap_or("");
         Self::claim(KIND_ACTION, &[mnemonic, " ", render::short_output(output)])
     }
 
@@ -955,6 +1019,34 @@ pub fn decide(
     })
 }
 
+/// Whether Bazel's plain progress lines print for `command` ([`plain`]):
+/// `build`, `test` and `run` whenever the display does not run
+/// ([`decide`]) but progress shows (not `--noshow_progress`, the startup
+/// option `--quiet` or `BAZEL_RS_PROGRESS=0`) — off a terminal, with
+/// `--curses=no`, in CI (Bazel has no CI rule of its own: its non-curses
+/// output is the same there). The rate: `--show_progress_rate_limit`, at
+/// least one second.
+pub fn decide_lines(
+    command: &str,
+    options: &UiOptions,
+    environment: &TerminalEnvironment,
+) -> Option<std::time::Duration> {
+    if !matches!(command, "build" | "test" | "run")
+        || !options.show_progress
+        || environment.disabled
+        || environment.quiet
+        || decide(command, options, environment).is_some()
+    {
+        return None;
+    }
+    Some(plain::rate(options.rate_limit))
+}
+
+/// Start the plain progress lines at `rate` (colored leads with `color`).
+pub fn start_lines(rate: std::time::Duration, color: bool) -> std::io::Result<()> {
+    plain::start(rate, color)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1080,6 +1172,52 @@ mod tests {
             decide("build", &fast, &terminal).unwrap().rate,
             std::time::Duration::from_millis(100)
         );
+    }
+
+    #[test]
+    fn plain_lines_print_whenever_the_display_does_not() {
+        let terminal = TerminalEnvironment {
+            standard_terminal: true,
+            ..Default::default()
+        };
+        let pipe = TerminalEnvironment::default();
+        let options = UiOptions::default();
+        let second = Some(std::time::Duration::from_secs(1));
+        assert_eq!(decide_lines("build", &options, &pipe), second);
+        assert_eq!(decide_lines("test", &options, &pipe), second);
+        assert_eq!(decide_lines("query", &options, &pipe), None);
+        assert_eq!(decide_lines("build", &options, &terminal), None);
+        let ci = TerminalEnvironment {
+            ci: true,
+            ..terminal.clone()
+        };
+        assert_eq!(decide_lines("run", &options, &ci), second);
+        let no = UiOptions {
+            curses: Tristate::No,
+            rate_limit: 2.5,
+            ..UiOptions::default()
+        };
+        assert_eq!(
+            decide_lines("build", &no, &terminal),
+            Some(std::time::Duration::from_millis(2500))
+        );
+        let quiet = UiOptions {
+            show_progress: false,
+            ..UiOptions::default()
+        };
+        assert_eq!(decide_lines("build", &quiet, &pipe), None);
+        for environment in [
+            TerminalEnvironment {
+                disabled: true,
+                ..pipe.clone()
+            },
+            TerminalEnvironment {
+                quiet: true,
+                ..pipe.clone()
+            },
+        ] {
+            assert_eq!(decide_lines("build", &options, &environment), None);
+        }
     }
 
     #[test]

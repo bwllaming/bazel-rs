@@ -152,6 +152,8 @@ pub fn abandon() {
 
 fn end(exit_code: Option<i32>) {
     let Some(session) = session().take() else {
+        // The plain lines end before the summary (or `run`'s target).
+        super::plain::stop();
         if let Some(code) = exit_code {
             super::plain_summary(code);
         }

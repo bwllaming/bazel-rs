@@ -544,6 +544,11 @@ fn run() -> Result<(), String> {
         && let Err(error) = bazel_rs::progress::start(config)
     {
         eprintln!("bazel-rs: warning: the progress display is off: {error}");
+    } else if let Some(rate) =
+        bazel_rs::progress::decide_lines(&command, &ui_options, &terminal_environment)
+        && let Err(error) = bazel_rs::progress::start_lines(rate, bazel_rs::ui::color())
+    {
+        eprintln!("bazel-rs: warning: the progress lines are off: {error}");
     }
     // Memory ceiling (native-only safety valve, crate::memory_limit):
     // --memory-limit=<MB> wins over BAZEL_RS_MAX_MEMORY_MB (Bazel's
@@ -1579,6 +1584,7 @@ fn run() -> Result<(), String> {
         // An incremental analysis instead of the target pattern phase and
         // the full analysis; any failure from here on runs the full
         // analysis in a fresh process.
+        bazel_rs::progress::loading_started();
         let loading_threads = loading_threads_for_report(
             &command,
             loading_phase_threads,
@@ -1637,6 +1643,7 @@ fn run() -> Result<(), String> {
         }
     }
     if command == "test" {
+        bazel_rs::progress::loading_started();
         return test_targets(TestContext {
             engine,
             patterns: &rest,

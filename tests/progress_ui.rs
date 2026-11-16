@@ -1,6 +1,8 @@
 //! The interactive progress display (crate::progress, docs/PROGRESS.md):
 //! Bazel's curses-mode status area when stderr and stdout are a terminal,
-//! and exactly the plain output otherwise.
+//! otherwise the plain output with Bazel's non-curses progress lines
+//! (`Loading: …`, `Analyzing: …`, `[N / M] …`), none of either with
+//! `--noshow_progress` or the startup option `--quiet`.
 //!
 //! The terminal runs are on a pseudo-terminal (support/pty_terminal.rs);
 //! the plain run writes stdout and stderr into one pipe, so its bytes are
@@ -114,7 +116,33 @@ fn the_status_area_shows_on_a_terminal_and_nowhere_else() {
     let (plain, code) = ws.plain(ws.command("plain", &build));
     assert_eq!(code, 0, "{}", text(&plain));
     assert!(!plain.contains(&0x1b), "{}", text(&plain));
-    let expected = ws.normalized(&text(&plain), "plain");
+    let (expected, progress) = split_progress(ws.normalized(&text(&plain), "plain"));
+    // Bazel's progress lines without cursor control: the phase starts at
+    // once, then (the slow genrule runs two seconds) an execution line a
+    // second after the last one.
+    assert_eq!(
+        progress[..3],
+        [
+            "Computing main repo mapping: ",
+            "Loading: ",
+            "Loading: 0 packages loaded"
+        ],
+        "{progress:#?}"
+    );
+    assert!(
+        progress[3].starts_with("Analyzing: target //:top (")
+            && progress[4].starts_with("Analyzing: target //:top (")
+            && progress[5].is_empty(),
+        "{progress:#?}"
+    );
+    assert!(
+        progress[6..].iter().any(|line| line.starts_with('[')
+            && line.contains("] Executing genrule //:slow; ")
+            && (line.ends_with("s processwrapper-sandbox")
+                || line.ends_with("s linux-sandbox")
+                || line.ends_with("s local"))),
+        "{progress:#?}"
+    );
     let info: Vec<&String> = expected
         .iter()
         .filter(|line| line.starts_with("INFO: ") && !line.contains(" processes: "))
@@ -152,34 +180,40 @@ fn the_status_area_shows_on_a_terminal_and_nowhere_else() {
     );
     assert!(expected.iter().any(|line| line.starts_with("//:top\t")));
 
-    // A terminal with --curses=no: the same bytes (the terminal turns each
-    // \n into \r\n).
+    // A terminal with --curses=no: the same lines (the terminal turns each
+    // \n into \r\n), no cursor control, the progress lines' leads green
+    // (`--color=auto` on a terminal).
     let off = on_pty(
         &ws.command("off", &[&build[..], &["--curses=no"]].concat()),
         100,
         None,
     );
     assert_eq!(off.status, 0, "{}", text(&off.bytes));
-    assert!(!off.bytes.contains(&0x1b), "{}", text(&off.bytes));
-    assert_eq!(
-        ws.normalized(&text(&off.bytes).replace("\r\n", "\n"), "off"),
-        expected
-    );
-    // --noshow_progress and CI likewise.
+    let off_text = without_green(&off.bytes);
+    let (off_lines, off_progress) =
+        split_progress(ws.normalized(&off_text.replace("\r\n", "\n"), "off"));
+    assert_eq!(off_lines, expected);
+    assert_eq!(off_progress[..3], progress[..3], "{off_progress:#?}");
+    // --noshow_progress: no progress lines either; CI: the plain lines
+    // (Bazel's non-curses output has no CI rule).
     let quiet = on_pty(
         &ws.command("quiet", &[&build[..], &["--noshow_progress"]].concat()),
         100,
         None,
     );
     assert!(!quiet.bytes.contains(&0x1b), "{}", text(&quiet.bytes));
+    let (quiet_lines, quiet_progress) =
+        split_progress(ws.normalized(&text(&quiet.bytes).replace("\r\n", "\n"), "quiet"));
+    assert!(quiet_progress.is_empty(), "{quiet_progress:#?}");
+    assert_eq!(quiet_lines.len(), expected.len(), "{quiet_lines:#?}");
     let mut ci = ws.command("ci", &build);
     ci.env("CI", "true");
     let ci = on_pty(&ci, 100, None);
-    assert!(!ci.bytes.contains(&0x1b), "{}", text(&ci.bytes));
-    assert_eq!(
-        ws.normalized(&text(&ci.bytes).replace("\r\n", "\n"), "ci"),
-        expected
-    );
+    let ci_text = without_green(&ci.bytes);
+    let (ci_lines, ci_progress) =
+        split_progress(ws.normalized(&ci_text.replace("\r\n", "\n"), "ci"));
+    assert_eq!(ci_lines, expected);
+    assert_eq!(ci_progress[..3], progress[..3], "{ci_progress:#?}");
     // The startup option --quiet (crate::ui): no status area, and of the
     // plain output only the result lines (native and Bazel's).
     let startup_quiet = on_pty(
@@ -193,11 +227,16 @@ fn the_status_area_shows_on_a_terminal_and_nowhere_else() {
         "{}",
         text(&startup_quiet.bytes)
     );
+    let (startup_quiet_lines, startup_quiet_progress) = split_progress(ws.normalized(
+        &text(&startup_quiet.bytes).replace("\r\n", "\n"),
+        "startup-quiet",
+    ));
+    assert!(
+        startup_quiet_progress.is_empty(),
+        "{startup_quiet_progress:#?}"
+    );
     assert_eq!(
-        ws.normalized(
-            &text(&startup_quiet.bytes).replace("\r\n", "\n"),
-            "startup-quiet"
-        ),
+        startup_quiet_lines,
         expected
             .iter()
             .filter(|line| {
@@ -266,6 +305,46 @@ fn an_interrupt_clears_the_status_area_and_exits_8() {
         !screen.iter().any(|line| line.starts_with('[')),
         "{screen:#?}"
     );
+}
+
+/// The text of `bytes` without the green leads of the plain progress
+/// lines; no other escape sequence is allowed.
+fn without_green(bytes: &[u8]) -> String {
+    let stripped = text(bytes).replace("\x1b[32m", "").replace("\x1b[0m", "");
+    assert!(!stripped.contains('\x1b'), "{stripped}");
+    stripped
+}
+
+/// `lines` split into the others and Bazel's non-curses progress lines
+/// (an `Analyzing:` line's empty follower included).
+fn split_progress(lines: Vec<String>) -> (Vec<String>, Vec<String>) {
+    let mut others = Vec::new();
+    let mut progress = Vec::new();
+    let mut after_analysis = false;
+    for line in lines {
+        let execution = line.strip_prefix('[').is_some_and(|rest| {
+            rest.split_once("] ").is_some_and(|(counts, _)| {
+                counts.split_once(" / ").is_some_and(|(done, total)| {
+                    [done, total].iter().all(|count| {
+                        !count.is_empty() && count.chars().all(|c| c.is_ascii_digit() || c == ',')
+                    })
+                })
+            })
+        });
+        let follows_analysis = line.is_empty() && after_analysis;
+        after_analysis = line.starts_with("Analyzing: ");
+        if execution
+            || follows_analysis
+            || line.starts_with("Computing main repo mapping: ")
+            || line.starts_with("Loading: ")
+            || line.starts_with("Analyzing: ")
+        {
+            progress.push(line);
+        } else {
+            others.push(line);
+        }
+    }
+    (others, progress)
 }
 
 /// `frame` without its escape sequences.

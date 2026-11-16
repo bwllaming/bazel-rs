@@ -815,15 +815,9 @@ where
         crate::progress::action_done();
         return (id, None);
     }
-    // The interactive progress display's running-action slot (None when
-    // the display is off): the mnemonic and the primary output.
-    let running = crate::progress::Running::action(
-        &node.action.extra.mnemonic,
-        node.action
-            .outputs
-            .first()
-            .map_or(Path::new(""), PathBuf::as_path),
-    );
+    // The progress display's (or plain lines') running-action slot (None
+    // when both are off).
+    let running = crate::progress::Running::action(&node.action);
     // --profile / the build event files (crate::profile, crate::bep): the
     // action's span, dependencies (critical path) and outcome.
     let traced = (crate::profile::recording() || crate::bep::active()).then(|| {

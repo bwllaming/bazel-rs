@@ -11177,7 +11177,7 @@ impl Engine {
         checkpoint: Option<&mut root_checkpoint::Callback<'_>>,
         evaluate: bool,
     ) -> Result<root_checkpoint::Outcome<BuildPlan>, String> {
-        crate::progress::analysis_targets(labels.len());
+        crate::progress::analysis_targets(labels);
         crate::perf_mark("plan.start");
         // The workspace status is computed at most once per build
         // (OnceLock), and recomputed by the NEXT build of this Engine —
