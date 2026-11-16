@@ -77,8 +77,7 @@ pub fn set_requested(requested: bool) {
 
 /// The configured cache when the option is on.
 fn cache() -> Option<&'static RemoteCache> {
-    REQUESTED
-        .load(Ordering::Relaxed)
+    (REQUESTED.load(Ordering::Relaxed) && !BROKEN.load(Ordering::Relaxed))
         .then(crate::remote_cache::active)
         .flatten()
 }
@@ -187,10 +186,27 @@ fn sha256_hex(bytes: &[u8]) -> String {
     Digest::of(bytes).hash
 }
 
+/// Failures (lookups, transfers, uploads) after which the cache is off for
+/// the rest of the command: an unreachable cache warns a few times, not
+/// once per repository.
+const MAX_FAILURES: usize = 5;
+static FAILURES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static BROKEN: AtomicBool = AtomicBool::new(false);
+
 /// A lookup or upload failure: a warning, never the command's failure
-/// (RepositoryFetchFunction.java:282-299 and addToCache's warnings).
-fn warn(canonical: &str, what: &str, error: &str) {
-    crate::note!("WARNING: {what} for {canonical}: {error}");
+/// (RepositoryFetchFunction.java:282-299 and addToCache's warnings); the
+/// repository is fetched instead.
+pub fn warn(canonical: &str, what: &str, error: &str) {
+    let count = FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
+    if count <= MAX_FAILURES {
+        crate::note!("WARNING: {what} for {canonical}: {error}");
+    }
+    if count == MAX_FAILURES {
+        BROKEN.store(true, Ordering::Relaxed);
+        crate::note!(
+            "WARNING: The remote repo contents cache failed {MAX_FAILURES} times; it is not used for the rest of this command"
+        );
+    }
 }
 
 /// The recorded-input digests of the final entries stored for

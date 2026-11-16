@@ -2170,6 +2170,24 @@ mod tests {
         assert!(state(&[]));
         assert!(!state(&["--noquiet"]));
         assert!(state(&["--noquiet", "--quiet"]));
+        // `--[no]experimental_remote_repo_contents_cache` (RemoteStartupOptions):
+        // modelled, the last value wins.
+        let remote = |startup: &[&str]| {
+            let line = CommandLine {
+                startup_args: startup.iter().map(|arg| arg.to_string()).collect(),
+                ..CommandLine::default()
+            };
+            let (mut warnings, mut provenance) = (Vec::new(), Vec::new());
+            process_startup_options(&[], &line, &mut warnings, &mut provenance)
+                .unwrap()
+                .remote_repo_contents_cache
+        };
+        assert!(!remote(&[]));
+        assert!(remote(&["--experimental_remote_repo_contents_cache"]));
+        assert!(!remote(&[
+            "--experimental_remote_repo_contents_cache",
+            "--noexperimental_remote_repo_contents_cache"
+        ]));
     }
 
     #[test]

@@ -5128,9 +5128,10 @@ fn execute_with(
             // keys ("return value"), repo_metadata is taken as is, and every
             // other value (None, ints, ...) means NONREPRODUCIBLE under the
             // default --incompatible_require_repo_extension_metadata=false
-            // (RepositoryOptions.java:346-347). Reproducibility only selects
-            // Bazel's repo contents cache; the native store keys publications
-            // by specification, so it has no effect here.
+            // (RepositoryOptions.java:346-347). Reproducibility selects the
+            // repo contents caches: the native store keys publications by
+            // specification whatever it says; the remote repository contents
+            // cache stores only reproducible results (crate::remote_repo_cache).
             let reproducibility = if let Some(metadata) = RepoMetadata::from_value(returned) {
                 reproducible_cell.set(metadata.reproducible);
                 Some(metadata.attrs.to_value())

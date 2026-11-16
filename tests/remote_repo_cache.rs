@@ -621,6 +621,21 @@ fn the_option_and_the_cache_policies_gate_lookups_and_uploads() {
             .any(|(method, path)| method == "GET" && path.starts_with("/cas/")),
         "{log:?}"
     );
+    // An unreachable cache: a few warnings, then the cache is off and the
+    // repositories are fetched.
+    let output = f.run(
+        &ws,
+        "down",
+        &[FLAG],
+        &["--remote_cache=http://127.0.0.1:1", "--remote_retries=0"],
+    );
+    assert_success(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let warnings = stderr
+        .matches("WARNING: Remote repo contents cache lookup failed for ")
+        .count();
+    assert!((1..=5).contains(&warnings), "{stderr}");
+    assert_eq!(Server::fetches(&f.server.take_log()), 2);
     // A command option it is not (genuine: `ERROR: … :: Unrecognized option`, exit 2).
     let output = f.run(&ws, "bad", &[], &[FLAG]);
     assert_eq!(output.status.code(), Some(2));

@@ -2433,8 +2433,10 @@ fn remote_hit(
                 }));
             }
             Ok(false) => crate::remote_repo_cache::note_miss(stage_key, "missing blob"),
-            Err(error) => crate::note!(
-                "WARNING: Remote repo contents cache lookup failed for {stage_key}: {error}"
+            Err(error) => crate::remote_repo_cache::warn(
+                stage_key,
+                "Remote repo contents cache lookup failed",
+                &error,
             ),
         }
         // A partial download: the slot is made again.
