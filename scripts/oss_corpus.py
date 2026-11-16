@@ -360,6 +360,7 @@ def clone(project, src):
         ):
             if project.get("submodules"):
                 subprocess.run(["git", "remote", "add", "origin", project["git"]], cwd=dest, stderr=subprocess.DEVNULL)
+                git(["submodule", "sync", "-q", "--recursive"], dest)
                 git(["submodule", "update", "-q", "--init", "--recursive", "--depth", "1"], dest)
             return dest
     os.makedirs(dest, exist_ok=True)
@@ -369,6 +370,7 @@ def clone(project, src):
     git(["fetch", "-q", "--depth", "1", "origin", project["commit"]], dest)
     git(["checkout", "-q", "--force", "FETCH_HEAD"], dest)
     if project.get("submodules"):
+        git(["submodule", "sync", "-q", "--recursive"], dest)
         git(["submodule", "update", "-q", "--init", "--recursive", "--depth", "1"], dest)
     return dest
 
