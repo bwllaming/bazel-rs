@@ -229,6 +229,9 @@ pub(super) struct Tracker {
     collected: Option<Vec<Label>>,
     /// The lookup tables were dropped ([`Self::compact`]).
     compacted: bool,
+    /// The records moved to [`Engine::incremental_index_later`]'s thread:
+    /// this tracker is the empty one left behind (no index is made of it).
+    taken: bool,
 }
 
 impl Tracker {
@@ -283,6 +286,7 @@ impl Tracker {
             deferred: None,
             collected: None,
             compacted: self.compacted,
+            taken: self.taken,
         }
     }
 }
@@ -1241,6 +1245,10 @@ impl Engine {
     pub(super) fn incremental_index(&mut self, labels: &[Label]) -> Option<Index> {
         let inputs = self.index_inputs();
         let tracker = self.incremental.as_mut()?;
+        assert!(
+            !tracker.taken,
+            "internal error: an incremental index of a tracker whose records moved to an earlier index"
+        );
         Some(build_index(tracker, &self.packages, inputs, labels))
     }
 
@@ -1253,9 +1261,17 @@ impl Engine {
         &mut self,
         labels: &[Label],
     ) -> Option<std::thread::JoinHandle<Option<Index>>> {
-        self.incremental.as_ref()?;
+        // (One plan per tracking engine: a second one's index would be
+        // made of the empty tracker left here.)
+        assert!(
+            !self.incremental.as_ref()?.taken,
+            "internal error: an incremental index of a tracker whose records moved to an earlier index"
+        );
         let inputs = self.index_inputs();
         let mut tracker = std::mem::take(&mut **self.incremental.as_mut()?);
+        if let Some(left) = self.incremental.as_mut() {
+            left.taken = true;
+        }
         let packages = self.packages.clone();
         let labels = labels.to_vec();
         Some(std::thread::spawn(move || {
