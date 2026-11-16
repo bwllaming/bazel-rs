@@ -142,12 +142,15 @@ server was idle `--repo_contents_cache_gc_idle_delay` (5m).
   published tree (a later warm reuse would take it). Built-in, registry and
   Git module trees (`trees/`, `git/trees/`) are not repository-rule
   publications and are not cached (they are downloads the repository
-  cache already covers).
+  cache already covers). Download-dominated repositories are skipped (no
+  lookup, no upload; "Skipped repositories" below).
 * **Key**: the repository's native specification key (`spec_key`: rule
-  definition and its `.bzl` closure, attributes, mappings, host markers,
-  declared environment values — the counterpart of the predeclared inputs
-  hash, docs/REPOSITORY_RULES.md), never the workspace path: checkouts in
-  other directories share entries.
+  definition, the SHA-256 of every `.bzl` file of its closure and the
+  repository mapping entries the closure's loads and top-level `Label()`
+  calls used, attributes, host markers, declared environment values — the
+  counterpart of the predeclared inputs hash, docs/REPOSITORY_RULES.md),
+  never the workspace path: checkouts in other directories share entries.
+  See "Keys and repository mappings" below.
 * **Recorded inputs**: bazel-rs records a repository's watched inputs as
   one opaque probe record (`repository_warm::RecordedInputs`), not as
   genuine's ordered list. An intermediate entry (salt `spec:<spec_key>`)
@@ -158,7 +161,7 @@ server was idle `--repo_contents_cache_gc_idle_delay` (5m).
   download without the probes of files inside the tree itself, `stage:`,
   and after it the whole record against the downloaded tree) and whose
   blobs are all there. Entries are untrusted input: the probes must have a
-  form an upload can carry (version 2 or 4, no `trees`, no `workspace`, no
+  form an upload can carry (version 2, 4 or 5, no `trees`, no `workspace`, no
   probe through the repository's own `@@<name>//` label), and the manifest
   must describe a writable tree (normal relative paths with listed
   parents, no special mode bits, every link inside the tree — also through
@@ -222,6 +225,57 @@ server was idle `--repo_contents_cache_gc_idle_delay` (5m).
   miss (`no entry`, `recorded inputs changed`, `incomplete entry`,
   `missing blob`).
 
+### Keys and repository mappings
+
+Bazel's predeclared inputs hash covers the repository mapping entries the
+rule's `.bzl` closure recorded (`recordedRepoMappingEntries`), and the
+lookups of `Label()` calls while the rule runs are REPO_MAPPING recorded
+inputs of its marker file — never whole mappings. bazel-rs's specification
+keys (and the content identities, which frame the same provenance) once
+held the whole mapping of every `.bzl` file's repository, of the declaring
+module and of the repository itself, and an extension's `use_repo`
+imports: adding a dependency, a `use_repo_rule` repository or a `use_repo`
+alias to the root module re-executed every repository the root module
+declared and every repository of an extension defined in the root module
+(and missed the remote cache for all of them). Now (direct profile
+`direct-file-template-v2`, extension profile `ordinary-file-template-v3`):
+
+* the definition closure enters a key as the SHA-256 of each `.bzl` file
+  plus the sorted mapping lookups its load statements and top-level
+  `Label()` calls recorded (from, apparent name, canonical result);
+* `Label()` lookups while a repository rule runs are recorded probes
+  (`repository_warm::RecordedInputs` version 5, `mappings`), checked on
+  every warm reuse and remote hit by resolving the same apparent name from
+  the same repository again (`loading::current_repo_mapping`);
+* an extension's `use_repo` imports are still checked (the import error)
+  but frame nothing; its evaluation stays part of every generated
+  repository's key (tags, recorded extension inputs, the lockfile entry).
+
+Consequences: an unrelated dependency or repository leaves every key
+unchanged (tests/repo_mapping_key.rs, tests/remote_repo_cache.rs
+`unrelated_dependencies_keep_remote_hits`); a changed entry a rule's
+closure used re-executes the rules of that closure; a changed entry a rule
+used while it ran re-executes that rule only. The lockfile, the hidden
+lockfile and stderr (with the action graph) of a reused repository equal a
+fresh fetch's. Upgrading re-executes every repository once (new keys and
+identities; the old trees are collected by the cache GC) and re-populates
+the remote cache once.
+
+### Skipped repositories
+
+Repositories whose fetch is a checksum-pinned download about the size of
+their tree gain nothing from the cache: it would move the same bytes from
+another server. bazel-rs skips them — no lookup, no upload — by an
+explicit rule on the repository's rule and attributes
+(`remote_repo_cache::skipped`), never by sizes: rules_python's wheel
+repositories, `@@rules_python+//python/private/pypi:whl_archive.bzl%whl_archive`,
+and `…:whl_library.bzl%whl_library` given a wheel (`whl_file`, or `urls`
+with a `filename` ending in `.whl`, the test of rules_python's own
+`whl_library` macro). Their trees hold the wheel and its extraction (on
+~/code 364 repositories, 12.0 GB of the 22.1 GB of trees). Sdist repositories
+(built locally, not reproducible) were never stored. `verbose` statistics
+list them as `skipped (download-dominated)`.
+
 ### Security
 
 With the option on, write access to the cache is write access to the
@@ -255,6 +309,22 @@ CI runner), one run each, seconds:
 | plain cold fetch (no remote cache) | 207.9 | 8,754 MB | — | — |
 | populating (`--remote_upload_local_results`) | 242.4 | 8,759 MB | 14.1 GB up, 52k PUTs | 0 / 8,726 |
 | cold with the populated cache (read-only) | **98.3** | 501 MB | 14.8 GB down, 35k AC + 45k CAS GETs | 8,726 / 0 |
+
+With the wheel repositories skipped (repo-mapping-key branch; a later
+series of runs, the network slower that hour: the plain fetch took 275 s):
+
+| run | wall | eth0 received | cache traffic | hits / uploads |
+| --- | ---: | ---: | --- | --- |
+| plain cold fetch | 275.3 | 8,757 MB | — | — |
+| populating, wheels skipped | 283.1 | 8,763 MB | 6.1 GB up (5.5 GB stored), 49k PUTs | 0 / 8,362 |
+| cold, wheels skipped | **110.1** | 4,614 MB | 6.2 GB down, 34k AC + 42k CAS GETs | 8,362 / 0 |
+| cold, everything cached (previous binary, same hour) | 92.0 | 500 MB | 14.8 GB down | 8,726 / 0 |
+
+stderr, the lockfile and the hidden lockfile are byte-identical across the
+plain, populating and cold runs. On loopback the cache's bandwidth is
+unlimited, so skipping the wheels costs ~18 s here (4.6 GB from PyPI
+instead of 8.6 GB more from the cache); over a WAN to the cache it saves
+those 8.6 GB.
 
 * The fetch phase ends at 189 s (plain) vs 81 s (hit); analysis is ~18 s
   in both. stderr (6.5M lines with the action graph), the lockfile and the
@@ -300,9 +370,13 @@ trade-off and a server restart):
   hits, misses and bytes.
 
 `bazel affected` passes its startup options to the planning processes, so
-the option given before `affected` covers both revisions' plannings. Expect
-~15 GB of downloads per cold runner from the storagebox (14.7 GB pack for
-this revision) instead of ~8.8 GB from the public CDNs, registries and
-snapshot.debian.org: the win on CI depends on the runner–storagebox
-bandwidth (the debian snapshot archive's 10–40 s per package and the
-registries' latency disappear; the bytes grow).
+the option given before `affected` covers both revisions' plannings.
+
+Volumes for this revision of ~/code (wheel repositories skipped): the first
+populating run uploads ~6.1 GB (8,362 entries, ~49k requests; 5.5 GB
+stored after deduplication); every cold runner then downloads ~6.2 GB from
+the cache (~76k requests) plus ~4.6 GB from PyPI (the 364 wheels) and
+~0.5 GB of registry files and the 91 non-reproducible repositories, instead
+of ~8.8 GB from the public CDNs, registries and snapshot.debian.org. A
+revision changes only the entries of the repositories it changes (an
+unrelated dependency changes none).
