@@ -145,7 +145,17 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
      probe of any later full analysis — of another target, or verify
      mode's shadow — refreshes a settled tree's stat fingerprints into its
      manifest; it still describes the same content-addressed tree, so that
-     is no miss). Below 4,000 checks one thread runs them; on more threads
+     is no miss). Such a tree is verified the way its store's warm check
+     verifies it before reuse — trusted by the manifest's settled stat
+     fingerprints, every file read under `--verify_repo_tampering` — and
+     only when that fails by reading every file against the manifest's
+     content (always reading cost the first derived hit after `bazel-rs
+     affected`, whose analyses refresh the manifests, a re-read of every
+     repository tree: 11.6 s for 5,007 trees locally). A derived hit takes
+     the INPUTS its candidate's prevalidation decoded and validated instead
+     of doing both again, and reads its family's candidates only until one
+     serves (`PERF-SNAPSHOT derive` under `BAZEL_RS_TIMING`). Below 4,000
+     checks one thread runs them; on more threads
      the reported mismatch is still the first failing check in path order.
    * **replay** of every `local = True` repository rule the recorded run
      executed (`snapshot::replay`), against the pinned repository set,

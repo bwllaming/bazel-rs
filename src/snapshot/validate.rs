@@ -939,7 +939,15 @@ fn check_for_hit(
             }
             // Recorded within the racy window (or a rewritten manifest):
             // the tree's content decides (once per tree), then the current
-            // key may be settled now.
+            // key may be settled now. First checked the way its store's warm
+            // check does before it reuses the tree — by stat where that
+            // check trusts (the manifest's settled stat fingerprints, which
+            // the rewrite refreshed), every file read under
+            // --verify_repo_tampering — and only when that fails by reading
+            // every file against the manifest's content. (Reading every
+            // file always cost the first derived hit after `bazel-rs
+            // affected`, whose analyses refresh the manifests, a re-read of
+            // every repository tree.)
             let start = now_ns();
             let already = verified
                 .lock()
@@ -957,15 +965,19 @@ fn check_for_hit(
                     .file_name()
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                crate::repository_store::verify_published_tree(
-                    &crate::repository_store::PublishedTree {
-                        kind: repository.kind,
-                        id,
-                        root: repository.root.clone(),
-                        manifest,
-                    },
-                )
-                .map_err(|error| format!("repository {}: {error}", repository.name))?;
+                let published = crate::repository_store::PublishedTree {
+                    kind: repository.kind,
+                    id,
+                    root: repository.root.clone(),
+                    manifest,
+                };
+                if crate::repository_store::verify_as_reused(&published).is_err() {
+                    // Not as its store would reuse it (a mode, a manifest
+                    // of another form): its content against the manifest,
+                    // every file read.
+                    crate::repository_store::verify_published_tree(&published)
+                        .map_err(|error| format!("repository {}: {error}", repository.name))?;
+                }
                 verified
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
