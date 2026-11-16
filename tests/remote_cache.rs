@@ -1603,6 +1603,15 @@ fn http_hits_download_toplevel_outputs_only() {
     let events = fs::read_to_string(&bep).unwrap();
     assert!(events.contains("file://"), "{events}");
     assert!(!events.contains("bytestream://"), "{events}");
+    // The downloaded output's digest and length (the executor's, not read
+    // again: crate::bep::resolve_files).
+    assert!(
+        events.contains(&format!(
+            r#""digest":"{}","length":"11""#,
+            sha256_hex(b"alpha\nbeta\n")
+        )),
+        "{events}"
+    );
     // The native action cache keeps a's metadata: a later local consumer
     // fetches a's blob before it runs.
     let local = ws.run_with("r1", &["build", &cache, "//bw:c"], false);
