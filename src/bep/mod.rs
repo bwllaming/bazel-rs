@@ -1358,14 +1358,14 @@ fn resolve_files(pending: Vec<PendingFile>) -> Vec<Msg> {
         })
     });
     if crate::repository_store::timing::enabled() {
-        eprintln!(
+        crate::snapshot::diag::line_fmt(format_args!(
             "PERF-BEP files={} known={} read={}/{}B elapsed={:.3}s",
             locals.len(),
             locals.len() as u64 - read.load(std::sync::atomic::Ordering::Relaxed),
             read.load(std::sync::atomic::Ordering::Relaxed),
             read_bytes.load(std::sync::atomic::Ordering::Relaxed),
             start.elapsed().as_secs_f64(),
-        );
+        ));
     }
     let mut digests = digests.into_iter();
     pending

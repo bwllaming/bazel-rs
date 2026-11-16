@@ -695,14 +695,16 @@ impl Tally {
                 )
             },
         );
-        eprintln!(
+        // The diagnostics stream: never into a capture (what planning
+        // printed, which a later hit replays).
+        crate::snapshot::diag::line_fmt(format_args!(
             "PERF-SNAPSHOT derive candidates={} prevalidated={} stale={} prevalidate_ms={:.3} lookup_ms={:.3}{hit}",
             self.candidates,
             self.prevalidated,
             self.stale,
             ms(self.prevalidate),
             ms(self.lookup),
-        );
+        ));
     }
 }
 
