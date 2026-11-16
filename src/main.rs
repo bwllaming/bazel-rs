@@ -1652,6 +1652,12 @@ fn run() -> Result<(), String> {
                 remote_enabled,
                 pattern_failure: None,
                 snapshot,
+                loading_threads: loading_threads_for_report(
+                    &command,
+                    loading_phase_threads,
+                    &query_options,
+                    memory_limit_mb,
+                ),
             },
         });
     }
@@ -2201,6 +2207,7 @@ impl PlannedTails<'_> {
                     remote_enabled: self.remote_enabled,
                     pattern_failure: None,
                     snapshot,
+                    loading_threads: self.loading_threads,
                 },
             ),
             "run" => {
@@ -3843,6 +3850,8 @@ struct TestTail<'a> {
     pattern_failure: Option<&'static str>,
     /// The analysis snapshot's sessions: finished once the build part ends.
     snapshot: bazel_rs::snapshot::Scope,
+    /// The effective loading-thread count, for the repository timing report.
+    loading_threads: usize,
 }
 
 /// `test` (runtime/commands/TestCommand.java:124-243): build the targets,
@@ -3968,6 +3977,7 @@ fn test_tail(
         remote_enabled,
         pattern_failure,
         snapshot,
+        loading_threads,
     } = tail;
     // The tests a failed build reports (also those of a decoded request).
     let test_labels = match &planned.request {
@@ -4043,6 +4053,11 @@ fn test_tail(
             session.as_ref(),
         )
     });
+    // Like build_tail: the repositories demanded while analyzing (and the
+    // remote repository contents cache's counters,
+    // BAZEL_RS_REMOTE_REPO_CACHE_STATS) — also of `bazel-rs affected`'s
+    // `test --nobuild` plannings, whose output the orchestrator forwards.
+    bazel_rs::repository_store::timing::report(loading_threads);
     report_diagnostics(planned.diagnostics);
     // --keep_going: the failures of the build part (docs/KEEP_GOING.md).
     let mut result = result;

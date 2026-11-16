@@ -349,6 +349,18 @@ use_repo(gen, "watched", "plain", "local_repo", "abs_link")
 
     /// `bazel-rs [startup] build ARGS //:use` in `ws` with `--cache-dir=<cache>`.
     fn run(&self, ws: &Path, cache: &str, startup: &[&str], args: &[&str]) -> Output {
+        self.run_command(ws, cache, startup, "build", args)
+    }
+
+    /// `bazel-rs [startup] COMMAND ARGS //:use` in `ws` with `--cache-dir=<cache>`.
+    fn run_command(
+        &self,
+        ws: &Path,
+        cache: &str,
+        startup: &[&str],
+        verb: &str,
+        args: &[&str],
+    ) -> Output {
         let cache_dir = format!("--cache-dir={}", self.root.join(cache).display());
         let registry = builtin_registry_flag();
         let mut command = Command::new(env!("CARGO_BIN_EXE_bazel-rs"));
@@ -356,7 +368,7 @@ use_repo(gen, "watched", "plain", "local_repo", "abs_link")
             .arg("--ignore_all_rc_files")
             .arg(&cache_dir)
             .args(startup)
-            .arg("build")
+            .arg(verb)
             .arg(&registry)
             .args(args)
             .arg("//:use")
@@ -968,4 +980,24 @@ fn unrelated_dependencies_keep_remote_hits() {
     assert_eq!(stats(&output), "hits=3 uploads=0");
     assert_eq!(Server::fetches(&f.server.take_log()), 0);
     assert_eq!(f.trees("c2"), f.trees("c1"));
+}
+
+#[test]
+fn test_commands_report_the_statistics_too() {
+    // `test` (also `bazel-rs affected`'s `test --nobuild` plannings) prints
+    // the statistics line like `build`: a cold cache's hits are visible.
+    let f = Fixture::new();
+    let remote = f.remote();
+    let ws_a = f.workspace("ws-a", "one\n");
+    let uploaded = f.run(&ws_a, "a", &[FLAG], &[&remote]);
+    assert_success(&uploaded);
+    assert_eq!(stats(&uploaded), "hits=0 uploads=3");
+    let ws_b = f.workspace("ws-b", "one\n");
+    let hit = f.run_command(&ws_b, "b", &[FLAG], "test", &[&remote, "--nobuild"]);
+    assert_eq!(
+        stats(&hit),
+        "hits=3 uploads=0",
+        "{}",
+        String::from_utf8_lossy(&hit.stderr)
+    );
 }
