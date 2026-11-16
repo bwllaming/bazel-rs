@@ -77,8 +77,8 @@ pub(super) fn verify_mode() -> bool {
 }
 
 /// BAZEL_RS_TIMING (`PERF-PARALLEL aspect_jobs`).
-static STATS: [AtomicU64; 23] = [const { AtomicU64::new(0) }; 23];
-const STAT_NAMES: [&str; 23] = [
+static STATS: [AtomicU64; 24] = [const { AtomicU64::new(0) }; 24];
+const STAT_NAMES: [&str; 24] = [
     "analyzed",
     "unusable",
     "requeued",
@@ -102,6 +102,7 @@ const STAT_NAMES: [&str; 23] = [
     "helper_effects",
     "keep_going_fallbacks",
     "track_fallbacks",
+    "track_table_replays",
 ];
 pub(super) const S_HELPER_SPREAD: usize = 19;
 pub(super) const S_FALLBACK_PREPARE: usize = 13;
@@ -110,6 +111,9 @@ pub(super) const S_FALLBACK: usize = 5;
 /// With the incremental tracker: a job whose tracker events could not be
 /// derived ([`replay_aspect_accesses`]), prepared at its turn.
 pub(super) const S_TRACK_FALLBACK: usize = 22;
+/// With the incremental tracker: an application another job planned,
+/// replayed from the walk's table where the turn plans it.
+const S_TRACK_TABLE_REPLAY: usize = 23;
 /// `--keep_going`: placements left to the rule's turn (a dependency its
 /// applications read failed at its merge after publishing).
 const S_KEEP_GOING_FALLBACK: usize = 21;
@@ -1006,8 +1010,21 @@ impl AspectCx for FrozenAspects<'_, '_> {
             let planning = self.state.borrow_mut().planning.pop();
             if let Some((applying, accesses, marks)) = planning {
                 let track = self.track_take((accesses, marks));
+                // (Only a complete planning: one that ended Ok while the
+                // job aborted, missed a read or met an unready dependency
+                // is short of the turn's lookups.)
+                let complete = publishable_planning(
+                    ok,
+                    self.prepare.record.abort.is_some(),
+                    self.state.borrow().missed.is_some(),
+                    self.prepare
+                        .record
+                        .aspects
+                        .as_ref()
+                        .is_some_and(|record| record.unready.is_some()),
+                );
                 if let Some(applying) = applying
-                    && ok
+                    && complete
                 {
                     self.frozen
                         .aspects
@@ -1671,6 +1688,15 @@ pub(super) enum TrackEvent<'a> {
     Aspect(&'a AspectApplicationKey),
 }
 
+/// Whether an application's planning is published to the walk's table of
+/// tracks ([`AspectTable::tracks`]): it ended Ok and its job neither
+/// aborted, nor missed a read (raised only at the next analysis: a trivial
+/// application ends Ok with it set), nor met an unready dependency — else
+/// its recorded lookups may stop short of the turn's.
+fn publishable_planning(ok: bool, aborted: bool, missed: bool, unready: bool) -> bool {
+    ok && !aborted && !missed && !unready
+}
+
 /// What one replay ([`replay_aspect_accesses`]) carries through its
 /// tracks.
 struct Replay<'r> {
@@ -1714,7 +1740,13 @@ impl Replay<'_> {
                         // Planned by the job here, else by another job's
                         // walk: its events where the turn plans it.
                         let tracks = self.tracks;
-                        let Some(planning) = here.or_else(|| tracks.get(&**applying)) else {
+                        let Some(planning) = here.or_else(|| {
+                            let planning = tracks.get(&**applying);
+                            if planning.is_some() {
+                                stat(S_TRACK_TABLE_REPLAY, 1);
+                            }
+                            planning
+                        }) else {
                             return false;
                         };
                         if !self.track(&planning.labels, &planning.marks, sink) {
@@ -1821,6 +1853,18 @@ mod replay_tests {
             })
         });
         ok.then_some(events)
+    }
+
+    /// A planning that ended Ok in a job that missed a read (a trivial
+    /// application: the miss is raised only at the next analysis), aborted
+    /// or met an unready dependency is not published.
+    #[test]
+    fn only_a_complete_planning_is_published() {
+        assert!(publishable_planning(true, false, false, false));
+        assert!(!publishable_planning(false, false, false, false));
+        assert!(!publishable_planning(true, false, true, false));
+        assert!(!publishable_planning(true, true, false, false));
+        assert!(!publishable_planning(true, false, false, true));
     }
 
     #[test]
