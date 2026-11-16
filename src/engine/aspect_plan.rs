@@ -67,6 +67,26 @@ impl std::hash::Hash for BaseView {
     }
 }
 
+#[cfg(test)]
+impl Context {
+    /// A context of its own per `name` (tests).
+    pub(super) fn named(name: &str) -> Self {
+        Self {
+            descriptors: vec![name.to_owned()],
+            base: BaseView {
+                label: name.to_owned(),
+                files: Vec::new(),
+                kind: [false; 4],
+                providers: Vec::new(),
+                provider_keys: Vec::new(),
+                runfiles: 0,
+                rule_class: None,
+            },
+            platform: false,
+        }
+    }
+}
+
 impl BaseView {
     fn of(view: &DependencyTarget) -> Self {
         use std::hash::BuildHasher;
@@ -179,8 +199,9 @@ pub(super) trait AspectCx: prepare::Lookup + Sized {
     ) -> Option<AspectProviders>;
     /// A collection's application (a memo hit or planned), in order.
     fn collected(&mut self, _key: &crate::aspects::AspectApplicationKey, _context: &Context) {}
-    /// A collection meets the application `key` (before its memo).
-    fn applying(&mut self, key: &crate::aspects::AspectApplicationKey);
+    /// A collection meets the application `key` in `context` (before its
+    /// memo).
+    fn applying(&mut self, key: &crate::aspects::AspectApplicationKey, context: &Context);
     /// The application `key` was planned: its providers (the ones every
     /// user shares).
     fn applied(
@@ -189,9 +210,10 @@ pub(super) trait AspectCx: prepare::Lookup + Sized {
         context: &Context,
         providers: AspectProviders,
     ) -> AspectProviders;
-    /// The planning of one application starts / ends.
+    /// The planning of one application starts / ends (`ok`: it was
+    /// planned).
     fn begin_application(&mut self) {}
-    fn end_application(&mut self) {}
+    fn end_application(&mut self, _ok: bool) {}
     /// The one shared `Target` value of an aspect-configured target.
     fn identity(
         &mut self,
@@ -338,7 +360,7 @@ impl AspectCx for CoordAspects<'_, '_> {
         None
     }
 
-    fn applying(&mut self, key: &crate::aspects::AspectApplicationKey) {
+    fn applying(&mut self, key: &crate::aspects::AspectApplicationKey, _context: &Context) {
         self.engine.track_aspect_application(key);
         if order_audit::enabled() && !parallel::aspects::dry() {
             order_audit::note_aspect(!self.state.aspect_providers.contains_key(key));
@@ -756,7 +778,7 @@ fn plan_collection<C: AspectCx>(
             aspect: aspect.descriptor.clone(),
             bases: bases.clone(),
         };
-        cx.applying(&key);
+        cx.applying(&key, &context);
         if let Some(providers) = cx.memo(&key, &context) {
             cx.collected(&key, &context);
             applications.push((key, providers));
@@ -768,7 +790,7 @@ fn plan_collection<C: AspectCx>(
         }
         cx.begin_application();
         let planned = plan_application(cx, &base_key, &base, aspect, bases, collection, &context);
-        cx.end_application();
+        cx.end_application(planned.is_ok());
         match planned {
             Ok(providers) => {
                 let providers = cx.applied(&key, &context, providers);

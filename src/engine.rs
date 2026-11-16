@@ -3569,6 +3569,9 @@ pub struct Engine {
     view_accesses: Shared<HashMap<ConfiguredTargetKey, Arc<[Label]>>>,
     /// The open captures of Engine::target lookups (innermost last).
     access_capture: Vec<Vec<Label>>,
+    /// `BAZEL_RS_T3_VERIFY_ASPECT_ACCESSES`: the open captures of the
+    /// tracker's aspect applications (Engine::track_aspect_application).
+    aspect_capture: Vec<Vec<crate::aspects::AspectApplicationKey>>,
     /// The artifacts a dependency view's miss path registered, by view
     /// key: a memo hit registers them again, so a registration made by a
     /// target prepared ahead of its turn becomes visible where the
@@ -3804,6 +3807,7 @@ impl Engine {
             ahead: false,
             view_accesses: Default::default(),
             access_capture: Vec::new(),
+            aspect_capture: Vec::new(),
             view_artifacts: Default::default(),
             ahead_aborted: false,
             analysis_pool: None,

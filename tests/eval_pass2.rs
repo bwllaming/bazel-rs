@@ -711,6 +711,125 @@ filegroup(name = "all", srcs = [":everything", ":picked", ":named"])
     );
 }
 
+/// snapshot-miss2: with the incremental tracker on (a snapshot miss) an
+/// aspect job whose prepare observed is placed as without the tracker,
+/// the tracker's events of its prepare derived from what its worker
+/// recorded with the aspect memo at its turn (`buffer::tracked_aspect_jobs`):
+/// applications committed by an earlier entry are met, not planned again;
+/// one another job planned is planned where the turn plans it.
+/// `BAZEL_RS_T3_VERIFY_ASPECT_ACCESSES=1` prepares each such rule at its
+/// turn instead and checks the derived events against the turn's; the
+/// index is the walk's either way.
+#[test]
+fn an_aspect_jobs_tracker_events_are_its_turns() {
+    let ws = Workspace::new(
+        4,
+        r#"load("//tools:asp.bzl", "lib", "user")
+lib(name = "a", srcs = ["sub/a.txt"])
+lib(name = "b", srcs = ["sub/deeper/b.txt"], deps = [":a"])
+lib(name = "c", srcs = ["c.txt"], deps = [":b", "//p2:top"])
+lib(name = "d", deps = [":c", ":a"])
+user(name = "u1", deps = [":b"])
+user(name = "u2", deps = [":d"])
+user(name = "u3", deps = [":a", ":c"])
+user(name = "u4", deps = [":d", ":u1"])
+"#,
+    );
+    for (path, text) in [
+        ("sub/a.txt", "x\n"),
+        ("sub/deeper/b.txt", "x\n"),
+        ("c.txt", "x\n"),
+        ("tools/BUILD.bazel", ""),
+        (
+            "tools/asp.bzl",
+            r#"AInfo = provider(fields = ["files"])
+
+def _asp_impl(target, ctx):
+    out = ctx.actions.declare_file(target.label.name + ".a")
+    ctx.actions.write(out, "x")
+    files = [out]
+    for dep in getattr(ctx.rule.attr, "deps", []):
+        if AInfo in dep:
+            files += dep[AInfo].files
+    return [AInfo(files = files)]
+
+asp = aspect(implementation = _asp_impl, attr_aspects = ["deps"])
+
+def _lib_impl(ctx):
+    return [DefaultInfo(files = depset(ctx.files.srcs))]
+
+lib = rule(implementation = _lib_impl, attrs = {
+    "deps": attr.label_list(),
+    "srcs": attr.label_list(allow_files = True),
+})
+
+def _user_impl(ctx):
+    files = []
+    for dep in ctx.attr.deps:
+        if AInfo in dep:
+            files += dep[AInfo].files
+    return [DefaultInfo(files = depset(files))]
+
+user = rule(implementation = _user_impl, attrs = {"deps": attr.label_list(aspects = [asp])})
+"#,
+        ),
+    ] {
+        let path = ws.path().join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+    let args = [
+        "//:u4",
+        "//:u3",
+        "//:u2",
+        "//:u1",
+        "--experimental-builtin-modules=true",
+    ];
+    let index = ws.path().join("tmp/index.txt");
+    let tracked = |mode: &str, env: &[(&str, &str)]| {
+        let _ = fs::remove_file(&index);
+        let _ = fs::remove_dir_all(ws.path().join("cache/worktrees"));
+        let mut all: Vec<(&str, &str)> = vec![
+            ("BAZEL_RS_SNAPSHOT", "on"),
+            ("BAZEL_RS_SNAPSHOT_INDEX_DUMP", index.to_str().unwrap()),
+            ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all"),
+            ("BAZEL_RS_TIMING", "1"),
+        ];
+        all.extend_from_slice(env);
+        let output = ws.build(mode, 8, &all, &args);
+        assert!(output.status.success(), "{env:?}: {}", stable(&output));
+        let dumped = fs::read_to_string(&index)
+            .unwrap_or_else(|error| panic!("the index dump: {error}: {}", stable(&output)));
+        (dumped, String::from_utf8_lossy(&output.stderr).into_owned())
+    };
+    // (The aspect jobs' PERF line's counter.)
+    let counter = |stderr: &str, name: &str| {
+        stderr
+            .lines()
+            .find(|line| line.starts_with("PERF-PARALLEL aspect_jobs "))
+            .and_then(|line| line.split(' ').find(|part| part.starts_with(name)))
+            .and_then(|part| part[name.len()..].parse::<usize>().ok())
+            .unwrap_or(0)
+    };
+    let (walk, _) = tracked("walk", &[]);
+    let (at_turn, stderr) = tracked("eval", &[("BAZEL_RS_T3_TRACKED_ASPECT_JOBS", "0")]);
+    // (Their prepares observe: at their turn without the derivation.)
+    assert!(
+        counter(&stderr, "fallback_prepare=") > 0,
+        "no aspect job at its turn: {stderr}"
+    );
+    assert_eq!(at_turn, walk, "the index of the aspect jobs at their turn");
+    let (placed, stderr) = tracked("eval", &[]);
+    assert_eq!(placed, walk, "the index of the placed aspect jobs");
+    assert!(
+        counter(&stderr, "placed_rules=") > 0 && counter(&stderr, "track_fallbacks=") == 0,
+        "no aspect job placed with its derived events: {stderr}"
+    );
+    let (verified, stderr) = tracked("eval", &[("BAZEL_RS_T3_VERIFY_ASPECT_ACCESSES", "1")]);
+    assert_eq!(verified, walk, "the verified aspect jobs' index");
+    assert_eq!(counter(&stderr, "track_fallbacks="), 0, "{stderr}");
+}
+
 /// S3 with the analysis snapshot's recording and the incremental tracker
 /// on (a snapshot miss, the default mode; docs/EVALUATOR.md "Selecting the
 /// engine"): the flushes are deferred there too, and the recording (the

@@ -517,6 +517,7 @@ impl Engine {
             ahead: self.ahead,
             view_accesses: self.view_accesses.clone(),
             access_capture: Vec::new(),
+            aspect_capture: Vec::new(),
             view_artifacts: self.view_artifacts.clone(),
             ahead_aborted: self.ahead_aborted,
             analysis_pool: None,

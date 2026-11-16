@@ -77,8 +77,8 @@ pub(super) fn verify_mode() -> bool {
 }
 
 /// BAZEL_RS_TIMING (`PERF-PARALLEL aspect_jobs`).
-static STATS: [AtomicU64; 22] = [const { AtomicU64::new(0) }; 22];
-const STAT_NAMES: [&str; 22] = [
+static STATS: [AtomicU64; 23] = [const { AtomicU64::new(0) }; 23];
+const STAT_NAMES: [&str; 23] = [
     "analyzed",
     "unusable",
     "requeued",
@@ -101,11 +101,15 @@ const STAT_NAMES: [&str; 22] = [
     "helper_spread",
     "helper_effects",
     "keep_going_fallbacks",
+    "track_fallbacks",
 ];
 pub(super) const S_HELPER_SPREAD: usize = 19;
 pub(super) const S_FALLBACK_PREPARE: usize = 13;
 pub(super) const S_REQUEUED: usize = 2;
 pub(super) const S_FALLBACK: usize = 5;
+/// With the incremental tracker: a job whose tracker events could not be
+/// derived ([`replay_aspect_accesses`]), prepared at its turn.
+pub(super) const S_TRACK_FALLBACK: usize = 22;
 /// `--keep_going`: placements left to the rule's turn (a dependency its
 /// applications read failed at its merge after publishing).
 const S_KEEP_GOING_FALLBACK: usize = 21;
@@ -227,6 +231,9 @@ pub(in crate::engine) struct AspectTable {
     /// hits, without reading again), checked by its placement under
     /// `--keep_going` beside its own.
     helper_reads: std::sync::Mutex<HashMap<usize, Vec<ConfiguredTargetKey>>>,
+    /// With the tracker: each application's own planning events as the
+    /// first job to plan it in its context met them ([`AspectTrack`]).
+    tracks: std::sync::Mutex<HashMap<Applying, Arc<AspectTrack>>>,
 }
 
 type AttributeConfigs = Arc<BTreeMap<String, TransitionConfigurations>>;
@@ -260,9 +267,42 @@ fn same_providers(a: &AspectProviders, b: &AspectProviders) -> bool {
             .all(|((ka, va), (kb, vb))| ka == kb && va.value().ptr_eq(vb.value()))
 }
 
+/// A point of an aspect job's tracker accesses (snapshot-miss2,
+/// [`AspectTrack`]).
+#[derive(Clone, Debug)]
+pub(in crate::engine) enum Mark {
+    /// `AspectCx::applying` (`Engine::track_aspect_application`).
+    Applying(Box<Applying>),
+    /// The job planned the application of the `Applying` just before
+    /// here: its own planning's events.
+    Planned(Arc<AspectTrack>),
+    /// A dependency walked here (its first walk, or again: the job walks
+    /// each once, the turn's recursion every time).
+    Walk(Arc<AspectTrack>),
+}
+
+/// The incremental tracker's events of an aspect planning (an aspect
+/// job's prepare, one application's own planning, one dependency's walk):
+/// its target lookups in order, with the [`Mark`]s before the lookup at
+/// their position (each nested planning and walk by reference: every
+/// lookup is held once). The turn's recursion plans the applications it
+/// does not find in its aspect memo, so its events depend on the memo at
+/// the turn; [`replay_aspect_accesses`] derives them from these: an
+/// application the job planned is skipped where the turn finds it
+/// committed, one the job found in the walk's table (another job planned
+/// it) replays that planning's events where the turn plans it.
+#[derive(Default, Debug)]
+pub(in crate::engine) struct AspectTrack {
+    labels: Vec<Label>,
+    marks: Vec<(u32, Mark)>,
+}
+
 /// What a job's aspect planning met, for its merge.
 #[derive(Default)]
 pub(in crate::engine) struct AspectRecord {
+    /// With the incremental tracker: the [`Mark`]s of the job's prepare,
+    /// at their positions in its accesses (`SharedRecord::accesses`).
+    marks: Vec<(u32, Mark)>,
     /// The applications of the rule's aspect-applied edges, in order.
     placements: Vec<Applying>,
     /// The shared `Target` values its views hold.
@@ -279,9 +319,14 @@ pub(in crate::engine) struct AspectRecord {
     /// applied at its merge).
     pub(super) sources: Vec<(Label, PathBuf, bool, SourceSide)>,
     /// The dependencies walked (one result per job), with what each walk
-    /// gave the frame that walked it.
-    walked: HashMap<(Label, ConfigId, Vec<String>), (Planned, Walking)>,
+    /// gave the frame that walked it (and with the tracker its events:
+    /// the turn walks it again, appended again).
+    walked: HashMap<(Label, ConfigId, Vec<String>), WalkedDependency>,
 }
+
+/// A dependency a job walked: its result, what the walk gave its frame,
+/// and with the tracker its events.
+type WalkedDependency = (Planned, Walking, Option<Arc<AspectTrack>>);
 
 /// What one application's planning met (its entry's subs, values, range).
 #[derive(Default)]
@@ -305,6 +350,11 @@ struct Walking {
 #[derive(Default)]
 struct Frames {
     frames: Vec<Frame>,
+    /// With the tracker: the application just met (`applying`), and for
+    /// each one being planned its key with where its events begin
+    /// (accesses, marks).
+    applying: Option<Applying>,
+    planning: Vec<(Option<Applying>, usize, usize)>,
     walking: Vec<Walking>,
     missed: Option<ConfiguredTargetKey>,
     /// The last memo answer was a committed application's.
@@ -416,6 +466,36 @@ impl FrozenAspects<'_, '_> {
         if let Some(frame) = state.frames.last_mut() {
             frame.identities.push((key, identity));
         }
+    }
+
+    /// Whether the job records the tracker's events ([`AspectTrack`]).
+    fn tracking(&self) -> bool {
+        self.prepare.engine.tracking() && super::buffer::tracked_aspect_jobs()
+    }
+
+    /// The tracker's accesses so far and the marks among them.
+    fn track_len(&mut self) -> (usize, usize) {
+        let accesses = self.prepare.record.accesses.len();
+        (accesses, self.record().marks.len())
+    }
+
+    fn mark(&mut self, mark: Mark) {
+        let position = self.prepare.record.accesses.len() as u32;
+        self.record().marks.push((position, mark));
+    }
+
+    /// The tracker's events since `(accesses, marks)`, taken out of the
+    /// prepare's (a [`Mark`] holds them).
+    fn track_take(&mut self, (accesses, marks): (usize, usize)) -> Arc<AspectTrack> {
+        let labels = self.prepare.record.accesses.split_off(accesses);
+        let marks = self
+            .record()
+            .marks
+            .split_off(marks)
+            .into_iter()
+            .map(|(position, mark)| (position - accesses as u32, mark))
+            .collect();
+        Arc::new(AspectTrack { labels, marks })
     }
 
     fn entry_of(&self) -> (Vec<Applying>, Identities, Range) {
@@ -776,19 +856,29 @@ impl AspectCx for FrozenAspects<'_, '_> {
         );
         let known = self.record().walked.get(&walked).cloned();
         let (planned, walking) = match known {
-            Some(known) => known,
+            Some((planned, walking, track)) => {
+                if let Some(track) = track {
+                    self.mark(Mark::Walk(track));
+                }
+                (planned, walking)
+            }
             None => {
                 let depth = self.state.borrow().frames.len();
                 self.state.borrow_mut().walking.push(Walking {
                     depth,
                     ..Walking::default()
                 });
+                let start = self.tracking().then(|| self.track_len());
                 let planned = walk(self, aspects);
                 let walking = self.state.borrow_mut().walking.pop().unwrap_or_default();
                 let planned = planned?;
+                let track = start.map(|start| self.track_take(start));
+                if let Some(track) = &track {
+                    self.mark(Mark::Walk(Arc::clone(track)));
+                }
                 self.record()
                     .walked
-                    .insert(walked, (Ok(planned.clone()), walking.clone()));
+                    .insert(walked, (Ok(planned.clone()), walking.clone(), track));
                 (Ok(planned), walking)
             }
         };
@@ -864,7 +954,13 @@ impl AspectCx for FrozenAspects<'_, '_> {
         }
     }
 
-    fn applying(&mut self, _key: &AspectApplicationKey) {}
+    fn applying(&mut self, key: &AspectApplicationKey, context: &Context) {
+        if self.tracking() {
+            let applying = (key.clone(), context.clone());
+            self.mark(Mark::Applying(Box::new(applying.clone())));
+            self.state.borrow_mut().applying = Some(applying);
+        }
+    }
 
     fn applied(
         &mut self,
@@ -896,10 +992,34 @@ impl AspectCx for FrozenAspects<'_, '_> {
 
     fn begin_application(&mut self) {
         self.state.borrow_mut().frames.push(Frame::default());
+        if self.tracking() {
+            let (accesses, marks) = self.track_len();
+            let mut state = self.state.borrow_mut();
+            let applying = state.applying.take();
+            state.planning.push((applying, accesses, marks));
+        }
     }
 
-    fn end_application(&mut self) {
+    fn end_application(&mut self, ok: bool) {
         self.state.borrow_mut().frames.pop();
+        if self.tracking() {
+            let planning = self.state.borrow_mut().planning.pop();
+            if let Some((applying, accesses, marks)) = planning {
+                let track = self.track_take((accesses, marks));
+                if let Some(applying) = applying
+                    && ok
+                {
+                    self.frozen
+                        .aspects
+                        .tracks
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .entry(applying)
+                        .or_insert_with(|| Arc::clone(&track));
+                }
+                self.mark(Mark::Planned(track));
+            }
+        }
     }
 
     fn identity(
@@ -1541,5 +1661,215 @@ impl Engine {
             registered.1.insert(address);
         }
         Ok(true)
+    }
+}
+
+/// An incremental-tracker event of an aspect job's replay
+/// ([`Engine::replay_aspect_accesses`]).
+pub(super) enum TrackEvent<'a> {
+    Access(&'a Label),
+    Aspect(&'a AspectApplicationKey),
+}
+
+/// What one replay ([`replay_aspect_accesses`]) carries through its
+/// tracks.
+struct Replay<'r> {
+    memo: &'r dyn Fn(&AspectApplicationKey) -> bool,
+    tracks: &'r HashMap<Applying, Arc<AspectTrack>>,
+    /// The applications planned so far (the turn's memo has them next).
+    planned: HashSet<AspectApplicationKey>,
+    /// The walks replayed (by address): a walk again records nothing new
+    /// (its lookups again; its applications planned the first time).
+    walked: HashSet<usize>,
+}
+
+impl Replay<'_> {
+    /// `false`: an application the turn plans has no recorded events.
+    fn track(
+        &mut self,
+        labels: &[Label],
+        marks: &[(u32, Mark)],
+        sink: &mut dyn FnMut(TrackEvent<'_>),
+    ) -> bool {
+        let (mut position, mut next) = (0usize, 0usize);
+        loop {
+            while let Some((at, mark)) = marks.get(next)
+                && *at as usize == position
+            {
+                next += 1;
+                match mark {
+                    Mark::Applying(applying) => {
+                        let key = &applying.0;
+                        sink(TrackEvent::Aspect(key));
+                        let here = match marks.get(next) {
+                            Some((at, Mark::Planned(planned))) if *at as usize == position => {
+                                next += 1;
+                                Some(planned)
+                            }
+                            _ => None,
+                        };
+                        if (self.memo)(key) || self.planned.contains(key) {
+                            continue;
+                        }
+                        // Planned by the job here, else by another job's
+                        // walk: its events where the turn plans it.
+                        let tracks = self.tracks;
+                        let Some(planning) = here.or_else(|| tracks.get(&**applying)) else {
+                            return false;
+                        };
+                        if !self.track(&planning.labels, &planning.marks, sink) {
+                            return false;
+                        }
+                        self.planned.insert(key.clone());
+                    }
+                    Mark::Planned(_) => return false,
+                    Mark::Walk(walk) => {
+                        if self.walked.insert(Arc::as_ptr(walk) as usize)
+                            && !self.track(&walk.labels, &walk.marks, sink)
+                        {
+                            return false;
+                        }
+                    }
+                }
+            }
+            let Some(label) = labels.get(position) else {
+                break;
+            };
+            sink(TrackEvent::Access(label));
+            position += 1;
+        }
+        next == marks.len()
+    }
+}
+
+/// The incremental tracker's events of an aspect job's prepare as its
+/// turn's recursion records them (`accesses` and its record's marks; the
+/// turn's aspect memo is `state`'s, before the job's placement), into
+/// `sink` in order. `false`: they cannot be derived (the rule is prepared
+/// at its turn; what was replayed is the turn's first events).
+pub(super) fn replay_aspect_accesses(
+    frozen: &Frozen,
+    state: &ActionPlanning,
+    accesses: &[Label],
+    record: &AspectRecord,
+    sink: &mut dyn FnMut(TrackEvent<'_>),
+) -> bool {
+    let tracks = frozen
+        .aspects
+        .tracks
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let memo = |key: &AspectApplicationKey| state.aspect_providers.contains_key(key);
+    let mut replay = Replay {
+        memo: &memo,
+        tracks: &tracks,
+        planned: HashSet::new(),
+        walked: HashSet::new(),
+    };
+    replay.track(accesses, &record.marks, sink)
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+
+    fn applying(name: &str) -> Applying {
+        let label = Label::parse(&format!("//p:{name}"), "").unwrap();
+        (
+            AspectApplicationKey {
+                base: ConfiguredTargetKey::new(label, crate::config_registry::no_config().id),
+                aspect: "//a:a.bzl%a".to_owned(),
+                bases: Vec::new(),
+            },
+            Context::named(name),
+        )
+    }
+
+    fn label(name: &str) -> Label {
+        Label::parse(&format!("//l:{name}"), "").unwrap()
+    }
+
+    fn track(labels: &[&str], marks: Vec<(u32, Mark)>) -> Arc<AspectTrack> {
+        Arc::new(AspectTrack {
+            labels: labels.iter().map(|name| label(name)).collect(),
+            marks,
+        })
+    }
+
+    /// The events as text: `l:x` a lookup, `a:x` an application met.
+    fn replay(
+        labels: &[&str],
+        marks: &[(u32, Mark)],
+        memo: &[&str],
+        tracks: &HashMap<Applying, Arc<AspectTrack>>,
+    ) -> Option<Vec<String>> {
+        let memo: HashSet<AspectApplicationKey> =
+            memo.iter().map(|name| applying(name).0).collect();
+        let is_memo = |key: &AspectApplicationKey| memo.contains(key);
+        let mut replay = Replay {
+            memo: &is_memo,
+            tracks,
+            planned: HashSet::new(),
+            walked: HashSet::new(),
+        };
+        let labels: Vec<Label> = labels.iter().map(|name| label(name)).collect();
+        let mut events = Vec::new();
+        let ok = replay.track(&labels, marks, &mut |event| {
+            events.push(match event {
+                TrackEvent::Access(label) => format!("l:{}", label.name),
+                TrackEvent::Aspect(key) => format!("a:{}", key.base.label.name),
+            })
+        });
+        ok.then_some(events)
+    }
+
+    #[test]
+    fn the_turns_events_follow_its_aspect_memo() {
+        // The job planned `x` (its planning looked up `x1`, met `y`, which
+        // another job planned looking up `y1`), then walked a dependency
+        // twice (`w`; the second walk again).
+        let walk = track(&["w"], Vec::new());
+        let x = track(
+            &["x1", "x2"],
+            vec![(1, Mark::Applying(Box::new(applying("y"))))],
+        );
+        let marks = vec![
+            (1, Mark::Applying(Box::new(applying("x")))),
+            (1, Mark::Planned(x)),
+            (2, Mark::Walk(Arc::clone(&walk))),
+            (2, Mark::Walk(walk)),
+        ];
+        let mut tracks = HashMap::new();
+        tracks.insert(applying("y"), track(&["y1"], Vec::new()));
+        let job = ["r1", "r2", "r3"];
+        // Nothing committed at the turn: x's planning, y's from the table.
+        assert_eq!(
+            replay(&job, &marks, &[], &tracks).unwrap(),
+            [
+                "l:r1", "a:x", "l:x1", "a:y", "l:y1", "l:x2", "l:r2", "l:w", "l:r3"
+            ]
+        );
+        // y committed by an earlier entry: met, not planned.
+        assert_eq!(
+            replay(&job, &marks, &["y"], &tracks).unwrap(),
+            ["l:r1", "a:x", "l:x1", "a:y", "l:x2", "l:r2", "l:w", "l:r3"]
+        );
+        // x committed: its planning skipped.
+        assert_eq!(
+            replay(&job, &marks, &["x"], &tracks).unwrap(),
+            ["l:r1", "a:x", "l:r2", "l:w", "l:r3"]
+        );
+        // y planned by no job's walk the turn would replay: not derived.
+        assert_eq!(replay(&job, &marks, &[], &HashMap::new()), None);
+        // An application met twice is planned once (the turn's memo has it
+        // the second time).
+        let marks = vec![
+            (0, Mark::Applying(Box::new(applying("y")))),
+            (1, Mark::Applying(Box::new(applying("y")))),
+        ];
+        assert_eq!(
+            replay(&["r1"], &marks, &[], &tracks).unwrap(),
+            ["a:y", "l:y1", "l:r1", "a:y"]
+        );
     }
 }

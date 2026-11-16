@@ -567,6 +567,30 @@ pub(super) fn tracked_natives() -> bool {
     *ON && !verify_native_accesses()
 }
 
+/// `BAZEL_RS_T3_TRACKED_ASPECT_JOBS=0` (a diagnostics switch): with the
+/// incremental tracker an aspect job whose prepare observed is prepared
+/// again at its turn, as before snapshot-miss2. By default it is placed as
+/// without the tracker, the tracker's events of its prepare derived from
+/// what its worker recorded with the turn's aspect memo
+/// (`aspect_jobs::replay_aspect_accesses`; `BAZEL_RS_T3_VERIFY_ASPECT_ACCESSES=1`
+/// prepares it at its turn and checks them against the turn's).
+pub(super) fn tracked_aspect_jobs() -> bool {
+    static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling switch; the index is the same either way.
+        std::env::var_os("BAZEL_RS_T3_TRACKED_ASPECT_JOBS").is_none_or(|value| value != "0")
+    });
+    *ON
+}
+
+/// `BAZEL_RS_T3_VERIFY_ASPECT_ACCESSES=1`: [`tracked_aspect_jobs`]' check.
+fn verify_aspect_accesses() -> bool {
+    static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
+        std::env::var_os("BAZEL_RS_T3_VERIFY_ASPECT_ACCESSES").is_some()
+    });
+    *ON
+}
+
 /// `BAZEL_RS_T3_VERIFY_NATIVE_ACCESSES=1`: [`tracked_natives`]' check.
 fn verify_native_accesses() -> bool {
     static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
@@ -2930,11 +2954,11 @@ impl Engine {
                 || !effects.console.is_empty()
                 // (Only plain observations, committed at its merge: a
                 // taint — a registration its placement may count again —
-                // is the turn's; so is everything with the incremental
-                // tracker, whose aspect applications its prepare records.)
+                // is the turn's; with the incremental tracker, unless its
+                // events are derived from its record: tracked_aspect_jobs.)
                 || (!effects.observations.is_empty()
                     && (!observed_jobs()
-                        || self.tracking()
+                        || (self.tracking() && !tracked_aspect_jobs())
                         || effects.observations.order_dependent()))
                 || !effects.roots.is_empty()
                 || super::aspect_jobs::verify_mode())
@@ -2952,6 +2976,16 @@ impl Engine {
             }
             effects.apply(self, false);
             return self.redo_at_turn(state, configured, key, rule, index, streamed);
+        }
+        // BAZEL_RS_T3_VERIFY_ASPECT_ACCESSES: its tracker events derived,
+        // then the rule prepared at its turn, its events compared.
+        if let Some(record) = &aspects
+            && self.tracking()
+            && verify_aspect_accesses()
+        {
+            return self.verify_aspect_job_accesses(
+                state, configured, key, rule, index, streamed, &accesses, record, effects,
+            );
         }
         frozen::FROZEN_STATS[0].fetch_add(1, Ordering::Relaxed);
         // The source lookups its prepare made (Engine::target): what they
@@ -2991,13 +3025,43 @@ impl Engine {
             return self.redo_at_turn(state, configured, key, rule, index, streamed);
         }
         // Its applications not committed yet, where its prepare meets them.
-        if let Some(record) = &aspects
-            && !self.place_aspects(state, rule, index, record)?
-        {
-            super::aspect_jobs::stat(super::aspect_jobs::S_FALLBACK, 1);
-            effects.apply(self, false);
-            drop(worker);
-            return self.redo_at_turn(state, configured, key, rule, index, streamed);
+        // With the incremental tracker in its planning frame, after the
+        // events the turn's prepare records (derived from its record).
+        let depth = self.track_depth();
+        let tracked = aspects.is_some() && self.tracking();
+        if let Some(record) = &aspects {
+            let placed = if tracked {
+                self.track_planning(key);
+                let frozen = Arc::clone(self.frozen_walk.as_ref().expect("a frozen walk"));
+                let replayed = super::aspect_jobs::replay_aspect_accesses(
+                    &frozen,
+                    state,
+                    &accesses,
+                    record,
+                    &mut |event| match event {
+                        super::aspect_jobs::TrackEvent::Access(label) => self.track_access(label),
+                        super::aspect_jobs::TrackEvent::Aspect(application) => {
+                            self.track_aspect_application(application)
+                        }
+                    },
+                );
+                if !replayed {
+                    super::aspect_jobs::stat(super::aspect_jobs::S_TRACK_FALLBACK, 1);
+                }
+                replayed
+                    && self
+                        .place_aspects(state, rule, index, record)
+                        .inspect_err(|_| self.track_restore(depth))?
+            } else {
+                self.place_aspects(state, rule, index, record)?
+            };
+            if !placed {
+                self.track_restore(depth);
+                super::aspect_jobs::stat(super::aspect_jobs::S_FALLBACK, 1);
+                effects.apply(self, false);
+                drop(worker);
+                return self.redo_at_turn(state, configured, key, rule, index, streamed);
+            }
         }
         // (Into the recorder at once: the placement memoized the sources
         // its lookups resolved.)
@@ -3010,11 +3074,13 @@ impl Engine {
         };
         // The incremental tracker: its planning frame, the prepare's
         // accesses in it (in this turn's scopes), then the commit's events,
-        // as the sequential walk records them (plan_one_target).
-        let depth = self.track_depth();
-        self.track_planning(key);
+        // as the sequential walk records them (plan_one_target). (An aspect
+        // job's are in its frame already.)
+        if !tracked {
+            self.track_planning(key);
+        }
         let started = self.tracking().then(std::time::Instant::now);
-        if self.tracking() {
+        if self.tracking() && !tracked {
             self.track_replay(incremental::TrackLog::accesses(
                 accesses,
                 incremental::ScopeContext::current(),
@@ -3025,6 +3091,70 @@ impl Engine {
             self.track_cost(started.elapsed() + elapsed);
         }
         self.track_restore(depth);
+        result
+    }
+
+    /// `BAZEL_RS_T3_VERIFY_ASPECT_ACCESSES`: an aspect job's tracker
+    /// events derived from its record (`aspect_jobs::replay_aspect_accesses`),
+    /// then the rule prepared at its turn, the turn's events captured: the
+    /// same target lookups' first occurrences in order (the tracker keeps
+    /// sets, its packages numbered in first-seen order) and the same
+    /// aspect applications.
+    #[allow(clippy::too_many_arguments)]
+    fn verify_aspect_job_accesses(
+        &mut self,
+        state: &mut ActionPlanning,
+        configured: &mut ConfiguredNodes,
+        key: &ConfiguredTargetKey,
+        rule: &Arc<Rule>,
+        index: usize,
+        streamed: bool,
+        accesses: &[Label],
+        record: &super::aspect_jobs::AspectRecord,
+        effects: Effects,
+    ) -> Result<(), String> {
+        let frozen = Arc::clone(self.frozen_walk.as_ref().expect("a frozen walk"));
+        let (mut labels, mut applications) = (Vec::new(), BTreeSet::new());
+        let derived = super::aspect_jobs::replay_aspect_accesses(
+            &frozen,
+            state,
+            accesses,
+            record,
+            &mut |event| match event {
+                super::aspect_jobs::TrackEvent::Access(label) => labels.push(label.clone()),
+                super::aspect_jobs::TrackEvent::Aspect(application) => {
+                    applications.insert(application.clone());
+                }
+            },
+        );
+        effects.apply(self, false);
+        self.access_capture.push(Vec::new());
+        self.aspect_capture.push(Vec::new());
+        let result = self.redo_at_turn(state, configured, key, rule, index, streamed);
+        let turn_labels = self.access_capture.pop().unwrap_or_default();
+        let turn_applications: BTreeSet<_> = self
+            .aspect_capture
+            .pop()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        if derived && result.is_ok() {
+            let distinct = |labels: Vec<Label>| {
+                let mut seen = HashSet::new();
+                labels
+                    .into_iter()
+                    .filter(|label| seen.insert(label.clone()))
+                    .collect::<Vec<_>>()
+            };
+            let (labels, turn_labels) = (distinct(labels), distinct(turn_labels));
+            assert!(
+                labels == turn_labels && applications == turn_applications,
+                "internal error: BAZEL_RS_T3_VERIFY_ASPECT_ACCESSES: the tracker events derived for aspect job {} differ from its turn's:\nderived lookups {labels:?}\nturn lookups {turn_labels:?}\nderived applications {applications:?}\nturn applications {turn_applications:?}",
+                key.label
+            );
+        } else if !derived {
+            super::aspect_jobs::stat(super::aspect_jobs::S_TRACK_FALLBACK, 1);
+        }
         result
     }
 

@@ -1105,6 +1105,9 @@ impl Engine {
     /// The innermost key's planning uses the aspect application `key`.
     pub(super) fn track_aspect_application(&mut self, key: &crate::aspects::AspectApplicationKey) {
         if self.tracking() {
+            if let Some(capture) = self.aspect_capture.last_mut() {
+                capture.push(key.clone());
+            }
             let base = &key.base;
             let identity = format!(
                 "{}|{}|{}|{}|{}",
