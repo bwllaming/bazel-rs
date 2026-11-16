@@ -1725,6 +1725,61 @@ pub fn source_file_digest(path: &Path, metadata: fs::Metadata) -> Result<[u8; 32
     hash_file_from(path, metadata, false, false).map(|(digest, _)| digest.0)
 }
 
+/// The SHA-256 this process already knows for the regular file `path`
+/// whose (followed) metadata is `metadata`, without reading it — for the
+/// files the build event file reports (crate::bep): an output linked into
+/// the execution root's output tree (one inode with its published output
+/// `entry`, `actions/<key>/outputs/<exec path>`), a published output itself
+/// (`entry` is `path`), or a source file (`entry` is `None`).
+///
+/// It answers from what the executor established this command, like
+/// [`hash_file_from`] does for an action input: a settled state of the inode
+/// (on any path), the state this process produced at `entry`, the published
+/// output `entry` it validated in a cache check (the output memo, which the
+/// output tree trusts the same way: [`published_kind`]) when `path` is
+/// still that inode, or the
+/// persistent memo's record of `entry` (keyed by birth time: one inode
+/// state, so it vouches for every link of it) or of `path` itself in
+/// exactly this state. `None` when nothing is known; the caller reads the
+/// file.
+pub fn known_file_digest(
+    path: &Path,
+    metadata: &fs::Metadata,
+    entry: Option<&Path>,
+) -> Option<[u8; 32]> {
+    if !metadata.is_file() {
+        return None;
+    }
+    let owned = file_key(metadata, true);
+    if let Some(entry) = entry
+        && let Some(digest) = memoized_digest(entry, &owned)
+    {
+        return Some(digest.0);
+    }
+    // A published output this process validated in a cache check (the
+    // output memo), still that inode.
+    if let Some(entry) = entry
+        && let Some(PublishedValue::File(input, Some((device, inode)))) = memoized_output(entry)
+        && (device, inode) == (metadata.dev(), metadata.ino())
+        && input.size == metadata.size()
+    {
+        return Some(input.digest.0);
+    }
+    let foreign = file_key(metadata, false);
+    if let Some(digest) = memoized_digest(path, &foreign) {
+        return Some(digest.0);
+    }
+    let table = digest_table()?;
+    if let Some(entry) = entry
+        && let Some(key) = crate::digest_memo::Key::of(metadata, true)
+        && let Some(sha256) = table.lookup(entry, &key)
+    {
+        return Some(sha256);
+    }
+    let key = crate::digest_memo::Key::of(metadata, false)?;
+    table.lookup(path, &key)
+}
+
 /// After publication: `path`, a published output file below the action
 /// entry `entry` with the content of `input` (its digest and executable
 /// bits), is remembered ([`remember_owned`]) — so that its consumers in
@@ -12048,6 +12103,43 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         assert_eq!(memoized(&output, &key), Some((digest(b"blob"), false)));
         forget_published(&entry);
         assert_eq!(memoized(&output, &key), None);
+    }
+
+    /// The build event file's digests (crate::bep): a published output's
+    /// link in the output tree is known by its entry's path while it is the
+    /// inode this process produced there; another file with the same bytes
+    /// and size is not, nor is anything once the entry is forgotten.
+    #[test]
+    fn known_file_digests_follow_the_entry_inode() {
+        let fixture = Fixture::new();
+        let entry = fixture.0.join("known-entry");
+        let output = entry.join("outputs/out");
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+        fs::write(&output, b"known").unwrap();
+        let metadata = fs::metadata(&output).unwrap();
+        remember_owned(&output, &metadata, digest(b"known"), Some(&entry));
+        let tree = fixture.0.join("execroot-out");
+        fs::hard_link(&output, &tree).unwrap();
+        let linked = fs::metadata(&tree).unwrap();
+        assert_eq!(
+            known_file_digest(&tree, &linked, Some(&output)),
+            Some(digest(b"known").0)
+        );
+        assert_eq!(known_file_digest(&tree, &linked, None), None);
+        let copy = fixture.0.join("execroot-copy");
+        fs::write(&copy, b"known").unwrap();
+        let copied = fs::metadata(&copy).unwrap();
+        assert_eq!(known_file_digest(&copy, &copied, Some(&output)), None);
+        assert_eq!(
+            known_file_digest(
+                &fixture.0,
+                &fs::metadata(&fixture.0).unwrap(),
+                Some(&output)
+            ),
+            None
+        );
+        forget_published(&entry);
+        assert_eq!(known_file_digest(&tree, &linked, Some(&output)), None);
     }
 
     /// A file's digest is never served for another file: a file that is

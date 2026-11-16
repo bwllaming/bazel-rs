@@ -131,6 +131,15 @@ stderr (saved as `bazel-out/_tmp/actions/stderr-N` for ActionExecuted.stderr).
 A target succeeded when every producer of its reported files did; one whose
 producer never ran (a failure elsewhere stopped the build) is aborted.
 
+A reported file's digest is, like Bazel's (the output's metadata from the
+action cache), the one the executor already knows when it knows that very
+inode state (`crate::action::known_file_digest`: an output it produced, took
+from a cache or validated in a cache check — the output-tree link is one inode
+with the action entry's file — or a record of the persistent digest memo);
+only the other files are read, on up to 8 threads (`bep::resolve_files`). A
+CI build of 550 targets after `affected` spent 66–124 s re-reading tens of GB
+of outputs here; `BAZEL_RS_TIMING` prints `PERF-BEP files= known= read=`.
+
 ### The analysis snapshot
 
 TargetConfigured/NamedSetOfFiles need analysis data a snapshot hit does not

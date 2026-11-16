@@ -600,6 +600,16 @@ fn a_snapshot_hit_streams_the_same_events() {
     let hit = events(&ws.capture().join("bep.json"));
     assert_eq!(normalize(&miss), normalize(&hit));
     assert_structural("build", &hit);
+    // The reported outputs' digests are the ones the executor knows (the
+    // cache hits' published outputs): none is read again.
+    for (output, stderr) in [(&first, &first.stderr), (&second, &second.stderr)] {
+        let stderr = String::from_utf8_lossy(stderr);
+        let line = stderr
+            .lines()
+            .find(|line| line.starts_with("PERF-BEP "))
+            .unwrap_or_else(|| panic!("{:?}: {stderr}", output.status));
+        assert!(line.contains(" read=0/0B "), "{line}");
+    }
 }
 
 /// `--profile=<file>.gz`: a gzipped Chrome trace with Bazel's otherData,

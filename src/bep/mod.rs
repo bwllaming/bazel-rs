@@ -1258,9 +1258,32 @@ fn exit_code_name(code: i32) -> &'static str {
     }
 }
 
+/// A BEP File of an artifact before its digest: a remote-only output's
+/// complete File, or a local file's name, path prefix and path, whose
+/// digest and length [`resolve_files`] fills in for all files at once.
+enum PendingFile {
+    Ready(Msg),
+    Local {
+        name: String,
+        prefix: Vec<String>,
+        uri: PathBuf,
+        /// The output's action entry path (one inode with `uri` when that
+        /// is its link in the output tree): where the executor knows its
+        /// digest from (crate::action::known_file_digest).
+        entry: Option<PathBuf>,
+    },
+}
+
 /// A BEP File of an artifact: name relative to its root, the root's path
-/// prefix, its URI, digest and length.
-fn artifact_file(exec: &str, location: &Path, execution_root: &Path, workspace: &Path) -> Msg {
+/// prefix, its URI, digest and length ([`PendingFile`]). `entry`: the
+/// generated file's path in its action's cache entry.
+fn artifact_file(
+    exec: &str,
+    location: &Path,
+    entry: Option<&Path>,
+    execution_root: &Path,
+    workspace: &Path,
+) -> PendingFile {
     let (prefix, name): (Vec<String>, String) = {
         let parts: Vec<&str> = exec.split('/').collect();
         if parts.len() > 3 && parts[0] == "bazel-out" {
@@ -1290,20 +1313,128 @@ fn artifact_file(exec: &str, location: &Path, execution_root: &Path, workspace: 
             Some(remote) => format!("{remote}blobs/{}/{}", file.hash, file.size),
             None => file_uri(&uri),
         };
-        return Msg::new()
-            .str(1, "name", name)
-            .str(2, "uri", location)
-            .strs(4, "path_prefix", prefix)
-            .str(5, "digest", file.hash)
-            .i64(6, "length", file.size as i64);
+        return PendingFile::Ready(
+            Msg::new()
+                .str(1, "name", name)
+                .str(2, "uri", location)
+                .strs(4, "path_prefix", prefix)
+                .str(5, "digest", file.hash)
+                .i64(6, "length", file.size as i64),
+        );
     }
-    let (digest, length) = file_digest(&uri);
-    Msg::new()
-        .str(1, "name", name)
-        .str(2, "uri", file_uri(&uri))
-        .strs(4, "path_prefix", prefix)
-        .str(5, "digest", digest)
-        .i64(6, "length", length)
+    PendingFile::Local {
+        name,
+        prefix,
+        uri,
+        entry: entry.map(Path::to_path_buf),
+    }
+}
+
+/// Most threads [`resolve_files`] reads files on.
+const DIGEST_THREADS: usize = 8;
+
+/// The BEP Files of `pending`, in order: a local file's digest and length
+/// as Bazel takes them from the output's metadata — the executor's when it
+/// knows them (crate::action::known_file_digest: an output it checked,
+/// produced or took from a cache, through any link of its inode), else read
+/// from the file, on several threads.
+fn resolve_files(pending: Vec<PendingFile>) -> Vec<Msg> {
+    let locals: Vec<(&Path, Option<&Path>)> = pending
+        .iter()
+        .filter_map(|file| match file {
+            PendingFile::Local { uri, entry, .. } => Some((uri.as_path(), entry.as_deref())),
+            PendingFile::Ready(_) => None,
+        })
+        .collect();
+    let start = std::time::Instant::now();
+    let read = std::sync::atomic::AtomicU64::new(0);
+    let read_bytes = std::sync::atomic::AtomicU64::new(0);
+    let digests = map_parallel(&locals, |(uri, entry)| {
+        local_digest(uri, *entry).unwrap_or_else(|| {
+            let (digest, length) = file_digest(uri);
+            read.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            read_bytes.fetch_add(length as u64, std::sync::atomic::Ordering::Relaxed);
+            (digest, length)
+        })
+    });
+    if crate::repository_store::timing::enabled() {
+        eprintln!(
+            "PERF-BEP files={} known={} read={}/{}B elapsed={:.3}s",
+            locals.len(),
+            locals.len() as u64 - read.load(std::sync::atomic::Ordering::Relaxed),
+            read.load(std::sync::atomic::Ordering::Relaxed),
+            read_bytes.load(std::sync::atomic::Ordering::Relaxed),
+            start.elapsed().as_secs_f64(),
+        );
+    }
+    let mut digests = digests.into_iter();
+    pending
+        .into_iter()
+        .map(|file| match file {
+            PendingFile::Ready(msg) => msg,
+            PendingFile::Local {
+                name, prefix, uri, ..
+            } => {
+                let (digest, length) = digests.next().unwrap_or_default();
+                Msg::new()
+                    .str(1, "name", name)
+                    .str(2, "uri", file_uri(&uri))
+                    .strs(4, "path_prefix", prefix)
+                    .str(5, "digest", digest)
+                    .i64(6, "length", length)
+            }
+        })
+        .collect()
+}
+
+/// `map` over `items` on up to [`DIGEST_THREADS`] threads (the calling
+/// thread included), results in `items` order.
+fn map_parallel<T: Sync, R: Send + Default>(items: &[T], map: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let threads = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(DIGEST_THREADS)
+        .min(items.len());
+    if threads <= 1 {
+        return items.iter().map(map).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let work = || {
+        let mut done = Vec::new();
+        loop {
+            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let Some(item) = items.get(index) else {
+                return done;
+            };
+            done.push((index, map(item)));
+        }
+    };
+    let mut results: Vec<R> = (0..items.len()).map(|_| R::default()).collect();
+    std::thread::scope(|scope| {
+        let helpers: Vec<_> = (1..threads)
+            .filter_map(|_| std::thread::Builder::new().spawn_scoped(scope, work).ok())
+            .collect();
+        let mut done = work();
+        for helper in helpers {
+            match helper.join() {
+                Ok(more) => done.extend(more),
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        }
+        for (index, result) in done {
+            results[index] = result;
+        }
+    });
+    results
+}
+
+/// The digest (lowercase hex) and length of the local file `uri` when the
+/// executor knows the file's state ([`resolve_files`]).
+fn local_digest(uri: &Path, entry: Option<&Path>) -> Option<(String, i64)> {
+    // snapshot-unrecorded: a built output's (or reported source's) stat for
+    // the build event file.
+    let metadata = std::fs::metadata(uri).ok()?;
+    let sha256 = crate::action::known_file_digest(uri, &metadata, entry)?;
+    Some((crate::digest_memo::hex(&sha256), metadata.len() as i64))
 }
 
 /// PathConverter.FileUriPathConverter: `file://` and the absolute path,
@@ -1419,6 +1550,9 @@ fn post_execution(state: &mut State, exit_code: i32) {
         .map(|(index, action)| (action.id.as_str(), index))
         .collect();
     let mut events: Vec<Event> = Vec::new();
+    // The NamedSetOfFiles events (their index in `events`, id and files),
+    // completed once every file's digest is known (resolve_files).
+    let mut named_sets: Vec<(usize, usize, Vec<PendingFile>)> = Vec::new();
     let configuration_of = |index: usize| -> String {
         planned.plan.configurations.get(index).map_or_else(
             || "none".to_owned(),
@@ -1636,18 +1770,19 @@ fn post_execution(state: &mut State, exit_code: i32) {
                 // A generated file at its place in the output tree below
                 // the execution root (crate::output_tree), else in its
                 // action's cache entry.
+                let entry = produced.producer.as_ref().and_then(|(producer, output)| {
+                    state
+                        .outputs
+                        .get(producer)
+                        .and_then(|outputs| outputs.get(*output))
+                });
                 let location = match &produced.producer {
-                    Some((producer, output)) => {
+                    Some(_) => {
                         let published = execution_root.join(&produced.real);
                         if published.is_file() {
                             published
                         } else {
-                            state
-                                .outputs
-                                .get(producer)
-                                .and_then(|outputs| outputs.get(*output))
-                                .cloned()
-                                .unwrap_or_else(|| produced.real.clone())
+                            entry.cloned().unwrap_or_else(|| produced.real.clone())
                         }
                     }
                     None => produced.real.clone(),
@@ -1662,17 +1797,20 @@ fn post_execution(state: &mut State, exit_code: i32) {
                         .display()
                         .to_string()
                 };
-                entries.push(artifact_file(&exec, &location, &execution_root, &workspace));
+                entries.push(artifact_file(
+                    &exec,
+                    &location,
+                    entry.map(PathBuf::as_path),
+                    &execution_root,
+                    &workspace,
+                ));
             }
             let set = named_set;
             named_set += 1;
+            named_sets.push((events.len(), set, entries));
             events.push(Event::new(
                 id::named_set(set),
-                (
-                    15,
-                    "named_set_of_files",
-                    Msg::new().msgs(1, "files", entries),
-                ),
+                (15, "named_set_of_files", Msg::new()),
             ));
             groups.push(Msg::new().str(1, "name", group.clone()).msgs(
                 3,
@@ -1723,6 +1861,24 @@ fn post_execution(state: &mut State, exit_code: i32) {
             id::convenience_symlinks_identified(),
             (27, "convenience_symlinks_identified", Msg::new()),
         ));
+    }
+    // Every set's files at once: their digests are read in parallel.
+    let mut sizes = Vec::with_capacity(named_sets.len());
+    let mut pending = Vec::new();
+    for (index, set, files) in named_sets {
+        sizes.push((index, set, files.len()));
+        pending.extend(files);
+    }
+    let mut files = resolve_files(pending).into_iter();
+    for (index, set, count) in sizes {
+        events[index] = Event::new(
+            id::named_set(set),
+            (
+                15,
+                "named_set_of_files",
+                Msg::new().msgs(1, "files", files.by_ref().take(count).collect::<Vec<_>>()),
+            ),
+        );
     }
     let _ = exit_code;
     for event in events {
