@@ -152,9 +152,10 @@ pub(in crate::engine) enum Published {
 #[derive(Default)]
 pub(crate) struct Store {
     pub(crate) keys: DenseMap<NodeKey>,
-    /// The graph's interner while the graph lives (snapshot-miss2: the
-    /// tracker's `Access` of a `Tgt` node resolves its label here; after
-    /// the graph's drop, through `keys`).
+    /// The graph's interner, until the first linearization after the
+    /// graph's drop (`linearize_all`; snapshot-miss2: the tracker's
+    /// `Access` of a `Tgt` node resolves its label here, then through
+    /// `keys`).
     pub(crate) interner: Option<Arc<super::super::key::Interner>>,
     pub(crate) transcripts: DenseMap<Transcript>,
     pub(crate) memo_ok: DenseMap<bool>,
@@ -811,7 +812,13 @@ impl Coord<'_> {
     /// deferred flush's phase 2 run (what a body that needs the planning
     /// state, a failure or the end of phase 1 sees: the ordered walk's).
     pub(crate) fn linearize_all(&mut self, shared: &EvalShared) -> Result<(), String> {
-        self.linearize(shared)?;
+        let linearized = self.linearize(shared);
+        // The graph was dropped: its interner (the keys of the `Access`
+        // events the tape names) is kept only through the linearization of
+        // the last ops above; from here on the store's keys (pruned below).
+        // (Dropped on the planning dropper thread, after the graph.)
+        super::super::super::drop_elsewhere(self.store.interner.take());
+        linearized?;
         let Some(mut lin) = self.lin.take() else {
             return Ok(());
         };
@@ -2455,7 +2462,6 @@ impl Engine {
             // (memory: the walks' peak).
             // (On the planning dropper thread, then the purge: the walks
             // do not wait for them.)
-            bodies.coord().store.interner = None;
             super::super::super::drop_elsewhere(evaluator.into_graph());
             for slot in &bodies.scratch {
                 super::super::super::drop_elsewhere(
