@@ -568,8 +568,10 @@ pub(super) fn tracked_natives() -> bool {
 }
 
 /// `BAZEL_RS_T3_TRACKED_ASPECT_JOBS=0` (a diagnostics switch): with the
-/// incremental tracker an aspect job whose prepare observed is prepared
-/// again at its turn, as before snapshot-miss2. By default it is placed as
+/// incremental tracker every aspect job is prepared again at its turn
+/// (before snapshot-miss2 those whose prepare observed were, the others
+/// placed without their aspect applications' tracker events). By default
+/// it is placed as
 /// without the tracker, the tracker's events of its prepare derived from
 /// what its worker recorded with the turn's aspect memo
 /// (`aspect_jobs::replay_aspect_accesses`; `BAZEL_RS_T3_VERIFY_ASPECT_ACCESSES=1`
@@ -2958,6 +2960,9 @@ impl Engine {
                         || (self.tracking() && !tracked_aspect_jobs())
                         || effects.observations.order_dependent()))
                 || !effects.roots.is_empty()
+                // (BAZEL_RS_T3_TRACKED_ASPECT_JOBS=0: every one with the
+                // tracker, its events the turn's.)
+                || (self.tracking() && !tracked_aspect_jobs())
                 || super::aspect_jobs::verify_mode())
         {
             super::aspect_jobs::stat(super::aspect_jobs::S_FALLBACK_PREPARE, 1);
