@@ -535,9 +535,15 @@ class ProjectRun:
 
 
 def list_outputs(root):
-    """Relative paths of the files below bazel-bin, minus runfiles trees."""
-    out = []
-    for dirpath, dirs, files in os.walk(root, followlinks=False):
+    """Relative paths of the files below bazel-bin, minus runfiles trees.
+    Directory symlinks (a tool may link a tree artifact) are followed once."""
+    out, seen = [], set()
+    for dirpath, dirs, files in os.walk(root, followlinks=True):
+        real = os.path.realpath(dirpath)
+        if real in seen:
+            dirs[:] = []
+            continue
+        seen.add(real)
         dirs[:] = [d for d in dirs if not d.endswith(".runfiles")]
         for f in files:
             full = os.path.join(dirpath, f)
