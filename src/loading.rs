@@ -397,6 +397,21 @@ fn recorded_canonical(label: &Label) -> Option<String> {
     (!label.repository.starts_with('[')).then(|| label.repository.clone())
 }
 
+/// What `Label("@<apparent>//…")` in repository `from` resolves to now, as
+/// [`RecordedRepoMapping::canonical`] records it (the warm check of a
+/// recorded mapping lookup, crate::repository_warm); `None` when it cannot
+/// be resolved at all.
+pub(crate) fn current_repo_mapping(
+    repositories: &crate::repository::RepositorySet,
+    from: &str,
+    apparent: &str,
+) -> Option<Option<String>> {
+    repositories
+        .parse_deferred(&format!("@{apparent}//:x"), from, "")
+        .ok()
+        .map(|label| recorded_canonical(&label))
+}
+
 /// `Label()` (StarlarkRuleClassFunctions.label, :2124-2143) records the
 /// mapping lookup of an apparent repository in the thread's
 /// RepoMappingRecorder: a module extension's context
@@ -418,7 +433,9 @@ pub(crate) fn record_label_repo_mapping(eval: &Evaluator<'_, '_, '_>, text: &str
         apparent: apparent.to_owned(),
         canonical: recorded_canonical(label),
     };
-    if crate::extension_ctx::record_repo_mapping(eval, &entry) {
+    if crate::extension_ctx::record_repo_mapping(eval, &entry)
+        || crate::repository_ctx::record_repo_mapping(eval, &entry)
+    {
         return;
     }
     if eval

@@ -940,3 +940,32 @@ fn refused_uploads_never_stop_lookups() {
     assert!(!stderr.contains("its lookups stop"), "{stderr}");
     assert_eq!(Server::fetches(&f.server.take_log()), 6);
 }
+
+/// An unrelated dependency and an unused repository added to the root
+/// module change no specification (docs/REPO_CONTENTS_CACHE.md "Keys"):
+/// a cold cache of that revision still takes every eligible repository
+/// from the remote cache.
+#[test]
+fn unrelated_dependencies_keep_remote_hits() {
+    let f = Fixture::new();
+    let remote = f.remote();
+    let ws1 = f.workspace("ws-1", "one\n");
+    assert_eq!(
+        stats(&f.run(&ws1, "c1", &[FLAG], &[&remote])),
+        "hits=0 uploads=3"
+    );
+    let ws2 = f.workspace("ws-2", "one\n");
+    let mut module = fs::read_to_string(ws2.join("MODULE.bazel")).unwrap();
+    module.push_str(&format!(
+        "bazel_dep(name = \"platforms\", version = \"0.0.4\")\nhttp_file(name = \"unused\", urls = [\"{}/files/missing.txt\"], sha256 = \"{}\")\n",
+        f.server.url(),
+        "0".repeat(64)
+    ));
+    fs::write(ws2.join("MODULE.bazel"), module).unwrap();
+    f.server.take_log();
+    let output = f.run(&ws2, "c2", &[FLAG], &[&remote]);
+    assert_success(&output);
+    assert_eq!(stats(&output), "hits=3 uploads=0");
+    assert_eq!(Server::fetches(&f.server.take_log()), 0);
+    assert_eq!(f.trees("c2"), f.trees("c1"));
+}

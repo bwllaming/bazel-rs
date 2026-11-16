@@ -852,14 +852,69 @@ struct PreparedGroup {
 }
 
 impl PreparedGroup {
+    /// The definition closure as the spec key frames it
+    /// ([`spec_closure_bytes`]).
     fn source_entries(&self) -> Result<&[u8], String> {
         self.source_entries
-            .get_or_init(|| {
-                crate::repository_store::source_digest_entries_bytes(&self.loaded.sources)
-            })
+            .get_or_init(|| spec_closure_bytes(&self.loaded))
             .as_deref()
             .map_err(Clone::clone)
     }
+}
+
+/// [`spec_closure_bytes`] as a raw JSON value (embedded in a provenance).
+fn closure_value(
+    loaded: &loading::LoadedDefinition,
+) -> Result<Box<serde_json::value::RawValue>, String> {
+    let bytes = spec_closure_bytes(loaded)?;
+    serde_json::value::RawValue::from_string(
+        String::from_utf8(bytes)
+            .map_err(|e| format!("cannot serialize repository provenance: {e}"))?,
+    )
+    .map_err(|e| format!("cannot serialize repository provenance: {e}"))
+}
+
+/// A definition closure as specification keys frame it (repo-mapping-key):
+/// each `.bzl` file's SHA-256 by label and the repository mapping entries
+/// its loads and top-level `Label()` calls USED (from, apparent name,
+/// canonical result; BzlLoadValue.getRecordedRepoMappings), sorted — not
+/// the whole mapping of every file's repository, which changes whenever a
+/// module gains an unrelated dependency (Bazel's predeclared inputs hash
+/// covers the transitive `.bzl` digest and the recorded repo mapping
+/// entries, DigestWriter.computePredeclaredInputHash). Mapping lookups
+/// while a rule runs are recorded inputs (crate::repository_warm version
+/// 5). The content identity keeps the full provenance bytes.
+fn spec_closure_bytes(loaded: &loading::LoadedDefinition) -> Result<Vec<u8>, String> {
+    #[derive(serde::Serialize)]
+    struct Closure<'a> {
+        digests: BTreeMap<&'a str, String>,
+        repo_mappings: BTreeSet<(&'a str, &'a str, Option<&'a str>)>,
+    }
+    let closure = Closure {
+        digests: loaded
+            .sources
+            .iter()
+            .map(|(label, source)| {
+                use sha2::Digest as _;
+                (
+                    label.as_str(),
+                    format!("{:x}", sha2::Sha256::digest(&source.bytes)),
+                )
+            })
+            .collect(),
+        repo_mappings: loaded
+            .repo_mappings
+            .iter()
+            .map(|entry| {
+                (
+                    entry.from.as_str(),
+                    entry.apparent.as_str(),
+                    entry.canonical.as_deref(),
+                )
+            })
+            .collect(),
+    };
+    serde_json::to_vec(&closure).map_err(|e| format!("cannot serialize repository provenance: {e}"))
 }
 
 /// Serialize one direct provenance object with `sources` rendered from
@@ -873,9 +928,7 @@ fn write_direct_provenance<W: std::io::Write>(
     out: &mut W,
     group: &crate::repository_catalog::DirectGroup,
     prepared: &PreparedGroup,
-    entry: &crate::repository_catalog::DirectRepository,
     attributes: &BTreeMap<String, AttrValue>,
-    owner_mapping: &BTreeMap<String, String>,
     sources_json: &[u8],
 ) -> Result<(), String> {
     fn field<W: std::io::Write>(
@@ -903,7 +956,10 @@ fn write_direct_provenance<W: std::io::Write>(
     }
     out.write_all(b"{").map_err(io_err)?;
     let mut first = true;
-    field(out, &mut first, "profile", &"direct-file-template-v1")?;
+    // v2 (repo-mapping-key): the definition closure as
+    // [`spec_closure_bytes`] (digests and the mapping entries its loads
+    // used), no whole owner or repository mapping.
+    field(out, &mut first, "profile", &"direct-file-template-v2")?;
     field(out, &mut first, "owner", &group.owner)?;
     field(out, &mut first, "raw_identity", &group.raw_identity)?;
     field(out, &mut first, "public_label", &prepared.label.to_string())?;
@@ -923,8 +979,7 @@ fn write_direct_provenance<W: std::io::Write>(
     field(out, &mut first, "attributes", &attributes)?;
     field(out, &mut first, "schema", &prepared.definition.schema)?;
     field(out, &mut first, "local", &prepared.definition.local)?;
-    field(out, &mut first, "owner_mapping", &owner_mapping)?;
-    field(out, &mut first, "repository_mapping", &entry.mapping)?;
+
     if prepared.definition.configure {
         field(out, &mut first, "configure", &true)?;
     }
@@ -935,28 +990,16 @@ fn write_direct_provenance<W: std::io::Write>(
     Ok(())
 }
 
-/// Render the full direct provenance bytes (execute path only, review
-/// R1): the closure is serialized from `prepared.loaded.sources`
-/// in place — no intermediate `Value` tree.
+/// The direct provenance bytes: the specification's and the content
+/// identity's (execute path only).
 fn direct_provenance_bytes(
     prepared: &PreparedGroup,
     group: &crate::repository_catalog::DirectGroup,
-    entry: &crate::repository_catalog::DirectRepository,
     attributes: &BTreeMap<String, AttrValue>,
-    owner_mapping: &BTreeMap<String, String>,
 ) -> Result<Vec<u8>, String> {
-    let sources = serde_json::to_vec(&prepared.loaded.sources)
-        .map_err(|e| format!("cannot serialize repository provenance: {e}"))?;
+    let sources = prepared.source_entries()?;
     let mut out = Vec::with_capacity(sources.len() + 1024);
-    write_direct_provenance(
-        &mut out,
-        group,
-        prepared,
-        entry,
-        attributes,
-        owner_mapping,
-        &sources,
-    )?;
+    write_direct_provenance(&mut out, group, prepared, attributes, sources)?;
     Ok(out)
 }
 
@@ -1079,7 +1122,12 @@ struct ProvenanceRecipe {
 /// whose rule key is the repository's own definition and attributes
 /// (DigestWriter): a sibling added or changed (a requirements bump) no
 /// longer re-executes every repository of the group.
-const ORDINARY_PROFILE: &str = "ordinary-file-template-v2";
+///
+/// v3 (repo-mapping-key): the definition closure as [`spec_closure_bytes`]
+/// (each `.bzl` file's digest and the mapping entries its loads used)
+/// instead of every file's bytes and its repository's whole mapping, which
+/// changed whenever a module gained an unrelated dependency.
+const ORDINARY_PROFILE: &str = "ordinary-file-template-v3";
 
 /// The provenance of an ordinary extension group: hashed into every
 /// generated repository's spec key and identity, with the repository's own
@@ -1090,11 +1138,19 @@ struct OrdinaryProvenance<'a> {
     public_label: String,
     symbol: &'a str,
     prefix: &'a str,
-    sources: &'a BTreeMap<String, loading::SourceProvenance>,
+    /// The definition closure as [`spec_closure_bytes`] (v3): digests and
+    /// the mapping entries its loads used, not whole mappings.
+    sources: &'a serde_json::value::RawValue,
     tag_classes: &'a BTreeMap<String, BTreeMap<String, crate::custom_rule::AttrSpec>>,
     modules: &'a [crate::extension_ctx::BoundModule],
     source_guards: &'a [serde_json::Value],
     root_has_non_dev_dependency: bool,
+    /// The participants' `use_repo` imports: checked (the group's import
+    /// error), never framed (v3): which apparent names see a generated
+    /// repository is the importing modules' mapping, not an input of the
+    /// repository (Bazel's usages trimmed for evaluation drop them too).
+    #[serde(skip)]
+    #[allow(dead_code)]
     imports: &'a [serde_json::Value],
     #[serde(skip_serializing_if = "crate::host_os::HostFactors::is_empty")]
     host_factors: crate::host_os::HostFactors<'a>,
@@ -1132,13 +1188,14 @@ impl PreparedOrdinary {
             "internal error: an ordinary extension provenance neither retained nor regenerable"
                 .to_owned()
         })?;
+        let closure = closure_value(&self.loaded)?;
         let mut bytes = bounded_provenance(
             &OrdinaryProvenance {
                 profile: ORDINARY_PROFILE,
                 public_label: recipe.public_label.clone(),
                 symbol: &recipe.symbol,
                 prefix: &recipe.prefix,
-                sources: &self.loaded.sources,
+                sources: &closure,
                 tag_classes: &recipe.tag_classes,
                 modules: &[],
                 source_guards: &recipe.source_guards,
@@ -2188,7 +2245,6 @@ impl RepositorySet {
                 key: self.direct_spec_key(
                     prepared,
                     group,
-                    entry,
                     &prepared.attributes[entry.declaration_index],
                 )?,
             });
@@ -4500,8 +4556,7 @@ impl RepositorySet {
                 let prepared = runtime.groups.get(&entry.group_id)?.ready()?;
                 let group = &runtime.catalog.groups[&entry.group_id];
                 let attributes = &prepared.attributes[entry.declaration_index];
-                self.direct_spec_key(prepared, group, entry, attributes)
-                    .ok()?
+                self.direct_spec_key(prepared, group, attributes).ok()?
             } else {
                 let (prepared, repository) = self.ordinary_repository(canonical).ok()?;
                 prepared.spec_key(self, repository).ok()?
@@ -5529,7 +5584,7 @@ impl RepositorySet {
         // Per-repository frame only: the group's cached source-digest
         // entries + this repo's attributes/mappings (review R1). No deep
         // copy of the closure, no re-hash of source bytes.
-        let spec_key = self.direct_spec_key(prepared, group, entry, attributes)?;
+        let spec_key = self.direct_spec_key(prepared, group, attributes)?;
         let workspace = crate::observed_fs::canonicalize(self.main_root())
             .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
         let workspace_text = crate::repository_warm::workspace_text(&workspace);
@@ -5560,35 +5615,16 @@ impl RepositorySet {
         &self,
         prepared: &PreparedGroup,
         group: &crate::repository_catalog::DirectGroup,
-        entry: &crate::repository_catalog::DirectRepository,
         attributes: &BTreeMap<String, AttrValue>,
     ) -> Result<String, String> {
-        let runtime = self.direct_runtime()?;
-        let owner_mapping = &runtime.catalog.owner_mappings[&group.owner];
         let entries = prepared.source_entries()?;
         crate::repository_warm::specification_digest_streaming(
             self,
             |out: &mut crate::repository_store::CountWriter| {
-                write_direct_provenance(
-                    out,
-                    group,
-                    prepared,
-                    entry,
-                    attributes,
-                    owner_mapping,
-                    entries,
-                )
+                write_direct_provenance(out, group, prepared, attributes, entries)
             },
             |out: &mut crate::repository_store::SeededDigestWriter| {
-                write_direct_provenance(
-                    out,
-                    group,
-                    prepared,
-                    entry,
-                    attributes,
-                    owner_mapping,
-                    entries,
-                )
+                write_direct_provenance(out, group, prepared, attributes, entries)
             },
             &prepared.definition.environ,
         )
@@ -5658,12 +5694,11 @@ impl RepositorySet {
         // entries + this repo's attributes/mappings. The full
         // provenance bytes are serialized LAZILY, only on the
         // execute path inside materialize (closure runs there).
-        let owner_mapping = runtime.catalog.owner_mappings[&group.owner].clone();
         let spec_key = {
             let _m = crate::repository_store::timing::mark(
                 &crate::repository_store::timing::PHASES.spec_serialize,
             );
-            self.direct_spec_key(prepared, group, entry, attributes)?
+            self.direct_spec_key(prepared, group, attributes)?
         };
         // Hidden diagnostic (N62 cold-variance hunt,
         // BAZEL_RS_DEBUG_PROVENANCE=1): provenance bytes per
@@ -5673,8 +5708,7 @@ impl RepositorySet {
         if std::env::var_os("BAZEL_RS_DEBUG_PROVENANCE").is_some()
             && !crate::repository_speculation::active()
         {
-            let provenance =
-                direct_provenance_bytes(prepared, group, entry, attributes, &owner_mapping)?;
+            let provenance = direct_provenance_bytes(prepared, group, attributes)?;
             eprintln!(
                 "PROVENANCE {canonical} {}",
                 String::from_utf8_lossy(&provenance)
@@ -5693,8 +5727,7 @@ impl RepositorySet {
         // their unrecorded dependencies (which/execute/executed-file
         // reads) make stale reuse dangerous.
         let local = prepared.definition.local;
-        let provenance =
-            move || direct_provenance_bytes(prepared, group, entry, attributes, &owner_mapping);
+        let provenance = move || direct_provenance_bytes(prepared, group, attributes);
         // A local execution's observations for its replay record.
         let observed = std::cell::RefCell::new(None);
         let observed_by = &observed;
@@ -6227,13 +6260,14 @@ impl RepositorySet {
         let evaluated = execution.as_ref().filter(|_| lock.is_none());
         let inputs = evaluated.map_or(&no_inputs, |execution| &execution.inputs);
         let modules = evaluated.map_or(&[][..], |execution| &execution.modules[..]);
+        let closure = closure_value(&loaded)?;
         let provenance = bounded_provenance(
             &OrdinaryProvenance {
                 profile: ORDINARY_PROFILE,
                 public_label: group.label.to_string(),
                 symbol: &group.symbol,
                 prefix: &group.prefix,
-                sources: &loaded.sources,
+                sources: &closure,
                 tag_classes: &definition.tag_classes,
                 modules,
                 source_guards: &source_guards,
@@ -6255,6 +6289,7 @@ impl RepositorySet {
             use sha2::Digest as _;
             sha2::Sha256::digest(&provenance).into()
         };
+
         // Only an executing repository reads the bytes again (MEM2):
         // with a lockfile they are regenerated on demand from the
         // recipe (checked against the digest); without one they may
@@ -8190,11 +8225,10 @@ mod tests {
                     "tag_classes",
                     "modules",
                     "source_guards",
-                    "root_has_non_dev_dependency",
-                    "imports"
+                    "root_has_non_dev_dependency"
                 ]
             );
-            assert_eq!(value["profile"], "ordinary-file-template-v2");
+            assert_eq!(value["profile"], "ordinary-file-template-v3");
             assert!(
                 !String::from_utf8_lossy(prepared.provenance().unwrap()).contains("extension_io")
             );
@@ -8364,7 +8398,7 @@ mod tests {
                 assert_eq!(base, run("another getter", "arch-a", "os-a"));
                 let json: serde_json::Value = serde_json::from_slice(&base).unwrap();
                 if !os && !arch {
-                    assert_eq!(json.as_object().unwrap().len(), 10);
+                    assert_eq!(json.as_object().unwrap().len(), 9);
                     assert!(json.get("host_factors").is_none());
                 } else {
                     let factors = json["host_factors"].as_object().unwrap();
@@ -9436,7 +9470,7 @@ mod tests {
         assert_eq!(serde_json::to_string(&with_environ).unwrap(), before);
         let provenance: serde_json::Value =
             serde_json::from_slice(prepared.provenance().unwrap()).unwrap();
-        assert_eq!(provenance["profile"], "ordinary-file-template-v2");
+        assert_eq!(provenance["profile"], "ordinary-file-template-v3");
     }
 
     #[test]

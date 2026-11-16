@@ -83,6 +83,15 @@ pub struct ExecutionInputs {
     /// Why an observation has no Bazel lockfile representation, if any.
     #[serde(skip)]
     pub bazel_unsupported: Option<String>,
+    /// Repository rules only: the repository mapping lookups of `Label()`
+    /// calls while the rule ran (from, apparent name, canonical result or
+    /// None when not visible): Bazel's REPO_MAPPING recorded inputs
+    /// (StarlarkRepositoryContext's RepoMappingRecorder). Recorded as warm
+    /// probes (crate::repository_warm), so the specification needs only the
+    /// mapping entries the definition's loads used, not whole mappings.
+    /// Never part of an identity.
+    #[serde(skip)]
+    pub repo_mappings: BTreeSet<(String, String, Option<String>)>,
 }
 
 #[derive(Debug, Serialize)]
@@ -628,6 +637,23 @@ pub(crate) fn evaluating_callback(eval: &Evaluator<'_, '_, '_>) -> bool {
 
 pub(crate) fn repository_context(eval: &Evaluator<'_, '_, '_>) -> Option<Arc<RepositorySet>> {
     own_context(eval).map(|context| context.repositories.clone())
+}
+
+/// Records a `Label()` mapping lookup of a running repository rule
+/// ([`ExecutionInputs::repo_mappings`]); false outside one.
+pub(crate) fn record_repo_mapping(
+    eval: &Evaluator<'_, '_, '_>,
+    entry: &crate::loading::RecordedRepoMapping,
+) -> bool {
+    let Some(context) = own_context(eval).filter(|context| context.kind == Kind::Repository) else {
+        return false;
+    };
+    context.state.borrow_mut().inputs.repo_mappings.insert((
+        entry.from.clone(),
+        entry.apparent.clone(),
+        entry.canonical.clone(),
+    ));
+    true
 }
 
 pub(crate) fn definition_package(eval: &Evaluator<'_, '_, '_>) -> Option<PackageId> {

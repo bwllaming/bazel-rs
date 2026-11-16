@@ -75,6 +75,14 @@ struct WatchedProbe {
 /// otherwise; the reuse requires each to resolve to the same tree still.
 /// Only such probes are written as version 4.
 ///
+/// Version 5 (repo-mapping-key) adds `mappings`: the repository mapping
+/// lookups of `Label()` calls while the rule ran (from, apparent name,
+/// canonical result; Bazel's REPO_MAPPING recorded inputs), which the
+/// specification no longer covers (it frames only the mapping entries the
+/// definition's loads used, crate::repository). The other fields keep their
+/// meaning (a `workspace` and `trees` may be present too). Only probes with
+/// lookups are written as version 5.
+///
 /// Any change to the probe bytes — a field, a path spelling, a state
 /// encoding, what a probe covers — must bump `version`. Binaries sharing a
 /// cache rely on it in both directions: an older binary never trusts a
@@ -98,6 +106,9 @@ struct RecordedInputs {
     /// Version 4: (canonical repository, its tree below the store).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     trees: Vec<(String, String)>,
+    /// Version 5: (from, apparent, canonical or null) mapping lookups.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    mappings: Vec<(String, String, Option<String>)>,
 }
 
 /// `recorded` (this binary's probes, [`record`]) with the trees of `trees`
@@ -105,7 +116,7 @@ struct RecordedInputs {
 pub(crate) fn with_trees(recorded: &[u8], trees: Vec<(String, String)>) -> Result<Vec<u8>, String> {
     let mut probes: RecordedInputs = serde_json::from_slice(recorded)
         .map_err(|error| format!("cannot parse recorded repository inputs: {error}"))?;
-    probes.version = 4;
+    probes.version = probes.version.max(4);
     probes.trees = trees;
     serde_json::to_vec(&probes).map_err(|error| format!("cannot record repository inputs: {error}"))
 }
@@ -118,7 +129,7 @@ pub(crate) fn with_trees(recorded: &[u8], trees: Vec<(String, String)>) -> Resul
 /// probes this binary reads.
 pub(crate) fn without_stage_probes(recorded: &[u8]) -> Option<Vec<u8>> {
     let mut probes: RecordedInputs = serde_json::from_slice(recorded).ok()?;
-    if !(1..=4).contains(&probes.version) {
+    if !(1..=5).contains(&probes.version) {
         return None;
     }
     probes
@@ -140,7 +151,7 @@ pub(crate) fn remote_probes_acceptable(recorded: &[u8], canonical: &str) -> bool
         return false;
     };
     let own = format!("@@{canonical}//");
-    matches!(probes.version, 2 | 4)
+    matches!(probes.version, 2 | 4 | 5)
         && probes.trees.is_empty()
         && probes.workspace.is_none()
         && !probes
@@ -394,7 +405,13 @@ pub(crate) fn record(
         Ok(crate::lockfile_extensions::FriendlyPath::of_label(&label).to_string())
     };
     let recorded = RecordedInputs {
-        version: if inputs.workspace.is_some() { 3 } else { 2 },
+        version: if !inputs.repo_mappings.is_empty() {
+            5
+        } else if inputs.workspace.is_some() {
+            3
+        } else {
+            2
+        },
         templates: inputs
             .templates
             .iter()
@@ -422,6 +439,7 @@ pub(crate) fn record(
         }),
         workspace: inputs.workspace.clone(),
         trees: Vec::new(),
+        mappings: inputs.repo_mappings.iter().cloned().collect(),
     };
     serde_json::to_vec(&recorded)
         .map_err(|error| format!("cannot record repository inputs: {error}"))
@@ -512,7 +530,7 @@ pub(crate) fn unchanged(
         .map_err(|error| format!("cannot parse recorded repository inputs: {error}"))?;
     let resolve = match recorded.version {
         1 => resolve_v1,
-        2..=4 => resolve_friendly,
+        2..=5 => resolve_friendly,
         _ => return Ok(false),
     };
     // Version 3 (and 4 with one): the publication of the workspace it names
@@ -520,7 +538,7 @@ pub(crate) fn unchanged(
     // foreign).
     if recorded.version == 3 || recorded.workspace.is_some() {
         let current = workspace_text(workspace);
-        if !matches!(recorded.version, 3 | 4)
+        if !matches!(recorded.version, 3..=5)
             || recorded.workspace.as_deref() != Some(current.as_str())
         {
             return Ok(false);
@@ -529,7 +547,7 @@ pub(crate) fn unchanged(
     // Version 4: each repository whose tree the published bytes name still
     // resolves to that tree (written only as version 4).
     if recorded.version == 4 || !recorded.trees.is_empty() {
-        if recorded.version != 4 || recorded.trees.is_empty() {
+        if !matches!(recorded.version, 4 | 5) || recorded.trees.is_empty() {
             return Ok(false);
         }
         let source_cache = repositories.source_cache_path()?;
@@ -573,6 +591,18 @@ pub(crate) fn unchanged(
             .map(|template| &template.source)
             .chain(recorded.files.iter().map(|file| &file.path))
             .any(|recorded| in_store(recorded))
+        {
+            return Ok(false);
+        }
+    }
+    // Version 5: every recorded `Label()` mapping lookup resolves as it did
+    // (RepoRecordedInput.RecordedRepoMapping.isOutdated).
+    if (recorded.version == 5) == recorded.mappings.is_empty() {
+        return Ok(false);
+    }
+    for (from, apparent, canonical) in &recorded.mappings {
+        if crate::loading::current_repo_mapping(repositories, from, apparent).as_ref()
+            != Some(canonical)
         {
             return Ok(false);
         }
