@@ -26,6 +26,17 @@
     {"name": "examples-bzlmod-01", "lang": "C++", "git": "https://github.com/bazelbuild/examples", "commit": "efab5bd4660ebfe720bd52efaeeccefaf00ee4ad", "subdir": "bzlmod/01-depend_on_bazel_module"},
     {"name": "limdor-rust", "lang": "Rust", "git": "https://github.com/limdor/bazel-examples", "commit": "cd69be99aff93edf639460aad9fcbc50604b43f8", "subdir": "rust"},
     {"name": "limdor-cpp", "lang": "C++", "git": "https://github.com/limdor/bazel-examples", "commit": "cd69be99aff93edf639460aad9fcbc50604b43f8", "subdir": "cpp"},
-    {"name": "rules_zig", "lang": "Zig", "git": "https://github.com/hermeticbuild/rules_zig", "commit": "4c6543de82a4946bb54faed00c7ace2345f1293c", "comment_out": [{"file": ".bazelrc.common", "lines": ["--windows_enable_symlinks", "--noincompatible_disallow_empty_glob"], "workaround": "B2"}]}
+    {"name": "rules_zig", "lang": "Zig", "git": "https://github.com/hermeticbuild/rules_zig", "commit": "4c6543de82a4946bb54faed00c7ace2345f1293c", "comment_out": [{"file": ".bazelrc.common", "lines": ["--windows_enable_symlinks", "--noincompatible_disallow_empty_glob"], "workaround": "B2"}]},
+    {"name": "examples-java-tutorial", "lang": "Java", "git": "https://github.com/bazelbuild/examples", "commit": "efab5bd4660ebfe720bd52efaeeccefaf00ee4ad", "subdir": "java-tutorial"},
+    {"name": "examples-java-maven", "lang": "Java", "git": "https://github.com/bazelbuild/examples", "commit": "efab5bd4660ebfe720bd52efaeeccefaf00ee4ad", "subdir": "java-maven"},
+    {"name": "examples-go-tutorial", "lang": "Go", "git": "https://github.com/bazelbuild/examples", "commit": "efab5bd4660ebfe720bd52efaeeccefaf00ee4ad", "subdir": "go-tutorial/stage3"},
+    {"name": "examples-cpp-tutorial", "lang": "C++", "git": "https://github.com/bazelbuild/examples", "commit": "efab5bd4660ebfe720bd52efaeeccefaf00ee4ad", "subdir": "cpp-tutorial/stage3"},
+    {"name": "examples-rust-deps-cargo", "lang": "Rust", "git": "https://github.com/bazelbuild/examples", "commit": "efab5bd4660ebfe720bd52efaeeccefaf00ee4ad", "subdir": "rust-examples/05-deps-cargo"},
+    {"name": "examples-rust-ffi", "lang": "Rust/C++", "git": "https://github.com/bazelbuild/examples", "commit": "efab5bd4660ebfe720bd52efaeeccefaf00ee4ad", "subdir": "rust-examples/04-ffi"},
+    {"name": "examples-configurations", "lang": "Starlark/C++", "git": "https://github.com/bazelbuild/examples", "commit": "efab5bd4660ebfe720bd52efaeeccefaf00ee4ad", "subdir": "configurations"},
+    {"name": "examples-rules", "lang": "Starlark", "git": "https://github.com/bazelbuild/examples", "commit": "efab5bd4660ebfe720bd52efaeeccefaf00ee4ad", "subdir": "rules"},
+    {"name": "examples-bzlmod-05", "lang": "C++/Starlark", "git": "https://github.com/bazelbuild/examples", "commit": "efab5bd4660ebfe720bd52efaeeccefaf00ee4ad", "subdir": "bzlmod/05-integrate_third_party_package_manager"},
+    {"name": "rules_go-basic_gazelle", "lang": "Go", "git": "https://github.com/bazel-contrib/rules_go", "commit": "e2d52babf3211185108cf73a93c9461681f15ac4", "subdir": "examples/basic_gazelle"},
+    {"name": "rules_python-pip_parse", "lang": "Python", "git": "https://github.com/bazel-contrib/rules_python", "commit": "ea4234e6457c8401bb6f2da3e64fda9693bf6b71", "subdir": "examples/pip_parse", "comment_out": [{"file": "../downloader_cfg.bazelrc", "lines": ["--experimental_downloader_config"], "workaround": "B2"}, {"file": "../../downloader_cfg.bazelrc", "lines": ["--http_timeout_scaling"], "workaround": "B2"}]}
   ]
 }
