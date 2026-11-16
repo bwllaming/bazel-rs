@@ -165,6 +165,17 @@ impl Workspace {
     fn build(&self, mode: &str, threads: usize, env: &[(&str, &str)], args: &[&str]) -> Output {
         // A fresh cache per run: every package loads (and prints) again.
         let _ = fs::remove_dir_all(self.path().join("cache"));
+        self.build_keeping_cache(mode, threads, env, args)
+    }
+
+    /// [`Self::build`] on the cache as it is (the snapshot store kept).
+    fn build_keeping_cache(
+        &self,
+        mode: &str,
+        threads: usize,
+        env: &[(&str, &str)],
+        args: &[&str],
+    ) -> Output {
         Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .current_dir(self.path())
             .env_clear()
@@ -1299,4 +1310,121 @@ fn the_compatibility_checks_lookups_are_the_walks_with_a_flush_pending() {
             assert_eq!(eval, walk, "{target} at {threads} threads {env:?}");
         }
     }
+}
+
+/// fix-access-node: with the incremental tracker on, a pass of the
+/// linearizer in the middle of phase 1 (a config_setting's Starlark
+/// flag_values flush applied at once: `--keep_going`, ordered flushes,
+/// config_settings in fetched repositories) keeps the graph's interner,
+/// through which the tape's `Access` events name their labels (0.4.23
+/// dropped it there: on ~/code, `build --keep_going` on a snapshot miss
+/// panicked at the sequential pass's next lookup of a `Tgt` node no
+/// attempt had begun); the index is the walk's at 1-8 threads. Then the
+/// snapshot's incremental reuse (a package edited) on the same engines.
+#[test]
+fn the_tracker_names_its_accesses_through_mid_phase_flushes() {
+    let ws = Workspace::new(
+        4,
+        r#"config_setting(name = "root_on", flag_values = {":mode": "on"})
+filegroup(name = "sources", srcs = ["a.txt"] + select({":root_on": ["on.txt"], "//conditions:default": []}))
+printing(name = "after", text = select({":root_on": "on", "//conditions:default": "off"}), deps = [":sources", "//p2:top", "@ext1//:lib", "@ext2//:lib"])
+printing(name = "later", text = "later", deps = ["@ext3//:lib", ":after"] + ["@hub//:s%d" % i for i in range(1, 9)])
+load("//:ext.bzl", "tooled")
+tooled(name = "with_tool", tool = "@ext1//:lib", deps = ["@hub//:s1", "@spoke2//:lib"])
+filegroup(name = "all", srcs = [":with_tool", ":everything", ":after", ":later"])
+"#,
+    );
+    // Repositories a rule fetches (the pool never does: the sequential pass
+    // looks their targets up on a cold cache, after the flushes before).
+    for (path, text) in [
+        ("a.txt", "x\n"),
+        ("on.txt", "x\n"),
+        (
+            "MODULE.bazel",
+            "ext = use_repo_rule(\"//:ext.bzl\", \"ext\")\nhub = use_repo_rule(\"//:ext.bzl\", \"hub\")\next(name = \"ext1\")\next(name = \"ext2\")\next(name = \"ext3\")\next(name = \"spoke1\")\next(name = \"spoke2\")\next(name = \"spoke3\")\next(name = \"spoke4\")\next(name = \"spoke5\")\next(name = \"spoke6\")\next(name = \"spoke7\")\next(name = \"spoke8\")\nhub(name = \"hub\")\n",
+        ),
+        (
+            "ext.bzl",
+            "def _ext_impl(rctx):\n    rctx.file(\"f.txt\", \"x\")\n    rctx.file(\"BUILD.bazel\", \"config_setting(name = 'on', flag_values = {'@@//:mode': 'on'})\\nfilegroup(name = 'lib', srcs = ['f.txt'] + select({':on': [], '//conditions:default': []}), visibility = ['//visibility:public'])\")\n\next = repository_rule(implementation = _ext_impl)\n\ndef _hub_impl(rctx):\n    rctx.file(\"BUILD.bazel\", \"alias(name = 's1', actual = '@spoke1//:lib', visibility = ['//visibility:public'])\\nalias(name = 's2', actual = '@spoke2//:lib', visibility = ['//visibility:public'])\\nalias(name = 's3', actual = '@spoke3//:lib', visibility = ['//visibility:public'])\\nalias(name = 's4', actual = '@spoke4//:lib', visibility = ['//visibility:public'])\\nalias(name = 's5', actual = '@spoke5//:lib', visibility = ['//visibility:public'])\\nalias(name = 's6', actual = '@spoke6//:lib', visibility = ['//visibility:public'])\\nalias(name = 's7', actual = '@spoke7//:lib', visibility = ['//visibility:public'])\\nalias(name = 's8', actual = '@spoke8//:lib', visibility = ['//visibility:public'])\\n\")\n\nhub = repository_rule(implementation = _hub_impl)\n\ndef _tooled_impl(ctx):\n    return [DefaultInfo(files = depset(ctx.files.tool + ctx.files.deps))]\n\ntooled = rule(implementation = _tooled_impl, attrs = {\"tool\": attr.label(cfg = \"exec\"), \"deps\": attr.label_list(cfg = \"exec\")})\n",
+        ),
+    ] {
+        fs::write(ws.path().join(path), text).unwrap();
+    }
+    let index = ws.path().join("tmp/index.txt");
+    let tracked =
+        |mode: &str, threads: usize, env: &[(&str, &str)], extra: &[&str], fresh: bool| {
+            let _ = fs::remove_file(&index);
+            if fresh {
+                // A cold cache: the sequential pass fetches what the pool
+                // cannot, looking targets up no attempt has begun yet.
+                fn writable(path: &Path) {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(metadata) = fs::symlink_metadata(path)
+                        && metadata.is_dir()
+                    {
+                        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o755));
+                        for entry in fs::read_dir(path).into_iter().flatten().flatten() {
+                            writable(&entry.path());
+                        }
+                    }
+                }
+                let cache = ws.path().join("cache");
+                writable(&cache);
+                let _ = fs::remove_dir_all(&cache);
+            }
+            let mut all: Vec<(&str, &str)> = vec![
+                ("BAZEL_RS_SNAPSHOT", "on"),
+                ("BAZEL_RS_SNAPSHOT_INDEX_DUMP", index.to_str().unwrap()),
+            ];
+            all.extend_from_slice(env);
+            let mut args = vec!["//:all", "--experimental-builtin-modules=true"];
+            args.extend_from_slice(extra);
+            let output = ws.build_keeping_cache(mode, threads, &all, &args);
+            assert!(
+                output.status.success(),
+                "{mode} {threads} {env:?} {extra:?}: {}",
+                stable(&output)
+            );
+            (
+                fs::read_to_string(&index).ok(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        };
+    for extra in [&["--keep_going"][..], &[][..]] {
+        let (walk, _) = tracked("walk", 4, &[], extra, true);
+        let walk = walk.expect("the walk's index");
+        for threads in [1, 2, 4, 8] {
+            for env in [
+                &[][..],
+                &[("BAZEL_RS_EVAL_NO_DEFER", "1")][..],
+                // The sequential pass runs what it needs itself (lookups of
+                // `Tgt` nodes no attempt has begun after the flush).
+                &[("BAZEL_RS_EVAL_NO_ASSIST", "1")][..],
+            ] {
+                let (eval, _) = tracked("eval", threads, env, extra, true);
+                assert_eq!(
+                    eval.as_deref(),
+                    Some(walk.as_str()),
+                    "{threads} threads {env:?} {extra:?}"
+                );
+            }
+        }
+    }
+    // The incremental reuse: a miss saves, one package is edited, the next
+    // run analyzes it again (eval at several thread counts).
+    let p2 = ws.path().join("p2/BUILD.bazel");
+    let original = fs::read_to_string(&p2).unwrap();
+    for threads in [1, 4, 8] {
+        for extra in [&["--keep_going"][..], &[][..]] {
+            fs::write(&p2, &original).unwrap();
+            let _ = tracked("eval", threads, &[], extra, true);
+            fs::write(&p2, format!("{original}\n# edited {threads}\n")).unwrap();
+            let (_, stderr) = tracked("eval", threads, &[], extra, false);
+            assert!(
+                !stderr.contains("internal error"),
+                "{threads} {extra:?}: {stderr}"
+            );
+        }
+    }
+    fs::write(&p2, &original).unwrap();
 }

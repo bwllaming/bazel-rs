@@ -813,11 +813,18 @@ impl Coord<'_> {
     /// state, a failure or the end of phase 1 sees: the ordered walk's).
     pub(crate) fn linearize_all(&mut self, shared: &EvalShared) -> Result<(), String> {
         let linearized = self.linearize(shared);
-        // The graph was dropped: its interner (the keys of the `Access`
-        // events the tape names) is kept only through the linearization of
-        // the last ops above; from here on the store's keys (pruned below).
-        // (Dropped on the planning dropper thread, after the graph.)
-        super::super::super::drop_elsewhere(self.store.interner.take());
+        // At the end of phase 1 (the graph dropped): its interner (the keys
+        // of the `Access` events the tape names) is kept only through the
+        // linearization of the last ops above; from here on the store's
+        // keys (pruned below). (Dropped on the planning dropper thread,
+        // after the graph.) A linearization in the middle of phase 1 (a
+        // config_setting's flush applied at once: `--keep_going`, ordered
+        // flushes) keeps it: bodies still emit `Access` events of `Tgt`
+        // nodes no attempt has begun yet (fix-access-node: 0.4.23 dropped
+        // it there and the next such access panicked).
+        if self.store.segments_done {
+            super::super::super::drop_elsewhere(self.store.interner.take());
+        }
         linearized?;
         let Some(mut lin) = self.lin.take() else {
             return Ok(());
