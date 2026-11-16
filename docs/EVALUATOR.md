@@ -871,6 +871,18 @@ change announced to the other two workers; adding a helper is not.
   visit (`Frame::Body` carries the key's hash to its `Done`);
   `label::plain_relative_label` (the native converter's fast path for a
   plain relative target name, `BAZEL_RS_PLAIN_LABELS=0` off).
+- 2026-11-16 (snapshot-miss2): `Event::Access` carries an
+  `transcript::Accessed` — `Node(NodeId)` (the lookup's own `Tgt` node,
+  emitted by the bodies and the requested lookups) or `Label(Box<Label>)`
+  (the engine services' captured lookups, the compatibility check's);
+  `TapeReplay::compact` takes a `key_of(NodeId)` resolver (the linearizer
+  store's `key_of`: the graph's interner, shared with the store as
+  `Store::interner` until the graph's drop, then `Store::keys`).
+  `AspectCx::applying(key, context)` and `AspectCx::end_application(ok)`
+  (the aspect jobs record their tracker marks). The planned incremental
+  index is a `snapshot::incremental::PlannedIndex` (made, or pending on a
+  thread; `take_planned_index` waits, the save's INDEX encoding waits
+  through `take_planned`).
 
 ## 4. Stages and gates
 
@@ -4368,3 +4380,80 @@ cut both); the 22 aspect jobs at their turn under the tracker (~2.5 s of the
 cursor); the end of planning (the incremental index 0.6 s, the plan
 encoding ~0.8 s, `note_hidden_lockfile` 0.25 s on the main thread); the
 kernel time of a miss (~140 s against ~60 s off, not on the critical path).
+
+## snapshot-miss2: an analysis-snapshot miss, round 2
+
+Measured first (~/code `80d6724f3a` private clone, `build --nobuild
+//src/...`, main `c0ee3f47`, non-LTO, `BAZEL_RS_EVAL_TIMELINE`, pprof):
+a miss 26.9–27.9 s against 12.5–12.7 s with the snapshot off, peak
+9.86 GB. Phase 1's pool ran to ~6.1 s (off ~3.3 s: the recording's tree
+walks), the linearizer alone after it ~3.3 s (pass 1 1.50 s against 0.46,
+the tape 1.85 s against 0.41: the tracker's `Access` labels cloned into
+the tape and interned there), the deferred walk 7.2 s against 4.0 (its
+last ~3.5 s on the cursor: the 22 aspect jobs prepared at their turn,
+the tracker's replays), the tail 2.6 s against 1.4, then the end of
+planning (top-level derive roots ~1 s, `incremental_index` ~0.55 s, run
+plans ~0.3 s) and the save (~1.2 s on the main thread, INPUTS 1.2 s on
+its own).
+
+What changed:
+
+- **`Access` by node.** A body's target lookup emits `Access(Node(id))`
+  of its `Tgt` node (interned anyway for its `need`), not a cloned
+  label; the tape's compaction finds the label through the graph's
+  interner (shared with the linearizer's store while the graph lives,
+  else the store's keys) and keeps the tracker's label and key ids by
+  node (dense: no hashing per op, a label interned once per node). The
+  tracker's own access finds its package and label access by reference
+  (`hashbrown::Equivalent` over the label's parts: no `PackageId` or
+  name cloned per access); a merged job's accesses are applied in place.
+  Pass 1 1.50 → 0.70 s, the tape 1.85 → 1.15 s, phase 1's end −0.4 GB.
+- **Aspect jobs with the tracker** (`BAZEL_RS_T3_TRACKED_ASPECT_JOBS=0`
+  restores the turn): a job that observed is placed as without the
+  tracker. Its worker records the tracker's events of its prepare with
+  marks (`aspect_jobs::AspectTrack`): where its recursion met an
+  application (`applying`), the planning of each one it planned itself
+  (`Mark::Planned`: that planning's own events, also kept in the walk's
+  table by application and context), and each dependency walk
+  (`Mark::Walk`; the job walks a dependency once, the turn every time).
+  At the merge, in the rule's planning frame and before the placement,
+  `replay_aspect_accesses` derives the turn's events with the turn's
+  aspect memo: an application committed by an earlier entry is met, not
+  planned (its planning skipped); one the job found in the table (another
+  job planned it) replays that planning's events where the turn plans
+  it; a walk replayed once is not replayed again (its applications are
+  memoized by then: nothing new); an application without recorded events
+  sends the rule to its turn (`track_fallbacks`).
+  `BAZEL_RS_T3_VERIFY_ASPECT_ACCESSES=1` prepares every such rule at its
+  turn and compares (the lookups' first occurrences in order, the
+  applications): clean on ~/code (22 jobs) and in
+  `eval_pass2::an_aspect_jobs_tracker_events_are_its_turns`. Deferred
+  walk 7.2 → 5.7 s.
+- **Tree walks once.** A claim of a store tree inside a frame waits for
+  another thread's walk of the same root instead of walking it too
+  (`Recorder::walked` single-flight: dozens of warm probes claimed one
+  large tree at once): the repository store's `recorded_check` 124 s →
+  40 s summed, the pool's end ~6.1 → ~5.0 s.
+- **The end of planning.** The derive roots by owner slot (no `Label`
+  hash per hidden artifact, ids cloned once, consecutive producers
+  skipped), the incremental demand deduplicated before its ids are cloned,
+  `rule_modules`, the run plans' conversion and the per-tree selection
+  of the INPUTS on threads (in order), the save's purge on the dropper
+  thread, and the incremental index made on a thread of its own: the
+  tracker moves there at the point the index was made (an empty one is
+  left; nothing recorded after it reached the index before either), and
+  the save's INDEX encoding waits for it (`BAZEL_RS_EVAL_SYNC_INDEX=1`
+  makes it in place; `BAZEL_RS_SNAPSHOT_INDEX_DUMP` waits for it at the
+  end of planning). Top-level runfiles → `plan.tail.toplevel` 1.0 →
+  0.65 s, `plan.built` → `plan.end` 1.5 → 0.8 s.
+  `BAZEL_RS_SNAPSHOT_DERIVE_DUMP=<file>` (hidden) dumps the DERIVE
+  coverage.
+- `BAZEL_RS_T3_RECORDING_TAIL_WORKERS=<n>`: the recording's frozen tail
+  workers (default: the recording's cap, 6). 8 workers −0.6 s, 10 −0.95 s
+  on the tail, at its peak +0.06–0.3 GB (noisy): left at 6 for the margin.
+
+Identical to main: the incremental index (`BAZEL_RS_SNAPSHOT_INDEX_DUMP`),
+the saved plan (`BAZEL_RS_SNAPSHOT_PLAN_OUT`, 468,167,650 bytes), the DERIVE
+coverage, stderr with the action dump, walk and eval; the record mode's
+dump (954,241 lines; timings aside) walk and eval.
+
