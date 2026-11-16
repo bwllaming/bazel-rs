@@ -2229,6 +2229,8 @@ const RUN_UNDER_ATTRIBUTES: [&str; 2] = [":run_under_exec_config", ":run_under_t
 fn derive_note(ids: &mut BTreeSet<String>, artifact: &Artifact) {
     if let Some((id, _)) = &artifact.producer
         && !id.starts_with(crate::request::STATUS_ID_PREFIX)
+        // (Most are there: one action produces many files.)
+        && !ids.contains(id.as_str())
     {
         ids.insert(id.clone());
     }
@@ -11844,15 +11846,18 @@ impl Engine {
                         // Every one resolved and new (the ones `seen` holds
                         // are in the requested or hidden lists noted below).
                         taken = listed.taken;
-                        for artifact in listed.artifacts {
-                            if derive_recording {
-                                derive_note(
-                                    derive_build.entry(label.clone()).or_default(),
-                                    &artifact,
-                                );
+                        if derive_recording {
+                            let ids = derive_build.entry(label.clone()).or_default();
+                            for artifact in &listed.artifacts {
+                                derive_note(ids, artifact);
                             }
-                            hidden.push((owner, artifact));
                         }
+                        hidden.extend(
+                            listed
+                                .artifacts
+                                .into_iter()
+                                .map(|artifact| (owner, artifact)),
+                        );
                     }
                     None => {
                         for file in runfiles.default_runfiles().all_artifacts() {
@@ -12094,15 +12099,37 @@ impl Engine {
             for (key, artifact) in &requested {
                 derive_note(own.entry(&key.label).or_default(), artifact);
             }
-            let mut initial: HashMap<&Label, BTreeSet<String>> = HashMap::new();
-            let mut all: HashMap<&Label, BTreeSet<String>> = HashMap::new();
+            // (By owner, each owner's label's slot found once: hundreds of
+            // thousands of hidden artifacts.)
+            let mut slots: crate::fast_hash::FxHashMap<&Label, usize> =
+                crate::fast_hash::FxHashMap::default();
+            let slot_of: Vec<usize> = owners
+                .keys
+                .iter()
+                .map(|key| {
+                    let next = slots.len();
+                    *slots.entry(&key.label).or_insert(next)
+                })
+                .collect();
+            let mut initial_sets: Vec<BTreeSet<String>> = vec![BTreeSet::new(); slots.len()];
+            let mut all_sets: Vec<BTreeSet<String>> = vec![BTreeSet::new(); slots.len()];
             for (index, (owner, artifact)) in hidden.iter().enumerate() {
-                let label = &owners.keys[*owner].label;
+                let slot = slot_of[*owner];
                 if index < initial_hidden {
-                    derive_note(initial.entry(label).or_default(), artifact);
+                    derive_note(&mut initial_sets[slot], artifact);
                 }
-                derive_note(all.entry(label).or_default(), artifact);
+                derive_note(&mut all_sets[slot], artifact);
             }
+            let initial: HashMap<&Label, BTreeSet<String>> = slots
+                .iter()
+                .map(|(label, slot)| (*label, std::mem::take(&mut initial_sets[*slot])))
+                .filter(|(_, ids)| !ids.is_empty())
+                .collect();
+            let all: HashMap<&Label, BTreeSet<String>> = slots
+                .iter()
+                .map(|(label, slot)| (*label, std::mem::take(&mut all_sets[*slot])))
+                .filter(|(_, ids)| !ids.is_empty())
+                .collect();
             for label in labels {
                 let mut build = own.get(label).cloned().unwrap_or_default();
                 build.extend(initial.get(label).into_iter().flatten().cloned());
@@ -12169,6 +12196,9 @@ impl Engine {
                 .enumerate()
                 .map(|(position, label)| (label, position))
                 .collect();
+            // (Each pair once: one action produces many files.)
+            let mut seen: crate::fast_hash::FxHashSet<(Option<usize>, &str)> =
+                crate::fast_hash::FxHashSet::default();
             let demand = hidden
                 .iter()
                 .filter_map(|(owner, artifact)| {
@@ -12178,9 +12208,11 @@ impl Engine {
                     } else {
                         Some(positions.get(&owners.keys[*owner].label).copied()?)
                     };
-                    Some((position, id.clone()))
+                    seen.insert((position, id.as_str()))
+                        .then(|| (position, id.clone()))
                 })
                 .collect();
+            drop(seen);
             self.track_demand(demand);
         }
         crate::perf_mark("plan.tail.toplevel");

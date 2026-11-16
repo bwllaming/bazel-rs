@@ -220,7 +220,9 @@ impl Save {
         // What planning freed goes back to the system before the
         // encoding's peak (it would wait for its decay; ~/code: ~1.7 GB
         // of dirty pages at the end of planning).
-        crate::alloc_arena::purge();
+        // (On the planning dropper thread: its checks and encodings do
+        // not wait for it.)
+        crate::engine::purge_elsewhere();
         match self.prepare(request, workspace_status) {
             Ok(pending) => self.pending = Some(pending),
             Err(reason) => self.skip(reason),

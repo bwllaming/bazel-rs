@@ -104,6 +104,15 @@ static PLANNED: std::sync::Mutex<Option<Coverage>> = std::sync::Mutex::new(None)
 
 /// Keep `coverage` for the save of this command.
 pub fn set_planned(coverage: Option<Coverage>) {
+    // `BAZEL_RS_SNAPSHOT_DERIVE_DUMP=<file>` (hidden, diagnostics): the
+    // coverage the save would encode, so two analyses' can be compared.
+    // snapshot-unrecorded: a hidden diagnostics dump; it changes nothing the analysis computes.
+    if let Some(path) = std::env::var_os("BAZEL_RS_SNAPSHOT_DERIVE_DUMP")
+        && let Some(coverage) = &coverage
+    {
+        // snapshot-unrecorded: writes the diagnostics dump requested above.
+        let _ = std::fs::write(path, format!("{coverage:#?}\n"));
+    }
     *PLANNED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = coverage;

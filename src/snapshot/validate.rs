@@ -588,14 +588,30 @@ fn per_tree_summary_owned(mut recording: Recording) -> Recording {
     let keep: Vec<bool> = {
         let roots = sorted_bytes(verified_roots(&recording));
         let links = sorted_bytes(tree_links(&recording));
-        recording
-            .observations
-            .iter()
-            .map(|(path, _)| {
-                let path = path.as_os_str().as_bytes();
-                !inside_bytes(&roots, path) || inside_bytes(&links, path)
-            })
-            .collect()
+        let keep =
+            |observations: &[(std::path::PathBuf, crate::observed_fs::Observation)]| -> Vec<bool> {
+                observations
+                    .iter()
+                    .map(|(path, _)| {
+                        let path = path.as_os_str().as_bytes();
+                        !inside_bytes(&roots, path) || inside_bytes(&links, path)
+                    })
+                    .collect()
+            };
+        // (Hundreds of thousands of observations: in chunks on threads.)
+        let threads = threads_for(&recording).min(8);
+        let chunk = recording.observations.len().div_ceil(threads).max(1);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = recording
+                .observations
+                .chunks(chunk)
+                .map(|observations| scope.spawn(move || keep(observations)))
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|handle| handle.join().expect("the per-tree selection panicked"))
+                .collect()
+        })
     };
     let mut keep = keep.into_iter();
     recording

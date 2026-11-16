@@ -1759,6 +1759,33 @@ fn rule_modules(
     packages: &BTreeMap<PackageId, Arc<Package>>,
     keys: &[(u32, Label)],
 ) -> Vec<(u32, Vec<Label>)> {
+    // (Hundreds of thousands of keys: in chunks on threads, in order.)
+    const CHUNK: usize = 16 * 1024;
+    if keys.len() <= CHUNK {
+        return rule_modules_of(packages, keys);
+    }
+    let threads = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .clamp(1, 8);
+    let chunk = keys.len().div_ceil(threads).max(CHUNK);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = keys
+            .chunks(chunk)
+            .map(|keys| scope.spawn(move || rule_modules_of(packages, keys)))
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().expect("rule_modules panicked"))
+            .collect()
+    })
+}
+
+/// [`rule_modules`] of one chunk of keys.
+fn rule_modules_of(
+    packages: &BTreeMap<PackageId, Arc<Package>>,
+    keys: &[(u32, Label)],
+) -> Vec<(u32, Vec<Label>)> {
     // (Hundreds of thousands of keys name a few hundred modules: each
     // parsed once.)
     let mut parsed: FxHashMap<&str, Label> = FxHashMap::default();
