@@ -740,6 +740,10 @@ pub struct Recorder {
     /// attempts that obtain one root concurrently (each claiming it in its
     /// frame before any reached the recorder) walk it once.
     walks: Mutex<HashMap<PathBuf, Arc<RepositoryRecord>>>,
+    /// The roots being walked for [`Self::walked`] now (snapshot-miss2: a
+    /// claim of one waits for that walk instead of walking it too; dozens
+    /// of probes claim the same large tree at once).
+    walking: Mutex<HashMap<PathBuf, Arc<(Mutex<bool>, std::sync::Condvar)>>>,
 }
 
 /// Everything one window recorded, sorted (paths in byte order).
@@ -831,6 +835,7 @@ impl Recorder {
             plan_registered: Mutex::default(),
             window: Mutex::default(),
             walks: Mutex::default(),
+            walking: Mutex::default(),
         }
     }
 
@@ -1489,13 +1494,55 @@ impl Recorder {
         root: &Path,
         manifest: Option<&Path>,
     ) -> Arc<RepositoryRecord> {
-        if let Some(record) = lock(&self.walks).get(root)
-            && record.kind == kind
-            && record.name == name
-            && record.manifest.as_deref() == manifest
-        {
-            return Arc::clone(record);
+        let known = || {
+            lock(&self.walks)
+                .get(root)
+                .filter(|record| {
+                    record.kind == kind
+                        && record.name == name
+                        && record.manifest.as_deref() == manifest
+                })
+                .cloned()
+        };
+        if let Some(record) = known() {
+            return record;
         }
+        // Another thread walking the root: its walk, once it is done (a
+        // walk of another kind, name or manifest, or of no directory,
+        // leaves this one to walk on its own).
+        let walking = {
+            let mut walking = lock(&self.walking);
+            match walking.get(root) {
+                Some(slot) => Some(Arc::clone(slot)),
+                None => {
+                    walking.insert(root.to_path_buf(), Arc::default());
+                    None
+                }
+            }
+        };
+        if let Some(slot) = walking {
+            let (done, woken) = &*slot;
+            let mut done = lock(done);
+            while !*done {
+                done = woken.wait(done).unwrap_or_else(|e| e.into_inner());
+            }
+            drop(done);
+            if let Some(record) = known() {
+                return record;
+            }
+            return Arc::new(self.walk_tree(kind, name, root, manifest));
+        }
+        // (Released, waking the waiters, also when the walk panics.)
+        struct Release<'r>(&'r Recorder, &'r Path);
+        impl Drop for Release<'_> {
+            fn drop(&mut self) {
+                if let Some(slot) = lock(&self.0.walking).remove(self.1) {
+                    *lock(&slot.0) = true;
+                    slot.1.notify_all();
+                }
+            }
+        }
+        let _release = Release(self, root);
         let record = Arc::new(self.walk_tree(kind, name, root, manifest));
         let directory = record
             .entries
