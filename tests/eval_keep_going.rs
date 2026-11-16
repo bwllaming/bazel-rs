@@ -231,6 +231,8 @@ fn run_with(
     Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
         .current_dir(root)
         .env_clear()
+        // No clock-timed plain progress lines in the compared stderr.
+        .env("BAZEL_RS_PROGRESS", "0")
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", root.join("home"))
         .env("TMPDIR", root.join("tmp"))

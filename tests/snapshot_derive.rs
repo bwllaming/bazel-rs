@@ -84,6 +84,8 @@ impl Twin {
             .arg("--lockfile_mode=off")
             .current_dir(self.run_root().join("ws"))
             .env_clear()
+            // No clock-timed plain progress lines in the compared stderr.
+            .env("BAZEL_RS_PROGRESS", "0")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &home)
             .env("TMPDIR", &home)
@@ -427,6 +429,8 @@ fn derivation_can_be_switched_off() {
         .arg("--lockfile_mode=off")
         .current_dir(twin.run_root().join("ws"))
         .env_clear()
+        // No clock-timed plain progress lines in the compared stderr.
+        .env("BAZEL_RS_PROGRESS", "0")
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", &home)
         .env("TMPDIR", &home)

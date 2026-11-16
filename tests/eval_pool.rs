@@ -126,6 +126,8 @@ impl Workspace {
         Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .current_dir(self.path())
             .env_clear()
+            // No clock-timed plain progress lines in the compared stderr.
+            .env("BAZEL_RS_PROGRESS", "0")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.path().join("home"))
             .env("TMPDIR", self.path().join("tmp"))

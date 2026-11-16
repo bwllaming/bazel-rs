@@ -224,6 +224,8 @@ impl Workspace {
             .args(with_explicit_modules(arguments))
             .current_dir(self.root())
             .env_clear()
+            // No clock-timed plain progress lines in the compared stderr.
+            .env("BAZEL_RS_PROGRESS", "0")
             // The native result lines this harness reads (crate::build_results).
             .env("BAZEL_RS_RESULT_LINES", "1")
             .env("PATH", "/usr/bin:/bin")

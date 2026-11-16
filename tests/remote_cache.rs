@@ -1985,6 +1985,8 @@ fn native_action_summary_needs_the_result_lines() {
         .args(["build", &cache, "//pkg:gen"])
         .current_dir(ws.0.join("ws"))
         .env_clear()
+        // No clock-timed plain progress lines in the compared stderr.
+        .env("BAZEL_RS_PROGRESS", "0")
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", ws.0.join("home"));
     let output = command
