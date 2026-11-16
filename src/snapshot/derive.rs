@@ -225,12 +225,15 @@ impl Coverage {
 /// the most recently saved first, read and decoded one at a time as the
 /// caller asks for the next (a lookup stops at the first that serves it:
 /// a family's markers accumulate, and each coverage names every target of
-/// its snapshot). Unreadable ones are skipped, their markers removed.
+/// its snapshot). Unreadable ones are skipped, their markers removed. Each
+/// comes with the open snapshot its coverage was read from: the lookup's
+/// prevalidation and the hit read that same file (a concurrent save of the
+/// key replaces it by a rename, never in place).
 pub fn candidates(
     cache: &Path,
     family: &[u8; 32],
     binary: [u8; 32],
-) -> impl Iterator<Item = (Key, Coverage)> {
+) -> impl Iterator<Item = (Key, Coverage, crate::snapshot::store::Reader)> {
     let directory = family_directory(cache, family);
     let mut markers: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(&directory)
         .into_iter()
@@ -248,9 +251,14 @@ pub fn candidates(
         .filter_map(move |(_, marker)| candidate(&cache, &marker, binary))
 }
 
-/// The snapshot `marker` names, with its coverage; `None` (the marker
-/// removed) when it is unreadable, evicted, damaged or of another binary.
-fn candidate(cache: &Path, marker: &Path, binary: [u8; 32]) -> Option<(Key, Coverage)> {
+/// The snapshot `marker` names, with its coverage and the open snapshot;
+/// `None` (the marker removed) when it is unreadable, evicted, damaged or
+/// of another binary.
+fn candidate(
+    cache: &Path,
+    marker: &Path,
+    binary: [u8; 32],
+) -> Option<(Key, Coverage, crate::snapshot::store::Reader)> {
     let Some(g) = std::fs::read_to_string(marker)
         .ok()
         .and_then(|text| parse_hex(text.trim()))
@@ -263,11 +271,12 @@ fn candidate(cache: &Path, marker: &Path, binary: [u8; 32]) -> Option<(Key, Cove
         Ok(Some(reader)) => reader
             .stored_section(crate::snapshot::format::Section::Derive)
             .and_then(decode)
-            .ok(),
+            .ok()
+            .map(|coverage| (coverage, reader)),
         _ => None,
     };
     match coverage {
-        Some(coverage) => Some((key, coverage)),
+        Some((coverage, reader)) => Some((key, coverage, reader)),
         None => {
             let _ = std::fs::remove_file(marker);
             None
@@ -725,7 +734,7 @@ pub fn attempt(
     // leaves its family. Candidates are decoded only until one is chosen.
     let mut tally = Tally::default();
     let mut chosen = None;
-    for (candidate, coverage) in candidates(&lookup.cache, &family, key.binary) {
+    for (candidate, coverage, reader) in candidates(&lookup.cache, &family, key.binary) {
         tally.candidates += 1;
         if candidate == key {
             continue;
@@ -733,15 +742,13 @@ pub fn attempt(
         let checked = coverage.covers(&request).and_then(|()| {
             tally.prevalidated += 1;
             let prevalidating = std::time::Instant::now();
-            let prevalidated = crate::snapshot::hit::prevalidate(
-                &lookup.cache,
-                &candidate,
-                &lookup.replay.environment,
-            )
-            .inspect_err(|_| {
-                tally.stale += 1;
-                unmark(&lookup.cache, &family, &candidate);
-            });
+            let prevalidated =
+                crate::snapshot::hit::prevalidate(reader, &lookup.replay.environment).inspect_err(
+                    |_| {
+                        tally.stale += 1;
+                        unmark(&lookup.cache, &family, &candidate);
+                    },
+                );
             tally.prevalidate += prevalidating.elapsed();
             prevalidated
         });

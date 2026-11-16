@@ -82,12 +82,16 @@ pub struct Attempt<'a> {
     /// the request's before the workspace status is computed.
     pub derive: Option<Derivation<'a>>,
     /// The snapshot's INPUTS as [`prevalidate`] decoded and validated them
-    /// just before (a derived hit): neither is done again.
+    /// just before (a derived hit): neither is done again, and the hit reads
+    /// the rest from the same open snapshot file.
     pub prevalidated: Option<Prevalidated>,
 }
 
-/// What [`prevalidate`] decoded and found valid.
+/// What [`prevalidate`] decoded and found valid, and the open snapshot it
+/// read (the hit reads EVENTS and PLAN from this very file: a save of the
+/// key in between renames a new file into place, which this one is not).
 pub struct Prevalidated {
+    pub reader: Reader,
     pub inputs: format::Inputs,
     pub validated: Validated,
 }
@@ -147,28 +151,26 @@ fn miss(reason: impl Into<String>) -> Result<Box<Hit>, Miss> {
     Err(reason.into())
 }
 
-/// Validate the recorded inputs of the snapshot of `key` only (no replay,
+/// Validate the recorded inputs of the open snapshot `reader` only (no replay,
 /// no decoding, no stderr capture): what a derived hit checks before it
 /// gives up the save of the command it serves (crate::snapshot::derive).
 /// The hit that follows takes the decoded inputs and the validation from it
 /// ([`Attempt::prevalidated`]) instead of doing both again.
 pub fn prevalidate(
-    cache: &Path,
-    key: &Key,
+    reader: Reader,
     environment: &[(OsString, OsString)],
 ) -> Result<Prevalidated, Miss> {
-    let reader = match Reader::open(cache, key) {
-        Ok(Some(reader)) => reader,
-        Ok(None) => return Err("no snapshot for this key".to_owned()),
-        Err(error) => return Err(format!("unreadable snapshot: {error}")),
-    };
     let inputs = reader
         .section(Section::Inputs)
         .and_then(|bytes| format::decode_inputs(&bytes))
         .map_err(|error| format!("unreadable snapshot: {error}"))?;
     let validated =
         validate::validate_for_hit(&inputs.recording, &validate::Environment::new(environment))?;
-    Ok(Prevalidated { inputs, validated })
+    Ok(Prevalidated {
+        reader,
+        inputs,
+        validated,
+    })
 }
 
 /// Try the snapshot of `attempt.key`. A miss with
@@ -190,14 +192,17 @@ fn attempt_keeping(
 ) -> Result<Box<Hit>, Miss> {
     let started = Instant::now();
     let derivation = attempt.derive.take();
-    let reader = match Reader::open(attempt.cache, &attempt.key) {
-        Ok(Some(reader)) => reader,
-        Ok(None) => return miss("no snapshot for this key"),
-        Err(error) => return miss(format!("unreadable snapshot: {error}")),
-    };
-    let (prevalidated, prevalidation) = match attempt.prevalidated.take() {
-        Some(Prevalidated { inputs, validated }) => (Some(inputs), Some(validated)),
-        None => (None, None),
+    let (reader, prevalidated, prevalidation) = match attempt.prevalidated.take() {
+        Some(Prevalidated {
+            reader,
+            inputs,
+            validated,
+        }) => (reader, Some(inputs), Some(validated)),
+        None => match Reader::open(attempt.cache, &attempt.key) {
+            Ok(Some(reader)) => (reader, None, None),
+            Ok(None) => return miss("no snapshot for this key"),
+            Err(error) => return miss(format!("unreadable snapshot: {error}")),
+        },
     };
     let decoded = crate::internal_error::recoverable_asserted(|| {
         let inputs = match prevalidated {
