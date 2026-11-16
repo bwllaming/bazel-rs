@@ -24,9 +24,12 @@ empty lists. Tags preserve MODULE call order even when differently spelled usage
 labels merge into one canonical extension identity.
 
 **Generated repositories are keyed by their own specification**
-(affected-reuse-cold, provenance profile `ordinary-file-template-v2`): a
+(affected-reuse-cold, provenance profile `ordinary-file-template-v2`; v3,
+repo-mapping-key: the sources as digests plus the mapping entries their
+loads used, no `use_repo` imports, docs/REPO_CONTENTS_CACHE.md "Keys and
+repository mappings"): a
 generated repository's spec key and tree identity frame the group's shared
-provenance (the extension's sources, tag classes, participants, imports, host
+provenance (the extension's sources, tag classes, participants, host
 factors, `environ`) with *its own* definition, bound attributes and names —
 no longer the whole group's repositories and mapping. Like Bazel's repository
 contents cache, whose key is the repository's own definition, a sibling added
