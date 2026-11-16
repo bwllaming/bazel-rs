@@ -29,6 +29,8 @@ struct State {
     /// `/ac/<hash>`, `/cas/<hash>` and the fixture files `/files/<name>`.
     blobs: BTreeMap<String, Vec<u8>>,
     log: Vec<(String, String)>,
+    /// Every PUT answers 403 (a read-only token).
+    refuse_puts: bool,
 }
 
 /// A minimal HTTP/1.1 server: an HTTP cache (GET/PUT `/ac/H`, `/cas/H`)
@@ -75,7 +77,9 @@ fn handle(stream: TcpStream, shared: Arc<Mutex<State>>) {
         let (status, payload) = {
             let mut state = shared.lock().unwrap();
             state.log.push((method.clone(), path.clone()));
-            if method == "PUT" {
+            if method == "PUT" && state.refuse_puts {
+                ("403 Forbidden", Vec::new())
+            } else if method == "PUT" {
                 state.blobs.insert(path, body);
                 ("200 OK", Vec::new())
             } else {
@@ -155,6 +159,47 @@ impl Server {
             })
             .map(|(path, blob)| (path.clone(), blob.clone()))
             .expect("a pack chunk")
+    }
+
+    /// Rewrites the final entry whose manifest lists `path` (an untrusted
+    /// cache's answer): `change` edits the manifest JSON (and may add CAS
+    /// blobs); the entry then names the new manifest.
+    fn rewrite_entry(&self, path: &str, change: impl FnOnce(&mut serde_json::Value, &Server)) {
+        use bazel_rs::reapi::{ActionResult, Digest};
+        let (key, mut result, mut manifest) = {
+            let state = self.state.lock().unwrap();
+            state
+                .blobs
+                .iter()
+                .filter(|(key, _)| key.starts_with("/ac/"))
+                .find_map(|(key, bytes)| {
+                    let result = ActionResult::decode(bytes).ok()?;
+                    let file = result
+                        .output_files
+                        .iter()
+                        .find(|file| file.path == "manifest.json")?;
+                    let manifest: serde_json::Value = serde_json::from_slice(
+                        state.blobs.get(&format!("/cas/{}", file.digest.hash))?,
+                    )
+                    .ok()?;
+                    manifest["entries"]
+                        .as_array()?
+                        .iter()
+                        .any(|entry| entry["path"] == path)
+                        .then(|| (key.clone(), result, manifest))
+                })
+                .expect("a final entry")
+        };
+        change(&mut manifest, self);
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        let digest = Digest::of(&bytes);
+        self.set_blob(&format!("/cas/{}", digest.hash), Some(bytes));
+        for file in &mut result.output_files {
+            if file.path == "manifest.json" {
+                file.digest = digest.clone();
+            }
+        }
+        self.set_blob(&key, Some(result.encode()));
     }
 
     fn set_blob(&self, path: &str, bytes: Option<Vec<u8>>) {
@@ -759,4 +804,139 @@ fn a_grpc_cache_serves_and_stores_repositories() {
     assert_eq!(Server::fetches(&f.server.take_log()), 0);
     assert_eq!(f.trees("b"), f.trees("a"));
     assert_eq!(f.out("b"), f.out("a"));
+}
+
+/// An untrusted entry whose pack chunk is a zstd bomb (a few bytes that
+/// decode to far more than the chunk claims): decoding stops at the claim,
+/// the repository is fetched.
+#[test]
+fn a_chunk_decoding_past_its_size_is_rejected() {
+    let f = Fixture::new();
+    let remote = f.remote();
+    let ws = f.workspace("ws-1", "one\n");
+    assert_success(&f.run(&ws, "c1", &[FLAG], &[&remote]));
+    f.server.rewrite_entry("lib/data.txt", |manifest, server| {
+        let bomb = ruzstd::encoding::compress_to_vec(
+            vec![0u8; 64 << 20].as_slice(),
+            ruzstd::encoding::CompressionLevel::Fastest,
+        );
+        let chunk = &mut manifest["chunks"][0];
+        chunk["sha256"] = sha256_hex(&bomb).into();
+        chunk["size"] = bomb.len().into();
+        server.set_blob(&format!("/cas/{}", sha256_hex(&bomb)), Some(bomb));
+    });
+    f.server.take_log();
+    let ws2 = f.workspace("ws-2", "one\n");
+    let output = f.run(
+        &ws2,
+        "c2",
+        &[FLAG],
+        &[&remote, "--noremote_upload_local_results"],
+    );
+    assert_success(&output);
+    assert_eq!(stats(&output), "hits=2 uploads=0");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("decodes to more than"), "{stderr}");
+    assert_eq!(Server::fetches(&f.server.take_log()), 1);
+    assert_eq!(f.trees("c2"), f.trees("c1"));
+}
+
+/// An untrusted entry with a link that escapes through another link of
+/// the tree (each lexically inside): rejected before anything is written.
+#[test]
+fn links_through_links_out_of_the_tree_are_rejected() {
+    let f = Fixture::new();
+    let remote = f.remote();
+    let ws = f.workspace("ws-1", "one\n");
+    assert_success(&f.run(&ws, "c1", &[FLAG], &[&remote]));
+    f.server.rewrite_entry("lib/data.txt", |manifest, _| {
+        let entries = manifest["entries"].as_array_mut().unwrap();
+        for dir in ["a", "a/b", "a/b/c", "a/b/c/d", "a/b/c/d/e"] {
+            entries.push(serde_json::json!({"path": dir, "directory": true, "mode": 493, "size": 0, "sha256": ""}));
+        }
+        for (path, target) in [
+            ("a/b/c/d/e/u", "../../../../.."),
+            ("a/b/c/d/e/t", "u/../../../../../etc/passwd"),
+        ] {
+            entries.push(serde_json::json!({"path": path, "directory": false, "mode": 0, "size": target.len(), "sha256": sha256_hex(target.as_bytes()), "symlink": target}));
+        }
+    });
+    f.server.take_log();
+    let ws2 = f.workspace("ws-2", "one\n");
+    let output = f.run(
+        &ws2,
+        "c2",
+        &[FLAG],
+        &[&remote, "--noremote_upload_local_results"],
+    );
+    assert_success(&output);
+    assert_eq!(stats(&output), "hits=2 uploads=0");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("a cached tree link leaves the repository"),
+        "{stderr}"
+    );
+    assert_eq!(Server::fetches(&f.server.take_log()), 1);
+    assert_eq!(f.trees("c2"), f.trees("c1"));
+}
+
+/// A read-only token (every upload refused) with the default
+/// `--remote_upload_local_results`: uploads stop after five failures, the
+/// hits go on.
+#[test]
+fn refused_uploads_never_stop_lookups() {
+    let f = Fixture::new();
+    let remote = f.remote();
+    // Six more reproducible repositories (the root module's mapping is part
+    // of every specification, so they are declared from the start).
+    let ws = f.workspace("ws-1", "one\n");
+    let url = f.server.url();
+    let mut module = fs::read_to_string(ws.join("MODULE.bazel")).unwrap();
+    let mut extra = String::new();
+    for index in 0..6 {
+        let bytes = format!("extra {index}\n");
+        f.server
+            .serve(&format!("extra{index}.txt"), bytes.as_bytes());
+        module.push_str(&format!(
+            "http_file(name = \"extra{index}\", urls = [\"{url}/files/extra{index}.txt\"], sha256 = \"{}\")\n",
+            sha256_hex(bytes.as_bytes())
+        ));
+        extra.push_str(&format!(", \"@extra{index}//file\""));
+    }
+    fs::write(ws.join("MODULE.bazel"), &module).unwrap();
+    let build = fs::read_to_string(ws.join("BUILD.bazel")).unwrap().replace(
+        "\"@abs_link//:value.txt\"]",
+        &format!("\"@abs_link//:value.txt\"{extra}]"),
+    );
+    fs::write(ws.join("BUILD.bazel"), &build).unwrap();
+    assert_success(&f.run(&ws, "c1", &[FLAG], &[&remote]));
+    // The extras' trees leave the cache; every upload is refused now.
+    for index in 0..6 {
+        let (chunk, _) = f
+            .server
+            .chunk_holding(format!("extra {index}\n").as_bytes());
+        f.server.set_blob(&chunk, None);
+    }
+    f.server.state.lock().unwrap().refuse_puts = true;
+    let ws2 = f.workspace("ws-2", "one\n");
+    fs::write(ws2.join("MODULE.bazel"), &module).unwrap();
+    fs::write(ws2.join("BUILD.bazel"), &build).unwrap();
+    f.server.take_log();
+    let output = f.run(&ws2, "c2", &[FLAG], &[&remote]);
+    assert_success(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stats(&output), "hits=3 uploads=0", "{stderr}");
+    assert_eq!(
+        stderr
+            .matches("WARNING: Failed to upload repo contents to remote cache for ")
+            .count(),
+        5,
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("its uploads stop for the rest of this command"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("its lookups stop"), "{stderr}");
+    assert_eq!(Server::fetches(&f.server.take_log()), 6);
 }

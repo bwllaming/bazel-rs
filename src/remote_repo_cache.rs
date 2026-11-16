@@ -38,6 +38,17 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// Salts every key: change it whenever entries written before may no
 /// longer be valid (RemoteRepoContentsCacheImpl.GUID's role).
 const GUID: &str = "bazel-rs-remote-repo-contents-v2-3c4f8a52-1d7e-4b9a-9e2f-6a0d5c8b7e41";
+
+/// The command's argument: [`GUID`] with the repository store's tree profile
+/// and manifest format, so bumping either (published trees may differ for
+/// the same specification) re-keys every entry.
+fn salt_prefix() -> String {
+    format!(
+        "{GUID}/{}/{}",
+        crate::repository_store::TREE_PROFILE,
+        crate::repository_store::TREE_MANIFEST_FORMAT
+    )
+}
 const MANIFEST: &str = "manifest.json";
 const RECORDED: &str = "recorded_inputs";
 const RUNTIME: &str = "runtime_inputs";
@@ -78,21 +89,32 @@ pub fn set_requested(requested: bool) {
 
 /// The configured cache when the option is on.
 fn cache() -> Option<&'static RemoteCache> {
-    (REQUESTED.load(Ordering::Relaxed) && !BROKEN.load(Ordering::Relaxed))
+    REQUESTED
+        .load(Ordering::Relaxed)
         .then(crate::remote_cache::active)
         .flatten()
+}
+
+/// The cache for lookups and downloads, unless they failed too often.
+fn reading() -> Option<&'static RemoteCache> {
+    cache().filter(|_| !LOOKUPS.broken.load(Ordering::Relaxed))
+}
+
+/// The cache for uploads, unless they failed too often.
+fn writing() -> Option<&'static RemoteCache> {
+    cache().filter(|_| !UPLOADS_FAILING.broken.load(Ordering::Relaxed))
 }
 
 /// Whether a repository fetch looks the cache up (`--remote_accept_cached`
 /// with a remote or disk cache, RemoteRepoContentsCacheImpl.buildContext).
 pub fn lookups() -> bool {
-    cache().is_some_and(RemoteCache::repo_contents_readable)
+    reading().is_some_and(RemoteCache::repo_contents_readable)
 }
 
 /// Whether a fetched eligible repository is uploaded
 /// (`--remote_upload_local_results` with a remote cache).
 pub fn uploads() -> bool {
-    cache().is_some_and(RemoteCache::repo_contents_writable)
+    writing().is_some_and(RemoteCache::repo_contents_writable)
 }
 
 /// One entry of a cached tree: a directory, a regular file (its SHA-256
@@ -153,7 +175,7 @@ pub struct Candidate {
 
 fn command() -> reapi::Command {
     reapi::Command {
-        arguments: vec![GUID.to_owned()],
+        arguments: vec![salt_prefix()],
         output_paths: vec![
             CONTENTS.to_owned(),
             MANIFEST.to_owned(),
@@ -187,33 +209,56 @@ fn sha256_hex(bytes: &[u8]) -> String {
     Digest::of(bytes).hash
 }
 
-/// Failures (lookups, transfers, uploads) after which the cache is off for
-/// the rest of the command: an unreachable cache warns a few times, not
-/// once per repository.
+/// Failures after which lookups (or uploads) stop for the rest of the
+/// command: an unreachable cache warns a few times, not once per
+/// repository. Counted apart: a read-only token whose uploads are refused
+/// (with the default `--remote_upload_local_results`) keeps its hits.
 const MAX_FAILURES: usize = 5;
-static FAILURES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-static BROKEN: AtomicBool = AtomicBool::new(false);
 
-/// A lookup or upload failure: a warning, never the command's failure
-/// (RepositoryFetchFunction.java:282-299 and addToCache's warnings); the
-/// repository is fetched instead.
+struct Failures {
+    count: std::sync::atomic::AtomicUsize,
+    broken: AtomicBool,
+    what: &'static str,
+}
+
+static LOOKUPS: Failures = Failures {
+    count: std::sync::atomic::AtomicUsize::new(0),
+    broken: AtomicBool::new(false),
+    what: "lookups",
+};
+static UPLOADS_FAILING: Failures = Failures {
+    count: std::sync::atomic::AtomicUsize::new(0),
+    broken: AtomicBool::new(false),
+    what: "uploads",
+};
+
+impl Failures {
+    fn note(&self, canonical: &str, what: &str, error: &str) {
+        let count = self.count.fetch_add(1, Ordering::Relaxed) + 1;
+        if count <= MAX_FAILURES {
+            crate::note!("WARNING: {what} for {canonical}: {error}");
+        }
+        if count == MAX_FAILURES {
+            self.broken.store(true, Ordering::Relaxed);
+            crate::note!(
+                "WARNING: The remote repo contents cache failed {MAX_FAILURES} times; its {} stop for the rest of this command",
+                self.what
+            );
+        }
+    }
+}
+
+/// A lookup or download failure: a warning, never the command's failure
+/// (RepositoryFetchFunction.java:282-299); the repository is fetched
+/// instead.
 pub fn warn(canonical: &str, what: &str, error: &str) {
-    let count = FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
-    if count <= MAX_FAILURES {
-        crate::note!("WARNING: {what} for {canonical}: {error}");
-    }
-    if count == MAX_FAILURES {
-        BROKEN.store(true, Ordering::Relaxed);
-        crate::note!(
-            "WARNING: The remote repo contents cache failed {MAX_FAILURES} times; it is not used for the rest of this command"
-        );
-    }
+    LOOKUPS.note(canonical, what, error);
 }
 
 /// The recorded-input digests of the final entries stored for
 /// `spec_key`, newest first. Empty on a miss; a failure warns.
 pub fn candidates(canonical: &str, spec_key: &str) -> Vec<String> {
-    let Some(cache) = cache().filter(|cache| cache.repo_contents_readable()) else {
+    let Some(cache) = reading().filter(|cache| cache.repo_contents_readable()) else {
         return Vec::new();
     };
     match intermediate_lines(cache, spec_key, true) {
@@ -280,7 +325,7 @@ fn intermediate_lines(
 /// `recorded_digest`, with its blobs (`None`: missing, malformed or
 /// incomplete; a failure warns).
 pub fn fetch(canonical: &str, spec_key: &str, recorded_digest: &str) -> Option<Candidate> {
-    let cache = cache()?;
+    let cache = reading()?;
     match fetch_final(cache, spec_key, recorded_digest) {
         Ok(candidate) => candidate,
         Err(error) => {
@@ -379,18 +424,41 @@ fn relative_ok(path: &str) -> bool {
                 .all(|part| !part.is_empty() && part != "." && part != ".." && part.len() <= 255))
 }
 
-/// Whether the link `target` of the entry `path` stays inside the tree
-/// (genuine's `safeForRemoteCache`: every symlink resolves within the
-/// repository).
-pub fn link_within(path: &str, target: &str) -> bool {
+/// Whether every link of a tree stays inside it (genuine's
+/// `safeForRemoteCache`: every symlink resolves within the repository).
+/// `links` maps each link's path to its target. A target is relative and
+/// normalized lexically from the link's directory; it never climbs above
+/// the root, and none of its intermediate components names a link of the
+/// tree (a link through another link — `t -> u/../..` with `u -> ../..` —
+/// would resolve where the lexical walk does not look). Its last component
+/// may be a link (a chain), which is checked as a link of its own.
+pub fn links_within(links: &std::collections::BTreeMap<&str, &str>) -> bool {
+    links
+        .iter()
+        .all(|(path, target)| link_within(path, target, links))
+}
+
+fn link_within(path: &str, target: &str, links: &std::collections::BTreeMap<&str, &str>) -> bool {
     if target.is_empty() || target.starts_with('/') || target.contains('\0') {
         return false;
     }
     let mut depth: Vec<&str> = path.split('/').collect();
     depth.pop();
-    for component in Path::new(target).components() {
+    let components: Vec<Component<'_>> = Path::new(target).components().collect();
+    for (index, component) in components.iter().enumerate() {
         match component {
-            Component::Normal(name) => depth.push(name.to_str().unwrap_or("")),
+            Component::Normal(name) => {
+                let Some(name) = name.to_str() else {
+                    return false;
+                };
+                depth.push(name);
+                let last = components[index + 1..]
+                    .iter()
+                    .all(|rest| matches!(rest, Component::CurDir));
+                if !last && links.contains_key(depth.join("/").as_str()) {
+                    return false;
+                }
+            }
             Component::CurDir => {}
             Component::ParentDir => {
                 if depth.pop().is_none() {
@@ -415,6 +483,13 @@ fn check_entries(entries: &[TreeEntry]) -> Result<(), String> {
     if !directories.contains("") {
         return Err("the cached tree has no root directory".into());
     }
+    let links: std::collections::BTreeMap<&str, &str> = entries
+        .iter()
+        .filter_map(|entry| Some((entry.path.as_str(), entry.symlink.as_deref()?)))
+        .collect();
+    if !links_within(&links) {
+        return Err("a cached tree link leaves the repository".into());
+    }
     let mut seen = std::collections::HashSet::new();
     for entry in entries {
         if !relative_ok(&entry.path) || !seen.insert(entry.path.as_str()) {
@@ -430,14 +505,10 @@ fn check_entries(entries: &[TreeEntry]) -> Result<(), String> {
             return Err(format!("invalid mode of cached tree path {:?}", entry.path));
         }
         match &entry.symlink {
-            Some(target) => {
-                if entry.directory || !link_within(&entry.path, target) {
-                    return Err(format!(
-                        "cached tree link {:?} leaves the repository",
-                        entry.path
-                    ));
-                }
+            Some(_) if entry.directory => {
+                return Err(format!("cached tree link {:?} is a directory", entry.path));
             }
+            Some(_) => {}
             None if !entry.directory
                 && (entry.sha256.len() != 64
                     || !entry.sha256.bytes().all(|b| b.is_ascii_hexdigit())) =>
@@ -457,7 +528,7 @@ fn check_entries(entries: &[TreeEntry]) -> Result<(), String> {
 /// missing; an error for a corrupt pack or a transport or write failure.
 pub fn download(candidate: &Candidate, root: &Path) -> Result<bool, String> {
     use std::os::unix::fs::PermissionsExt;
-    let cache = cache().ok_or("no remote cache")?;
+    let cache = reading().ok_or("no remote cache")?;
     for entry in candidate.entries.iter().filter(|entry| entry.directory) {
         if !entry.path.is_empty() {
             std::fs::create_dir(root.join(&entry.path))
@@ -491,13 +562,12 @@ pub fn download(candidate: &Candidate, root: &Path) -> Result<bool, String> {
                 Err(_) => return Err("the pack download stopped".into()),
             };
             DOWNLOADED_BYTES.fetch_add(compressed.len() as u64, Ordering::Relaxed);
-            let mut raw = Vec::with_capacity(chunk.raw as usize);
-            ruzstd::decoding::StreamingDecoder::new(compressed.as_slice())
-                .map_err(|error| format!("corrupt pack chunk {}: {error}", chunk.sha256))
-                .and_then(|mut decoder| {
-                    std::io::Read::read_to_end(&mut decoder, &mut raw)
-                        .map_err(|error| format!("corrupt pack chunk {}: {error}", chunk.sha256))
-                })?;
+            // A cancelled speculation gives up (its coordinator runs it).
+            if crate::repository_speculation::cancelled() {
+                return Ok(false);
+            }
+            let raw = decode_chunk(&compressed, chunk.raw)
+                .map_err(|error| format!("corrupt pack chunk {}: {error}", chunk.sha256))?;
             if raw.len() as u64 != chunk.raw {
                 return Err(format!("corrupt pack chunk {}", chunk.sha256));
             }
@@ -546,6 +616,25 @@ pub fn download(candidate: &Candidate, root: &Path) -> Result<bool, String> {
             .map_err(|error| format!("cannot set the mode of {}: {error}", entry.path))?;
     }
     Ok(true)
+}
+
+/// One chunk's zstd frame decoded, never past `raw` + 1 bytes: a small
+/// frame may claim to decode to gigabytes (an RLE block), so the decoder
+/// is bounded by what the manifest says the chunk holds (at most
+/// [`CHUNK`]) and anything longer is an error.
+fn decode_chunk(compressed: &[u8], raw: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let decoder =
+        ruzstd::decoding::StreamingDecoder::new(compressed).map_err(|error| error.to_string())?;
+    let mut bytes = Vec::with_capacity(raw.min(CHUNK as u64) as usize);
+    decoder
+        .take(raw + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > raw {
+        return Err(format!("it decodes to more than {raw} bytes"));
+    }
+    Ok(bytes)
 }
 
 /// The file of a pack being written: its remaining bytes and their
@@ -629,11 +718,11 @@ pub fn upload(
     recorded: &[u8],
     inputs: &[u8],
 ) {
-    let Some(cache) = cache().filter(|cache| cache.repo_contents_writable()) else {
+    let Some(cache) = writing().filter(|cache| cache.repo_contents_writable()) else {
         return;
     };
     if let Err(error) = store(cache, spec_key, tree, entries, recorded, inputs) {
-        warn(
+        UPLOADS_FAILING.note(
             canonical,
             "Failed to upload repo contents to remote cache",
             &error.to_string(),
@@ -827,14 +916,41 @@ mod tests {
 
     #[test]
     fn links_must_stay_inside_the_tree() {
-        assert!(link_within("a/b", "c"));
-        assert!(link_within("a/b", "../c"));
-        assert!(link_within("a/b/c", "../../d"));
-        assert!(!link_within("a/b", "../../c"));
-        assert!(!link_within("a", "../x"));
-        assert!(!link_within("a", "/abs"));
-        assert!(!link_within("a", ""));
-        assert!(link_within("a", "./b/../c"));
+        let one = |path: &str, target: &str| {
+            links_within(&std::collections::BTreeMap::from([(path, target)]))
+        };
+        assert!(one("a/b", "c"));
+        assert!(one("a/b", "../c"));
+        assert!(one("a/b/c", "../../d"));
+        assert!(!one("a/b", "../../c"));
+        assert!(!one("a", "../x"));
+        assert!(!one("a", "/abs"));
+        assert!(!one("a", ""));
+        assert!(one("a", "./b/../c"));
+        // Through another link of the tree: lexically inside, resolved outside.
+        let escape = std::collections::BTreeMap::from([
+            ("a/b/c/d/e/u", "../../../../.."),
+            ("a/b/c/d/e/t", "u/../../../../../etc/passwd"),
+        ]);
+        assert!(!links_within(&escape));
+        // A chain (the last component a link) is each link's own check.
+        let chain = std::collections::BTreeMap::from([("a/x", "y"), ("a/y", "../z")]);
+        assert!(links_within(&chain));
+        let through = std::collections::BTreeMap::from([("a/x", "y/f"), ("a/y", "../z")]);
+        assert!(!links_within(&through));
+    }
+
+    #[test]
+    fn chunks_decode_no_further_than_they_claim() {
+        let raw = vec![7u8; 1 << 20];
+        let frame = ruzstd::encoding::compress_to_vec(
+            raw.as_slice(),
+            ruzstd::encoding::CompressionLevel::Fastest,
+        );
+        assert_eq!(decode_chunk(&frame, raw.len() as u64).unwrap(), raw);
+        // A frame claiming 1 KiB that decodes to 1 MiB stops at 1 KiB + 1.
+        let error = decode_chunk(&frame, 1024).unwrap_err();
+        assert!(error.contains("more than 1024 bytes"), "{error}");
     }
 
     #[test]
@@ -867,6 +983,8 @@ mod tests {
         assert!(check_entries(&[dir(""), dir("..")]).is_err());
         assert!(check_entries(&[dir(""), link("l", "/etc/passwd")]).is_err());
         assert!(check_entries(&[dir(""), link("l", "../out")]).is_err());
+        // `u/..` is lexically inside but goes through the link `u`.
+        assert!(check_entries(&[dir(""), link("u", "."), link("t", "u/../x")]).is_err());
         let file = TreeEntry {
             directory: false,
             sha256: "x".into(),

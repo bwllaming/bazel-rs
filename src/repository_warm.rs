@@ -130,6 +130,27 @@ pub(crate) fn without_stage_probes(recorded: &[u8]) -> Option<Vec<u8>> {
     serde_json::to_vec(&probes).ok()
 }
 
+/// Whether recorded probes of a remote repository contents cache entry
+/// (crate::remote_repo_cache; untrusted bytes) have a form an upload can
+/// carry: version 2 or 4, no `trees` (store paths), no `workspace`, and no
+/// probe through `canonical`'s own label (`@@<canonical>//…`: its own tree,
+/// which only `stage:` names).
+pub(crate) fn remote_probes_acceptable(recorded: &[u8], canonical: &str) -> bool {
+    let Ok(probes) = serde_json::from_slice::<RecordedInputs>(recorded) else {
+        return false;
+    };
+    let own = format!("@@{canonical}//");
+    matches!(probes.version, 2 | 4)
+        && probes.trees.is_empty()
+        && probes.workspace.is_none()
+        && !probes
+            .templates
+            .iter()
+            .map(|probe| probe.source.as_str())
+            .chain(probes.files.iter().map(|probe| probe.path.as_str()))
+            .any(|path| path.starts_with(&own))
+}
+
 fn sha256(bytes: &[u8]) -> String {
     use sha2::Digest;
     format!("{:x}", sha2::Sha256::digest(bytes))
@@ -679,6 +700,28 @@ fn safe_child(root: &Path, relative: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn remote_probes_have_an_uploadable_form() {
+        let ok = |json: &str| super::remote_probes_acceptable(json.as_bytes(), "self");
+        assert!(ok(r#"{"version":2}"#));
+        assert!(ok(
+            r#"{"version":2,"files":[{"path":"@@other//x","kind":"file","state":"s"}]}"#
+        ));
+        assert!(ok(r#"{"version":4}"#));
+        assert!(!ok(r#"{"version":1}"#));
+        assert!(!ok(r#"{"version":3,"workspace":"/w"}"#));
+        assert!(!ok(r#"{"version":2,"workspace":"/w"}"#));
+        assert!(!ok(r#"{"version":4,"trees":[["a","direct/trees/x"]]}"#));
+        assert!(!ok(
+            r#"{"version":2,"files":[{"path":"@@self//x","kind":"file","state":"s"}]}"#
+        ));
+        assert!(!ok(
+            r#"{"version":2,"templates":[{"source":"@@self//t","sha256":"x"}]}"#
+        ));
+        assert!(!ok("not json"));
+    }
+
     use super::*;
 
     /// Keep-but-never-trust (review i20): probes of a version this binary

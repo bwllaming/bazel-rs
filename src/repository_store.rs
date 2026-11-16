@@ -32,6 +32,10 @@ use std::path::{Component, Path, PathBuf};
 const PROFILE: &str = "direct-file-template-v1";
 /// The manifest schema this binary writes and trusts (see [`Manifest`]).
 const MANIFEST_FORMAT: u32 = 1;
+/// [`PROFILE`] and [`MANIFEST_FORMAT`] for the remote repository contents
+/// cache's keys (crate::remote_repo_cache): a bump re-keys it.
+pub(crate) const TREE_PROFILE: &str = PROFILE;
+pub(crate) const TREE_MANIFEST_FORMAT: u32 = MANIFEST_FORMAT;
 const PATH_LIMIT: usize = 4096;
 const NAME_LIMIT: usize = 255;
 /// Bumped (v1 -> v2) when repository rules moved from private stages into
@@ -2365,6 +2369,9 @@ where
         return Ok((destination, Publication::Reused));
     }
     if let (Some((recorded, inputs)), Probe::Warm { validate, .. }) = (upload, &probe) {
+        // The slot is complete: other processes need not wait for the
+        // upload to take it.
+        drop(writer);
         upload_publication(
             stage_key,
             spec_key,
@@ -2406,8 +2413,11 @@ fn remote_hit(
             crate::remote_repo_cache::note_miss(stage_key, "incomplete entry");
             continue;
         };
-        // A workspace-dependent publication is never uploaded (nor taken).
-        if recorded_workspace(&candidate.recorded).is_some() {
+        // The entry is untrusted: only the probe forms an upload can carry
+        // (version 2 or 4, no `trees`, no `workspace`, nothing read through
+        // this repository's own label).
+        if !crate::repository_warm::remote_probes_acceptable(&candidate.recorded, stage_key) {
+            crate::remote_repo_cache::note_miss(stage_key, "unacceptable recorded inputs");
             continue;
         }
         let Some(outside) = crate::repository_warm::without_stage_probes(&candidate.recorded)
@@ -2424,7 +2434,10 @@ fn remote_hit(
             crate::remote_repo_cache::download(&candidate, slot)
         };
         match downloaded {
-            Ok(true) => {
+            // The whole record — with the probes of files inside the tree
+            // itself (`stage:`) — holds for the downloaded tree, as a warm
+            // reuse checks it; else a miss.
+            Ok(true) if validate(slot, &candidate.recorded).unwrap_or(false) => {
                 return Ok(Some(Executed {
                     inputs: candidate.inputs,
                     recorded: candidate.recorded,
@@ -2432,6 +2445,11 @@ fn remote_hit(
                     reproducible: true,
                 }));
             }
+            Ok(true) => crate::remote_repo_cache::warn(
+                stage_key,
+                "Remote repo contents cache lookup failed",
+                "the recorded inputs do not hold for the cached tree",
+            ),
             Ok(false) => crate::remote_repo_cache::note_miss(stage_key, "missing blob"),
             Err(error) => crate::remote_repo_cache::warn(
                 stage_key,
@@ -2471,12 +2489,13 @@ fn upload_publication(
     };
     if manifest.self_ref == Some(true)
         || !manifest.refs.is_empty()
-        || manifest.files.iter().any(|(path, entry)| {
-            entry
-                .symlink
-                .as_deref()
-                .is_some_and(|target| !crate::remote_repo_cache::link_within(path, target))
-        })
+        || !crate::remote_repo_cache::links_within(
+            &manifest
+                .files
+                .iter()
+                .filter_map(|(path, entry)| Some((path.as_str(), entry.symlink.as_deref()?)))
+                .collect(),
+        )
         || !validate(destination, recorded).unwrap_or(false)
     {
         return;
