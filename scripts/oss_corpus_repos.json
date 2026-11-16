@@ -27,6 +27,6 @@
     {"name": "examples-bzlmod-01", "lang": "C++", "git": "https://github.com/bazelbuild/examples", "commit": "efab5bd4660ebfe720bd52efaeeccefaf00ee4ad", "subdir": "bzlmod/01-depend_on_bazel_module"},
     {"name": "limdor-rust", "lang": "Rust", "git": "https://github.com/limdor/bazel-examples", "commit": "cd69be99aff93edf639460aad9fcbc50604b43f8", "subdir": "rust"},
     {"name": "limdor-cpp", "lang": "C++", "git": "https://github.com/limdor/bazel-examples", "commit": "cd69be99aff93edf639460aad9fcbc50604b43f8", "subdir": "cpp"},
-    {"name": "rules_zig", "lang": "Zig", "git": "https://github.com/hermeticbuild/rules_zig", "commit": "4c6543de82a4946bb54faed00c7ace2345f1293c", "comment_out": [{"file": ".bazelrc.common", "lines": ["--windows_enable_symlinks"], "workaround": "B2"}]}
+    {"name": "rules_zig", "lang": "Zig", "git": "https://github.com/hermeticbuild/rules_zig", "commit": "4c6543de82a4946bb54faed00c7ace2345f1293c", "comment_out": [{"file": ".bazelrc.common", "lines": ["--windows_enable_symlinks", "--noincompatible_disallow_empty_glob"], "workaround": "B2"}]}
   ]
 }
