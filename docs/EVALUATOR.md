@@ -4423,11 +4423,17 @@ What changed:
   job planned it) replays that planning's events where the turn plans
   it; a walk replayed once is not replayed again (its applications are
   memoized by then: nothing new); an application without recorded events
-  sends the rule to its turn (`track_fallbacks`).
+  sends the rule to its turn (`track_fallbacks`). A planning reaches the
+  table only when complete (it ended Ok and its job did not abort, miss a
+  read or meet an unready dependency: a trivial application can end Ok
+  with a miss still pending); `track_table_replays` counts the replays
+  from it. `BAZEL_RS_T3_TRACKED_ASPECT_JOBS=0` sends every aspect job to
+  its turn while tracking.
   `BAZEL_RS_T3_VERIFY_ASPECT_ACCESSES=1` prepares every such rule at its
   turn and compares (the lookups' first occurrences in order, the
   applications): clean on ~/code (22 jobs) and in
-  `eval_pass2::an_aspect_jobs_tracker_events_are_its_turns`. Deferred
+  `eval_pass2::an_aspect_jobs_tracker_events_are_its_turns` (at 2–16
+  workers, every run with applications replayed from the table). Deferred
   walk 7.2 → 5.7 s.
 - **Tree walks once.** A claim of a store tree inside a frame waits for
   another thread's walk of the same root instead of walking it too
@@ -4444,7 +4450,10 @@ What changed:
   left; nothing recorded after it reached the index before either), and
   the save's INDEX encoding waits for it (`BAZEL_RS_EVAL_SYNC_INDEX=1`
   makes it in place; `BAZEL_RS_SNAPSHOT_INDEX_DUMP` waits for it at the
-  end of planning). Top-level runfiles → `plan.tail.toplevel` 1.0 →
+  end of planning). The tracker left behind is marked taken: an index of
+  it (a second plan on the same engine) is an internal error. The graph's
+  interner stays with the linearizer's store until `linearize_all`'s
+  first linearization. Top-level runfiles → `plan.tail.toplevel` 1.0 →
   0.65 s, `plan.built` → `plan.end` 1.5 → 0.8 s.
   `BAZEL_RS_SNAPSHOT_DERIVE_DUMP=<file>` (hidden) dumps the DERIVE
   coverage.
