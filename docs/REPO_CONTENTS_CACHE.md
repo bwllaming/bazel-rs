@@ -154,9 +154,16 @@ server was idle `--repo_contents_cache_gc_idle_delay` (5m).
   therefore lists, newest first and at most 8, the SHA-256 of each stored
   record; each names a final entry (salt `final:<spec_key>:<sha256>`). A
   lookup tries them in order and takes the first whose probes hold now
-  (`repository_warm::unchanged`, the warm reuse's own check; probes of
-  files inside the tree itself, `stage:`, are decided by the tree's
-  verified contents) and whose blobs are all there.
+  (`repository_warm::unchanged`, the warm reuse's own check: before the
+  download without the probes of files inside the tree itself, `stage:`,
+  and after it the whole record against the downloaded tree) and whose
+  blobs are all there. Entries are untrusted input: the probes must have a
+  form an upload can carry (version 2 or 4, no `trees`, no `workspace`, no
+  probe through the repository's own `@@<name>//` label), and the manifest
+  must describe a writable tree (normal relative paths with listed
+  parents, no special mode bits, every link inside the tree — also through
+  the tree's other links: no intermediate component of a target may be a
+  link of the tree).
 * **Final entry**: output files `manifest.json` (every entry of the tree:
   path, directory/file/link, the mode the rule left before the store sealed
   it, size, SHA-256, link target; and the pack's chunks),
@@ -166,7 +173,10 @@ server was idle `--repo_contents_cache_gc_idle_delay` (5m).
   concatenated in manifest order, cut every 16 MiB and stored as zstd frames
   (one CAS blob each): one request per 16 MiB instead of one per file (a
   per-file layout needed 895k requests for ~/code, which latency makes
-  unusable over a WAN) and compressed. bazel-rs's GUID salts every key;
+  unusable over a WAN) and compressed. A chunk is decoded no further than
+  the size the manifest gives it (a small frame may claim gigabytes).
+  bazel-rs's GUID, with the store's tree profile and manifest format (a
+  bump of either re-keys the cache), salts every key;
   entries are never shared with genuine's (different keys and recorded
   inputs).
 * **Hit**: under the repository's slot writer lock, after the warm probes
@@ -180,20 +190,29 @@ server was idle `--repo_contents_cache_gc_idle_delay` (5m).
   re-probe that lets the analysis snapshot record the publication as a
   reuse. The lockfile, the hidden lockfile, stderr (with the action graph)
   and every tree identity are byte-identical to a real fetch (tests, and
-  ~/code below). A missing chunk falls back to the fetch silently; a
-  corrupt one, or any transfer failure, with a warning `Remote repo
-  contents cache lookup failed for <repo>: …`; after 5 failures the cache
-  is off for the rest of the command (no warning per repository when the
-  cache is down).
+  ~/code below). The analysis snapshot's recording is a superset of a real
+  fetch's: the candidate's probes are checked (through the recording
+  facade) before the download and again after it, besides the re-probe; a
+  later validation of the snapshot reads the same current values. A
+  missing chunk falls back to the fetch silently; a corrupt one, recorded
+  inputs that do not hold for the downloaded tree, or any transfer failure,
+  with a warning `Remote repo contents cache lookup failed for <repo>: …`;
+  after 5 such failures lookups stop for the rest of the command (no
+  warning per repository when the cache is down).
 * **Upload**: synchronous after the publication, like genuine's (its
   `TODO: Consider uploading asynchronously`); each file is verified against
-  the manifest as it is packed. Failures warn `Failed to upload repo
-  contents to remote cache for <repo>: …`.
-* **Concurrency**: lookups run wherever a repository is materialized —
-  the coordinator, repository speculation and extension speculation
-  workers — under the per-repository slot lock; transfers of different
-  repositories run in parallel (16 MiB chunks bound the memory of each:
-  one chunk downloads while the previous one is written).
+  the manifest as it is packed; the slot's writer lock is released first.
+  Failures warn `Failed to upload repo contents to remote cache for
+  <repo>: …`; after 5 of them uploads stop (counted apart from lookups: a
+  read-only token with the default `--remote_upload_local_results` keeps
+  its hits).
+* **Concurrency**: lookups run where a repository rule would execute
+  (`materialize_inner`): on the coordinator and on repository speculation
+  workers, under the per-repository slot writer lock. Extension
+  speculation and the reuse-only probes (`try_reuse_direct`) never reach
+  it. Transfers of different repositories run in parallel (16 MiB chunks
+  bound the memory of each: one chunk downloads while the previous one is
+  written); a cancelled speculation stops between chunks.
 * **Laziness**: none. Genuine keeps hit repositories in an overlay file
   system and downloads a file when it is read; bazel-rs's store publishes
   complete, sealed, verified trees, so a hit downloads the whole tree.
@@ -202,6 +221,19 @@ server was idle `--repo_contents_cache_gc_idle_delay` (5m).
   `=verbose` adds one `REMOTE-REPO-CACHE miss <repo>: <reason>` line per
   miss (`no entry`, `recorded inputs changed`, `incomplete entry`,
   `missing blob`).
+
+### Security
+
+With the option on, write access to the cache is write access to the
+contents of every reader's repositories: an entry is trusted like
+genuine's (its recorded inputs must hold and its blobs must match their
+digests, but nothing proves the tree is what the rule produces). Treat the
+cache's write credentials like push rights to the repository, and give
+readers that must not trust other writers a read-only token
+(`--noremote_upload_local_results`) or a separate cache. Uploads carry
+what the repository recorded: host paths of files it watched outside the
+workspace, the digests (not values) of watched environment variables, the
+digests of template sources, and the tree's bytes themselves.
 
 ### The local `--repo_contents_cache`
 
