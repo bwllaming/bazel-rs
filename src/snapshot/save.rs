@@ -313,8 +313,10 @@ impl Save {
             return Err("local repository replay records without pinned tables".to_owned());
         }
         let index = match &seed {
-            Some(seed) => Some(seed.index.clone()),
-            None => crate::snapshot::incremental::take_planned_index(),
+            Some(seed) => Some(crate::snapshot::incremental::PlannedIndex::Ready(Box::new(
+                seed.index.clone(),
+            ))),
+            None => crate::snapshot::incremental::take_planned(),
         };
         // An incremental save's plan was spliced: no derivation record.
         let derive = crate::snapshot::derive::take_planned()
@@ -512,7 +514,7 @@ impl Sections {
         records: Vec<crate::snapshot::replay::ReplayRecord>,
         tables: Option<crate::snapshot::replay::PinnedTables>,
         workspace_status: bool,
-        index: Option<crate::snapshot::incremental::Index>,
+        index: Option<crate::snapshot::incremental::PlannedIndex>,
         derive: Option<crate::snapshot::derive::Coverage>,
     ) -> Self {
         let replay_records = records.len();
@@ -584,9 +586,10 @@ impl Sections {
                 (encoded, started.elapsed().as_secs_f64() * 1000.0)
             })
         };
+        // (The index may still be being made: waited for here.)
         let index = index.map(|index| {
             timed(Box::new(move || {
-                crate::snapshot::incremental::encode_index(&index).ok()
+                crate::snapshot::incremental::encode_index(&index.wait()?).ok()
             }))
         });
         let derive = derive.map(|derive| {

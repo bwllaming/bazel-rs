@@ -1228,10 +1228,87 @@ impl Engine {
     /// requested labels), with the fingerprints of its main-repository
     /// packages; `None` without tracking.
     pub(super) fn incremental_index(&mut self, labels: &[Label]) -> Option<Index> {
+        let inputs = self.index_inputs();
         let tracker = self.incremental.as_mut()?;
+        Some(build_index(tracker, &self.packages, inputs, labels))
+    }
+
+    /// [`Self::incremental_index`] on a thread of its own (snapshot-miss2:
+    /// beside the end of planning and the save's start; the save's INDEX
+    /// encoding waits for it): the tracker moves there (an empty one is
+    /// left: nothing records into the index after this point), with the
+    /// loaded packages and what it reads of the repositories now.
+    pub(super) fn incremental_index_later(
+        &mut self,
+        labels: &[Label],
+    ) -> Option<std::thread::JoinHandle<Option<Index>>> {
+        self.incremental.as_ref()?;
+        let inputs = self.index_inputs();
+        let mut tracker = std::mem::take(&mut **self.incremental.as_mut()?);
+        let packages = self.packages.clone();
+        let labels = labels.to_vec();
+        Some(std::thread::spawn(move || {
+            Some(build_index(&mut tracker, &packages, inputs, &labels))
+        }))
+    }
+
+    /// What the index reads of the repositories and the configuration.
+    fn index_inputs(&self) -> IndexInputs {
+        let main_root = self
+            .repositories
+            .root("")
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let repository_inputs: Vec<_> = crate::observed_fs::repository_inputs()
+            .into_iter()
+            .map(|(path, tree, owner)| {
+                (crate::snapshot::incremental::PathBufWire(path), tree, owner)
+            })
+            .collect();
+        let repository_roots = {
+            let owners: BTreeSet<&str> = repository_inputs
+                .iter()
+                .filter_map(|(_, _, owner)| owner.as_deref())
+                .collect();
+            self.repositories
+                .materialized_roots()
+                .into_iter()
+                .filter(|(name, _)| owners.contains(name.as_str()))
+                .map(|(name, root)| (name, crate::snapshot::incremental::PathBufWire(root)))
+                .collect()
+        };
+        IndexInputs {
+            main_root,
+            repository_inputs,
+            repository_roots,
+            top: self.configurations.top().bytes(),
+        }
+    }
+}
+
+/// [`Engine::index_inputs`].
+pub(super) struct IndexInputs {
+    main_root: PathBuf,
+    repository_inputs: Vec<(
+        crate::snapshot::incremental::PathBufWire,
+        bool,
+        Option<String>,
+    )>,
+    repository_roots: Vec<(String, crate::snapshot::incremental::PathBufWire)>,
+    top: [u8; 32],
+}
+
+/// The incremental index of `tracker`'s records (docs/INCREMENTAL_ANALYSIS.md).
+fn build_index(
+    tracker: &mut Tracker,
+    all_packages: &BTreeMap<PackageId, Arc<Package>>,
+    inputs: IndexInputs,
+    labels: &[Label],
+) -> Index {
+    {
         // Every loaded package has a record (fingerprints of the main
         // repository's).
-        let loaded: Vec<PackageId> = self.packages.keys().cloned().collect();
+        let loaded: Vec<PackageId> = all_packages.keys().cloned().collect();
         for package in &loaded {
             tracker.package(package);
         }
@@ -1244,7 +1321,7 @@ impl Engine {
                 if !id.repository.is_empty() {
                     return None;
                 }
-                self.packages
+                all_packages
                     .get(id)
                     .map(|package| (index as u32, &**package))
             })
@@ -1284,17 +1361,12 @@ impl Engine {
         let mut label_accesses: Vec<(u32, u32, String)> =
             tracker.label_accesses.iter().cloned().collect();
         label_accesses.sort_unstable();
-        let main_root = self
-            .repositories
-            .root("")
-            .map(Path::to_path_buf)
-            .unwrap_or_default();
         let package_loads: Vec<(u32, Vec<Label>)> = tracker
             .packages
             .iter()
             .enumerate()
             .filter_map(|(index, record)| {
-                let package = self.packages.get(record.id.as_ref()?)?;
+                let package = all_packages.get(record.id.as_ref()?)?;
                 Some((index as u32, package.direct_loads.clone()))
             })
             .collect();
@@ -1305,30 +1377,13 @@ impl Engine {
             .filter(|(_, (_, config, _))| config.is_some())
             .map(|(index, (label, _, _))| (index as u32, label.clone()))
             .collect();
-        let graph = module_graph(&self.packages);
-        let rules = rule_modules(&self.packages, &keys);
-        let repository_inputs: Vec<_> = crate::observed_fs::repository_inputs()
-            .into_iter()
-            .map(|(path, tree, owner)| {
-                (crate::snapshot::incremental::PathBufWire(path), tree, owner)
-            })
-            .collect();
+        let graph = module_graph(all_packages);
+        let rules = rule_modules(all_packages, &keys);
         let mut index = Index {
-            main_root,
-            repository_inputs: repository_inputs.clone(),
-            repository_roots: {
-                let owners: BTreeSet<&str> = repository_inputs
-                    .iter()
-                    .filter_map(|(_, _, owner)| owner.as_deref())
-                    .collect();
-                self.repositories
-                    .materialized_roots()
-                    .into_iter()
-                    .filter(|(name, _)| owners.contains(name.as_str()))
-                    .map(|(name, root)| (name, crate::snapshot::incremental::PathBufWire(root)))
-                    .collect()
-            },
-            top: self.configurations.top().bytes(),
+            main_root: inputs.main_root,
+            repository_inputs: inputs.repository_inputs,
+            repository_roots: inputs.repository_roots,
+            top: inputs.top,
             labels: labels.to_vec(),
             keys: tracker
                 .keys
@@ -1379,9 +1434,11 @@ impl Engine {
             },
         };
         crate::snapshot::incremental::set_modules(&mut index, &graph, &package_loads, &rules);
-        Some(index)
+        index
     }
+}
 
+impl Engine {
     /// The `.bzl` load graph of every loaded package, and the modules
     /// definition loads entered (crate::snapshot::incremental::ModuleGraph).
     pub fn module_graph(&self) -> crate::snapshot::incremental::ModuleGraph {

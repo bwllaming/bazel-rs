@@ -6603,13 +6603,50 @@ impl Engine {
         // configuration (every run plan's is the top-level one today).
         let mut configurations: Vec<crate::request::ConfigurationSummary> = Vec::new();
         let mut configuration_index: BTreeMap<ConfigId, usize> = BTreeMap::new();
-        let mut run_plans = Vec::new();
+        let mut runs = Vec::new();
         for (label, plan) in plans {
-            if let Some(run) = self.planned_run(plan, &mut configurations, &mut configuration_index)
-            {
-                run_plans.push((label, run));
+            if plan.executable.is_some() {
+                let configuration = self.run_configuration(
+                    plan.config,
+                    &mut configurations,
+                    &mut configuration_index,
+                );
+                runs.push((label, plan, configuration));
             }
         }
+        // (Thousands of plans with their runfiles entries: in chunks on
+        // threads, in order.)
+        let run_plans: Vec<(Label, crate::request::PlannedRun)> = {
+            let threads = std::thread::available_parallelism()
+                .map(usize::from)
+                .unwrap_or(1)
+                .clamp(1, 8);
+            let chunk = runs.len().div_ceil(threads).max(64);
+            let mut chunks = Vec::new();
+            while !runs.is_empty() {
+                let rest = runs.split_off(chunk.min(runs.len()));
+                chunks.push(std::mem::replace(&mut runs, rest));
+            }
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = chunks
+                    .into_iter()
+                    .map(|chunk| {
+                        scope.spawn(move || {
+                            chunk
+                                .into_iter()
+                                .filter_map(|(label, plan, configuration)| {
+                                    Some((label, planned_run(plan, configuration)?))
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .flat_map(|handle| handle.join().expect("planned_run panicked"))
+                    .collect()
+            })
+        };
         // The build-info actions the plan kept (it prunes unreachable ones).
         let planned_ids: HashSet<&str> = nodes.iter().map(|node| node.action.id.as_str()).collect();
         let build_info = std::mem::take(&mut self.build_info_actions)
@@ -6672,9 +6709,28 @@ impl Engine {
         }
         crate::progress::analysis_report(spec.build, test_count);
         if self.tracking() {
-            let index = self.incremental_index(spec.build);
-            debug_dump_index(index.as_ref());
-            crate::snapshot::incremental::set_planned_index(index);
+            // (On a thread of its own: the save's INDEX encoding waits for
+            // it; `BAZEL_RS_EVAL_SYNC_INDEX=1` makes it here, as before.)
+            // snapshot-unrecorded: a diagnostics switch; the index is the same either way.
+            if std::env::var_os("BAZEL_RS_EVAL_SYNC_INDEX").is_some() {
+                let index = self.incremental_index(spec.build);
+                debug_dump_index(index.as_ref());
+                crate::snapshot::incremental::set_planned_index(index);
+            } else {
+                let pending = self.incremental_index_later(spec.build).map(|handle| {
+                    crate::snapshot::incremental::PlannedIndex::Pending(std::thread::spawn(
+                        move || {
+                            let index = match handle.join() {
+                                Ok(index) => index,
+                                Err(panic) => std::panic::resume_unwind(panic),
+                            };
+                            debug_dump_index(index.as_ref());
+                            index
+                        },
+                    ))
+                });
+                crate::snapshot::incremental::set_planned(pending);
+            }
         }
         if self.derive_recording {
             let coverage = self.derive_coverage(&request, spec.build, spec.trees);
@@ -6820,9 +6876,15 @@ impl Engine {
             };
             let mut plan = plan;
             plan.completion = ids.iter().cloned().collect();
-            let Some(run) =
-                self.planned_run(plan, &mut coverage.configurations, &mut configuration_index)
-            else {
+            if plan.executable.is_none() {
+                continue;
+            }
+            let configuration = self.run_configuration(
+                plan.config,
+                &mut coverage.configurations,
+                &mut configuration_index,
+            );
+            let Some(run) = planned_run(plan, configuration) else {
                 continue;
             };
             coverage.runs.push(crate::snapshot::derive::Run {
@@ -6842,75 +6904,84 @@ impl Engine {
     /// A run plan with its artifacts resolved ([`Self::plan_request`]), its
     /// configuration's summary added to `configurations` once; `None` for a
     /// plan without an executable (it runs nothing).
-    fn planned_run(
+    /// The index of `config`'s summary among a request's configurations
+    /// (added at its first run plan).
+    fn run_configuration(
         &self,
-        plan: RunPlan,
+        config: ConfigId,
         configurations: &mut Vec<crate::request::ConfigurationSummary>,
         configuration_index: &mut BTreeMap<ConfigId, usize>,
-    ) -> Option<crate::request::PlannedRun> {
-        let produced = |artifact: &Artifact| crate::request::Produced {
-            real: artifact.real.to_path_buf(),
-            producer: artifact.producer.clone(),
-        };
-        let executable = plan.executable.as_ref()?;
-        let configuration = match configuration_index.get(&plan.config) {
+    ) -> usize {
+        match configuration_index.get(&config) {
             Some(index) => *index,
             None => {
-                let native = &self.configurations.get(plan.config).native;
+                let native = &self.configurations.get(config).native;
                 configurations.push(crate::request::ConfigurationSummary {
-                    mnemonic: self.configurations.mnemonic(plan.config).to_owned(),
+                    mnemonic: self.configurations.mnemonic(config).to_owned(),
                     action_env: native.action_environment(),
                     test_env: native.test_environment(),
                 });
-                configuration_index.insert(plan.config, configurations.len() - 1);
+                configuration_index.insert(config, configurations.len() - 1);
                 configurations.len() - 1
             }
-        };
-        Some(crate::request::PlannedRun {
-            executable: produced(executable),
-            executable_exec: executable.exec.to_path_buf(),
-            executable_short_path: executable.file.short_path.clone(),
-            tree: plan.tree.as_ref().map(|tree| {
-                (
-                    produced(tree),
-                    crate::request::PlannedPath(tree.exec.to_path_buf()),
-                )
-            }),
-            entries: plan.entries.as_ref().map(|entries| {
-                entries
-                    .iter()
-                    .map(|(path, artifact)| (path.to_string(), artifact.as_ref().map(produced)))
-                    .collect()
-            }),
-            settings: plan.settings,
-            configuration,
-            completion: plan.completion,
-            coverage: plan.coverage.as_ref().map(|(coverage, inputs)| {
-                crate::request::PlannedCoverage {
-                    script: coverage
-                        .script
-                        .as_ref()
-                        .map(|file| file.path.clone())
-                        .unwrap_or_default(),
-                    inputs: inputs
-                        .iter()
-                        .map(|(exec, artifact)| (exec.clone(), produced(artifact)))
-                        .collect(),
-                    manifest_exec: coverage.manifest_exec.clone(),
-                    manifest: coverage.manifest.clone(),
-                    env: coverage.env.clone(),
-                    reported: coverage.reported.clone(),
-                    native_merger: coverage.native_merger,
-                    baselines: plan
-                        .baselines
-                        .iter()
-                        .map(|(exec, artifact)| (exec.clone(), produced(artifact)))
-                        .collect(),
-                }
-            }),
-        })
+        }
     }
+}
 
+/// A run plan as the planned request holds it (its configuration's index
+/// [`Engine::run_configuration`]); `None` without an executable.
+fn planned_run(plan: RunPlan, configuration: usize) -> Option<crate::request::PlannedRun> {
+    let produced = |artifact: &Artifact| crate::request::Produced {
+        real: artifact.real.to_path_buf(),
+        producer: artifact.producer.clone(),
+    };
+    let executable = plan.executable.as_ref()?;
+    Some(crate::request::PlannedRun {
+        executable: produced(executable),
+        executable_exec: executable.exec.to_path_buf(),
+        executable_short_path: executable.file.short_path.clone(),
+        tree: plan.tree.as_ref().map(|tree| {
+            (
+                produced(tree),
+                crate::request::PlannedPath(tree.exec.to_path_buf()),
+            )
+        }),
+        entries: plan.entries.as_ref().map(|entries| {
+            entries
+                .iter()
+                .map(|(path, artifact)| (path.to_string(), artifact.as_ref().map(produced)))
+                .collect()
+        }),
+        settings: plan.settings,
+        configuration,
+        completion: plan.completion,
+        coverage: plan.coverage.as_ref().map(|(coverage, inputs)| {
+            crate::request::PlannedCoverage {
+                script: coverage
+                    .script
+                    .as_ref()
+                    .map(|file| file.path.clone())
+                    .unwrap_or_default(),
+                inputs: inputs
+                    .iter()
+                    .map(|(exec, artifact)| (exec.clone(), produced(artifact)))
+                    .collect(),
+                manifest_exec: coverage.manifest_exec.clone(),
+                manifest: coverage.manifest.clone(),
+                env: coverage.env.clone(),
+                reported: coverage.reported.clone(),
+                native_merger: coverage.native_merger,
+                baselines: plan
+                    .baselines
+                    .iter()
+                    .map(|(exec, artifact)| (exec.clone(), produced(artifact)))
+                    .collect(),
+            }
+        }),
+    })
+}
+
+impl Engine {
     /// The build event plan (crate::bep::plan, docs/BEP.md) of the last
     /// planned build: each requested target's TargetConfigured data, its
     /// reported output groups (indices into `requested`) and the
@@ -12113,12 +12184,23 @@ impl Engine {
                 .collect();
             let mut initial_sets: Vec<BTreeSet<String>> = vec![BTreeSet::new(); slots.len()];
             let mut all_sets: Vec<BTreeSet<String>> = vec![BTreeSet::new(); slots.len()];
+            // (One action's files are mostly together: the same producer
+            // as the one before is noted already.)
+            let mut previous: Option<(usize, bool, &str)> = None;
             for (index, (owner, artifact)) in hidden.iter().enumerate() {
                 let slot = slot_of[*owner];
-                if index < initial_hidden {
+                let initial = index < initial_hidden;
+                let producer = artifact.producer.as_ref().map(|(id, _)| id.as_str());
+                if let Some(id) = producer
+                    && previous == Some((slot, initial, id))
+                {
+                    continue;
+                }
+                if initial {
                     derive_note(&mut initial_sets[slot], artifact);
                 }
                 derive_note(&mut all_sets[slot], artifact);
+                previous = producer.map(|id| (slot, initial, id));
             }
             let initial: HashMap<&Label, BTreeSet<String>> = slots
                 .iter()
@@ -12199,6 +12281,7 @@ impl Engine {
             // (Each pair once: one action produces many files.)
             let mut seen: crate::fast_hash::FxHashSet<(Option<usize>, &str)> =
                 crate::fast_hash::FxHashSet::default();
+            let mut previous: Option<(Option<usize>, &str)> = None;
             let demand = hidden
                 .iter()
                 .filter_map(|(owner, artifact)| {
@@ -12208,6 +12291,12 @@ impl Engine {
                     } else {
                         Some(positions.get(&owners.keys[*owner].label).copied()?)
                     };
+                    // (The pair before is most often the same: one
+                    // action's files are mostly together.)
+                    if previous == Some((position, id.as_str())) {
+                        return None;
+                    }
+                    previous = Some((position, id.as_str()));
                     seen.insert((position, id.as_str()))
                         .then(|| (position, id.clone()))
                 })

@@ -743,8 +743,11 @@ pub struct Recorder {
     /// The roots being walked for [`Self::walked`] now (snapshot-miss2: a
     /// claim of one waits for that walk instead of walking it too; dozens
     /// of probes claim the same large tree at once).
-    walking: Mutex<HashMap<PathBuf, Arc<(Mutex<bool>, std::sync::Condvar)>>>,
+    walking: Mutex<HashMap<PathBuf, Arc<WalkDone>>>,
 }
+
+/// A walk in progress ([`Recorder::walked`]): done, and its waiters.
+type WalkDone = (Mutex<bool>, std::sync::Condvar);
 
 /// Everything one window recorded, sorted (paths in byte order).
 #[derive(Clone, Debug, Default)]

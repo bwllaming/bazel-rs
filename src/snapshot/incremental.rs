@@ -588,17 +588,47 @@ pub fn decode_index(stored: Vec<u8>) -> Result<Index, String> {
 
 /// The index the last planned build recorded, for the save
 /// (crate::snapshot::save takes it).
-static PLANNED_INDEX: std::sync::Mutex<Option<Index>> = std::sync::Mutex::new(None);
+static PLANNED_INDEX: std::sync::Mutex<Option<PlannedIndex>> = std::sync::Mutex::new(None);
+
+/// The index of the planned build: made, or being made on a thread of its
+/// own (snapshot-miss2: beside the end of planning and the save's start).
+pub enum PlannedIndex {
+    Ready(Box<Index>),
+    Pending(std::thread::JoinHandle<Option<Index>>),
+}
+
+impl PlannedIndex {
+    /// The index, once made (a panic making it is raised here).
+    pub fn wait(self) -> Option<Index> {
+        match self {
+            Self::Ready(index) => Some(*index),
+            Self::Pending(handle) => match handle.join() {
+                Ok(index) => index,
+                Err(panic) => std::panic::resume_unwind(panic),
+            },
+        }
+    }
+}
 
 /// Keep `index` for the save of this command.
 pub fn set_planned_index(index: Option<Index>) {
+    set_planned(index.map(|index| PlannedIndex::Ready(Box::new(index))));
+}
+
+/// Keep `index` (made or being made) for the save of this command.
+pub fn set_planned(index: Option<PlannedIndex>) {
     *PLANNED_INDEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = index;
 }
 
-/// The index the save writes (taken once).
+/// The index the save writes (taken once; waited for).
 pub fn take_planned_index() -> Option<Index> {
+    take_planned().and_then(PlannedIndex::wait)
+}
+
+/// [`take_planned_index`], not waited for.
+pub fn take_planned() -> Option<PlannedIndex> {
     PLANNED_INDEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
