@@ -1,0 +1,127 @@
+{
+ "schema": "tree-relative-path-reference-receipt/v1",
+ "fixture": "tree_relative_path",
+ "purpose": "File.tree_relative_path (starlarkbuildapi/FileApi.java:133-143): on a tree artifact's expanded file (Artifact.TreeFileArtifact.getTreeRelativePathString, actions/Artifact.java:1148-1150) the path below the tree, as an expanded directory's files reach an Args map_each (add_all/add_joined) or DirectoryExpander.expand; on any other File (a source file, the tree itself) reading it is `tree_relative_path not allowed for files that are not tree artifact files.` (Artifact.java:549-552), getattr with a default included (Starlark.getattr calls the field, Starlark.java:985-992); the field is listed by dir() and hasattr() on every File. The expanded files' path/short_path/basename/dirname/extension/is_*/owner/root/repr/str are captured too. Motivation: bazel-rs 0.4.25 building //src/beyondwork.ai/bworker/cmd/monolith:image_push on ~/code failed `image_push_index#1: ... map_each failed: ... 'File' value has no field or method 'tree_relative_path' --> @@rules_oci+//oci/private:image_index.bzl:97:44`.",
+ "reference": {
+  "binary": "bazel-9.3.1-linux-x86_64",
+  "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "<command> --noshow_progress --color=no --curses=no --show_result=1000 <targets>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; one fresh copy of the fixture workspace per case (the genuine platforms 1.0.0 module extracted into `platforms` from tests/fixtures/label_repo_name/platforms_archive.json)"
+ },
+ "native": {
+  "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <targets>"
+ },
+ "script": {
+  "path": "/tmp/opencode/w/trp-capture.py (not committed)",
+  "sha256": "72916c6b130d5b78495fd8bd525673a35c26b8b2ade3d2e1851d08db95580527"
+ },
+ "fixture_files_sha256": {
+  "MODULE.bazel": "f08de71c75e9d16958ee6edd4e02e51be1eab021189558787d37773bdc34ef68",
+  "pkg/BUILD.bazel": "8b21514c350d07f63f5a45562636621aa655f0c5b7a5fcc34059503986760095",
+  "pkg/defs.bzl": "7eaea0afb9a76bcab9b024e1ce8be0acf08b6d0de560caabd963cb368c2ecc32",
+  "pkg/plain.txt": "dacf36547c7774a0a170806363b5d412991fbc0d6260b2c00b1d3a80a816c23f"
+ },
+ "normalization": "<WS> = the case's workspace copy; elapsed times <T>. Outputs are the top-level outputs (genuine --show_result lines, bazel-bin = bazel-out/k8-fastbuild/bin) as [mode, contents].",
+ "comparison (tests/tree_relative_path.rs, live)": "MATCH: success equal; WARNING lines equal; a failing case's message contained; the top-level outputs (the spawn's expanded command line, the parameter file, the hasattr/dir facts) equal. DECLARED_DIVERGENCE: native fails with the recorded message.",
+ "cases": {
+  "probe": {
+   "argv": [
+    "build",
+    "//pkg:probe"
+   ],
+   "genuine": {
+    "exit": 0,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:probe (5 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:probe up-to-date:\n  bazel-bin/pkg/probe_args.txt\n  bazel-bin/pkg/probe_params.txt\n  bazel-bin/pkg/probe_facts.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 5 processes: 3 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 5 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/probe_args.txt": [
+      "0o555",
+      "--blob=a.txt\n--blob=sub/b.json\n--blob=sub/deep/c\n--joined\n--blob=a.txt,--blob=sub/b.json,--blob=sub/deep/c\na.txt|bazel-out/k8-fastbuild/bin/pkg/tree/a.txt|pkg/tree/a.txt|a.txt|bazel-out/k8-fastbuild/bin/pkg/tree|txt|False|False|False|@@//pkg:tree|bazel-out/k8-fastbuild/bin|True|True|<generated file pkg/tree/a.txt>|<generated file pkg/tree/a.txt>\nsub/b.json|bazel-out/k8-fastbuild/bin/pkg/tree/sub/b.json|pkg/tree/sub/b.json|b.json|bazel-out/k8-fastbuild/bin/pkg/tree/sub|json|False|False|False|@@//pkg:tree|bazel-out/k8-fastbuild/bin|True|True|<generated file pkg/tree/sub/b.json>|<generated file pkg/tree/sub/b.json>\nsub/deep/c|bazel-out/k8-fastbuild/bin/pkg/tree/sub/deep/c|pkg/tree/sub/deep/c|c|bazel-out/k8-fastbuild/bin/pkg/tree/sub/deep||False|False|False|@@//pkg:tree|bazel-out/k8-fastbuild/bin|True|True|<generated file pkg/tree/sub/deep/c>|<generated file pkg/tree/sub/deep/c>\nbasename,dirname,extension,is_directory,is_source,is_symlink,owner,path,root,short_path,tree_relative_path\nbasename,dirname,extension,is_directory,is_source,is_symlink,owner,path,root,short_path,tree_relative_path\nbasename,dirname,extension,is_directory,is_source,is_symlink,owner,path,root,short_path,tree_relative_path\na.txt=a.txt\nb.json=sub/b.json\nc=sub/deep/c\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/probe_params.txt": [
+      "0o555",
+      "'--blob=a.txt'\n'--blob=sub/b.json'\n'--blob=sub/deep/c'\n--joined\n'--blob=a.txt,--blob=sub/b.json,--blob=sub/deep/c'\n'a.txt|bazel-out/k8-fastbuild/bin/pkg/tree/a.txt|pkg/tree/a.txt|a.txt|bazel-out/k8-fastbuild/bin/pkg/tree|txt|False|False|False|@@//pkg:tree|bazel-out/k8-fastbuild/bin|True|True|<generated file pkg/tree/a.txt>|<generated file pkg/tree/a.txt>'\n'sub/b.json|bazel-out/k8-fastbuild/bin/pkg/tree/sub/b.json|pkg/tree/sub/b.json|b.json|bazel-out/k8-fastbuild/bin/pkg/tree/sub|json|False|False|False|@@//pkg:tree|bazel-out/k8-fastbuild/bin|True|True|<generated file pkg/tree/sub/b.json>|<generated file pkg/tree/sub/b.json>'\n'sub/deep/c|bazel-out/k8-fastbuild/bin/pkg/tree/sub/deep/c|pkg/tree/sub/deep/c|c|bazel-out/k8-fastbuild/bin/pkg/tree/sub/deep||False|False|False|@@//pkg:tree|bazel-out/k8-fastbuild/bin|True|True|<generated file pkg/tree/sub/deep/c>|<generated file pkg/tree/sub/deep/c>'\nbasename,dirname,extension,is_directory,is_source,is_symlink,owner,path,root,short_path,tree_relative_path\nbasename,dirname,extension,is_directory,is_source,is_symlink,owner,path,root,short_path,tree_relative_path\nbasename,dirname,extension,is_directory,is_source,is_symlink,owner,path,root,short_path,tree_relative_path\n'a.txt=a.txt'\n'b.json=sub/b.json'\n'c=sub/deep/c'\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/probe_facts.txt": [
+      "0o555",
+      "True\nTrue\nbasename,dirname,extension,is_directory,is_source,is_symlink,owner,path,root,short_path,tree_relative_path\nTrue\nbasename,dirname,extension,is_directory,is_source,is_symlink,owner,path,root,short_path,tree_relative_path\n"
+     ]
+    }
+   },
+   "verdict": "MATCH"
+  },
+  "bad_analysis_plain": {
+   "argv": [
+    "build",
+    "//pkg:bad_analysis_plain"
+   ],
+   "genuine": {
+    "exit": 1,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:12:8: in bad rule //pkg:bad_analysis_plain: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 92, column 23, in _bad_impl\n\t\targs.add(plain.tree_relative_path)\nError: tree_relative_path not allowed for files that are not tree artifact files.\nERROR: <WS>/pkg/BUILD.bazel:12:8: Analysis of target '//pkg:bad_analysis_plain' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_analysis_plain' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "verdict": "MATCH",
+   "expected_message": "tree_relative_path not allowed for files that are not tree artifact files."
+  },
+  "bad_analysis_tree": {
+   "argv": [
+    "build",
+    "//pkg:bad_analysis_tree"
+   ],
+   "genuine": {
+    "exit": 1,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:12:8: in bad rule //pkg:bad_analysis_tree: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 94, column 22, in _bad_impl\n\t\targs.add(tree.tree_relative_path)\nError: tree_relative_path not allowed for files that are not tree artifact files.\nERROR: <WS>/pkg/BUILD.bazel:12:8: Analysis of target '//pkg:bad_analysis_tree' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_analysis_tree' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "verdict": "MATCH",
+   "expected_message": "tree_relative_path not allowed for files that are not tree artifact files."
+  },
+  "bad_getattr_default": {
+   "argv": [
+    "build",
+    "//pkg:bad_getattr_default"
+   ],
+   "genuine": {
+    "exit": 1,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:12:8: in bad rule //pkg:bad_getattr_default: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 96, column 25, in _bad_impl\n\t\targs.add(getattr(plain, \"tree_relative_path\", \"default\"))\nError in getattr: tree_relative_path not allowed for files that are not tree artifact files.\nERROR: <WS>/pkg/BUILD.bazel:12:8: Analysis of target '//pkg:bad_getattr_default' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_getattr_default' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "verdict": "MATCH",
+   "expected_message": "tree_relative_path not allowed for files that are not tree artifact files."
+  },
+  "bad_map_each_plain": {
+   "argv": [
+    "build",
+    "//pkg:bad_map_each_plain"
+   ],
+   "genuine": {
+    "exit": 1,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:bad_map_each_plain (5 packages loaded, 9 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:12:8: Bad pkg/bad_map_each_plain.txt failed: \n\n<WS>/pkg/defs.bzl:98:21: Traceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 19, column 35, in _blob\n\t\treturn \"--blob={}\".format(file.tree_relative_path)\nError: tree_relative_path not allowed for files that are not tree artifact files.\nTarget //pkg:bad_map_each_plain failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 2 internal, 1 processwrapper-sandbox.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "verdict": "DECLARED_DIVERGENCE",
+   "native_message": "tree_relative_path not allowed for files that are not tree artifact files.",
+   "divergence": "Genuine fails the action at execution (map_each over a non-directory value runs when the command line expands); the native profile maps non-directory values at analysis time (docs/ACTIONS_PARAMS.md), so the same Starlark error fails the target's analysis."
+  },
+  "bad_map_each_unexpanded": {
+   "argv": [
+    "build",
+    "//pkg:bad_map_each_unexpanded"
+   ],
+   "genuine": {
+    "exit": 1,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:bad_map_each_unexpanded (5 packages loaded, 9 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:12:8: Bad pkg/bad_map_each_unexpanded.txt failed: \n\n<WS>/pkg/defs.bzl:100:21: Traceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 19, column 35, in _blob\n\t\treturn \"--blob={}\".format(file.tree_relative_path)\nError: tree_relative_path not allowed for files that are not tree artifact files.\nTarget //pkg:bad_map_each_unexpanded failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 2 internal, 1 processwrapper-sandbox.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "verdict": "DECLARED_DIVERGENCE",
+   "native_message": "tree_relative_path not allowed for files that are not tree artifact files.",
+   "divergence": "Genuine fails the action at execution (map_each over a non-directory value runs when the command line expands); the native profile maps non-directory values at analysis time (docs/ACTIONS_PARAMS.md), so the same Starlark error fails the target's analysis."
+  }
+ }
+}

@@ -96,7 +96,13 @@ Citations are to the pinned Bazel source
   Non-directory values keep the existing eager mapping. An expanded directory
   that is not an action input fails when the action executes with Bazel's
   `Action %{output} failed: Failed to expand directory ...` text (the action's
-  progress message prefixes it). `Args.add(directory)` fails
+  progress message prefixes it). An expanded directory's files (map_each,
+  `DirectoryExpander.expand`) carry `File.tree_relative_path`, their path
+  below the tree (`TreeFileArtifact`, `Artifact.java:1148-1150`); on any
+  other File the field is listed by `dir()`/`hasattr()` but reading it —
+  `getattr` with a default too — is Bazel's `tree_relative_path not allowed
+  for files that are not tree artifact files.` (paired capture
+  `tests/fixtures/tree_relative_path`; rules_oci's `oci_image_index`). `Args.add(directory)` fails
   with Bazel's `Cannot add directories to Args#add ...` (`Args.java:534-541`).
   Written Args expand their directories too (the directories become inputs of
   the write).

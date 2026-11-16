@@ -36,6 +36,13 @@ mod owned {
     )]
     pub struct File(pub(super) Arc<FileData>);
 
+    /// A tree artifact's expanded file ([`super::file_of`]).
+    #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+    pub struct TreeFile {
+        pub file: File,
+        pub relative: String,
+    }
+
     /// The fields of a [`File`].
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Allocative, StarlarkPagable)]
     pub struct FileData {
@@ -819,7 +826,21 @@ impl<'v> StarlarkValue<'v> for File {
     }
 
     fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
-        Ok(Self::from_value(other) == Some(self))
+        Ok(file_of(other) == Some(self))
+    }
+
+    /// FileApi.getTreeRelativePathString is a field of every File
+    /// (starlarkbuildapi/FileApi.java:133-143): listed and `hasattr`-true,
+    /// but reading it fails unless the File is a tree artifact's expanded
+    /// file ([`TreeFile`]; Artifact.java:549-552).
+    fn has_attr(&self, name: &str, heap: Heap<'v>) -> bool {
+        name == "tree_relative_path" || self.get_attr(name, heap).is_some()
+    }
+
+    fn unknown_attribute_message(&self, name: &str) -> Option<String> {
+        (name == "tree_relative_path").then(|| {
+            "tree_relative_path not allowed for files that are not tree artifact files.".to_owned()
+        })
     }
 
     fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
@@ -875,9 +896,59 @@ impl<'v> StarlarkValue<'v> for File {
             "is_symlink",
             "owner",
             "root",
+            "tree_relative_path",
         ]
         .map(String::from)
         .to_vec()
+    }
+}
+
+/// The File of `value`: a File, or a tree artifact's expanded file.
+pub(crate) fn file_of<'v>(value: Value<'v>) -> Option<&'v File> {
+    File::from_value(value).or_else(|| TreeFile::from_value(value).map(|tree| &tree.file))
+}
+
+/// A tree artifact's expanded file (Artifact.TreeFileArtifact,
+/// actions/Artifact.java:1100-1150), as an expanded directory's file is
+/// passed to an Args map_each (or returned by DirectoryExpander.expand): a
+/// File with its path below the tree as `tree_relative_path`
+/// (getTreeRelativePathString, :1148-1150).
+pub(crate) use owned::TreeFile;
+
+starlark_simple_value!(TreeFile);
+
+impl fmt::Display for TreeFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.file.fmt(f)
+    }
+}
+
+#[starlark_value(type = "File")]
+impl<'v> StarlarkValue<'v> for TreeFile {
+    fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
+        self.file.write_hash(hasher)
+    }
+
+    fn compare(&self, other: Value<'v>) -> starlark::Result<std::cmp::Ordering> {
+        match file_of(other) {
+            Some(other) => Ok(self.file.path.cmp(&other.path)),
+            None => starlark::values::ValueError::unsupported_with(self, "compare", other),
+        }
+    }
+
+    fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+        Ok(file_of(other) == Some(&self.file))
+    }
+
+    fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
+        match name {
+            "tree_relative_path" => Some(heap.alloc(self.relative.as_str())),
+            _ => self.file.get_attr(name, heap),
+        }
+    }
+
+    fn dir_attr(&self) -> Vec<String> {
+        self.file.dir_attr()
     }
 }
 

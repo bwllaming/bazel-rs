@@ -244,6 +244,12 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
         match a.get_attr(attr, heap)? {
             Some(v) => Ok(v),
             None => match default {
+                // Modified: a field that exists but fails to read fails
+                // getattr too (Starlark.getattr calls the field,
+                // net/starlark/java/eval/Starlark.java:985-992), e.g.
+                // File.tree_relative_path on a File that is not a tree
+                // artifact's expanded file.
+                Some(_) if a.has_attr(attr, heap) => Err(a.unknown_attr_error(attr)),
                 Some(x) => Ok(x),
                 // Modified: a value-specific message
                 // (StarlarkValue::unknown_attribute_message), as Bazel's

@@ -1,0 +1,26 @@
+load(":defs.bzl", "bad", "probe", "tree")
+
+tree(name = "tree")
+
+probe(
+    name = "probe",
+    plain = "plain.txt",
+    tree = ":tree",
+)
+
+[
+    bad(
+        name = "bad_" + mode,
+        mode = mode,
+        plain = "plain.txt",
+        tags = ["manual"],
+        tree = ":tree",
+    )
+    for mode in [
+        "analysis_plain",
+        "analysis_tree",
+        "getattr_default",
+        "map_each_plain",
+        "map_each_unexpanded",
+    ]
+]
