@@ -295,3 +295,112 @@ fn load_time_mapping_entries_are_part_of_the_specification() {
     f.run(&ws2, "c");
     assert_eq!(f.executions(), ["a", "b", "d", "r"]);
 }
+
+/// Rules whose runs resolve `@bar` without calling `Label()` from a `.bzl`
+/// frame: `Label.relative` and `sorted(key = Label)` (called from native
+/// code). Each run's lookup is recorded, so remapping `@bar` re-executes
+/// exactly the rules that resolved it.
+const NATIVE_RULES: &str = r#"def _log(ctx):
+    ctx.execute(["sh", "-c", "echo %s >> %s" % (ctx.original_name, ctx.attr.log)])
+
+def _rec(ctx):
+    _log(ctx)
+    ctx.file("BUILD.bazel", "exports_files(['value.txt'])\n")
+    ctx.file("value.txt", ctx.attr.value + "\n")
+
+rec = repository_rule(_rec, attrs = {"value": attr.string(), "log": attr.string()})
+
+def _relative(ctx):
+    _log(ctx)
+    ctx.file("BUILD.bazel", "exports_files(['value.txt'])\n")
+    ctx.file("value.txt", str(Label("//:x").relative("@bar//:t")) + "\n")
+
+relative = repository_rule(_relative, attrs = {"log": attr.string()})
+
+def _sorter(ctx):
+    _log(ctx)
+    ctx.file("BUILD.bazel", "exports_files(['value.txt'])\n")
+    ctx.file("value.txt", str(sorted(["@bar//:a"], key = Label)) + "\n")
+
+sorter = repository_rule(_sorter, attrs = {"log": attr.string()})
+
+def _gen(mctx):
+    log = mctx.modules[0].tags.log[0].path
+    rec(name = "a", value = "A", log = log)
+    rec(name = "b", value = "B", log = log)
+    relative(name = "rel", log = log)
+    sorter(name = "sorted", log = log)
+
+gen = module_extension(_gen, tag_classes = {"log": tag_class(attrs = {"path": attr.string()})})
+"#;
+
+impl Fixture {
+    /// A workspace of [`NATIVE_RULES`] (`rules` prepended to them).
+    fn native_workspace(&self, name: &str, rules: &str, bar: &str) -> PathBuf {
+        let ws = self.workspace(name, "", bar);
+        let log = self.log();
+        fs::write(
+            ws.join("MODULE.bazel"),
+            format!(
+                r#"module(name = "mk")
+gen = use_extension("//:rules.bzl", "gen")
+gen.log(path = "{log}")
+use_repo(gen, "a", "b", "rel", "sorted", bar = "{bar}")
+"#,
+                log = log.display()
+            ),
+        )
+        .unwrap();
+        fs::write(ws.join("rules.bzl"), format!("{rules}{NATIVE_RULES}")).unwrap();
+        fs::write(
+            ws.join("BUILD.bazel"),
+            "genrule(name = \"use\", srcs = [\"@rel//:value.txt\", \"@sorted//:value.txt\"], outs = [\"out.txt\"], cmd = \"cat $(SRCS) > $@\")\n",
+        )
+        .unwrap();
+        ws
+    }
+}
+
+#[test]
+fn relative_and_native_label_lookups_are_recorded() {
+    let f = Fixture::new();
+    let ws1 = f.native_workspace("ws1", "", "a");
+    f.run(&ws1, "c");
+    assert_eq!(f.executions(), ["rel", "sorted"]);
+    // sorted() keeps the strings; its key resolved `@bar` all the same.
+    assert_eq!(f.out("c", &ws1), "@@+gen+a//:t\n[\"@bar//:a\"]\n");
+    // Remapped: both rules run again (and see the new repository), nothing
+    // else does.
+    let ws2 = f.native_workspace("ws2", "", "b");
+    f.run(&ws2, "c");
+    assert_eq!(f.executions(), ["rel", "sorted"]);
+    assert_eq!(f.out("c", &ws2), "@@+gen+b//:t\n[\"@bar//:a\"]\n");
+}
+
+/// A top-level `Label.relative` with an apparent name is part of the
+/// definition's key (every rule of the file runs again when it is
+/// remapped) but, like in Bazel, never part of the extension's lockfile
+/// entry.
+#[test]
+fn load_time_relative_lookups_key_the_definition_not_the_lockfile() {
+    let f = Fixture::new();
+    let top = "_PINNED = Label(\"//:x\").relative(\"@bar//:t\")\n";
+    let ws1 = f.native_workspace("ws1", top, "a");
+    f.run(&ws1, "c");
+    assert_eq!(f.executions(), ["rel", "sorted"]);
+    let lockfile: serde_json::Value =
+        serde_json::from_slice(&fs::read(ws1.join("MODULE.bazel.lock")).unwrap()).unwrap();
+    let text = lockfile["moduleExtensions"].to_string();
+    assert!(!text.contains("\"bar\""), "{text}");
+    let ws2 = f.native_workspace("ws2", top, "b");
+    f.run(&ws2, "c");
+    assert_eq!(f.executions(), ["rel", "sorted"]);
+    // Without the top-level lookup the same remap re-runs only the rules
+    // that resolve `@bar` while they run (the others' keys hold).
+    let ws3 = f.native_workspace("ws3", "", "a");
+    f.run(&ws3, "c");
+    f.executions();
+    let ws4 = f.native_workspace("ws4", "", "b");
+    f.run(&ws4, "c");
+    assert_eq!(f.executions(), ["rel", "sorted"]);
+}
