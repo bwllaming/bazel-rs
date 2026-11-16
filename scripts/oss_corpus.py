@@ -534,21 +534,35 @@ class ProjectRun:
         return cmp_
 
 
-def list_outputs(root):
+def list_outputs(root, max_depth=48):
     """Relative paths of the files below bazel-bin, minus runfiles trees.
-    Directory symlinks (a tool may link a tree artifact) are followed once."""
-    out, seen = [], set()
-    for dirpath, dirs, files in os.walk(root, followlinks=True):
-        real = os.path.realpath(dirpath)
-        if real in seen:
-            dirs[:] = []
-            continue
-        seen.add(real)
-        dirs[:] = [d for d in dirs if not d.endswith(".runfiles")]
-        for f in files:
-            full = os.path.join(dirpath, f)
-            if os.path.isfile(full):
-                out.append(os.path.relpath(full, root))
+    Directory symlinks (tools link tree artifacts and node_modules
+    differently) are followed; only a cycle back into an ancestor stops."""
+    out = []
+
+    def walk(directory, rel, ancestors):
+        try:
+            entries = sorted(os.scandir(directory), key=lambda e: e.name)
+        except OSError:
+            return
+        for entry in entries:
+            sub = f"{rel}/{entry.name}" if rel else entry.name
+            try:
+                is_dir = entry.is_dir(follow_symlinks=True)
+            except OSError:
+                continue
+            if is_dir:
+                if entry.name.endswith(".runfiles") or len(ancestors) >= max_depth:
+                    continue
+                real = os.path.realpath(entry.path)
+                if real in ancestors:
+                    continue
+                walk(entry.path, sub, ancestors | {real})
+            elif entry.is_file(follow_symlinks=True):
+                out.append(sub)
+
+    if os.path.isdir(root):
+        walk(root, "", frozenset({os.path.realpath(root)}))
     return sorted(out)
 
 
