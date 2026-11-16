@@ -111,6 +111,8 @@ def tool_argv(tool, binary, state, command, flags, targets, batch=True):
             f"--install_base={os.path.normpath(os.path.join(state, '..', '..', 'genuine-install'))}",
             "--nohome_rc",
             "--nosystem_rc",
+            # The JVM expands rc files' `~` with user.home (getpwuid), not $HOME.
+            f"--host_jvm_args=-Duser.home={state}/home",
         ]
         if batch:
             startup.append("--batch")
@@ -377,6 +379,22 @@ def apply_edits(project, ws):
             raise ValueError(f"{project['name']}: {rep['file']} lacks {rep['old']!r}")
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(text.replace(rep["old"], rep["new"]))
+    for com in project.get("comment_out", []):
+        path = os.path.join(ws, com["file"])
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(comment_out(text, com["lines"]))
+
+
+def comment_out(text, needles):
+    """Comment out every line containing one of `needles`."""
+    out = []
+    for line in text.splitlines(keepends=True):
+        if any(n in line for n in needles) and not line.lstrip().startswith("#"):
+            line = "# oss_corpus workaround: " + line
+        out.append(line)
+    return "".join(out)
 
 
 def rmtree_force(path):
@@ -617,7 +635,8 @@ def main(argv=None):
         if ph not in PHASES:
             sys.exit(f"unknown phase {ph}")
     for p in projects:
-        p = dict(p, flags=[f"--jobs={args.jobs}", *p["flags"]])
+        # Local execution only: no disk or remote cache from the project's rc.
+        p = dict(p, flags=[f"--jobs={args.jobs}", "--disk_cache=", "--remote_cache=", *p["flags"]])
         run = ProjectRun(p, args)
         run.prepare()
         res = run.go(phases)
