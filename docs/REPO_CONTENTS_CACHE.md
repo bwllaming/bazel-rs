@@ -247,6 +247,14 @@ declared and every repository of an extension defined in the root module
   (`repository_warm::RecordedInputs` version 5, `mappings`), checked on
   every warm reuse and remote hit by resolving the same apparent name from
   the same repository again (`loading::current_repo_mapping`);
+* every apparent-name resolution of `Label()` and `Label.relative()` is
+  recorded under the repository whose mapping resolved it — also `Label`
+  called from native code without a `.bzl` frame (`sorted(names, key =
+  Label)`); debug builds assert that a repository rule's run recorded every
+  such resolution. `Label.relative()`'s lookups, which Bazel's recorder
+  does not see, key repositories (load time) and are recorded inputs (run
+  time) but never enter an extension's lockfile entry, which stays
+  genuine's;
 * an extension's `use_repo` imports are still checked (the import error)
   but frame nothing; its evaluation stays part of every generated
   repository's key (tags, recorded extension inputs, the lockfile entry).
@@ -257,7 +265,11 @@ unchanged (tests/repo_mapping_key.rs, tests/remote_repo_cache.rs
 closure used re-executes the rules of that closure; a changed entry a rule
 used while it ran re-executes that rule only. The lockfile, the hidden
 lockfile and stderr (with the action graph) of a reused repository equal a
-fresh fetch's. Upgrading re-executes every repository once (new keys and
+fresh fetch's. What remains unrecorded is the same class genuine leaves
+unrecorded: mapping-dependent conversions at load time that reach a
+repository only through their printed form without a recorded lookup (for
+example a top-level `select()` whose apparent-label keys a rule writes out
+via `repr`). Upgrading re-executes every repository once (new keys and
 identities; the old trees are collected by the cache GC) and re-populates
 the remote cache once.
 
