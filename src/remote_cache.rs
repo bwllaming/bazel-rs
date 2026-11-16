@@ -2468,6 +2468,20 @@ impl RemoteCache {
         sources: &[(Digest, BlobSource<'_>)],
         result: &[u8],
     ) -> Result<(), CacheError> {
+        self.repo_contents_upload(key, sources)?;
+        match &self.backend {
+            Backend::Http(http) => http.put(false, &key.hash, result),
+            Backend::Grpc(grpc) => Ok(grpc.update_action_result(key, result)?),
+            Backend::None => Ok(()),
+        }
+    }
+
+    /// The blob part of [`Self::repo_contents_store`].
+    pub fn repo_contents_upload(
+        &self,
+        key: &Digest,
+        sources: &[(Digest, BlobSource<'_>)],
+    ) -> Result<(), CacheError> {
         if let Backend::Grpc(grpc) = &self.backend {
             grpc.capabilities().map_err(capability_failure)?;
         }
@@ -2547,11 +2561,7 @@ impl RemoteCache {
             Ok(())
         };
         parallel(&missing, upload_one)?;
-        match &self.backend {
-            Backend::Http(http) => http.put(false, &key.hash, result),
-            Backend::Grpc(grpc) => Ok(grpc.update_action_result(key, result)?),
-            Backend::None => Ok(()),
-        }
+        Ok(())
     }
 
     /// Writes `blobs` and then the Action Cache entry `result` under `key`

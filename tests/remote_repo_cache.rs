@@ -5,6 +5,7 @@
 //! fetches upload; corrupt or missing blobs fall back to a fetch; local,
 //! non-reproducible and non-portable repositories never use it; the
 //! policies and the startup option parse like genuine's.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -136,8 +137,23 @@ impl Server {
         log.iter().filter(|(method, _)| method == "PUT").count()
     }
 
-    fn cas_path_of(bytes: &[u8]) -> String {
-        format!("/cas/{}", sha256_hex(bytes))
+    /// The CAS path and bytes of the pack chunk (a zstd frame) holding `bytes`.
+    fn chunk_holding(&self, bytes: &[u8]) -> (String, Vec<u8>) {
+        let state = self.state.lock().unwrap();
+        state
+            .blobs
+            .iter()
+            .filter(|(path, blob)| {
+                path.starts_with("/cas/") && blob.starts_with(&[0x28, 0xb5, 0x2f, 0xfd])
+            })
+            .find(|(_, blob)| {
+                let mut raw = Vec::new();
+                ruzstd::decoding::StreamingDecoder::new(blob.as_slice())
+                    .is_ok_and(|mut decoder| decoder.read_to_end(&mut raw).is_ok())
+                    && raw.windows(bytes.len()).any(|window| window == bytes)
+            })
+            .map(|(path, blob)| (path.clone(), blob.clone()))
+            .expect("a pack chunk")
     }
 
     fn set_blob(&self, path: &str, bytes: Option<Vec<u8>>) {
@@ -146,10 +162,6 @@ impl Server {
             Some(bytes) => state.blobs.insert(path.to_owned(), bytes),
             None => state.blobs.remove(path),
         };
-    }
-
-    fn has(&self, path: &str) -> bool {
-        self.state.lock().unwrap().blobs.contains_key(path)
     }
 }
 
@@ -516,8 +528,7 @@ fn corrupt_and_missing_blobs_fall_back_to_a_fetch() {
     let remote = f.remote();
     let ws = f.workspace("ws-1", "one\n");
     assert_success(&f.run(&ws, "c1", &[FLAG], &[&remote]));
-    let blob = Server::cas_path_of(DATA);
-    assert!(f.server.has(&blob));
+    let (blob, original) = f.server.chunk_holding(DATA);
     f.server.take_log();
     // A corrupt blob: a warning, then the archive is fetched.
     f.server.set_blob(&blob, Some(b"corrupt".to_vec()));
@@ -534,14 +545,8 @@ fn corrupt_and_missing_blobs_fall_back_to_a_fetch() {
     assert_eq!(f.trees("c2"), f.trees("c1"));
     // The fetch's upload repaired it; a missing blob falls back silently.
     assert_eq!(
-        f.server
-            .state
-            .lock()
-            .unwrap()
-            .blobs
-            .get(&blob)
-            .map(Vec::as_slice),
-        Some(DATA)
+        f.server.state.lock().unwrap().blobs.get(&blob),
+        Some(&original)
     );
     f.server.set_blob(&blob, None);
     let ws3 = f.workspace("ws-3", "one\n");

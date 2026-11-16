@@ -2395,10 +2395,15 @@ fn remote_hit(
     slot: &mut PathBuf,
     validate: Validate<'_>,
 ) -> Result<Option<Executed>, String> {
-    for recorded_digest in crate::remote_repo_cache::candidates(stage_key, spec_key) {
+    let candidates = crate::remote_repo_cache::candidates(stage_key, spec_key);
+    if candidates.is_empty() {
+        crate::remote_repo_cache::note_miss(stage_key, "no entry");
+    }
+    for recorded_digest in candidates {
         let Some(candidate) =
             crate::remote_repo_cache::fetch(stage_key, spec_key, &recorded_digest)
         else {
+            crate::remote_repo_cache::note_miss(stage_key, "incomplete entry");
             continue;
         };
         // A workspace-dependent publication is never uploaded (nor taken).
@@ -2410,6 +2415,7 @@ fn remote_hit(
             continue;
         };
         if !validate(slot, &outside).unwrap_or(false) {
+            crate::remote_repo_cache::note_miss(stage_key, "recorded inputs changed");
             continue;
         }
         let downloaded = {
@@ -2426,7 +2432,7 @@ fn remote_hit(
                     reproducible: true,
                 }));
             }
-            Ok(false) => {}
+            Ok(false) => crate::remote_repo_cache::note_miss(stage_key, "missing blob"),
             Err(error) => crate::note!(
                 "WARNING: Remote repo contents cache lookup failed for {stage_key}: {error}"
             ),

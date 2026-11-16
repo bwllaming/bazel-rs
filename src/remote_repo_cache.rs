@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Salts every key: change it whenever entries written before may no
 /// longer be valid (RemoteRepoContentsCacheImpl.GUID's role).
-const GUID: &str = "bazel-rs-remote-repo-contents-v1-3c4f8a52-1d7e-4b9a-9e2f-6a0d5c8b7e41";
+const GUID: &str = "bazel-rs-remote-repo-contents-v2-3c4f8a52-1d7e-4b9a-9e2f-6a0d5c8b7e41";
 const MANIFEST: &str = "manifest.json";
 const RECORDED: &str = "recorded_inputs";
 const RUNTIME: &str = "runtime_inputs";
@@ -55,6 +55,19 @@ pub static HITS: AtomicU64 = AtomicU64::new(0);
 pub static DOWNLOADED_BYTES: AtomicU64 = AtomicU64::new(0);
 pub static UPLOADS: AtomicU64 = AtomicU64::new(0);
 pub static UPLOADED_BYTES: AtomicU64 = AtomicU64::new(0);
+/// Per-repository misses (`BAZEL_RS_REMOTE_REPO_CACHE_STATS=verbose`).
+static MISSES: std::sync::Mutex<Vec<(String, &'static str)>> = std::sync::Mutex::new(Vec::new());
+
+/// Notes why `canonical` was not served (`verbose` statistics only).
+pub fn note_miss(canonical: &str, reason: &'static str) {
+    if std::env::var_os("BAZEL_RS_REMOTE_REPO_CACHE_STATS").is_some_and(|value| value == "verbose")
+    {
+        MISSES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((canonical.to_owned(), reason));
+    }
+}
 
 /// `--[no]experimental_remote_repo_contents_cache` (a startup option,
 /// RemoteStartupOptions; the last value wins).
@@ -101,13 +114,40 @@ pub struct TreeEntry {
 struct Manifest {
     format: u32,
     entries: Vec<TreeEntry>,
+    /// The pack: the regular files' contents concatenated in `entries`
+    /// order, cut every [`CHUNK`] bytes, each piece a zstd frame stored as
+    /// one CAS blob (one request per 16 MiB instead of one per file, and
+    /// compressed: a cache over a WAN serves a repository like its archive).
+    chunks: Vec<Chunk>,
 }
+
+/// One piece of a pack: the CAS digest of its zstd frame and how many
+/// bytes of the concatenated contents it holds.
+#[derive(Clone, Serialize, Deserialize)]
+struct Chunk {
+    sha256: String,
+    size: u64,
+    raw: u64,
+}
+
+impl Chunk {
+    fn digest(&self) -> Digest {
+        Digest {
+            hash: self.sha256.clone(),
+            size: self.size,
+        }
+    }
+}
+
+/// Uncompressed bytes per pack chunk (bounds the memory of a transfer).
+const CHUNK: usize = 16 << 20;
 
 /// A final entry: what the publication of the tree needs.
 pub struct Candidate {
     pub recorded: Vec<u8>,
     pub inputs: Vec<u8>,
     pub entries: Vec<TreeEntry>,
+    chunks: Vec<Chunk>,
     key: Digest,
 }
 
@@ -120,7 +160,6 @@ fn command() -> reapi::Command {
             RECORDED.to_owned(),
             RUNTIME.to_owned(),
         ],
-        output_directories: [CONTENTS.to_owned()].into(),
         ..reapi::Command::default()
     }
 }
@@ -249,16 +288,10 @@ fn fetch_final(
     };
     let result = reapi::ActionResult::decode(&bytes)
         .map_err(|error| CacheError::Other(format!("Failed to parse the ActionResult: {error}")))?;
-    let mut paths: Vec<&str> = result
-        .output_files
-        .iter()
-        .map(|file| file.path.as_str())
-        .collect();
-    paths.sort_unstable();
+    let has = |path: &str| result.output_files.iter().any(|file| file.path == path);
     if result.exit_code != 0
-        || paths != [MANIFEST, RECORDED, RUNTIME]
-        || result.output_directories.len() != 1
-        || result.output_directories[0].path != CONTENTS
+        || !(has(MANIFEST) && has(RECORDED) && has(RUNTIME))
+        || !result.output_directories.is_empty()
         || !result.output_symlinks.is_empty()
     {
         return Err(CacheError::Other(format!(
@@ -294,10 +327,28 @@ fn fetch_final(
         return Ok(None);
     }
     check_entries(&manifest.entries).map_err(CacheError::Other)?;
+    let content: u64 = manifest
+        .entries
+        .iter()
+        .filter(|entry| !entry.directory && entry.symlink.is_none())
+        .map(|entry| entry.size)
+        .sum();
+    if manifest.chunks.iter().map(|chunk| chunk.raw).sum::<u64>() != content
+        || manifest
+            .chunks
+            .iter()
+            .any(|chunk| chunk.raw == 0 || chunk.raw > CHUNK as u64)
+    {
+        return Err(CacheError::Other(format!(
+            "the pack of {} does not hold its files",
+            key.hash
+        )));
+    }
     Ok(Some(Candidate {
         recorded,
         inputs,
         entries: manifest.entries,
+        chunks: manifest.chunks,
         key,
     }))
 }
@@ -382,10 +433,11 @@ fn check_entries(entries: &[TreeEntry]) -> Result<(), String> {
     Ok(())
 }
 
-/// Writes the tree of `candidate` into the empty directory `root`: every
-/// file downloaded and verified, then links, then the directories' modes
-/// (deepest first). `Ok(false)` when a blob is missing; an error for a
-/// corrupt blob or a transport or write failure.
+/// Writes the tree of `candidate` into the empty directory `root`: the
+/// directories, every file from the pack (each chunk verified as a CAS
+/// blob, each file against its digest as it is written), the links, then
+/// the directories' modes (deepest first). `Ok(false)` when a chunk is
+/// missing; an error for a corrupt pack or a transport or write failure.
 pub fn download(candidate: &Candidate, root: &Path) -> Result<bool, String> {
     use std::os::unix::fs::PermissionsExt;
     let cache = cache().ok_or("no remote cache")?;
@@ -395,35 +447,65 @@ pub fn download(candidate: &Candidate, root: &Path) -> Result<bool, String> {
                 .map_err(|error| format!("cannot create {}: {error}", entry.path))?;
         }
     }
-    let files: Vec<&TreeEntry> = candidate
+    let mut files = candidate
         .entries
         .iter()
-        .filter(|entry| !entry.directory && entry.symlink.is_none())
-        .collect();
-    let missing = AtomicBool::new(false);
-    let written = crate::remote_cache::parallel(&files, |entry| {
-        if missing.load(Ordering::Relaxed) {
-            return Ok(());
+        .filter(|entry| !entry.directory && entry.symlink.is_none());
+    let mut writer = FileWriter::default();
+    // The next chunk downloads while one is written.
+    let complete = std::thread::scope(|scope| -> Result<bool, String> {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let chunks = &candidate.chunks;
+        let key = &candidate.key;
+        scope.spawn(move || {
+            for chunk in chunks {
+                let fetched = cache.repo_contents_blob(&chunk.digest(), key);
+                let stop = !matches!(fetched, Ok(Some(_)));
+                if sender.send(fetched).is_err() || stop {
+                    return;
+                }
+            }
+        });
+        for chunk in &candidate.chunks {
+            let compressed = match receiver.recv() {
+                Ok(Ok(Some(bytes))) => bytes,
+                Ok(Ok(None)) => return Ok(false),
+                Ok(Err(error)) => return Err(error.to_string()),
+                Err(_) => return Err("the pack download stopped".into()),
+            };
+            DOWNLOADED_BYTES.fetch_add(compressed.len() as u64, Ordering::Relaxed);
+            let mut raw = Vec::with_capacity(chunk.raw as usize);
+            ruzstd::decoding::StreamingDecoder::new(compressed.as_slice())
+                .map_err(|error| format!("corrupt pack chunk {}: {error}", chunk.sha256))
+                .and_then(|mut decoder| {
+                    std::io::Read::read_to_end(&mut decoder, &mut raw)
+                        .map_err(|error| format!("corrupt pack chunk {}: {error}", chunk.sha256))
+                })?;
+            if raw.len() as u64 != chunk.raw {
+                return Err(format!("corrupt pack chunk {}", chunk.sha256));
+            }
+            let mut bytes = raw.as_slice();
+            while !bytes.is_empty() {
+                if writer.remaining == 0 {
+                    let entry = files.next().ok_or("the pack holds more than its files")?;
+                    writer.open(root, entry)?;
+                    continue;
+                }
+                let take = bytes.len().min(writer.remaining as usize);
+                writer.write(&bytes[..take])?;
+                bytes = &bytes[take..];
+            }
         }
-        let digest = Digest {
-            hash: entry.sha256.clone(),
-            size: entry.size,
-        };
-        let Some(bytes) = cache.repo_contents_blob(&digest, &candidate.key)? else {
-            missing.store(true, Ordering::Relaxed);
-            return Ok(());
-        };
-        DOWNLOADED_BYTES.fetch_add(bytes.len() as u64, Ordering::Relaxed);
-        let path = root.join(&entry.path);
-        std::fs::write(&path, &bytes)
-            .and_then(|()| {
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(entry.mode))
-            })
-            .map_err(|error| CacheError::Other(format!("cannot write {}: {error}", entry.path)))
-    });
-    written.map_err(|error| error.to_string())?;
-    if missing.load(Ordering::Relaxed) {
+        Ok(true)
+    })?;
+    if !complete {
         return Ok(false);
+    }
+    writer.finish()?;
+    // Empty files hold no pack bytes.
+    for entry in files {
+        writer.open(root, entry)?;
+        writer.finish()?;
     }
     for entry in &candidate.entries {
         if let Some(target) = &entry.symlink {
@@ -447,6 +529,70 @@ pub fn download(candidate: &Candidate, root: &Path) -> Result<bool, String> {
             .map_err(|error| format!("cannot set the mode of {}: {error}", entry.path))?;
     }
     Ok(true)
+}
+
+/// The file of a pack being written: its remaining bytes and their
+/// running digest.
+#[derive(Default)]
+struct FileWriter {
+    file: Option<std::io::BufWriter<std::fs::File>>,
+    path: String,
+    expected: String,
+    mode: u32,
+    remaining: u64,
+    hasher: sha2::Sha256,
+}
+
+impl FileWriter {
+    fn open(&mut self, root: &Path, entry: &TreeEntry) -> Result<(), String> {
+        self.finish()?;
+        let file = std::fs::File::create(root.join(&entry.path))
+            .map_err(|error| format!("cannot write {}: {error}", entry.path))?;
+        self.file = Some(std::io::BufWriter::with_capacity(1 << 16, file));
+        self.path = entry.path.clone();
+        self.expected = entry.sha256.clone();
+        self.mode = entry.mode;
+        self.remaining = entry.size;
+        self.hasher = sha2::Sha256::default();
+        Ok(())
+    }
+
+    fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
+        use sha2::Digest as _;
+        use std::io::Write as _;
+        self.hasher.update(bytes);
+        self.remaining -= bytes.len() as u64;
+        let file = self.file.as_mut().ok_or("no file is open")?;
+        file.write_all(bytes)
+            .map_err(|error| format!("cannot write {}: {error}", self.path))
+    }
+
+    /// Closes the open file: complete, its digest as listed, its mode set.
+    fn finish(&mut self) -> Result<(), String> {
+        use sha2::Digest as _;
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt;
+        let Some(mut file) = self.file.take() else {
+            return Ok(());
+        };
+        if self.remaining != 0 {
+            return Err(format!("the pack ends inside {}", self.path));
+        }
+        let actual = format!("{:x}", std::mem::take(&mut self.hasher).finalize());
+        if actual != self.expected {
+            return Err(format!(
+                "{} of the pack has digest {actual}, not {}",
+                self.path, self.expected
+            ));
+        }
+        file.flush()
+            .map_err(|error| format!("cannot write {}: {error}", self.path))?;
+        let file = file
+            .into_inner()
+            .map_err(|error| format!("cannot write {}: {error}", self.path))?;
+        file.set_permissions(std::fs::Permissions::from_mode(self.mode))
+            .map_err(|error| format!("cannot set the mode of {}: {error}", self.path))
+    }
 }
 
 /// A hit (counted for the statistics line).
@@ -488,78 +634,48 @@ fn store(
 ) -> Result<(), CacheError> {
     let recorded_digest = sha256_hex(recorded);
     let (final_action, final_key) = action(&final_salt(spec_key, &recorded_digest));
+    let chunks = upload_pack(cache, &final_key, tree, &entries)?;
     let command = command().encode();
     let manifest = serde_json::to_vec(&Manifest {
         format: FORMAT,
         entries,
+        chunks: chunks.clone(),
     })
     .map_err(|error| CacheError::Other(error.to_string()))?;
-    let entries: Vec<TreeEntry> = serde_json::from_slice::<Manifest>(&manifest)
-        .map(|manifest| manifest.entries)
-        .map_err(|error| CacheError::Other(error.to_string()))?;
-    let mut files = Vec::new();
-    let mut symlinks = Vec::new();
-    let mut directories = Vec::new();
-    let mut paths = Vec::new();
-    for entry in &entries {
-        if entry.directory {
-            if !entry.path.is_empty() {
-                directories.push(entry.path.clone());
-            }
-        } else if let Some(target) = &entry.symlink {
-            symlinks.push((entry.path.clone(), target.clone()));
-        } else {
-            let digest = Digest {
-                hash: entry.sha256.clone(),
-                size: entry.size,
-            };
-            files.push((entry.path.clone(), digest.clone()));
-            paths.push((digest, tree.join(&entry.path)));
-        }
-    }
-    let tree_blob = reapi::output_tree(&files, &symlinks, &directories);
-    let tree_digest = Digest::of(&tree_blob);
     let (manifest_digest, recorded_blob, inputs_digest) = (
         Digest::of(&manifest),
         Digest::of(recorded),
         Digest::of(inputs),
     );
-    let mut sources: Vec<(Digest, BlobSource<'_>)> = vec![
+    let sources: Vec<(Digest, BlobSource<'_>)> = vec![
         (Digest::of(&command), BlobSource::Bytes(&command)),
         (final_key.clone(), BlobSource::Bytes(&final_action)),
         (manifest_digest.clone(), BlobSource::Bytes(&manifest)),
         (recorded_blob.clone(), BlobSource::Bytes(recorded)),
         (inputs_digest.clone(), BlobSource::Bytes(inputs)),
-        (tree_digest.clone(), BlobSource::Bytes(&tree_blob)),
     ];
-    let bytes: u64 = paths.iter().map(|(digest, _)| digest.size).sum();
-    sources.extend(
-        paths
-            .iter()
-            .map(|(digest, path)| (digest.clone(), BlobSource::File(path))),
-    );
-    let output = |path: &str, digest: Digest| reapi::OutputFile {
-        path: path.to_owned(),
+    let output = |path: String, digest: Digest| reapi::OutputFile {
+        path,
         digest,
         is_executable: false,
         contents: Vec::new(),
     };
+    let mut output_files = vec![
+        output(MANIFEST.to_owned(), manifest_digest),
+        output(RECORDED.to_owned(), recorded_blob),
+        output(RUNTIME.to_owned(), inputs_digest),
+    ];
+    // The pack's blobs are outputs too: a cache that checks or ages what an
+    // entry references keeps them with it.
+    for (index, chunk) in chunks.iter().enumerate() {
+        output_files.push(output(format!("{CONTENTS}/{index:06}"), chunk.digest()));
+    }
     let result = reapi::ActionResult {
-        output_files: vec![
-            output(MANIFEST, manifest_digest),
-            output(RECORDED, recorded_blob),
-            output(RUNTIME, inputs_digest),
-        ],
-        output_directories: vec![reapi::OutputDirectory {
-            path: CONTENTS.to_owned(),
-            tree_digest,
-            is_topologically_sorted: true,
-        }],
+        output_files,
         ..reapi::ActionResult::default()
     };
     cache.repo_contents_store(&final_key, &sources, &result.encode())?;
     UPLOADS.fetch_add(1, Ordering::Relaxed);
-    UPLOADED_BYTES.fetch_add(bytes, Ordering::Relaxed);
     // The intermediate entry: this record first, then the others (a racy
     // update may drop a concurrent writer's line, as genuine's does).
     let mut lines = intermediate_lines(cache, spec_key, false).unwrap_or_default();
@@ -593,6 +709,79 @@ fn store(
     )
 }
 
+/// Packs the regular files of `entries` below `tree` (each verified
+/// against its digest as it is read) into zstd chunks of [`CHUNK`] bytes
+/// and uploads each one as it is complete.
+fn upload_pack(
+    cache: &RemoteCache,
+    key: &Digest,
+    tree: &Path,
+    entries: &[TreeEntry],
+) -> Result<Vec<Chunk>, CacheError> {
+    use sha2::Digest as _;
+    use std::io::Read as _;
+    let mut chunks = Vec::new();
+    let mut buffer: Vec<u8> = Vec::with_capacity(CHUNK);
+    let flush = |buffer: &mut Vec<u8>, chunks: &mut Vec<Chunk>| -> Result<(), CacheError> {
+        if buffer.is_empty() {
+            return Ok(());
+        }
+        let compressed = ruzstd::encoding::compress_to_vec(
+            buffer.as_slice(),
+            ruzstd::encoding::CompressionLevel::Fastest,
+        );
+        let digest = Digest::of(&compressed);
+        cache.repo_contents_upload(key, &[(digest.clone(), BlobSource::Bytes(&compressed))])?;
+        UPLOADED_BYTES.fetch_add(compressed.len() as u64, Ordering::Relaxed);
+        chunks.push(Chunk {
+            sha256: digest.hash,
+            size: digest.size,
+            raw: buffer.len() as u64,
+        });
+        buffer.clear();
+        Ok(())
+    };
+    let mut block = vec![0u8; 1 << 16];
+    for entry in entries
+        .iter()
+        .filter(|entry| !entry.directory && entry.symlink.is_none())
+    {
+        let path = tree.join(&entry.path);
+        let mut file = std::fs::File::open(&path).map_err(|error| {
+            CacheError::Other(format!("cannot read {}: {error}", path.display()))
+        })?;
+        let mut hasher = sha2::Sha256::default();
+        let mut size = 0u64;
+        loop {
+            let read = file.read(&mut block).map_err(|error| {
+                CacheError::Other(format!("cannot read {}: {error}", path.display()))
+            })?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&block[..read]);
+            size += read as u64;
+            let mut bytes = &block[..read];
+            while !bytes.is_empty() {
+                let take = bytes.len().min(CHUNK - buffer.len());
+                buffer.extend_from_slice(&bytes[..take]);
+                bytes = &bytes[take..];
+                if buffer.len() == CHUNK {
+                    flush(&mut buffer, &mut chunks)?;
+                }
+            }
+        }
+        if size != entry.size || format!("{:x}", hasher.finalize()) != entry.sha256 {
+            return Err(CacheError::Other(format!(
+                "{} changed while it was uploaded",
+                path.display()
+            )));
+        }
+    }
+    flush(&mut buffer, &mut chunks)?;
+    Ok(chunks)
+}
+
 /// `BAZEL_RS_REMOTE_REPO_CACHE_STATS=1`: one stderr line with the counters.
 pub fn report() {
     if std::env::var_os("BAZEL_RS_REMOTE_REPO_CACHE_STATS").is_none() {
@@ -605,6 +794,11 @@ pub fn report() {
         UPLOADS.load(Ordering::Relaxed),
         UPLOADED_BYTES.load(Ordering::Relaxed)
     );
+    let mut misses = std::mem::take(&mut *MISSES.lock().unwrap_or_else(|e| e.into_inner()));
+    misses.sort();
+    for (canonical, reason) in misses {
+        eprintln!("REMOTE-REPO-CACHE miss {canonical}: {reason}");
+    }
 }
 
 #[cfg(test)]
