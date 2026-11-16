@@ -551,10 +551,7 @@ thread_local! {
 /// (`BAZEL_RS_REMOTE_REPO_CACHE_STATS=verbose`).
 fn diagnosing() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    // snapshot-unrecorded: a diagnostics switch; no result depends on it.
-    *ON.get_or_init(|| {
-        std::env::var_os("BAZEL_RS_REMOTE_REPO_CACHE_STATS").is_some_and(|value| value == "verbose")
-    })
+    *ON.get_or_init(crate::remote_repo_cache::verbose)
 }
 
 /// The first changed recorded input of this thread's last [`unchanged`]
