@@ -1757,10 +1757,16 @@ pub fn known_file_digest(
         return Some(digest.0);
     }
     // A published output this process validated in a cache check (the
-    // output memo), still that inode.
+    // output memo), still that inode with that modification time.
     if let Some(entry) = entry
-        && let Some(PublishedValue::File(input, Some((device, inode)))) = memoized_output(entry)
-        && (device, inode) == (metadata.dev(), metadata.ino())
+        && let Some(PublishedValue::File(input, Some((device, inode, mtime)))) =
+            memoized_output(entry)
+        && (device, inode, mtime)
+            == (
+                metadata.dev(),
+                metadata.ino(),
+                (metadata.mtime(), metadata.mtime_nsec()),
+            )
         && input.size == metadata.size()
     {
         return Some(input.digest.0);
@@ -2715,8 +2721,9 @@ fn forget_trees(prefix: &Path) {
 #[derive(Clone)]
 enum PublishedValue {
     /// The file and, when the published path is that file itself (no
-    /// symlink output), its device and inode.
-    File(Input, Option<(u64, u64)>),
+    /// symlink output), its device, inode and modification time (seconds,
+    /// nanoseconds) when the cache check read it.
+    File(Input, Option<(u64, u64, (i64, i64))>),
     Link(PathBuf),
 }
 
@@ -2734,7 +2741,7 @@ pub enum PublishedKind {
 /// when it does not know.
 pub fn published_kind(path: &Path) -> Option<PublishedKind> {
     match memoized_output(path) {
-        Some(PublishedValue::File(_, Some((device, inode)))) => {
+        Some(PublishedValue::File(_, Some((device, inode, _)))) => {
             return Some(PublishedKind::File { device, inode });
         }
         Some(PublishedValue::File(input, None)) if input.path != path => {
@@ -2858,7 +2865,11 @@ pub(crate) fn remember_published_file(root: &Path, path: &Path) {
         executable: 0o111,
         mode: OUTPUT_MODE,
     };
-    let identity = Some((metadata.dev(), metadata.ino()));
+    let identity = Some((
+        metadata.dev(),
+        metadata.ino(),
+        (metadata.mtime(), metadata.mtime_nsec()),
+    ));
     remember_outputs(
         root,
         vec![(path.to_path_buf(), PublishedValue::File(input, identity))],
@@ -5628,7 +5639,11 @@ fn cache_valid(
                         (read_input(&path, Some(root), false)?, None)
                     } else {
                         let metadata = regular_file(&path, Some(root))?;
-                        let identity = (metadata.dev(), metadata.ino());
+                        let identity = (
+                            metadata.dev(),
+                            metadata.ino(),
+                            (metadata.mtime(), metadata.mtime_nsec()),
+                        );
                         let owned = owned_by(Some(root), &path);
                         (
                             read_regular_from(&path, metadata, owned, false)?,
