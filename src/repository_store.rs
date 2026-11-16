@@ -2084,9 +2084,16 @@ where
     // tree another fetch of this specification uploaded, whose recorded
     // inputs hold here, is published below exactly as if the rule had
     // produced it (RepositoryFetchFunction.java:282-299).
+    // Read once: an execution may materialize other repositories, each
+    // under its own policy (crate::remote_repo_cache::with_policy).
+    let remote_eligible = crate::remote_repo_cache::eligible();
+    if !remote_eligible && matches!(probe, Probe::Warm { .. }) {
+        crate::remote_repo_cache::note_miss(stage_key, "skipped (download-dominated)");
+    }
     let remote = match &probe {
         Probe::Warm { validate, .. }
-            if !FORCE_FETCH.load(std::sync::atomic::Ordering::Relaxed)
+            if remote_eligible
+                && !FORCE_FETCH.load(std::sync::atomic::Ordering::Relaxed)
                 && crate::remote_repo_cache::lookups() =>
         {
             remote_hit(stage_key, spec_key, &writer, &mut slot, *validate)?
@@ -2121,8 +2128,11 @@ where
     let executed = executed?;
     // What an upload to the remote repository contents cache needs once
     // the tree is published (a reproducible rule's execution only).
-    let upload = (!from_remote && executed.reproducible && crate::remote_repo_cache::uploads())
-        .then(|| (executed.recorded.clone(), executed.inputs.clone()));
+    let upload = (remote_eligible
+        && !from_remote
+        && executed.reproducible
+        && crate::remote_repo_cache::uploads())
+    .then(|| (executed.recorded.clone(), executed.inputs.clone()));
     // A publication that depends on where the workspace is gets the
     // workspace's own pointer; every other one the specification's.
     let pointer = match recorded_workspace(&executed.recorded) {

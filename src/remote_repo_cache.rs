@@ -117,6 +117,63 @@ pub fn uploads() -> bool {
     writing().is_some_and(RemoteCache::repo_contents_writable)
 }
 
+/// The repositories the cache never serves nor stores (no lookup, no
+/// upload): download-dominated ones, whose fetch is a checksum-pinned
+/// download of about the size of the tree, so the cache would only move
+/// the same bytes from another server (docs/REPO_CONTENTS_CACHE.md
+/// "Skipped repositories"). An explicit, deterministic rule on the
+/// repository's rule and attributes, never a heuristic on sizes: a
+/// rules_python wheel repository — `whl_archive`, or `whl_library` given a
+/// `.whl` (`whl_file`, or `urls` with a `filename` ending in `.whl`, the
+/// test rules_python's own `whl_library` macro applies), both defined by
+/// the `rules_python` module (`@@rules_python+`). Its tree holds the
+/// wheel and its extraction (twice the download; on ~/code 12 GB of 22).
+/// The reason when skipped.
+pub fn skipped(
+    rule_identity: &str,
+    attributes: &std::collections::BTreeMap<String, crate::custom_rule::AttrValue>,
+) -> Option<&'static str> {
+    use crate::custom_rule::AttrValue;
+    let (definition, name) = rule_identity.rsplit_once('%')?;
+    // rules_python's own definitions only (its canonical repository).
+    let file = definition.strip_prefix("@@rules_python+//")?;
+    match (file, name) {
+        ("python/private/pypi:whl_archive.bzl", "whl_archive") => Some("a wheel download"),
+        ("python/private/pypi:whl_library.bzl", "whl_library") => {
+            let wheel_file = matches!(attributes.get("whl_file"), Some(AttrValue::Label(Some(_))));
+            let wheel_url = matches!(attributes.get("urls"), Some(AttrValue::Strings(urls)) if !urls.is_empty())
+                && matches!(attributes.get("filename"), Some(AttrValue::String(name)) if name.ends_with(".whl"));
+            (wheel_file || wheel_url).then_some("a wheel download")
+        }
+        _ => None,
+    }
+}
+
+thread_local! {
+    /// Whether the repository materialized on this thread may use the cache
+    /// ([`with_policy`]).
+    static ELIGIBLE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Runs `f` (one repository's materialization) with `eligible` as this
+/// thread's policy; the previous one is restored after (a rule demanding
+/// another repository nests materializations).
+pub fn with_policy<T>(eligible: bool, f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ELIGIBLE.with(|cell| cell.set(self.0));
+        }
+    }
+    let _restore = Restore(ELIGIBLE.with(|cell| cell.replace(eligible)));
+    f()
+}
+
+/// The policy of the repository being materialized on this thread.
+pub fn eligible() -> bool {
+    ELIGIBLE.with(std::cell::Cell::get)
+}
+
 /// One entry of a cached tree: a directory, a regular file (its SHA-256
 /// and size name its CAS blob) or a symbolic link; `mode` is what the
 /// rule left (before the store sealed the tree). `path` is relative to the
@@ -951,6 +1008,48 @@ mod tests {
         // A frame claiming 1 KiB that decodes to 1 MiB stops at 1 KiB + 1.
         let error = decode_chunk(&frame, 1024).unwrap_err();
         assert!(error.contains("more than 1024 bytes"), "{error}");
+    }
+
+    #[test]
+    fn wheel_repositories_are_skipped() {
+        use crate::custom_rule::AttrValue;
+        let attrs = |pairs: Vec<(&str, AttrValue)>| {
+            pairs
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let none = attrs(vec![]);
+        let archive = "@@rules_python+//python/private/pypi:whl_archive.bzl%whl_archive";
+        assert!(skipped(archive, &none).is_some());
+        let library = "@@rules_python+//python/private/pypi:whl_library.bzl%whl_library";
+        let wheel = attrs(vec![
+            ("urls", AttrValue::Strings(vec!["https://x/a.whl".into()])),
+            (
+                "filename",
+                AttrValue::String("a-1.0-py3-none-any.whl".into()),
+            ),
+        ]);
+        assert!(skipped(library, &wheel).is_some());
+        let file = attrs(vec![(
+            "whl_file",
+            AttrValue::Label(Some("@@w//:a.whl".into())),
+        )]);
+        assert!(skipped(library, &file).is_some());
+        let sdist = attrs(vec![
+            (
+                "urls",
+                AttrValue::Strings(vec!["https://x/a.tar.gz".into()]),
+            ),
+            ("filename", AttrValue::String("a-1.0.tar.gz".into())),
+        ]);
+        assert!(skipped(library, &sdist).is_none());
+        assert!(skipped(library, &none).is_none());
+        // Same file names in another module are not rules_python's rules.
+        let other = "@@other+//python/private/pypi:whl_archive.bzl%whl_archive";
+        assert!(skipped(other, &none).is_none());
+        let http = "@@bazel_tools//tools/build_defs/repo:http.bzl%http_archive";
+        assert!(skipped(http, &wheel).is_none());
     }
 
     #[test]

@@ -5802,17 +5802,21 @@ impl RepositorySet {
             );
             return Ok(root);
         }
-        crate::repository_store::materialize_lazy_in(
-            self.source_cache_path()?,
-            canonical,
-            &spec_key,
-            Some(&workspace_text),
-            provenance,
-            move |tree, recorded| {
-                crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
-            },
-            execute,
-        )
+        let eligible =
+            crate::remote_repo_cache::skipped(&prepared.definition.identity, attributes).is_none();
+        crate::remote_repo_cache::with_policy(eligible, || {
+            crate::repository_store::materialize_lazy_in(
+                self.source_cache_path()?,
+                canonical,
+                &spec_key,
+                Some(&workspace_text),
+                provenance,
+                move |tree, recorded| {
+                    crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
+                },
+                execute,
+            )
+        })
         .map(|(root, _)| {
             self.record_publication(
                 canonical,
@@ -6577,17 +6581,24 @@ impl RepositorySet {
             );
             return Ok(root);
         }
-        crate::repository_store::materialize_lazy_in(
-            self.source_cache_path()?,
-            &repository.canonical_name,
-            &spec_key,
-            Some(&workspace_text),
-            provenance,
-            move |tree, recorded| {
-                crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
-            },
-            execute,
+        let eligible = crate::remote_repo_cache::skipped(
+            &repository.definition.identity,
+            &repository.attributes,
         )
+        .is_none();
+        crate::remote_repo_cache::with_policy(eligible, || {
+            crate::repository_store::materialize_lazy_in(
+                self.source_cache_path()?,
+                &repository.canonical_name,
+                &spec_key,
+                Some(&workspace_text),
+                provenance,
+                move |tree, recorded| {
+                    crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
+                },
+                execute,
+            )
+        })
         .map(|(root, _)| {
             self.record_publication(
                 &repository.canonical_name,
