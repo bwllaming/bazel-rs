@@ -1,6 +1,16 @@
-load(":defs.bzl", "bad", "probe", "tree")
+load(":defs.bzl", "bad", "index", "probe", "tree")
 
 tree(name = "tree")
+
+tree(name = "tree2")
+
+index(
+    name = "index",
+    images = [
+        ":tree",
+        ":tree2",
+    ],
+)
 
 probe(
     name = "probe",

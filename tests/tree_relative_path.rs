@@ -39,7 +39,8 @@ fn receipt() -> Value {
 
 /// The receipt's cases, each in exactly one test below.
 const GROUPS: &[(&str, &[&str])] = &[
-    ("probe", &["probe"]),
+    ("probe", &["probe", "index"]),
+    ("aquery", &["aquery_index"]),
     (
         "errors",
         &[
@@ -237,8 +238,13 @@ fn check(name: &str, case: &Value, ws: &Workspace) {
             "{name}: missing {message:?} in {stderr}"
         );
     }
-    // The program `run` ran, the `query` result.
-    if succeeded && (argv[0] == "run" || argv[0] == "query") {
+    // The aquery result, without the configuration checksum line (the
+    // native option set differs).
+    if succeeded && argv[0] == "aquery" {
+        let stdout: String = stdout
+            .split_inclusive('\n')
+            .filter(|line| !line.starts_with("# Configuration: "))
+            .collect();
         assert_eq!(
             stdout,
             case["expected_stdout"].as_str().unwrap(),
@@ -338,6 +344,12 @@ fn receipt_covers_the_fixture_and_every_case_once() {
 #[test]
 fn expanded_tree_files_have_tree_relative_paths() {
     check_group("probe");
+}
+
+/// aquery's command line maps an unexpanded tree with a NoopExpander.
+#[test]
+fn aquery_maps_unexpanded_trees_at_analysis() {
+    check_group("aquery");
 }
 
 /// Reading tree_relative_path on a File that is not an expanded tree file.

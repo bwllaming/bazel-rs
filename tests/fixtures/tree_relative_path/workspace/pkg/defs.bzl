@@ -116,3 +116,32 @@ bad = rule(
         "mode": attr.string(),
     },
 )
+
+# rules_oci's oci_image_index (oci/private/image_index.bzl:91-125): an
+# unexpanded tree mapped with a DirectoryExpander; at analysis (aquery) the
+# expander is a NoopExpander and the tree maps as it is.
+def _image_to_args(image, expander):
+    args = ["--image={}".format(image.path)]
+    for file in expander.expand(image):
+        if file.path.find("sub") != -1:
+            args.append("--blob={}".format(file.tree_relative_path))
+    return args
+
+def _index_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    args = ctx.actions.args()
+    args.add(out.path, format = "--output=%s")
+    args.add_all(ctx.files.images, map_each = _image_to_args, expand_directories = False)
+    ctx.actions.run_shell(
+        outputs = [out],
+        inputs = ctx.files.images,
+        arguments = [args],
+        command = "out=$1; shift; for a in \"$@\"; do echo \"$a\"; done > ${out#--output=}",
+        mnemonic = "Index",
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+index = rule(
+    implementation = _index_impl,
+    attrs = {"images": attr.label_list()},
+)

@@ -102,7 +102,11 @@ Citations are to the pinned Bazel source
   other File the field is listed by `dir()`/`hasattr()` but reading it —
   `getattr` with a default too — is Bazel's `tree_relative_path not allowed
   for files that are not tree artifact files.` (paired capture
-  `tests/fixtures/tree_relative_path`; rules_oci's `oci_image_index`). `Args.add(directory)` fails
+  `tests/fixtures/tree_relative_path`; rules_oci's `oci_image_index`).
+  Without input metadata (aquery's command line, `print(args)`) a directory
+  is not expanded: it is its path, or — with a map_each — what map_each maps
+  the directory itself to, with a NoopExpander for one that takes a
+  DirectoryExpander (`StarlarkCustomCommandLine.java:577-595, 1090-1097`). `Args.add(directory)` fails
   with Bazel's `Cannot add directories to Args#add ...` (`Args.java:534-541`).
   Written Args expand their directories too (the directories become inputs of
   the write).

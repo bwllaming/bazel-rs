@@ -367,13 +367,23 @@ enum Mapped {
     Tree(File),
 }
 
+/// The DirectoryExpander a deferred map_each takes, if any.
+#[derive(Clone, Copy)]
+enum Expander<'a> {
+    None,
+    /// FullExpander over the action's tree listings (execution).
+    Full(&'a Arc<Listings>),
+    /// NoopExpander (analysis: no input metadata).
+    Noop,
+}
+
 /// Call a deferred map_each with one value (a tree child, or an unexpanded
-/// tree), and a DirectoryExpander over `listings` when it takes one
+/// tree), and a DirectoryExpander when it takes one
 /// (StarlarkCustomCommandLine.applyMapEach, :1125-1183).
 fn call_mapper(
     mapper: &Mapper,
     file: Mapped,
-    listings: Option<&Arc<Listings>>,
+    expander: Expander<'_>,
 ) -> Result<Vec<String>, String> {
     let mapper = mapper.function()?;
     Module::with_temp_heap(|module| {
@@ -384,11 +394,16 @@ fn call_mapper(
             Mapped::Child(child) => heap.alloc(child),
             Mapped::Tree(tree) => crate::starlark_types::alloc_file(heap, tree),
         }];
-        if let Some(listings) = listings {
-            arguments.push(heap.alloc(DirectoryExpander {
+        match expander {
+            Expander::None => {}
+            Expander::Full(listings) => arguments.push(heap.alloc(DirectoryExpander {
                 listings: Some(Arc::clone(listings)),
                 noop: false,
-            }));
+            })),
+            Expander::Noop => arguments.push(heap.alloc(DirectoryExpander {
+                listings: None,
+                noop: true,
+            })),
         }
         // Its `print`s show nothing (crate::debug_print::silenced).
         let mapped = crate::debug_print::silenced(|| eval.eval_function(function, &arguments, &[]))
@@ -439,6 +454,7 @@ fn expand_deferred(vector: &DeferredVector, trees: TreeLookup<'_>) -> Result<Vec
     } else {
         None
     };
+    let expander = listings.as_ref().map_or(Expander::None, Expander::Full);
     let mut values = Vec::new();
     for item in &vector.items {
         match item {
@@ -447,21 +463,17 @@ fn expand_deferred(vector: &DeferredVector, trees: TreeLookup<'_>) -> Result<Vec
                 for relative in trees(tree)? {
                     let child = tree_child(tree, &relative);
                     match &vector.map_each {
-                        Some(mapper) => values.extend(call_mapper(
-                            mapper,
-                            Mapped::Child(child),
-                            listings.as_ref(),
-                        )?),
+                        Some(mapper) => {
+                            values.extend(call_mapper(mapper, Mapped::Child(child), expander)?)
+                        }
                         None => values.push(child.file.path.clone()),
                     }
                 }
             }
             Item::Unexpanded(tree) => match &vector.map_each {
-                Some(mapper) => values.extend(call_mapper(
-                    mapper,
-                    Mapped::Tree(tree.clone()),
-                    listings.as_ref(),
-                )?),
+                Some(mapper) => {
+                    values.extend(call_mapper(mapper, Mapped::Tree(tree.clone()), expander)?)
+                }
                 None => values.push(tree.path.clone()),
             },
         }
@@ -484,14 +496,29 @@ pub(crate) fn expand_groups(
             Group::Deferred(vector) => match trees {
                 Some(trees) => expand_deferred(vector, trees)?,
                 // Without input metadata Bazel does not expand directories
-                // (maybeExpandDirectories); debug output shows their paths.
+                // (maybeExpandDirectories): a directory is its path, or what
+                // map_each maps it to with a NoopExpander
+                // (StarlarkCustomCommandLine.java:1090-1097), e.g. aquery's
+                // command line.
                 None => {
+                    let expander = if vector.expander {
+                        Expander::Noop
+                    } else {
+                        Expander::None
+                    };
                     let mut values = Vec::new();
                     for item in &vector.items {
                         match item {
                             Item::Strings(strings) => values.extend(strings.iter().cloned()),
                             Item::Directory(tree) | Item::Unexpanded(tree) => {
-                                values.push(tree.path.clone())
+                                match &vector.map_each {
+                                    // A callable not yet frozen with its
+                                    // analysis module stays a path.
+                                    Some(mapper) if mapper.function().is_ok() => values.extend(
+                                        call_mapper(mapper, Mapped::Tree(tree.clone()), expander)?,
+                                    ),
+                                    _ => values.push(tree.path.clone()),
+                                }
                             }
                         }
                     }
