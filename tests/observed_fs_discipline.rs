@@ -85,6 +85,9 @@ const ALLOWED_MODULES: &[&str] = &[
     // The execution log (docs/PROFILE.md): digests of spawn outputs, read
     // by the executor after the spawn.
     "exec_log",
+    // Descriptor budget of action execution: action logs and outputs read
+    // by the executor after the spawn.
+    "fd_budget",
     // The profile (docs/PROFILE.md): this process's CPU times and the
     // profile file, written when the command ends.
     "profile", // The coverage output generator and the combined report
