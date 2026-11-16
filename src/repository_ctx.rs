@@ -256,6 +256,10 @@ mod values {
         /// workspace (`replant_symlinks`) a non-local rule's publication
         /// records the workspace ([`ExecutionInputs::workspace`]).
         pub workspace_observed: Arc<std::sync::atomic::AtomicBool>,
+        /// Apparent-name label resolutions and recorded mapping lookups of
+        /// a repository rule's run: every resolution must be recorded
+        /// (debug builds assert it when the run finishes).
+        pub mapping_lookups: std::cell::Cell<(usize, usize)>,
         /// A repository rule's mentions of the workspace's path — paths
         /// into the cache excepted, which every worktree sharing it sees
         /// alike (a main checkout's `bazel-rs-out`); None for a module
@@ -653,7 +657,18 @@ pub(crate) fn record_repo_mapping(
         entry.apparent.clone(),
         entry.canonical.clone(),
     ));
+    let (resolved, recorded) = context.mapping_lookups.get();
+    context.mapping_lookups.set((resolved, recorded + 1));
     true
+}
+
+/// Counts an apparent-name label resolution of a running repository rule
+/// ([`Context::mapping_lookups`]).
+pub(crate) fn note_apparent_resolution(eval: &Evaluator<'_, '_, '_>) {
+    if let Some(context) = own_context(eval).filter(|context| context.kind == Kind::Repository) {
+        let (resolved, recorded) = context.mapping_lookups.get();
+        context.mapping_lookups.set((resolved + 1, recorded));
+    }
 }
 
 pub(crate) fn definition_package(eval: &Evaluator<'_, '_, '_>) -> Option<PackageId> {
@@ -1605,6 +1620,7 @@ impl Context {
             live: true,
             environ_read: Arc::default(),
             workspace_observed: Arc::default(),
+            mapping_lookups: std::cell::Cell::new((0, 0)),
             mentions: None,
         })
     }
@@ -1671,6 +1687,17 @@ impl Context {
 
     /// `finish` plus the observed environment names, for warm revalidation.
     pub(crate) fn finish_with_names(self) -> anyhow::Result<(ExecutionInputs, Vec<String>)> {
+        // Every apparent-name resolution of a repository rule's run was
+        // recorded (a missed one would let a stale tree be reused after a
+        // mapping change).
+        if self.kind == Kind::Repository {
+            let (resolved, recorded) = self.mapping_lookups.get();
+            debug_assert_eq!(
+                resolved, recorded,
+                "repository {}: {resolved} apparent-name label resolutions, {recorded} recorded mapping lookups",
+                self.canonical
+            );
+        }
         let names = self.environment.borrow().names();
         let watched_env = self.environment.borrow().inputs()?;
         let mut inputs = std::mem::take(&mut self.state.borrow_mut().inputs);
@@ -5096,6 +5123,7 @@ fn execute_with(
             live,
             environ_read: Arc::default(),
             workspace_observed: Arc::default(),
+            mapping_lookups: std::cell::Cell::new((0, 0)),
             mentions,
         };
         context.state.borrow_mut().label_siblings = label_siblings(attrs);

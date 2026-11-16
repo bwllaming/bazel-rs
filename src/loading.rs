@@ -252,7 +252,24 @@ pub(crate) fn latin1_profile(eval: &Evaluator<'_, '_, '_>) -> bool {
 /// apparent repository the context repository does not see: an invalid
 /// Label (RepositorySet::parse_deferred) instead of an error.
 pub fn resolve_label_deferred(eval: &Evaluator<'_, '_, '_>, text: &str) -> anyhow::Result<Label> {
-    resolve_label_with(eval, text, None, true)
+    resolve_label_with(eval, text, None, true).map(|(label, _)| label)
+}
+
+/// [`resolve_label_deferred`] that records an apparent repository's mapping
+/// lookup ([`record_label_repo_mapping`]) under the repository whose
+/// mapping the resolution used — also when no `.bzl` frame is on the stack
+/// (`sorted(names, key = Label)` calls `Label` from native code). `lockfile`:
+/// see [`RecordedRepoMapping::lockfile`].
+pub(crate) fn resolve_label_recorded(
+    eval: &Evaluator<'_, '_, '_>,
+    text: &str,
+    lockfile: bool,
+) -> anyhow::Result<Label> {
+    let (label, from) = resolve_label_with(eval, text, None, true)?;
+    if let Some(from) = from {
+        record_label_repo_mapping(eval, &from, text, &label, lockfile);
+    }
+    Ok(label)
 }
 
 fn resolve_label_inner(
@@ -260,15 +277,22 @@ fn resolve_label_inner(
     text: &str,
     budget: Option<&mut crate::repository_budget::HostBudget>,
 ) -> anyhow::Result<Label> {
-    resolve_label_with(eval, text, budget, false)
+    resolve_label_with(eval, text, budget, false).map(|(label, _)| label)
 }
 
+/// The label and the repository whose context (mapping) resolved it, if
+/// any.
 fn resolve_label_with(
     eval: &Evaluator<'_, '_, '_>,
     text: &str,
     mut budget: Option<&mut crate::repository_budget::HostBudget>,
     deferred: bool,
-) -> anyhow::Result<Label> {
+) -> anyhow::Result<(Label, Option<String>)> {
+    // Inside a repository rule's run every apparent-name resolution must be
+    // recorded (debug builds check it, crate::repository_ctx).
+    if apparent_repository(text).is_some() {
+        crate::repository_ctx::note_apparent_resolution(eval);
+    }
     // In the Latin-1 char model a non-ASCII label string holds the Latin-1
     // decoding of its UTF-8 bytes; native labels and paths are UTF-8, so it
     // would name a different file. Bazel converts it back to the original
@@ -280,20 +304,22 @@ fn resolve_label_with(
         );
     }
     if let Some(repositories) = repositories(eval) {
-        let mut resolve = |repository: &str, package: &str| -> anyhow::Result<Label> {
-            if let Some(budget) = budget.as_deref_mut() {
-                let bound = repositories
-                    .resolution_size_bound(text, repository, package)
-                    .map_err(anyhow::Error::msg)?;
-                budget.bytes(bound).map_err(anyhow::Error::msg)?;
-            }
-            if deferred {
-                repositories.parse_deferred(text, repository, package)
-            } else {
-                repositories.parse(text, repository, package)
-            }
-            .map_err(anyhow::Error::msg)
-        };
+        let mut resolve =
+            |repository: &str, package: &str| -> anyhow::Result<(Label, Option<String>)> {
+                if let Some(budget) = budget.as_deref_mut() {
+                    let bound = repositories
+                        .resolution_size_bound(text, repository, package)
+                        .map_err(anyhow::Error::msg)?;
+                    budget.bytes(bound).map_err(anyhow::Error::msg)?;
+                }
+                if deferred {
+                    repositories.parse_deferred(text, repository, package)
+                } else {
+                    repositories.parse(text, repository, package)
+                }
+                .map(|label| (label, Some(repository.to_owned())))
+                .map_err(anyhow::Error::msg)
+            };
         if let Some(label) = definition_label(eval) {
             return resolve(&label.repository, &label.package);
         }
@@ -312,7 +338,9 @@ fn resolve_label_with(
             .bytes(Label::resolution_size_bound(text, "", "", &BTreeMap::new()))
             .map_err(anyhow::Error::msg)?;
     }
-    Label::parse(text, "").map_err(anyhow::Error::msg)
+    Label::parse(text, "")
+        .map(|label| (label, None))
+        .map_err(anyhow::Error::msg)
 }
 
 /// Resolve the raw load IDs in `ast` to frozen modules, evaluating each canonical
@@ -372,6 +400,12 @@ pub struct RecordedRepoMapping {
     pub from: String,
     pub apparent: String,
     pub canonical: Option<String>,
+    /// Bazel records it too (a load statement, `Label()`): it enters an
+    /// extension's MODULE.bazel.lock entry. False for lookups only bazel-rs
+    /// records (`Label.relative`, which Bazel's recorder does not see): they
+    /// key repositories (crate::repository's spec closure) but never reach
+    /// the lockfile, which stays genuine's.
+    pub lockfile: bool,
 }
 
 thread_local! {
@@ -415,27 +449,36 @@ pub(crate) fn current_repo_mapping(
 /// `Label()` (StarlarkRuleClassFunctions.label, :2124-2143) records the
 /// mapping lookup of an apparent repository in the thread's
 /// RepoMappingRecorder: a module extension's context
-/// (StarlarkBaseExternalContext.java:209-216), or the `.bzl` file being
-/// loaded (BzlLoadFunction.java:1396). Other phases record nothing.
-pub(crate) fn record_label_repo_mapping(eval: &Evaluator<'_, '_, '_>, text: &str, label: &Label) {
+/// (StarlarkBaseExternalContext.java:209-216), a repository rule's (its
+/// recorded inputs), or the `.bzl` file being loaded (BzlLoadFunction.java
+/// :1396). Other phases record nothing. `from` is the repository whose
+/// mapping the resolution actually used ([`resolve_label_recorded`]).
+/// `lockfile`: Bazel records this lookup too ([`RecordedRepoMapping::lockfile`]);
+/// a lookup only bazel-rs records never reaches an extension's lockfile
+/// entry (nor its context).
+pub(crate) fn record_label_repo_mapping(
+    eval: &Evaluator<'_, '_, '_>,
+    from: &str,
+    text: &str,
+    label: &Label,
+    lockfile: bool,
+) {
     let Some(apparent) = apparent_repository(text) else {
         return;
     };
-    let from = if let Some(label) = definition_label(eval) {
-        label.repository
-    } else if let Some(package) = crate::extension_ctx::definition_package(eval) {
-        package.repository
-    } else {
-        return;
-    };
     let entry = RecordedRepoMapping {
-        from,
+        from: from.to_owned(),
         apparent: apparent.to_owned(),
         canonical: recorded_canonical(label),
+        lockfile,
     };
-    if crate::extension_ctx::record_repo_mapping(eval, &entry)
-        || crate::repository_ctx::record_repo_mapping(eval, &entry)
-    {
+    if crate::repository_ctx::record_repo_mapping(eval, &entry) {
+        return;
+    }
+    if crate::extension_ctx::base_context(eval).is_some() {
+        if lockfile {
+            crate::extension_ctx::record_repo_mapping(eval, &entry);
+        }
         return;
     }
     if eval
@@ -2293,6 +2336,7 @@ impl<'a> Loader<'a> {
                         from: label.repository.clone(),
                         apparent: apparent.to_owned(),
                         canonical: recorded_canonical(resolved),
+                        lockfile: true,
                     });
                 }
             }

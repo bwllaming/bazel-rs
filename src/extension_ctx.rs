@@ -1047,6 +1047,7 @@ fn bind_modules(
                                     apparent: apparent.to_owned(),
                                     canonical: (!label.repository.starts_with('['))
                                         .then(|| label.repository.clone()),
+                                    lockfile: true,
                                 });
                         }
                         Ok(label)

@@ -759,7 +759,10 @@ fn label_methods(builder: &mut MethodsBuilder) {
     ) -> anyhow::Result<LabelValue> {
         let apparent = rel_name.starts_with('@') && !rel_name.starts_with("@@");
         let resolved = if apparent && crate::loading::repositories(eval).is_some() {
-            crate::loading::resolve_label_deferred(eval, rel_name)?
+            // Recorded like Label()'s lookup (Bazel's recorder does not see
+            // it: a repository's key and recorded inputs only, never an
+            // extension's lockfile entry).
+            crate::loading::resolve_label_recorded(eval, rel_name, false)?
         } else {
             crate::label::Label::parse_in(
                 rel_name,
@@ -2690,7 +2693,7 @@ pub fn analysis_globals(builder: &mut GlobalsBuilder) {
             // LabelSyntaxException -> `invalid label in Label(): MSG` (:2140-2142)
             // for Bazel-worded syntax errors (RepositoryName.validate).
             let label =
-                crate::loading::resolve_label_deferred(eval, label_string).map_err(|e| {
+                crate::loading::resolve_label_recorded(eval, label_string, true).map_err(|e| {
                     let text = e.to_string();
                     if text.starts_with("invalid repository name '") {
                         anyhow::anyhow!("invalid label in Label(): {text}")
@@ -2698,7 +2701,6 @@ pub fn analysis_globals(builder: &mut GlobalsBuilder) {
                         e
                     }
                 })?;
-            crate::loading::record_label_repo_mapping(eval, label_string, &label);
             return Ok(eval.heap().alloc(LabelValue::parse(&label.to_string())?));
         }
         Ok(eval.heap().alloc(LabelValue::parse(

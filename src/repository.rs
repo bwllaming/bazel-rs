@@ -7349,6 +7349,8 @@ impl RepositorySet {
             .repo_mappings
             .iter()
             .chain(&execution.tag_repo_mappings)
+            // Lookups only bazel-rs records stay out of the lockfile.
+            .filter(|entry| entry.lockfile)
         {
             table.insert(
                 (entry.from.clone(), entry.apparent.clone()),
@@ -8790,6 +8792,50 @@ mod tests {
             );
         }
         f
+    }
+
+    #[test]
+    fn recorded_mapping_lookups_are_checked_exactly() {
+        let f = environment_fixture(false, "[]", "ctx.file('value', 'constant')");
+        let repos = RepositorySet::new(f.0.clone());
+        let workspace = f.0.clone();
+        let tree = f.0.join("no-tree");
+        let current = crate::loading::current_repo_mapping(&repos, "", "repo")
+            .expect("@repo resolves")
+            .expect("@repo is visible");
+        let unchanged = |json: serde_json::Value| {
+            crate::repository_warm::unchanged(
+                &repos,
+                &workspace,
+                &tree,
+                &serde_json::to_vec(&json).unwrap(),
+            )
+            .unwrap()
+        };
+        // The lookup as it resolves now: unchanged.
+        assert!(unchanged(serde_json::json!({
+            "version": 5, "mappings": [["", "repo", current]]
+        })));
+        // Another result, or a recorded "not visible" that now resolves.
+        assert!(!unchanged(serde_json::json!({
+            "version": 5, "mappings": [["", "repo", "+other+thing"]]
+        })));
+        assert!(!unchanged(serde_json::json!({
+            "version": 5, "mappings": [["", "repo", null]]
+        })));
+        // A name still not visible stays unchanged.
+        assert!(unchanged(serde_json::json!({
+            "version": 5, "mappings": [["", "nowhere", null]]
+        })));
+        // Version 5 is written only with lookups, lookups only as version 5.
+        assert!(!unchanged(serde_json::json!({"version": 5})));
+        assert!(!unchanged(serde_json::json!({
+            "version": 4, "trees": [["x", "direct/trees/y"]], "mappings": [["", "repo", current]]
+        })));
+        assert!(!unchanged(serde_json::json!({
+            "version": 2, "mappings": [["", "repo", current]]
+        })));
+        assert!(unchanged(serde_json::json!({"version": 2})));
     }
 
     #[test]
