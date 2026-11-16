@@ -1,0 +1,71 @@
+{
+ "bazel": "9.3.1",
+ "cases": {
+  "command_option": {
+   "args": [
+    "--ignore_all_rc_files",
+    "build",
+    "--experimental_remote_repo_contents_cache",
+    "//..."
+   ],
+   "exit_code": 2,
+   "lines": [
+    "ERROR: --experimental_remote_repo_contents_cache :: Unrecognized option: --experimental_remote_repo_contents_cache"
+   ]
+  },
+  "rc_startup_line": {
+   "args": [
+    "--nosystem_rc",
+    "--nohome_rc",
+    "--noworkspace_rc",
+    "--bazelrc=SCRATCH/rc",
+    "build",
+    "--nobuild",
+    "//..."
+   ],
+   "exit_code": 0,
+   "lines": [
+    "INFO: Build completed successfully, 0 total actions"
+   ]
+  },
+  "startup": {
+   "args": [
+    "--ignore_all_rc_files",
+    "--experimental_remote_repo_contents_cache",
+    "build",
+    "--nobuild",
+    "//..."
+   ],
+   "exit_code": 0,
+   "lines": [
+    "INFO: Build completed successfully, 0 total actions"
+   ]
+  },
+  "startup_negated": {
+   "args": [
+    "--ignore_all_rc_files",
+    "--noexperimental_remote_repo_contents_cache",
+    "build",
+    "--nobuild",
+    "//..."
+   ],
+   "exit_code": 0,
+   "lines": [
+    "INFO: Build completed successfully, 0 total actions"
+   ]
+  },
+  "startup_value": {
+   "args": [
+    "--ignore_all_rc_files",
+    "--experimental_remote_repo_contents_cache=yes",
+    "build",
+    "--nobuild",
+    "//..."
+   ],
+   "exit_code": 2,
+   "lines": [
+    "[FATAL 07:36:39.747 src/main/cpp/blaze.cc:1275] In argument '--experimental_remote_repo_contents_cache=yes': option '--experimental_remote_repo_contents_cache' does not take a value."
+   ]
+  }
+ }
+}

@@ -653,3 +653,81 @@ fn the_option_and_the_cache_policies_gate_lookups_and_uploads() {
         )
     );
 }
+
+/// The option's parsing against genuine 9.3.1's
+/// (tests/fixtures/remote_repo_cache/reference_receipt.json, capture.py):
+/// a startup option on the command line or in an rc `startup` line, its
+/// negation, no value, no command option. Messages are compared without
+/// the client's prefix (`ERROR: `, `[FATAL …] `, `bazel-rs: `); the exit
+/// code of a startup argument with a value is 1 here, 2 in genuine (every
+/// OptionProcessor::SplitCommandLine failure is BAD_ARGV there; a native
+/// difference of all such failures, docs/REPO_CONTENTS_CACHE.md).
+#[test]
+fn the_option_parses_like_genuine() {
+    let receipt: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/remote_repo_cache/reference_receipt.json"
+    ))
+    .unwrap();
+    let root = crate::test_temp::root().join(format!(
+        "native-remote-repo-cache-parse-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let ws = root.join("ws");
+    fs::create_dir_all(&ws).unwrap();
+    fs::create_dir_all(root.join("home")).unwrap();
+    fs::write(ws.join("MODULE.bazel"), "module(name = \"rrc\")\n").unwrap();
+    fs::write(ws.join("BUILD.bazel"), "").unwrap();
+    let rc = root.join("rc");
+    fs::write(&rc, "startup --experimental_remote_repo_contents_cache\n").unwrap();
+    let message = |line: &str| {
+        let line = line
+            .strip_prefix("ERROR: ")
+            .or_else(|| line.strip_prefix("bazel-rs: "))
+            .unwrap_or(line);
+        match line.strip_prefix("[FATAL") {
+            Some(rest) => rest
+                .split_once("] ")
+                .map_or(rest, |(_, text)| text)
+                .to_owned(),
+            None => line.to_owned(),
+        }
+    };
+    for (name, case) in receipt["cases"].as_object().unwrap() {
+        let args: Vec<String> = case["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|arg| {
+                arg.as_str()
+                    .unwrap()
+                    .replace("SCRATCH/rc", &rc.display().to_string())
+            })
+            .collect();
+        let build = args.iter().position(|arg| arg == "build").unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_bazel-rs"));
+        command
+            .arg(format!("--cache-dir={}", root.join("cache").display()))
+            .args(&args[..=build])
+            .arg(builtin_registry_flag())
+            .args(&args[build + 1..])
+            .current_dir(&ws)
+            .env_clear()
+            .envs(verifier_environment())
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", root.join("home"));
+        let output = command.seeded_archives().output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let genuine = case["exit_code"].as_i64().unwrap() as i32;
+        let expected = if name == "startup_value" { 1 } else { genuine };
+        assert_eq!(output.status.code(), Some(expected), "{name}: {stderr}");
+        for line in case["lines"].as_array().unwrap() {
+            let wanted = message(line.as_str().unwrap());
+            assert!(
+                stderr.lines().any(|ours| message(ours) == wanted),
+                "{name}: {wanted:?} not in {stderr}"
+            );
+        }
+    }
+    let _ = sealed_trees::remove_tree(&root);
+}
