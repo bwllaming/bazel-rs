@@ -48,8 +48,8 @@ as the static builds' C compiler: run `scripts/setup-zig.sh` once (pinned zig
    prints its URL and the `gh run watch` command. `--watch` waits with `gh run
    watch --exit-status` and prints the release URL (exit status of the run).
 
-`--latest` is not passed to CI (the workflow publishes 0.x/-pre versions as
-prereleases; promote one in the GitHub UI or with `gh release edit --latest`).
+Releases are published as full releases marked latest; only `X.Y.Z-pre`
+versions (or `--prerelease`) become GitHub prereleases.
 If tagging or pushing fails, the exact undo commands are printed
 (`git tag -d v<version>`, `git push origin :refs/tags/v<version>`).
 
@@ -267,12 +267,12 @@ build: ~2 minutes) but enough for paired captures (docs/HOST_OS.md).
 5. `--dry-run` then prints what a real release would do and exits (1 if the
    preflight found problems); `--ci` publishes (above).
 
-**Prereleases.** 0.x versions and `X.Y.Z-pre` versions are published as GitHub
-prereleases (bazel-rs is not at Bazel parity; GitHub then never shows them as
-"latest"). `--ci --latest` would publish them as a full release marked latest
-(the workflow does not pass it; promote a published prerelease with `gh release
-edit v<version> --prerelease=false --latest`); 1.0 and later are always full
-releases.
+**Prereleases.** Since 0.4.28, 0.x versions are published as full GitHub
+releases marked latest, so the repository page lists them and
+`releases/latest` (and `…/releases/latest/download/<asset>`) resolves; their
+notes still say "Pre-1.0: not full Bazel parity". Only `X.Y.Z-pre` versions,
+or a release run with `--prerelease`, are GitHub prereleases. (0.4.27 was
+promoted by hand; earlier 0.x releases remain prereleases.)
 
 The `--dry-run` work directory is kept (archive, checksums, notes, the smoke
 workspace); the temporary worktree is removed and so is its target directory

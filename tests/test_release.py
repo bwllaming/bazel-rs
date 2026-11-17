@@ -99,8 +99,10 @@ class VersionTest(unittest.TestCase):
         self.assertEqual(
             release.archive_stem("0.2.0", "x86_64-unknown-linux-musl"), "bazel-rs-0.2.0-x86_64-unknown-linux-musl"
         )
-        self.assertTrue(release.is_prerelease("0.1.0"))
-        self.assertFalse(release.is_prerelease("0.1.0", latest=True))
+        self.assertFalse(release.is_prerelease("0.1.0"))
+        self.assertTrue(release.is_prerelease("0.1.0", prerelease=True))
+        self.assertTrue(release.is_pre_1_0("0.1.0"))
+        self.assertFalse(release.is_pre_1_0("1.0.0"))
         self.assertTrue(release.is_prerelease("1.0.0-rc.1"))
         self.assertFalse(release.is_prerelease("1.0.0"))
         keys = sorted(["0.10.0", "0.2.0", "1.0.0", "1.0.0-rc.1"], key=release.version_key)

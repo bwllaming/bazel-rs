@@ -217,12 +217,18 @@ def tag_name(version: str) -> str:
     return f"v{version}"
 
 
-def is_prerelease(version: str, latest: bool = False) -> bool:
-    """0.x and X.Y.Z-pre versions are GitHub prereleases unless --latest."""
-    if latest:
-        return False
-    major, _, _, pre = parse_version(version)
-    return major == 0 or pre is not None
+def is_prerelease(version: str, prerelease: bool = False) -> bool:
+    """Only X.Y.Z-pre versions (or --prerelease) are GitHub prereleases.
+
+    0.x releases are full releases marked latest, so the repository page lists
+    them and `releases/latest` resolves; their notes say they are pre-1.0.
+    """
+    _, _, _, pre = parse_version(version)
+    return prerelease or pre is not None
+
+
+def is_pre_1_0(version: str) -> bool:
+    return parse_version(version)[0] == 0
 
 
 def archive_stem(version: str, triple: str = TARGET) -> str:
@@ -1180,7 +1186,7 @@ def render_notes(info: NotesInfo, changelog: str, prepend: str | None = None) ->
         f"# bazel-rs {info.version}",
         "",
         "Experimental native Rust implementation of a Bazel-compatible build system."
-        + (" Pre-1.0: not full Bazel parity; expect behaviour changes between releases." if info.prerelease else ""),
+        + (" Pre-1.0: not full Bazel parity; expect behaviour changes between releases." if is_pre_1_0(info.version) else ""),
         "",
         "| | |",
         "|---|---|",
@@ -1782,7 +1788,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--watch", action="store_true", help="after pushing the tag, wait for the workflow run (gh run watch)")
     parser.add_argument("--notes", type=Path, help="markdown prepended to the generated release notes (stored in the tag message)")
     parser.add_argument("--replace-changelog", action="store_true", help="with --notes: drop the generated changelog")
-    parser.add_argument("--latest", action="store_true", help="publish a 0.x/-pre version as a full release marked latest")
+    parser.add_argument("--prerelease", action="store_true", help="publish as a GitHub prerelease (default: only X.Y.Z-pre versions)")
+    parser.add_argument("--latest", action="store_true", help=argparse.SUPPRESS)  # the default since 0.4.28
     parser.add_argument("--allow-dirty-for-test", action="store_true", help="skip the clean-tree check (the build uses the commit anyway)")
     parser.add_argument("--gh", default=default_gh(), help="GitHub CLI binary (default: $GH or gh on PATH)")
     parser.add_argument("--repo", help="GitHub owner/name (default: Cargo.toml repository)")
@@ -1835,7 +1842,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parse_version(version)
     tag = tag_name(version)
     gh_repo = args.repo or repository_slug(cargo_toml_head)
-    prerelease = is_prerelease(version, args.latest)
+    prerelease = is_prerelease(version, args.prerelease)
     mode = "ci" + (" dry run" if args.dry_run else "") if args.ci else ("dry run" if args.dry_run else "tag and push")
     print(f"release {tag} of {gh_repo} ({'prerelease' if prerelease else 'latest'}) [{mode}]")
 
@@ -1847,8 +1854,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if problems:
             report_problems(problems, False)
             return 2
-        if args.latest:
-            print("note: --latest is not passed to CI; the workflow publishes 0.x/-pre versions as prereleases", file=sys.stderr)
+        if args.prerelease:
+            print("note: --prerelease is not passed to CI; the workflow publishes only X.Y.Z-pre versions as prereleases", file=sys.stderr)
         return push_tag(
             run, repo_dir=repo_dir, gh=args.gh, gh_repo=gh_repo, version=version, commit=commit,
             message=tag_message(version, notes, args.replace_changelog), watch=args.watch,
