@@ -177,17 +177,17 @@ sample.
 | googletest | RS-FAIL | 25.4 / 14.7 (exit 1) | 3.2 / 0.2 / 1.5 (exit 1) | 32.0 / 1.1 (exit 1) | 1198 / 453 | 8, 521, 0, 0 | PASSED:44 / — | B1 |
 | re2 | RS-FAIL³ | 13.7 (exit 1) / 9.5 (exit 1) | 2.9 / 0.2 / 1.4 (both exit 1) | 15.3 (exit 1) / 6.6 (exit 1) | 1071 / 313 | 324, 761, 0, 0 | PASSED:21 / PASSED:1 | B1 |
 | highway | RS-FAIL | 11.9 / 7.6 (exit 1) | — | — | 736 / 234 | — | — | B1 |
-| bazel-skylib | RS-FAIL | 23.2 / 10.9 (exit 1) | 4.2 / 0.2 / 1.3 (exit 1) | 50.9 / 1.6 (exit 1) | 999 / 370 | 167, 522, 0, 1 | FAILED:4 PASSED:158 / PASSED:15 | B3, B6 |
+| bazel-skylib | RS-FAIL¹³ | 23.5 / 19.0 (exit 1) | 3.2 / 0.2 / 1.6 (exit 1) | 53.1 / 54.8 (exit 1) | 1335 / 579 | 677, 12, 0, 9 | FAILED:4 PASSED:158 / FAILED:5 PASSED:153 | B13a, B13b, B6 |
 | junit5-starter | RS-FAIL | 25.3 / 4.2 (exit 1) | 4.0 / 0.2 / 0.3 (exit 1) | 7.7 / 0.3 (exit 1) | 1293 / 115 | 0, 128, 0, 0 | PASSED:1 / — | B3 |
-| rules_zig | RS-FAIL | 32.7 / 10.3 (exit 1) | 13.3 / 0.4 / 8.4 (exit 1) | 38.2 / 8.3 (exit 1) | 2146 / 249 | 0, 1292, 0, 0 | PASSED:211 SKIPPED:4 / — | B3, B21, (B2) |
+| rules_zig | RS-FAIL¹³ | 36.8 / 39.0 (exit 1) | 13.5 / 0.4 / 11.8 (exit 1) | 41.2 / 11.6 (exit 1) | 2516 / 2079 | 0, 1292, 0, 0 | PASSED:211 SKIPPED:4 / SKIPPED:4 | B13c |
 | capnproto | RS-FAIL⁴ | 17.1 / 11.3 (exit 1) | 3.3 / 0.1 / 1.5 (exit 1) | 22.6 (exit 1) / 7.5 (exit 1) | 1127 / 384 | 317, 1085, 0, 0 | both: FAILED TO BUILD:5 SKIPPED:14 | B11, B20, (B2) |
 | tink-cc-examples | RS-FAIL | 17.3 / 17.1 (exit 1) | — | — | 1127 / 490 | — | — | B11, B14 |
 | examples-java-maven | RS-FAIL | 36.3 / 26.4 (exit 1) | 3.5 / 0.2 / 2.2 (exit 1) | 9.6 / 1.1 (exit 1) | 1130 / 436 | 1, 134, 0, 0 | PASSED:2 / — | B4, B14 |
-| rules_cc | RS-FAIL¹² | 31.4 (exit 1) / 19.1 (exit 1) | 5.3 / — / 1.8 (both exit 1) | — | 2395 / 550 | — | — | B29, B13 |
+| rules_cc | RS-FAIL¹³ | 24.9 (exit 1) / 22.1 (exit 1) | 5.1 / 0.4 / 2.5 (all exit 1) | 57.9 (exit 1) / 64.0 (exit 1) | 2724 / 685 | 452, 1532, 0, 2 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:2 FAILED TO BUILD:1 PASSED:50 | B29 (= B13d), B13e |
 | examples-rust-deps-cargo | RS-FAIL | 44.0 / 0.3 (exit 1) | 2.9 / 0.2 / 0.3 (exit 1) | 28.8 / 0.3 (exit 1) | 1034 / 29 | 0, 103, 0, 0 | — | B9, (B2) |
-| protobuf | RS-FAIL⁵ | 43.4 (exit 1) / 0.5 (exit 1) | 7.2 / 0.6 / 0.4 (both exit 1) | — | 2601 / 38 | — | — | B9, (B2) |
+| protobuf | RS-FAIL¹³ | 43.3 (exit 1) / 5.2 (exit 1) | 8.7 / 0.6 / 3.8 (all exit 1) | 296.5 (exit 1) / 4.4 (exit 1) | 2965 / 57 | 0, 41087, 0, 0 | — | B2 (`--incompatible_check_testonly_for_output_files`) |
 | openroad | RS-FAIL¹¹ | 89.4 / 211.3 (exit 1) | 9.8 / 0.8 / 68.9 (exit 1) | — | 3910 / 3671 | — | — | B27 |
-| rules_kotlin | RS-FAIL | 36.2 / 0.1 (exit 1) | — | — | 1748 / 1 | — | — | B10, (B2) |
+| rules_kotlin | RS-FAIL¹³ | 38.0 / 17.0 (exit 1) | — | — | 1663 / 336 | — | — | B4 |
 | riegeli | DIFF⁶ | 34.7 (exit 1) / 24.5 (exit 1) | 3.8 / 0.2 / 3.5 (all exit 1) | 82.5 (exit 1) / 79.1 (exit 1) | 1455 / 792 | 1865, 935, 0, 0 | PASSED:2 / PASSED:2 | B28 |
 | examples-frontend | DIFF⁷ | 89.7 (exit 1) / 129.3 (exit 1) | 60.6 / 110.6 / 100.7 (all exit 1) | 60.7 (exit 1) / 208.3 (exit 1) | 1350 / 1838 | 44827, 170986, 2, 0 | PASSED:14 / — | B8, B25, (B2) |
 | rules_jvm_external-simple | BOTH-FAIL⁸ | 75.9 (exit 1) / 5.5 (exit 1) | — | — | 1484 / 108 | 0, 0, 0, 0 | — | B4 |
@@ -242,12 +242,20 @@ Notes:
     analyse. rules_cc as the main module additionally hits B29 (4 targets)
     and B13 `testing.analysis_test` (17 targets); genuine fails there too
     (its `//tests/integration` targets need a `bazel` on PATH).
+13. Rerun on 2026-11-17 on branch corpus-analysistest (bazel-rs 0.4.27 plus
+    the B13 fix). bazel-skylib's `nonexistent_subdirectory_test` fails in
+    that run and passes after its last commit: 154 of 158 pass. rules_kotlin
+    is the base 0.4.27 run's `nobuild_cold`; its other phases were not
+    rerun, because genuine's `test //...` runs nested Bazel integration
+    tests. These runs predate main's B16 fix: rules_cc's
+    `extension_support_tests.bzl` (`inherit_attrs`) failed in them too.
 
 **Summary.** 37 projects ran. On 10 of them bazel-rs matches genuine exactly:
 same exit codes, `query //...` labels, `bazel-bin` file lists, sampled
 SHA-256s and test results. abseil-cpp is the largest: 2,767 outputs and 252
 passing tests. Two more (rules-template, yalantinglibs) fail the same way on
-both tools. Three are clean except for one bug each: bazel-gazelle (B13),
+both tools. Three are clean except for one bug each: bazel-gazelle (B13,
+since fixed),
 buildtools (B15) and rules_python-bzlmod (B7). The rest are blocked by the
 bugs below. Most block loading, analysis or module resolution, not
 execution: where both tools built, the outputs were identical except in
@@ -269,7 +277,12 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B11 | 2 (tink-cc, capnproto); every boringssl user | `strip_prefix` with a trailing `/` rejected |
 | B14 | 3 (tink-cc, examples-java-maven, examples-frontend) | internal errors "has no recorded duplicate-label check" / "internal analysis order error" |
 | B4 | 2 (examples-java-maven, rules_jvm_external-simple); every rules_android user | `android_common` global undefined |
-| B13 | 1 (bazel-gazelle) | `analysis_test_transition` (known gap) |
+| B13 | fixed (bazel-gazelle, bazel-skylib, rules_zig, rules_cc) | analysis tests: `analysis_test_transition`, `testing.analysis_test`, `Target.actions`, `AnalysisFailureInfo` (docs/ANALYSIS_TESTS.md) |
+| B13a | 1 (bazel-skylib) | transition on `//command_line_option:minimum_os_version` and `ctx.fragments.cpp.minimum_os_version()` |
+| B13b | 1 (bazel-skylib) | `srcs = ["."]` (the package directory as a source label): "unsafe source label //tests/directory:." |
+| B13c | 1 (rules_zig) | one toolchain implementation for two execution platforms in one configuration (ConfiguredTargetKey.executionPlatformLabel), a fatal error |
+| B13d | 1 (rules_cc) | rules_cc's own `cc_test.bzl`/`cc_binary.bzl` "cannot use private API" |
+| B13e | 1 (rules_cc) | `cc_import` of `mylib.dll`/`mylib.lib` on Linux: "does not match expected filetype" |
 | B15 | 1 (buildtools) | test runfiles are hardlinks, not symlinks |
 | B7 | 1 (rules_python-bzlmod) | transition: "Starlark flag and its alias have different values: False and "false"" |
 | B5 | 1 (diff.bzl) | `local_repository` → `rctx.symlink(path, ".")` rejected |
@@ -458,8 +471,23 @@ is unfetched and this thread does not fetch". The earlier commands had
 fetched that repository. It looks like an internal fetch-scheduling bug on a
 warm command.
 
-**B13.** skylib `analysistest` / `analysis_test_transition` with
-`expect_failure` is not analysed. This is known; see docs/BENCHMARKS.md.
+**B13 (fixed).** skylib `analysistest`, rules_testing and
+`analysis_test_transition`, including `expect_failure`, are analysed
+(docs/ANALYSIS_TESTS.md). One known gap remains: an aspect applied to a
+target in a configuration where nothing resolved the target platform, for
+example a failure target below `expect_failure`'s transition analysed
+alone (`test //tests/directory:nonexistent_subdirectory_test` in
+bazel-skylib), stops with the deferred-platform sentinel "rule
+implementation needs the target platform" when it reads `ctx.var`. The
+whole `//tests/directory/...` package analyses.
+
+**B13a.** skylib's `change_setting_test`,
+`change_setting_with_failure_test` and `inspect_output_dirs_test` set
+`//command_line_option:minimum_os_version` (CppOptions, default null). It is
+not a modelled native option.
+
+**B13c.** `zig/tests:version_validation_test` needs the zig toolchain for
+two execution platforms in one configuration, which ends the whole command.
 
 ### Cosmetic differences
 
