@@ -1,0 +1,1 @@
+filegroup(name = "f", srcs = ["a"] + select({"//conditions:default": depset(["b"])}))

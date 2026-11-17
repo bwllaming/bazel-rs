@@ -1,0 +1,11 @@
+{
+ "reference": "bazel 9.3.1",
+ "command": "query --output=build //:all (WORKSPACE = the workspace path)",
+ "query_build": "# WORKSPACE/BUILD.bazel:1:10\nfilegroup(\n  name = \"fg\",\n  srcs = [\"//:a.txt\"],\n)\n# Rule fg instantiated at (most recent call last):\n#   WORKSPACE/BUILD.bazel:1:10 in <toplevel>\n\n# WORKSPACE/BUILD.bazel:2:10\nfilegroup(\n  name = \"fg2\",\n  srcs = [\"//:b.txt\"],\n)\n# Rule fg2 instantiated at (most recent call last):\n#   WORKSPACE/BUILD.bazel:2:10 in <toplevel>\n\n# WORKSPACE/BUILD.bazel:3:8\ngenrule(\n  name = \"g\",\n  tags = [\"x\", \"y\"],\n  outs = [\"//:o.txt\"],\n  cmd = \"touch $@\",\n)\n# Rule g instantiated at (most recent call last):\n#   WORKSPACE/BUILD.bazel:3:8 in <toplevel>\n\n# WORKSPACE/BUILD.bazel:6:2\nr(\n  name = \"s\",\n  tags = [\"t\"],\n  deps = [\"//:fg\"],\n  strs = [\"p\", \"q\"],\n)\n# Rule s instantiated at (most recent call last):\n#   WORKSPACE/BUILD.bazel:6:2 in <toplevel>\n# Rule r defined at (most recent call last):\n#   WORKSPACE/r.bzl:1:9 in <toplevel>\n\n",
+ "debug": "DEBUG: WORKSPACE/BUILD.bazel:4:6: depset [1, 2]",
+ "errors": {
+  "e1": "//e1:g: expected value of type 'string' for attribute 'cmd' of 'genrule', but got depset([\"x\"]) (depset)",
+  "e2": "Cannot combine incompatible types (list, select of depset)",
+  "e4": "unsupported binary operation: depset + list"
+ }
+}

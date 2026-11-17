@@ -1,0 +1,1 @@
+genrule(name = "g", outs = ["o"], cmd = depset(["x"]))

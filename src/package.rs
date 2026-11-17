@@ -1511,6 +1511,20 @@ fn declare_native<'v>(
     let context = declarations(eval)?;
     let class = crate::native_rules::rule_class(class)
         .ok_or_else(|| anyhow!("unregistered native rule class {class}"))?;
+    // A depset for a list-typed attribute is its list (Type.ListType.convert).
+    let mut converted = None;
+    for (index, (key, value)) in arguments.iter().enumerate() {
+        if class
+            .attribute(key)
+            .is_some_and(|attribute| attribute.ty.is_list())
+        {
+            let list = crate::starlark_types::depset_as_list(*value, eval.heap())?;
+            if !list.ptr_eq(*value) {
+                converted.get_or_insert_with(|| arguments.to_vec())[index].1 = list;
+            }
+        }
+    }
+    let arguments = converted.as_deref().unwrap_or(arguments);
     let instance = crate::native_rules::instantiate(
         &class,
         arguments,
@@ -2407,7 +2421,8 @@ pub(crate) fn build_file_globals() -> Globals {
         .with(rule_globals)
         .with(native_rule_globals)
         .with(package_globals)
-        .with(build_only_globals);
+        .with(build_only_globals)
+        .with(crate::starlark_types::depset_globals);
     install_build_native_methods(&mut globals);
     crate::json::install(&mut globals);
     crate::rule_declarations::install_build(&mut globals);

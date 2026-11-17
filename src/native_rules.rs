@@ -37,6 +37,15 @@ pub enum NativeType {
 }
 
 impl NativeType {
+    /// Whether the type is a Type.ListType (packages/Type.java:697-760):
+    /// its conversion accepts any iterable and a depset.
+    pub fn is_list(self) -> bool {
+        matches!(
+            self,
+            Self::StringList | Self::LabelList | Self::NodepLabelList | Self::OutputList
+        )
+    }
+
     /// `Type.toString` (packages/Type.java, packages/BuildType.java).
     pub fn name(self) -> &'static str {
         match self {

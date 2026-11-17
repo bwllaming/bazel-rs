@@ -1,0 +1,1 @@
+filegroup(name = "f", srcs = depset(["a"]) + ["b"])

@@ -12,6 +12,22 @@ topological), a homogeneous element type and first-encounter deduplication
 in `to_list()`. Their elements are owned values, never Starlark heap
 references, so a depset can be frozen, shared and expanded after analysis.
 
+## BUILD files and list attributes (B27)
+
+`depset` is a BUILD-file global like in every `.bzl` context
+(StarlarkGlobalsImpl.addCommonUtilToplevels puts Depset.DepsetLibrary in
+the BUILD environment beside `json` and `proto`; `crate::starlark_types::depset_globals`).
+A depset given to a list-typed rule attribute (`list(string)`,
+`list(label)`, `list(output)`, `list(int)`, native or Starlark, BUILD file or
+macro) is its `to_list()` (Type.ListType.convert, packages/Type.java:731-738),
+also as a `select()` branch (OpenROAD's `@openssl//:BUILD.bazel`:
+`select({...: depset([...])})`); `crate::starlark_types::depset_as_list` converts
+the value at the rule call, after a Starlark rule's initializer. Other attribute
+types keep rejecting a depset (`expected value of type 'string' for attribute
+'cmd' of 'genrule', but got depset(["x"]) (depset)`), and `list + select of
+depset` / `depset + list` fail with Bazel's messages. Genuine capture:
+`tests/fixtures/build_depsets` (`tests/build_depsets.rs`).
+
 ## Element check (`depset(direct, ...)`)
 
 Depset.fromDirectAndTransitive checks each direct element in turn

@@ -1587,6 +1587,33 @@ mod values {
                 )
                 .map_err(starlark::Error::new_other)?;
             }
+            // A depset for a list-typed attribute is its list
+            // (Type.ListType.convert, after the initializer like
+            // RuleClass.populateRuleAttributeValues).
+            for (key, value, origin) in &mut arguments {
+                let list = match self.schema.get(key.as_str()) {
+                    Some(spec) if !key.starts_with('_') || *origin == Origin::Initializer => {
+                        matches!(
+                            spec.kind,
+                            AttrKind::StringList
+                                | AttrKind::LabelList
+                                | AttrKind::OutputList
+                                | AttrKind::IntList
+                        )
+                    }
+                    _ => crate::native_rules::starlark_builtins(self.declaration.kind())
+                        .attribute(if key == "applicable_licenses" {
+                            "package_metadata"
+                        } else {
+                            key.as_str()
+                        })
+                        .is_some_and(|attribute| attribute.ty.is_list()),
+                };
+                if list {
+                    *value = crate::starlark_types::depset_as_list(*value, eval.heap())
+                        .map_err(starlark::Error::new_other)?;
+                }
+            }
             let mut name = None;
             let mut visibility = None;
             let mut attrs = BTreeMap::new();

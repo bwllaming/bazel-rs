@@ -32,6 +32,7 @@ tests/fixtures/aspects/workspace
 tests/fixtures/basic
 tests/fixtures/bazel_tools_external/workspace
 tests/fixtures/bazel_version_digest/workspace
+tests/fixtures/build_depsets/workspace
 tests/fixtures/build_results/workspace
 tests/fixtures/build_settings/skylib
 tests/fixtures/bzl_visibility/package_metadata

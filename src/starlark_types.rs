@@ -2823,8 +2823,14 @@ impl<'v> UnpackValue<'v> for LabelInput<'v> {
     }
 }
 
-#[starlark_module]
+/// The analysis globals: `DefaultInfo`, `Label` and `depset`.
 pub fn analysis_globals(builder: &mut GlobalsBuilder) {
+    analysis_only_globals(builder);
+    depset_globals(builder);
+}
+
+#[starlark_module]
+fn analysis_only_globals(builder: &mut GlobalsBuilder) {
     const DefaultInfo: DefaultInfoConstructor = DefaultInfoConstructor;
 
     fn Label<'v>(
@@ -2859,7 +2865,12 @@ pub fn analysis_globals(builder: &mut GlobalsBuilder) {
                 .map_or(label_string, |_| &label_string[1..]),
         )?))
     }
+}
 
+/// `depset` (Depset.DepsetLibrary): in every .bzl context and, like
+/// StarlarkGlobalsImpl.addCommonUtilToplevels, in BUILD files.
+#[starlark_module]
+pub fn depset_globals(builder: &mut GlobalsBuilder) {
     fn depset<'v>(
         #[starlark(default = NoneType)] direct: Value<'v>,
         #[starlark(default = "default")] order: &str,
@@ -2921,6 +2932,45 @@ pub fn analysis_globals(builder: &mut GlobalsBuilder) {
 }
 
 use starlark::values::none::NoneType;
+
+/// Type.ListType.convert takes a depset's `to_list()` (packages/Type.java:
+/// 731-738): a depset given to a list-typed rule attribute — directly or as a
+/// `select()` branch (BuildType.copyAndLiftSelectorList converts each
+/// branch) — becomes a list of its items in depset order. Anything else is
+/// returned unchanged (a select without depset branches is not rebuilt).
+pub(crate) fn depset_as_list<'v>(value: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    use starlark::values::ValueLike as _;
+    let to_list = |value: Value<'v>| -> anyhow::Result<Value<'v>> {
+        Ok(match value.downcast_ref::<Depset>() {
+            Some(depset) => heap.alloc(
+                depset
+                    .flatten()
+                    .into_iter()
+                    .map(|item| item.alloc(heap))
+                    .collect::<Vec<_>>(),
+            ),
+            None => value,
+        })
+    };
+    if value.downcast_ref::<Depset>().is_some() {
+        return to_list(value);
+    }
+    let Some(pieces) = crate::rule_declarations::select_pieces(value) else {
+        return Ok(value);
+    };
+    let has_depset = pieces.iter().any(|piece| match piece {
+        crate::rule_declarations::SelectPiece::Plain(value) => {
+            value.downcast_ref::<Depset>().is_some()
+        }
+        crate::rule_declarations::SelectPiece::Select { branches, .. } => branches
+            .iter()
+            .any(|(_, value)| value.downcast_ref::<Depset>().is_some()),
+    });
+    if !has_depset {
+        return Ok(value);
+    }
+    crate::rule_declarations::lift_select(value, heap, &Ok, &to_list).unwrap_or(Ok(value))
+}
 
 /// A label value as a depset item (crate::depset_items).
 pub(crate) fn label_item(value: Value<'_>) -> Option<Item> {

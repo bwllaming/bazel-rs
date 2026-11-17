@@ -1,0 +1,6 @@
+filegroup(name = "fg", srcs = depset(["a.txt"]))
+filegroup(name = "fg2", srcs = select({"//conditions:default": depset(["b.txt"])}))
+genrule(name = "g", outs = ["o.txt"], cmd = "touch $@", tags = depset(["x", "y"]))
+print(type(depset([1])), depset([1, 2]).to_list())
+load(":r.bzl", "r")
+r(name = "s", deps = depset([":fg"]), strs = select({"//conditions:default": depset(["p", "q"])}), tags = depset(["t"]))
