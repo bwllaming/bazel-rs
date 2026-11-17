@@ -51,6 +51,8 @@ impl Workspace {
             .args(args)
             .envs(env.iter().copied())
             .current_dir(self.path())
+            // No clock-timed plain progress lines (whatever the runner's env).
+            .env("BAZEL_RS_PROGRESS", "0")
             .explicit_modules()
             .output()
             .unwrap();

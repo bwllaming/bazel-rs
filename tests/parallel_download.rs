@@ -258,7 +258,10 @@ impl Workspace {
         if sequential {
             command.env("BAZEL_RS_DEBUG_NO_ASYNC_DOWNLOAD", "1");
         }
-        command.explicit_modules();
+        command
+            // No clock-timed plain progress lines (whatever the runner's env).
+            .env("BAZEL_RS_PROGRESS", "0")
+            .explicit_modules();
         let started = Instant::now();
         let output = command.output().unwrap();
         let seen = fs::read_to_string(

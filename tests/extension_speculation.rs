@@ -464,7 +464,12 @@ slow = repository_rule(implementation = _slow_impl, local = True)
         for (key, value) in env {
             command.env(key, value);
         }
-        let output = command.explicit_modules().output().unwrap();
+        let output = command
+            // No clock-timed plain progress lines (whatever the runner's env).
+            .env("BAZEL_RS_PROGRESS", "0")
+            .explicit_modules()
+            .output()
+            .unwrap();
         assert_ne!(output.status.code(), Some(124), "timed out: {patterns:?}");
         let text = String::from_utf8_lossy(&output.stderr).into_owned();
         let (timing, stderr): (Vec<&str>, Vec<&str>) = text

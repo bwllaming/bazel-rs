@@ -49,6 +49,8 @@ impl Workspace {
             .args(["--ignore_all_rc_files", "--cache-dir=private-cache"])
             .args(args)
             .current_dir(self.path())
+            // No clock-timed plain progress lines (whatever the runner's env).
+            .env("BAZEL_RS_PROGRESS", "0")
             .explicit_modules()
             .output()
             .unwrap();

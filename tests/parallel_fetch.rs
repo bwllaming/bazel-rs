@@ -181,7 +181,10 @@ impl Workspace {
         if jitter > 0 {
             command.env("BAZEL_RS_LOADING_JITTER", jitter.to_string());
         }
-        command.explicit_modules();
+        command
+            // No clock-timed plain progress lines (whatever the runner's env).
+            .env("BAZEL_RS_PROGRESS", "0")
+            .explicit_modules();
         command
     }
 

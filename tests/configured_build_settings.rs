@@ -68,6 +68,8 @@ impl Fixture {
             ))
             .args(args)
             .current_dir(self.path())
+            // No clock-timed plain progress lines (whatever the runner's env).
+            .env("BAZEL_RS_PROGRESS", "0")
             .explicit_modules()
             .output()
             .unwrap();

@@ -56,7 +56,12 @@ impl Workspace {
             .env("BAZEL_RS_EVAL_LANE_AHEAD", if ahead { "1" } else { "0" })
             .envs(env.iter().copied())
             .current_dir(&self.0);
-        let output: Output = command.explicit_modules().output().unwrap();
+        let output: Output = command
+            // No clock-timed plain progress lines (whatever the runner's env).
+            .env("BAZEL_RS_PROGRESS", "0")
+            .explicit_modules()
+            .output()
+            .unwrap();
         let stderr =
             without_print_locations(&without_elapsed(&String::from_utf8_lossy(&output.stderr)))
                 .replace(&self.0.display().to_string(), "WS");

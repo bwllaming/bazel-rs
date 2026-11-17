@@ -60,6 +60,8 @@ impl Workspace {
             .args(args)
             .current_dir(self.path())
             .seeded_archives()
+            // No clock-timed plain progress lines (whatever the runner's env).
+            .env("BAZEL_RS_PROGRESS", "0")
             .explicit_modules()
             .output()
             .unwrap();
@@ -1167,6 +1169,8 @@ fn incremental_index_is_the_sequential_one_at_every_thread_count() {
             )
             .current_dir(ws.path())
             .seeded_archives()
+            // No clock-timed plain progress lines (whatever the runner's env).
+            .env("BAZEL_RS_PROGRESS", "0")
             .explicit_modules()
             .output()
             .unwrap();

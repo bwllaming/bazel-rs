@@ -57,7 +57,12 @@ impl Workspace {
         for (key, value) in env {
             command.env(key, value);
         }
-        command.explicit_modules().output().unwrap()
+        command
+            // No clock-timed plain progress lines (whatever the runner's env).
+            .env("BAZEL_RS_PROGRESS", "0")
+            .explicit_modules()
+            .output()
+            .unwrap()
     }
 }
 

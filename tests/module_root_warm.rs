@@ -202,7 +202,12 @@ impl Fixture {
         for (key, value) in env {
             command.env(key, value);
         }
-        let output: Output = command.explicit_modules().output().unwrap();
+        let output: Output = command
+            // No clock-timed plain progress lines (whatever the runner's env).
+            .env("BAZEL_RS_PROGRESS", "0")
+            .explicit_modules()
+            .output()
+            .unwrap();
         let text = String::from_utf8_lossy(&output.stderr).into_owned();
         let (timeline, stderr): (Vec<&str>, Vec<&str>) = text
             .split_inclusive('\n')
@@ -388,7 +393,12 @@ fn a_files_extension_repositories_execute_ahead_while_patterns_load() {
         for (key, value) in env {
             command.env(key, value);
         }
-        let output = command.explicit_modules().output().unwrap();
+        let output = command
+            // No clock-timed plain progress lines (whatever the runner's env).
+            .env("BAZEL_RS_PROGRESS", "0")
+            .explicit_modules()
+            .output()
+            .unwrap();
         let text = String::from_utf8_lossy(&output.stderr).into_owned();
         let (timeline, stderr): (Vec<&str>, Vec<&str>) = text
             .split_inclusive('\n')
