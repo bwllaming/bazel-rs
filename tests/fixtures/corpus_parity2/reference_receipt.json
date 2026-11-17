@@ -38,6 +38,24 @@
    ],
    "workspace": "workspace"
   },
+  "build_thread_attr_label_default": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/buildattr/made.sh": "#!/bin/sh\necho \\o\\k\nexit 0"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//buildattr:made"
+   ],
+   "workspace": "workspace"
+  },
   "exec_starlark_flags_default": {
    "command": "build",
    "exit": 0,

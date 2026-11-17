@@ -92,6 +92,8 @@ CASES = {
         [r'is not visible from'], []),
     'no_implicit_file_export_info': (
         [], 'info', ['--incompatible_no_implicit_file_export'], ['starlark-semantics'], [], []),
+    'build_thread_attr_label_default': (
+        [], 'build', BUILD, ['//buildattr:made'], [], ['made.sh']),
     'rules_cc_main_private_initializer': (
         [], 'build', BUILD, ['//use:t'], [], ['t.txt'], 'rules_cc_main'),
     'other_main_private_initializer': (
@@ -129,7 +131,9 @@ def main():
             matched.append(dict(pattern=pattern, line=found[0] if found else None))
         files = {}
         out = os.path.join(workspace, 'bazel-out')
-        for top, _, names in os.walk(out):
+        for top, dirs, names in os.walk(out):
+            # Runfiles trees repeat the outputs (bazel-rs reports none).
+            dirs[:] = [d for d in dirs if not d.endswith('.runfiles')]
             for file in names:
                 if file in outputs:
                     path = os.path.join(top, file)

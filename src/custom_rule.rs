@@ -4079,7 +4079,12 @@ fn dependency_descriptor<'v>(
         mandatory,
         false,
         false,
-        definition_package(eval).map(|_| &resolve as &LabelResolver<'_>),
+        // LabelConverter.forBzlEvaluatingThread: the innermost `.bzl` of
+        // the call stack, also for an attribute a macro creates while a
+        // BUILD file evaluates (rules_testing's analysis tests).
+        definition_package(eval)
+            .or_else(|| crate::loading::definition_label(eval))
+            .map(|_| &resolve as &LabelResolver<'_>),
     )?;
     let declaration = &mut descriptor.0.declaration;
     declaration.late_bound = late_bound;

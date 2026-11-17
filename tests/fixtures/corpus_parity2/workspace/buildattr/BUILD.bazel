@@ -1,0 +1,5 @@
+load(":defs.bzl", "make")
+
+filegroup(name = "dep")
+
+make(name = "made")
