@@ -120,6 +120,41 @@
    ],
    "workspace": "rules_cc_main"
   },
+  "self_source_label": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/selfsrc/self.txt": "selfsrc|selfsrc|selfsrc|.||True|False|@@//selfsrc:.|\n",
+    "k8-fastbuild/bin/selfsrc/self_label.txt": "selfsrc|selfsrc|selfsrc|.||True|False|@@//selfsrc:.|\n",
+    "k8-fastbuild/bin/selfsrc/via_filegroup.txt": "selfsrc|selfsrc|selfsrc|.||True|False|@@//selfsrc:.|\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//selfsrc:self",
+    "//selfsrc:self_label",
+    "//selfsrc:via_filegroup"
+   ],
+   "workspace": "workspace"
+  },
+  "self_source_label_query": {
+   "command": "query",
+   "exit": 0,
+   "flags": [],
+   "outputs": {},
+   "startup": [],
+   "stderr": [],
+   "stdout": "//selfsrc:.\n//selfsrc:BUILD.bazel\n//selfsrc:fg\n//selfsrc:self\n//selfsrc:self_label\n//selfsrc:via_filegroup\n",
+   "targets": [
+    "//selfsrc:all + //selfsrc:*"
+   ],
+   "workspace": "workspace"
+  },
   "testonly_output_alias_checked": {
    "command": "build",
    "exit": 1,

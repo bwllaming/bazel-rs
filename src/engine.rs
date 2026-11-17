@@ -18553,6 +18553,14 @@ fn source_target_with(
         side.missing.push((full.clone(), label.clone()));
         return Ok((full, true));
     }
+    // `:.` names the package directory itself (skylib's `srcs = ["."]`):
+    // a valid target name (LabelValidator allows `.` as the whole name) and,
+    // as an input file, the package's own directory: a source directory
+    // whose path is the package path (PathFragment normalizes `pkg/.`).
+    if label.name == "." {
+        side.directories.push((package_dir.clone(), label.clone()));
+        return Ok((package_dir, true));
+    }
     let ignored = repositories.ignored_subdirectories(&label.repository)?;
     let mut path = package_dir.clone();
     let mut relative = label.package.clone();

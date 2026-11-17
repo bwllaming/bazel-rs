@@ -46,6 +46,10 @@ CASES = {
     'minimum_os_version_transition_from_flag': (
         [], 'build', BUILD + ['--minimum_os_version=7'], ['//minos:unset', '//minos:read'], [],
         ['show.txt']),
+    'self_source_label': (
+        [], 'build', BUILD, ['//selfsrc:self', '//selfsrc:self_label', '//selfsrc:via_filegroup'],
+        [], ['self.txt', 'self_label.txt', 'via_filegroup.txt']),
+    'self_source_label_query': ([], 'query', [], ['//selfsrc:all + //selfsrc:*'], [], []),
     'rules_cc_main_private_initializer': (
         [], 'build', BUILD, ['//use:t'], [], ['t.txt'], 'rules_cc_main'),
     'other_main_private_initializer': (

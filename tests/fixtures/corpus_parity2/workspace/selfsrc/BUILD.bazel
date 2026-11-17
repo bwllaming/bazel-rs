@@ -1,0 +1,21 @@
+load(":defs.bzl", "describe")
+
+describe(
+    name = "self",
+    srcs = ["."],
+)
+
+describe(
+    name = "self_label",
+    srcs = ["//selfsrc:."],
+)
+
+filegroup(
+    name = "fg",
+    srcs = ["."],
+)
+
+describe(
+    name = "via_filegroup",
+    srcs = [":fg"],
+)

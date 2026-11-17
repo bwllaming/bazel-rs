@@ -440,6 +440,11 @@ impl Label {
     }
 
     pub fn source_exec_path(&self) -> PathBuf {
+        // `:.` is the package directory itself: PathFragment normalizes
+        // `pkg/.` to `pkg` (skylib's `srcs = ["."]`).
+        if self.name == "." {
+            return self.package_exec_path();
+        }
         self.package_exec_path().join(&self.name)
     }
 
@@ -448,10 +453,14 @@ impl Label {
         if self.repository.is_empty() {
             self.source_exec_path()
         } else {
-            PathBuf::from("..")
+            let package = PathBuf::from("..")
                 .join(&self.repository)
-                .join(&self.package)
-                .join(&self.name)
+                .join(&self.package);
+            if self.name == "." {
+                package
+            } else {
+                package.join(&self.name)
+            }
         }
     }
 
