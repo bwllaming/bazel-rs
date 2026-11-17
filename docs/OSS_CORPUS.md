@@ -34,9 +34,10 @@ First run: 2026-11-16/17, bazel-rs 0.4.23 (the installed main binary, sha256
   1. `nobuild_cold`: `build --nobuild --keep_going //...` with fresh state.
      This covers module resolution, every fetch, loading and analysis.
   2. `nobuild_warm`: the same command twice more; the second run is measured.
-     bazel-rs does not save an analysis snapshot for a command that wrote
-     `MODULE.bazel.lock`, which the cold command does. So its first repeat
-     re-analyses, and the second one uses the snapshot.
+     Before corpus-perf (P1), bazel-rs did not save an analysis snapshot
+     for a command that wrote `MODULE.bazel.lock`, which the cold command
+     does, so its first repeat re-analysed; the rows before that rerun were
+     measured so, and the second repeat is the snapshot hit either way.
   3. `server` (genuine only): the same command twice in server mode; the
      second run, with a warm server, is measured. Then `shutdown`.
   4. `query`: `query --keep_going //...`. The two label sets are compared.
@@ -157,7 +158,7 @@ sample.
 
 | project | verdict | cold nobuild g / rs (s) | warm nobuild g-batch / g-server / rs (s) | build g / rs (s) | peak RSS cold g / rs (MB) | outputs (common, only g, only rs, hash diff) | tests g / rs | blocking bugs |
 |---|---|---|---|---|---|---|---|---|
-| abseil-cpp | **OK** | 14.8 / 12.0 | 3.3 / 0.2 / 0.2 | 97.7 / 76.3 | 1131 / 453 | 2767, 0, 0, 0 | PASSED:252 / PASSED:252 | (B2) |
+| abseil-cpp | **OK**¹⁵ | 14.8 / 12.0 | 3.3 / 0.2 / 0.2 | 97.7 / 76.3 | 1131 / 453 | 2767, 0, 0, 0 | PASSED:252 / PASSED:252 | (B2) |
 | limdor-cpp | **OK** | 11.0 / 6.7 | 2.8 / 0.1 / 0.1 | 7.3 / 0.7 | 704 / 217 | 18, 0, 0, 0 | PASSED:1 / PASSED:1 | |
 | limdor-rust | **OK** | 29.0 / 20.5 | 2.8 / 0.1 / 0.2 | 4.7 / 1.9 | 807 / 426 | 91, 0, 0, 0 | PASSED:1 / PASSED:1 | |
 | examples-bzlmod-01 | **OK** | 11.5 / 6.7 | 3.0 / 0.1 / 0.1 | 5.4 / 2.6 | 641 / 217 | 187, 0, 0, 0 | — | |
@@ -165,11 +166,11 @@ sample.
 | examples-cpp-tutorial | **OK** | 10.8 / 6.7 | 2.8 / 0.2 / 0.1 | 3.6 / 0.7 | 755 / 203 | 13, 0, 0, 0 | — | |
 | examples-rust-ffi | **OK** | 27.0 / 17.4 | 2.9 / 0.2 / 0.1 | 4.0 / 1.6 | 788 / 373 | 57, 0, 0, 0 | — | (B2) |
 | rules_go-basic_gazelle | **OK** | 27.5 / 23.9 | 5.9 / 0.2 / 0.2 | 42.6 / 32.0 | 1281 / 490 | 117, 0, 0, 0 | PASSED:1 / PASSED:1 | |
-| rules_python-pip_parse | **OK** | 30.1 / 41.7 | 3.5 / 0.2 / 0.2 | 4.7 / 1.1 | 1625 / 614 | 56, 0, 0, 0 | PASSED:2 / PASSED:2 | (B2) |
+| rules_python-pip_parse | **OK**¹⁵ | 30.3–35.7 / 46.5–51.7 | 3.5 / 0.2 / 0.2 | 4.7 / 1.1 | 1625 / 614 | 56, 0, 0, 0 | PASSED:2 / PASSED:2 | (B2) |
 | rules-template | BOTH-FAIL¹ | 25.8 / 24.1 | 3.7 / 0.2 / 0.2 | 26.4 / 25.6 | 1405 / 423 | 446, 0, 0, 0 | FAILED:1 PASSED:1 / same | (B2) |
 | yalantinglibs | DIFF² | 12.2 / 7.5 | 3.1 / 0.2 / 0.1 | 61.5 (exit 1) / 52.1 (exit 1) | 638 / 213 | 126, 6, 0, 0 | same | (B2) |
 | buildtools | DIFF¹⁴ | 25.9 / 29.5 | 4.3 / 0.3 / 0.2 | 50.4 / 54.0 | 1974 / 1464 | 566, 0, 0, 1 | FAILED:2 PASSED:23 / same | B6 |
-| bazel-gazelle | RS-FAIL | 32.6 / 39.9 (exit 1) | 4.4 / 0.3 / 3.0 (exit 1) | 60.6 / 112.6 (exit 1) | 1647 / 1031 | 2545, 6, 0, 0 | FAILED:2 PASSED:194 / FAILED:2 PASSED:192 | B13 |
+| bazel-gazelle | RS-FAIL¹⁶ | 49.8 / 40.2 | 4.4 / 0.3 / not rerun | 53.0–62.5 / 55.1–59.7 | 1647 / 1031 | 2545, 6, 0, 0 (before B13's fix) | FAILED:2 PASSED:194 / FAILED:2 PASSED:192 (before B13's fix) | (B13 fixed; not rerun) |
 | diff.bzl | DIFF¹⁵ | 22.3 / 14.5 | 3.5 / — / 0.2 | 11.8 / 10.9 | 1190 / 354 | 308, 0, 0, 1 | PASSED:6 / PASSED:6 | B6 |
 | rules_python-bzlmod | DIFF¹⁵ | 44.9 / 59.6 | 7.3 / — / 0.2 | 43.8 / 41.4 | 2022 / 2577 | 319, 0, 0, 1 | PASSED:31 / PASSED:31 | B34 |
 | with_cfg-examples | RS-FAIL¹⁰ | 35.3 / 43.9 (exit 1) | 4.2 / 0.3 / 3.3 (exit 1) | 8.7 / 8.6 (exit 1) | 1405 / 1739 | 188, 56, 0, 8 | PASSED:20 / PASSED:15 | B17, B18, B19 |
@@ -186,7 +187,7 @@ sample.
 | rules_cc | RS-FAIL¹⁵ | 20.0 (exit 1) / 20.4 (exit 1) | 5.3 (exit 1) / — / 4.7 (exit 1) | 52.6 (exit 1) / 63.6 (exit 1) | 2635 / 1392 | 1348, 636, 0, 1 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:3 FAILED TO BUILD:2 PASSED:258 SKIPPED:2 | B32, B17, B18 |
 | examples-rust-deps-cargo | RS-FAIL | 44.0 / 0.3 (exit 1) | 2.9 / 0.2 / 0.3 (exit 1) | 28.8 / 0.3 (exit 1) | 1034 / 29 | 0, 103, 0, 0 | — | B9, (B2) |
 | protobuf | BOTH-FAIL¹⁵ | 49.3 (exit 1) / 79.0 (exit 1) | 7.0 (exit 1) / — / 18.1 (exit 1) | — | 2699 / 3315 | — | — | B33 |
-| openroad | RS-FAIL¹¹ | 75.2 / 211.0 (exit 1) | 8.5 / 0.8 / 64.7 (exit 1) | — | 3764 / 3980 | — | — | B18, B30 |
+| openroad | RS-FAIL¹¹ ¹⁶ | 87.6 / 143.5–153.0 (exit 1) | 8.4 / 0.8 / 15.4–17.4 (exit 1) | — | 3764 / 3980 | — | — | B18, B30 |
 | rules_kotlin | RS-FAIL¹⁵ | 36.9 / 35.7 (exit 1) | 4.7 / — / 7.4 (exit 1) | — | 2027 / 2165 | — | — | B35 |
 | riegeli | BOTH-FAIL⁶ | 30.2 (exit 1) / 31.0 (exit 1) | 4.1 / 0.2 / 3.7 (all exit 1) | 78.2 (exit 1) / 92.5 (exit 1) | 1427 / 794 | 2800, 0, 0, 0 | PASSED:2 / PASSED:2 | |
 | examples-frontend | DIFF⁷ | 89.7 (exit 1) / 129.3 (exit 1) | 60.6 / 110.6 / 100.7 (all exit 1) | 60.7 (exit 1) / 208.3 (exit 1) | 1350 / 1838 | 44827, 170986, 2, 0 | PASSED:14 / — | B8, B25, (B2) |
@@ -262,7 +263,6 @@ Notes:
     match (`//:make_location_lint` passes; the two failures are the same on
     both tools). The one remaining output difference is B6
     (`lang/tables.gen.go_checkshtest.repo_mapping`).
-
 15. Rerun 2026-11-17 on branch corpus-parity2 (phases `nobuild_cold,
     nobuild_warm,query,build,test`; protobuf and rules_kotlin
     `nobuild_cold,nobuild_warm,query`; rules_jvm_external-simple without
@@ -279,13 +279,26 @@ Notes:
     rules_jvm_external-simple: B31 (rules_jvm_external-simple also fails
     on genuine: no Android SDK). rules_kotlin: B35.
 
+16. Rerun 2026-11-17 on branch corpus-perf (main 460717e5 plus the
+    performance fixes below), phases `nobuild_cold` and `nobuild_warm` (and
+    `build` for bazel-gazelle) only, with the harness's flags and isolation
+    but driven by hand, three rounds each; ranges are the three runs (load
+    13–47). bazel-gazelle's cold `--nobuild` and `build //...` now exit 0
+    on both tools (B13 is fixed); its `build` outputs are byte-identical
+    before and after the scheduler change (2,551 files of `bazel-bin`);
+    query and test were not rerun. abseil-cpp's first repeat now hits the
+    snapshot (0.19–0.24 s, was 3.2–3.5 s). rules_python-pip_parse's cold
+    run stays unsaved: its pip extension prints a warning
+    (`extension-output`), which the next run does not print.
+
 **Summary.** 37 projects ran. On 10 of them bazel-rs matches genuine exactly:
 same exit codes, `query //...` labels, `bazel-bin` file lists, sampled
 SHA-256s and test results. abseil-cpp is the largest: 2,767 outputs and 252
 passing tests. Two more (rules-template, yalantinglibs; riegeli too since the
 corpus-runfiles rerun) fail the same way on
 both tools. Three are clean except for one bug each: bazel-gazelle (B13,
-fixed since, gazelle not rerun),
+fixed since; the corpus-perf rerun builds `//...` on both tools, its query
+and tests not rerun),
 buildtools (B15; since fixed, only B6's repo mapping manifest remains) and
 rules_python-bzlmod (B7). The rest are blocked by the
 bugs below. Most block loading, analysis or module resolution, not
@@ -564,19 +577,119 @@ These are indicative only, because the host was shared (load 15–60).
 - **Cold `build --nobuild //...`** (module resolution, fetch, loading,
   analysis): bazel-rs is faster on 9 of the 11 matching projects, by 1.2–1.7×
   (abseil 12.0 s against 14.8 s, limdor-cpp 6.7 against 11.0, rust-ffi
-  17.4 against 27.0). It is slower on rules_python pip_parse (41.7 against
-  30.1, pip wheel fetching) and on bazel-gazelle (39.9 against 32.6). It is
-  even on buildtools.
+  17.4 against 27.0). It is slower on rules_python pip_parse (46–52 against
+  30–36 s; P3 below), on OpenROAD (144–153 against 88 s; P4) and was on
+  bazel-gazelle (39.9 against 32.6; 40.2 against 49.8 in the corpus-perf
+  rerun). It is even on buildtools.
 - **Warm `build --nobuild`:** bazel-rs, with its analysis snapshot, takes
   0.1–0.2 s, like a warm genuine server (0.1–0.4 s) and 15–30× faster than
-  genuine `--batch` (2.8–5.9 s). bazel-rs does not save a snapshot for the
-  command that wrote `MODULE.bazel.lock` (the cold one), so the first repeat
-  re-analyses, for example 2.7 s on abseil (P1).
+  genuine `--batch` (2.8–5.9 s). Since corpus-perf the command that wrote
+  `MODULE.bazel.lock` (the cold one) saves a snapshot too (P1, fixed), so
+  the first repeat hits: abseil 0.19–0.24 s, was 3.2–3.5 s. A command whose
+  analysis failed is never saved; OpenROAD's repeats (5,439 targets fail on
+  B18/B30) re-analyse: 15.4–17.4 s against genuine `--batch` 8.4 s (was
+  65–68 s; P5).
 - **Full build** (after the cold analysis): bazel-rs is faster on abseil
   (76 s against 98 s), buildtools (58 against 75), basic_gazelle (32 against
-  43) and the small projects. It is 1.9× slower on bazel-gazelle (113 s
-  against 61 s, with similar CPU time: 1,147 against 1,051 s), which matches
-  docs/BENCHMARKS.md's gazelle cold build gap (P2).
+  43) and the small projects. bazel-gazelle (P2, fixed) is now even:
+  55.1–59.7 s against genuine's 53.0–62.5 s (main before the fix:
+  63.5–71.6 s; the corpus's 113 s ran into B13).
+- **Memory:** bazel-rs's peak RSS is 1.3–3.5× lower on cold analysis (for
+  example 453 MB against 1,131 MB on abseil). The exceptions are the large JS
+  (1.8 GB against 1.35 GB) and rules_python bzlmod (2.6 GB, about equal)
+  workspaces.
+
+### Findings and fixes (branch corpus-perf)
+
+Measured with non-LTO release builds of main (460717e5) and the branch,
+alternating, three rounds; genuine 9.3.1 `--batch` in the same rounds. The
+load average is the 1-minute value when each command started. Profiles:
+`--profile`, `BAZEL_RS_TIMING=1` (PERF marks), `BAZEL_RS_TIMING_TIMELINE=1`
+(`PERF-TL` spans of every repository execution, download, extension and
+module root, docs/MODULE_EXTENSIONS.md "Profiling") and
+`BAZEL_RS_EVAL_TIMELINE=1` (the evaluator's slow attempts and lane fetches).
+
+| | load | genuine | main | corpus-perf |
+|---|---|---|---|---|
+| OpenROAD cold `--nobuild` (exit 1 on bazel-rs) | 18–40 | 87.6 s | 205.4 / 174.4 / 185.7 s | 144.1 / 153.0 / 143.5 s |
+| OpenROAD second repeat (exit 1) | 13–33 | 8.4 s (`--batch`) | 67.5 / 66.9 / 65.2 s | 15.4 / 16.1 / 17.4 s |
+| OpenROAD first repeat | 14–29 | | 111.7 / 99.6 / 68.1 s | 31.9 / 31.2 / 45.2 s |
+| abseil-cpp cold `--nobuild` | 18–27 | | 15.0 / 12.2 / 11.9 s | 13.5 / 13.0 / 13.4 s |
+| abseil-cpp first repeat | 19–27 | | 3.51 / 3.20 / 3.27 s | 0.24 / 0.19 / 0.23 s (hit) |
+| bazel-gazelle `build //...` (after the cold analysis, outputs and action cache removed) | 22–47 | 58.0 / 62.5 / 53.0 s | 71.6 / 65.0 / 63.5 s | 59.7 / 55.5 / 55.1 s |
+| rules_python-pip_parse cold `--nobuild` | 13–30 | 30.3 / 34.5 / 35.7 s | 44.2 / 43.4 / 49.6 s | 46.5 / 51.7 / 50.1 s |
+
+Output identity: stdout and stderr (without timings, progress and PERF
+lines) of every abseil-cpp and OpenROAD command match main's; the snapshot
+hit after a lockfile-writing cold run passed `BAZEL_RS_SNAPSHOT=verify`
+with `BAZEL_RS_SNAPSHOT_VERIFY_STRICT=1`; bazel-gazelle's 2,551 `bazel-bin`
+files hash identically before and after the scheduler change.
+
+- **P5: `--keep_going` report, O(artifacts × failed targets)** (fixed).
+  After execution (also `--nobuild`), every requested artifact was checked
+  against the failed targets by a linear scan (`KeepGoingResult::built`):
+  48 s of one core on OpenROAD's 5,439 failed targets, in the cold run and
+  in every repeat. Now a set (`KeepGoingResult::not_built`).
+- **Git override warm check** (fixed). `qt-bazel`'s `git_override` tree
+  (262 MB, 17,632 files) was hashed in full by every command's module
+  resolution (3.3 s of `startup.modules`); its warm check now takes digests
+  from the persistent digest memo, like registry trees
+  (`startup.modules` 0.46–0.52 s).
+- **rules_m4 / rules_flex re-executed every command** (fixed).
+  `ctx.template("src/m4.h", "src/m4.h", …)` applied twice left `stage:`
+  template probes the published tree could never satisfy, so both toolchain
+  repositories were fetched again by every repeat (m4 1.5–3.8 s, once 90 s
+  on a slow mirror). Such a probe is no longer recorded
+  (docs/REPOSITORY_RULES.md).
+- **P1: no snapshot after a lockfile write** (fixed; soundness-sensitive,
+  docs/ANALYSIS_SNAPSHOT.md "The workspace lockfile as written"). The run
+  that writes MODULE.bazel.lock now records the lockfile's READ as the
+  bytes it writes, and the registry downloads it made without a checksum
+  settle when the written lockfile records their hash (or absence), as do
+  the `metadata.json` reads the written lockfile answers. Not recorded so:
+  `--native-lockfile=<path>` before that path exists, and `readonly`.
+- **P2: bazel-gazelle build, ready-action order** (fixed). The profile
+  showed `GoStdlib` starting 17 s after its only input
+  (`GoToolchainBinaryBuild`, the Go builder) finished: the 16 jobs took
+  ready C++ compilations by action id first. With more than one job the
+  scheduler now starts the ready action heading the longest chain of
+  dependent actions first (`Graph::ready_key`; Bazel's evaluator orders by
+  depth likewise). The jobs stay busy to the end (16.0 per 5 s window from
+  the first to the last but one).
+- **P4: OpenROAD cold `--nobuild` is still 1.6–1.7× genuine** (open). With
+  the fixes above, ~145 s against 88 s. The process uses about one core
+  (95 s user + 65 s sys over 145 s; genuine 246 + 54 s over 88 s). The
+  timeline shows why: of ~550 repositories (348 executed; 84–97 s of
+  execution summed) the evaluator demands most one at a time. Pool workers
+  never fetch: a load that needs an unfetched repository parks, and the
+  coordinator's single FIFO lane materializes it (registry module roots
+  `module-root` on `main`, e.g. freetype 7.6 s, icu 4.9 s, tcl_lang 4.1 s,
+  git 6.9 s) before the parked load runs again and discovers the next
+  one; module-root warm-ups and repository speculation start only when
+  the demand is discovered, so they overlap the lane by seconds, not the
+  chain. Long single waits stall everything: one run spent 91 s in
+  `Pkg(@@rules_m4++…m4_v1.4.18//rules_m4_internal)` waiting for a 90 s
+  download of `m4-1.4.18.tar.xz` from mirrors.kernel.org. Module
+  resolution itself is 13–26 s (the registry files arrive in 4.7 s; the
+  rest is the `qt-bazel` `git_override` clone, 262 MB). Genuine fetches as
+  many repositories at once as Skyframe evaluates. The fix is in the
+  evaluator: demands of different pool attempts fetched side by side (the
+  lane's queue fetched concurrently, or speculation requested for every
+  queued demand), keeping the order-independence of recorded inputs
+  (docs/EVALUATOR.md "Repositories").
+- **P3: rules_python-pip_parse cold fetch is ~1.4× genuine** (open; same
+  cause as P4). The timeline is one chain: the Python interpreter
+  (8.8 s), the wheels, then rules_rust's `stable_tools` (16 s, on the
+  fetch pool but alone), then the `crate` extension (12.7 s) whose
+  evaluation fetches `rust_host_tools` (12.2 s) on `main`: both rust
+  repositories decompress the same `rustc`, `llvm-tools` and `rust-std`
+  archives (the second from the download cache, 5.3 s of xz alone), one
+  after the other. Genuine runs them side by side.
+- **First repeat after a cold OpenROAD run** (open, by design): 31–45 s,
+  because the files of every repository tree published by the cold run
+  were younger than the digest memo's racy margin, so the first repeat
+  hashes all 2 GB of them once (`PERF-DMEMO registry=152,302 files`); the
+  second repeat reads none.
 - **Memory:** bazel-rs's peak RSS is 1.3–3.5× lower on cold analysis (for
   example 453 MB against 1,131 MB on abseil). The exceptions are the large JS
   (1.8 GB against 1.35 GB) and rules_python bzlmod (2.6 GB, about equal)
