@@ -297,6 +297,27 @@ fn archive_override_fetches_patches_and_runs_patch_commands() {
 }
 
 #[test]
+fn override_patch_commands_see_the_repository_environment() {
+    // utils.bzl `patch` runs them through repository_ctx.execute: the client
+    // environment with --repo_env applied.
+    let f = Fixture::new("archive");
+    let url = format!("file://{}", f.ws.join("arch.tar.gz").display());
+    f.template(&[("@ARCHIVE_URL@", url)], None);
+    let module = fs::read_to_string(f.ws.join("MODULE.bazel"))
+        .unwrap()
+        .replace("echo cmd > cmd.txt", "echo $OVERRIDE_ENV-$LC_ALL > cmd.txt");
+    fs::write(f.ws.join("MODULE.bazel"), module).unwrap();
+    let output = f.run(&[
+        "build",
+        "--repo_env=OVERRIDE_ENV=from-repo-env",
+        "--repo_env==LC_ALL",
+        "//:g",
+    ]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(f.output_file("g.txt"), "from-repo-env-\npatched\n");
+}
+
+#[test]
 fn archive_override_integrity_mismatch_fails() {
     let f = Fixture::new("archive");
     let url = format!("file://{}", f.ws.join("arch.tar.gz").display());

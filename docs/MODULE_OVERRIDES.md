@@ -58,8 +58,17 @@ module discovery like a Git override): download (`url` then `urls`,
 http.bzl `_get_source_urls`), verified against `integrity` or `sha256` when
 given, extraction with `strip_prefix` and `type`, `build_file_content`, then
 the root module's `patches` (native patcher, `patch_strip` or `-pN`
-`patch_args`) and `patch_cmds` (`bash -c` in the repository root, Bazel's
-`Error applying patch command` text) — utils.bzl `patch` order. Without a
+`patch_args`) and `patch_cmds` — utils.bzl `patch` order. Patch commands
+run like `repository_ctx.execute`: `bash -c` (`BAZEL_SH` of the repository
+environment, else `bash`) in the repository root with the repository
+environment (`--repo_env` over the client environment) and the default
+600-second timeout; a failure is Bazel's `Error applying patch command CMD:`
+with the command's stdout and stderr. One difference: the root is a private
+stage (`.stage-*` beside the published tree) renamed into place afterwards,
+not Bazel's `external/NAME`, so an absolute `$PWD` a command writes into the
+tree does not name the published location. The environment is not part of
+the tree's key, as it is not part of Bazel's marker (http_archive declares
+no `environ` beyond its canonical-id variable). Without a
 checksum the fetch prints genuine's two reproducible-form DEBUG lines. The
 tree is published in the repository store keyed by these attributes and the
 patch contents, and later commands reuse it after its manifest check (like

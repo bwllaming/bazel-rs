@@ -166,8 +166,14 @@ impl LocalPatchPlan {
 
     /// utils.bzl `patch` of http_archive / git_repository: the patch files
     /// in order (native patcher), then each patch command through
-    /// `bash -c` in the repository root, failing with
-    /// `Error applying patch command CMD:\nSTDOUTSTDERR`.
+    /// `bash -c` (`BAZEL_SH` of the repository environment, else `bash`) in
+    /// the repository root, with the repository environment (`--repo_env`
+    /// over the client environment, as `repository_ctx.execute`) and its
+    /// default 600-second timeout, failing with
+    /// `Error applying patch command CMD:\nSTDOUTSTDERR`. The root is a
+    /// private stage published by rename afterwards: unlike Bazel's
+    /// `external/NAME`, an absolute `$PWD` a command writes into the tree
+    /// does not name its final location (docs/MODULE_OVERRIDES.md).
     pub fn apply_override_tree(&self, root: &Path) -> Result<(), String> {
         self.validate_override_materialization()?;
         for input in &self.inputs {
@@ -177,23 +183,50 @@ impl LocalPatchPlan {
                     .map_err(|e| format!("cannot apply patch {label}: {e}"))?;
             }
         }
+        if self.commands.is_empty() {
+            return Ok(());
+        }
         // snapshot-unrecorded: only shapes a tree published under its own key; reuse never re-runs the commands.
-        let bash = std::env::var_os("BAZEL_SH").unwrap_or_else(|| "bash".into());
+        let process: Vec<(std::ffi::OsString, std::ffi::OsString)>;
+        let environment = match crate::repo_env::installed() {
+            Some(environment) => environment,
+            None => {
+                // snapshot-unrecorded: library use only (no installed command environment); as above.
+                process = std::env::vars_os().collect();
+                &process
+            }
+        };
+        let bash = environment
+            .iter()
+            .find(|(name, _)| name == "BAZEL_SH")
+            .map_or_else(|| "bash".into(), |(_, value)| value.clone());
         for command in &self.commands {
-            let output = crate::spawn_lock::output(
+            let failed =
+                |detail: &str| format!("Error applying patch command {command}:\n{detail}");
+            let output = run_with_timeout(
                 std::process::Command::new(&bash)
                     .arg("-c")
                     .arg(command)
                     .current_dir(root)
-                    .stdin(std::process::Stdio::null()),
+                    .env_clear()
+                    .envs(environment.iter().map(|(name, value)| (name, value))),
+                PATCH_COMMAND_TIMEOUT,
             )
-            .map_err(|e| format!("Error applying patch command {command}:\n{e}"))?;
-            if !output.status.success() {
-                return Err(format!(
-                    "Error applying patch command {command}:\n{}{}",
+            .map_err(|e| failed(&e))?;
+            if output.timed_out || !output.success {
+                return Err(failed(&format!(
+                    "{}{}{}",
                     String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                ));
+                    String::from_utf8_lossy(&output.stderr),
+                    if output.timed_out {
+                        format!(
+                            "Timed out after {} seconds",
+                            PATCH_COMMAND_TIMEOUT.as_secs()
+                        )
+                    } else {
+                        String::new()
+                    }
+                )));
             }
         }
         Ok(())
@@ -228,6 +261,58 @@ impl LocalPatchPlan {
         }
         identity
     }
+}
+
+/// `repository_ctx.execute`'s default timeout (600 seconds), which utils.bzl
+/// `patch` runs patch commands with.
+const PATCH_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+struct CommandOutput {
+    success: bool,
+    timed_out: bool,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+/// Run `command` (stdin closed, output into private temporary files) until
+/// it exits or `timeout` passes; on timeout its process is killed.
+fn run_with_timeout(
+    command: &mut std::process::Command,
+    timeout: std::time::Duration,
+) -> Result<CommandOutput, String> {
+    use std::io::{Read, Seek};
+    let mut stdout = tempfile::tempfile().map_err(|e| e.to_string())?;
+    let mut stderr = tempfile::tempfile().map_err(|e| e.to_string())?;
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(stdout.try_clone().map_err(|e| e.to_string())?)
+        .stderr(stderr.try_clone().map_err(|e| e.to_string())?);
+    let mut child = crate::spawn_lock::spawn(command).map_err(|e| e.to_string())?;
+    let deadline = std::time::Instant::now() + timeout;
+    let (success, timed_out) = loop {
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            break (status.success(), false);
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break (false, true);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    let read = |file: &mut std::fs::File| -> Result<Vec<u8>, String> {
+        let mut bytes = Vec::new();
+        file.seek(std::io::SeekFrom::Start(0))
+            .and_then(|_| file.read_to_end(&mut bytes))
+            .map_err(|e| e.to_string())?;
+        Ok(bytes)
+    };
+    Ok(CommandOutput {
+        success,
+        timed_out,
+        stdout: read(&mut stdout)?,
+        stderr: read(&mut stderr)?,
+    })
 }
 
 fn check_directory(path: &Path, kind: &str) -> Result<(), String> {
@@ -337,6 +422,28 @@ fn read_patch(path: &Path) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn patch_commands_time_out_and_capture_their_output() {
+        let output = super::run_with_timeout(
+            std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg("echo out; echo err >&2; exec sleep 30"),
+            std::time::Duration::from_millis(300),
+        )
+        .unwrap();
+        assert!(output.timed_out && !output.success);
+        assert_eq!(output.stdout, b"out\n");
+        assert_eq!(output.stderr, b"err\n");
+        let output = super::run_with_timeout(
+            std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg("exit 0"),
+            std::time::Duration::from_secs(30),
+        )
+        .unwrap();
+        assert!(output.success && !output.timed_out);
+    }
+
     use super::*;
     use crate::bzlmod::{Dependency, ModuleInfo};
     use std::fs::{self, File};

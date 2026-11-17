@@ -51,6 +51,22 @@ pub fn convert(input: &str) -> Result<EnvVar, String> {
     })
 }
 
+/// This command's repository environment ([`repository_environment`]),
+/// installed once by the CLI for consumers without a repository set (the
+/// patch commands of MODULE overrides, run during module discovery).
+static INSTALLED: std::sync::OnceLock<Vec<(OsString, OsString)>> = std::sync::OnceLock::new();
+
+/// Install this command's repository environment ([`installed`]).
+pub fn install(environment: Vec<(OsString, OsString)>) {
+    let _ = INSTALLED.set(environment);
+}
+
+/// The installed repository environment; `None` in library use, where the
+/// process environment applies.
+pub fn installed() -> Option<&'static [(OsString, OsString)]> {
+    INSTALLED.get().map(Vec::as_slice)
+}
+
 /// The non-strict repository environment (CommandEnvironment.java:347, :393-416):
 /// `client` with each value applied in order; `%bazel_workspace%` in a set
 /// value becomes the workspace path.

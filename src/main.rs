@@ -653,6 +653,7 @@ fn run() -> Result<(), String> {
                 .map_err(bazel_rs::exit_code::command_line)?;
         bazel_rs::download_options::install(settings);
     }
+    bazel_rs::repo_env::install(repository_environment.clone());
     // The cache root (crate::worktree, docs/WORKTREES.md): `--cache-dir`,
     // else found from the git metadata above the workspace — a linked git
     // worktree shares its main checkout's `bazel-rs-out`, anything else
