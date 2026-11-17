@@ -881,9 +881,11 @@ pub enum Use {
     Builtin = 2,
     /// Recorded repository-rule inputs (crate::repository_ctx).
     Recorded = 3,
+    /// Published `git_override` trees (crate::git_source).
+    Git = 4,
 }
 
-const USES: [&str; 4] = ["action", "registry", "builtin", "recorded"];
+const USES: [&str; 5] = ["action", "registry", "builtin", "recorded", "git"];
 
 struct Counter {
     files: AtomicU64,
@@ -918,8 +920,8 @@ struct Stats {
     fresh_hits: AtomicU64,
     misses: AtomicU64,
     remembered: AtomicU64,
-    hashed: [Counter; 4],
-    verified: [Timer; 4],
+    hashed: [Counter; 5],
+    verified: [Timer; 5],
 }
 
 static STATS: Stats = Stats {
@@ -932,8 +934,15 @@ static STATS: Stats = Stats {
         Counter::new(),
         Counter::new(),
         Counter::new(),
+        Counter::new(),
     ],
-    verified: [Timer::new(), Timer::new(), Timer::new(), Timer::new()],
+    verified: [
+        Timer::new(),
+        Timer::new(),
+        Timer::new(),
+        Timer::new(),
+        Timer::new(),
+    ],
 };
 
 /// Count a file that `user` actually read and hashed (telemetry).

@@ -1079,6 +1079,25 @@ fn snapshot(root: &Path, normalize: bool) -> Result<BTreeMap<String, Entry>, Str
         }
         if let EntryKind::Symlink { target } = &entry.kind {
             entry.size = target.len() as u64;
+        } else if entry.kind == EntryKind::File && !normalize {
+            // The warm check of a published (sealed) tree: a file's digest
+            // comes from the digest memo when it records the path in
+            // exactly its current state (dev, inode, size, mtime, ctime;
+            // recorded only when settled), as for registry trees
+            // (materializer::tree_matches); under --verify_repo_tampering
+            // every file is read (digest_memo::repository_table).
+            let sha256 = crate::digest_memo::file_sha256(
+                path,
+                &metadata,
+                crate::digest_memo::Use::Git,
+                |file| {
+                    crate::digest_memo::sha256_reader(file, metadata.len())
+                        .map(|(sha256, _)| sha256)
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            entry.size = metadata.len();
+            entry.sha256 = crate::digest_memo::hex(&sha256);
         } else if entry.kind == EntryKind::File {
             let mut digest = Sha256::new();
             let mut input = File::open(path).map_err(|e| e.to_string())?;
