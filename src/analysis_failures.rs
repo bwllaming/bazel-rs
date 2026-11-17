@@ -187,8 +187,9 @@ pub(crate) fn message_with_stack(error: &starlark::Error, repositories: &Reposit
             text.push_str(&format!("\t\t{line}\n"));
         }
     }
+    // The message as raised, a trailing newline included (Java prints it
+    // unchanged).
     let message = error.kind().to_string();
-    let message = message.trim().to_owned();
     match builtin {
         Some(name) => {
             text.push_str(&format!("Error in {name}: "));
