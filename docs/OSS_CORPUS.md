@@ -168,11 +168,11 @@ sample.
 | rules_python-pip_parse | **OK** | 30.1 / 41.7 | 3.5 / 0.2 / 0.2 | 4.7 / 1.1 | 1625 / 614 | 56, 0, 0, 0 | PASSED:2 / PASSED:2 | (B2) |
 | rules-template | BOTH-FAIL¹ | 25.8 / 24.1 | 3.7 / 0.2 / 0.2 | 26.4 / 25.6 | 1405 / 423 | 446, 0, 0, 0 | FAILED:1 PASSED:1 / same | (B2) |
 | yalantinglibs | DIFF² | 12.2 / 7.5 | 3.1 / 0.2 / 0.1 | 61.5 (exit 1) / 52.1 (exit 1) | 638 / 213 | 126, 6, 0, 0 | same | (B2) |
-| buildtools | DIFF | 26.0 / 27.9 | 4.3 / 0.4 / 0.2 | 74.9 / 57.6 | 1840 / 1440 | 566, 0, 0, 1 | FAILED:2 PASSED:23 / FAILED:3 PASSED:22 | B15, B6 |
+| buildtools | DIFF¹⁴ | 25.9 / 29.5 | 4.3 / 0.3 / 0.2 | 50.4 / 54.0 | 1974 / 1464 | 566, 0, 0, 1 | FAILED:2 PASSED:23 / same | B6 |
 | bazel-gazelle | RS-FAIL | 32.6 / 39.9 (exit 1) | 4.4 / 0.3 / 3.0 (exit 1) | 60.6 / 112.6 (exit 1) | 1647 / 1031 | 2545, 6, 0, 0 | FAILED:2 PASSED:194 / FAILED:2 PASSED:192 | B13 |
 | diff.bzl | RS-FAIL | 24.0 / 15.0 (exit 1) | 3.5 / 0.2 / 1.5 (exit 1) | 12.3 / 11.3 (exit 1) | 1105 / 339 | 292, 16, 0, 1 | FAILED:1 PASSED:5 / same | B5, B6, (B2) |
 | rules_python-bzlmod | RS-FAIL | 70.7 / 54.2 (exit 1) | 5.0 / 0.6 / 5.5 (exit 1) | 46.3 / 8.2 (exit 1) | 2547 / 2566 | 306, 13, 0, 0 | PASSED:31 / PASSED:30 | B7, (B2) |
-| with_cfg-examples | RS-FAIL¹⁰ | 32.9 / 50.8 (exit 1) | 4.0 / 0.3 / 3.4 (exit 1) | 9.4 / 10.1 (exit 1) | 1938 / 1717 | 188, 56, 0, 8 | PASSED:20 / FAILED:2 PASSED:13 | B17, B18, B19, B15 |
+| with_cfg-examples | RS-FAIL¹⁰ | 35.3 / 43.9 (exit 1) | 4.2 / 0.3 / 3.3 (exit 1) | 8.7 / 8.6 (exit 1) | 1405 / 1739 | 188, 56, 0, 8 | PASSED:20 / PASSED:15 | B17, B18, B19 |
 | examples-rules | RS-FAIL | 12.3 / 8.3 (exit 1) | 2.9 / 0.1 / 1.2 (exit 1) | 3.6 / 1.7 (exit 1) | 673 / 250 | 99, 4, 0, 0 | PASSED:1 / PASSED:1 | B23 |
 | googletest | RS-FAIL | 25.4 / 14.7 (exit 1) | 3.2 / 0.2 / 1.5 (exit 1) | 32.0 / 1.1 (exit 1) | 1198 / 453 | 8, 521, 0, 0 | PASSED:44 / — | B1 |
 | re2 | RS-FAIL³ | 13.7 (exit 1) / 9.5 (exit 1) | 2.9 / 0.2 / 1.4 (both exit 1) | 15.3 (exit 1) / 6.6 (exit 1) | 1071 / 313 | 324, 761, 0, 0 | PASSED:21 / PASSED:1 | B1 |
@@ -186,9 +186,9 @@ sample.
 | rules_cc | RS-FAIL¹³ | 24.9 (exit 1) / 22.1 (exit 1) | 5.1 / 0.4 / 2.5 (all exit 1) | 57.9 (exit 1) / 64.0 (exit 1) | 2724 / 685 | 452, 1532, 0, 2 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:2 FAILED TO BUILD:1 PASSED:50 | B29 (= B13d), B13e |
 | examples-rust-deps-cargo | RS-FAIL | 44.0 / 0.3 (exit 1) | 2.9 / 0.2 / 0.3 (exit 1) | 28.8 / 0.3 (exit 1) | 1034 / 29 | 0, 103, 0, 0 | — | B9, (B2) |
 | protobuf | RS-FAIL¹³ | 43.3 (exit 1) / 5.2 (exit 1) | 8.7 / 0.6 / 3.8 (all exit 1) | 296.5 (exit 1) / 4.4 (exit 1) | 2965 / 57 | 0, 41087, 0, 0 | — | B2 (`--incompatible_check_testonly_for_output_files`) |
-| openroad | RS-FAIL¹¹ | 89.4 / 211.3 (exit 1) | 9.8 / 0.8 / 68.9 (exit 1) | — | 3910 / 3671 | — | — | B27 |
+| openroad | RS-FAIL¹¹ | 108.4 / 252.7 (exit 1) | 9.8 / 0.9 / 62.0 (exit 1) | — | 3347 / 3512 | — | — | B27 TBD |
 | rules_kotlin | RS-FAIL¹³ | 38.0 / 17.0 (exit 1) | — | — | 1663 / 336 | — | — | B4 |
-| riegeli | DIFF⁶ | 34.7 (exit 1) / 24.5 (exit 1) | 3.8 / 0.2 / 3.5 (all exit 1) | 82.5 (exit 1) / 79.1 (exit 1) | 1455 / 792 | 1865, 935, 0, 0 | PASSED:2 / PASSED:2 | B28 |
+| riegeli | BOTH-FAIL⁶ | 30.2 (exit 1) / 31.0 (exit 1) | 4.1 / 0.2 / 3.7 (all exit 1) | 78.2 (exit 1) / 92.5 (exit 1) | 1427 / 794 | 2800, 0, 0, 0 | PASSED:2 / PASSED:2 | |
 | examples-frontend | DIFF⁷ | 89.7 (exit 1) / 129.3 (exit 1) | 60.6 / 110.6 / 100.7 (all exit 1) | 60.7 (exit 1) / 208.3 (exit 1) | 1350 / 1838 | 44827, 170986, 2, 0 | PASSED:14 / — | B8, B25, (B2) |
 | rules_jvm_external-simple | BOTH-FAIL⁸ | 75.9 (exit 1) / 5.5 (exit 1) | — | — | 1484 / 108 | 0, 0, 0, 0 | — | B4 |
 | flatbuffers | BOTH-FAIL⁸ | 21.7 (exit 1) / 8.2 (exit 1) | — | — | 864 / 184 | — | — | B12 |
@@ -211,7 +211,9 @@ Notes:
    fail the same way in loading and analysis (`@local_config_tf` is not
    visible; `sh_binary` undefined in `//python`), and the same 256 of 263
    top-level targets build. `query //...` (264 labels) and the tests match.
-   The output difference is B28 plus C1's 322 params files.
+   The output difference was B28 plus C1's 322 params files; rerun
+   2026-11-17 (branch corpus-runfiles, B28 fixed): the 2,800 outputs match,
+   only C1's params files remain.
 7. `cosmo.zip` (the `ape` toolchain) timed out from this host on both tools,
    so timings include connection timeouts. Besides that, bazel-rs fails
    `//react-router:build` (B8). Its `test` run then hit B25. The output
@@ -225,10 +227,12 @@ Notes:
 10. Rerun 2026-11-17 (branch corpus-macros): B3 and B16 are fixed, so the
     `inherit_attrs` wrappers (`wrapper.bzl:31`) load and expand. The two
     test failures (`//opt_filegroup:slow_app_integration_test` and its
-    `_with_reset` variant) are B15: the test checks that the runfile's
-    `realpath` contains `-opt/bin/`, but bazel-rs's per-test runfiles are
-    hardlinked copies. The `.bzl` files using `rule(parent=…)` (B17) still
-    fail, as does `cc_shared_library` (B18).
+    `_with_reset` variant) were B15: the test checks that the runfile's
+    `realpath` contains `-opt/bin/`, but bazel-rs's per-test runfiles were
+    hardlinked copies. Rerun 2026-11-17 (branch corpus-runfiles, B15 fixed):
+    both pass. The five tests still missing are behind the `.bzl` files
+    using `rule(parent=…)` (B17: `//sh`, `//args_location_expansion`) and
+    `cc_shared_library` (B18: `//dynamic_deps`).
 11. Rerun 2026-11-17 (branch corpus-macros), without the `build` phase (a
     full genuine OpenROAD build exceeds the 20-minute cap; bazel-rs fails in
     analysis first). B9, B22, B10 and B16 are passed: `query //...` matches
@@ -249,6 +253,10 @@ Notes:
     rerun, because genuine's `test //...` runs nested Bazel integration
     tests. These runs predate main's B16 fix: rules_cc's
     `extension_support_tests.bzl` (`inherit_attrs`) failed in them too.
+14. Rerun 2026-11-17 (branch corpus-runfiles, B15 fixed): the test statuses
+    match (`//:make_location_lint` passes; the two failures are the same on
+    both tools). The one remaining output difference is B6
+    (`lang/tables.gen.go_checkshtest.repo_mapping`).
 
 **Summary.** 37 projects ran. On 10 of them bazel-rs matches genuine exactly:
 same exit codes, `query //...` labels, `bazel-bin` file lists, sampled
@@ -256,7 +264,8 @@ SHA-256s and test results. abseil-cpp is the largest: 2,767 outputs and 252
 passing tests. Two more (rules-template, yalantinglibs) fail the same way on
 both tools. Three are clean except for one bug each: bazel-gazelle (B13,
 fixed since, gazelle not rerun),
-buildtools (B15) and rules_python-bzlmod (B7). The rest are blocked by the
+buildtools (B15; since fixed, only B6's repo mapping manifest remains) and
+rules_python-bzlmod (B7). The rest are blocked by the
 bugs below. Most block loading, analysis or module resolution, not
 execution: where both tools built, the outputs were identical except in
 with_cfg (B19).
@@ -283,7 +292,7 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B13c | 1 (rules_zig) | one toolchain implementation for two execution platforms in one configuration (ConfiguredTargetKey.executionPlatformLabel), a fatal error |
 | B13d | 1 (rules_cc) | rules_cc's own `cc_test.bzl`/`cc_binary.bzl` "cannot use private API" |
 | B13e | 1 (rules_cc) | `cc_import` of `mylib.dll`/`mylib.lib` on Linux: "does not match expected filetype" |
-| B15 | 1 (buildtools) | test runfiles are hardlinks, not symlinks |
+| B15 | fixed (corpus-runfiles) | test runfiles were hardlinks, not symlinks |
 | B7 | 1 (rules_python-bzlmod) | transition: "Starlark flag and its alias have different values: False and "false"" |
 | B5 | 1 (diff.bzl) | `local_repository` → `rctx.symlink(path, ".")` rejected |
 | B8 | 1 (examples-frontend) | declared output "crosses a package boundary" |
@@ -297,8 +306,8 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B12 | 1 (flatbuffers) | `@local_config_platform` unknown |
 | B24 | 1 (examples-configurations) | no PROJECT.scl project-file check |
 | B25 | 1 (examples-frontend) | "needs-repository: repository @@rules_diff+ is unfetched and this thread does not fetch" on a warm `test` |
-| B27 | 1 (openroad) | `depset` is not a BUILD-file global, and list-typed attributes do not accept depsets (`@openssl//:BUILD.bazel:508`, `select({...: depset([...])})`) |
-| B28 | 1 (riegeli); not blocking | `build //...` misses genuine's `.pic.o`/`.pic.d` of external C++ deps (curl, google_cloud_cpp, xz, bzip2) that no link uses |
+| B27 | fixed (corpus-runfiles) | `depset` was not a BUILD-file global, and list-typed attributes did not accept depsets (`@openssl//:BUILD.bazel:508`, `select({...: depset([...])})`) |
+| B28 | fixed (corpus-runfiles) | `build //...` missed genuine's `.pic.o`/`.pic.d` of external C++ deps: the rule-returned `_hidden_top_level_INTERNAL_` group (rules_cc cc_library's transitive objects) was not built |
 
 ### Details and minimal repros
 
@@ -388,7 +397,10 @@ bazel-rs's per-test execroot (`<cache>/tests/work/<key>/execroot/…runfiles/_ma
 runfiles are hardlinked regular files, so `readlink` prints nothing and
 `realpath WORKSPACE` stays inside the runfiles tree. Genuine's runfiles are
 symlinks. Repro: `bazel-rs test //:make_location_lint` in buildtools at
-fe6ef4d5.
+fe6ef4d5. Fixed on branch corpus-runfiles: a test's runfiles are symlinks to
+the artifacts staged at their exec paths and to the live sources
+(docs/RUNFILES_TREES.md "Test runfiles", genuine capture
+`tests/fixtures/runfiles_symlinks`).
 
 **B7: flag and alias values.** rules_python's `_zipapp_transition`
 (`python/private/zipapp/py_zipapp_rule.bzl:307`) sets
@@ -437,7 +449,12 @@ files and converts a depset to a list attribute value (Type.ListType.convert,
 packages/Type.java:731-738). B28: genuine's riegeli `bazel-bin` has ~600
 `.pic.o`/`.pic.d` files of external libraries (curl, google_cloud_cpp, xz,
 bzip2) that bazel-rs does not build; no `.params` link file names them;
-probably an output group of rules_cc targets (not investigated).
+probably an output group of rules_cc targets (not investigated). Fixed on
+branch corpus-runfiles: B27 (`depset` in BUILD files, depsets for list
+attributes, docs/DEPSETS.md) and B28 (rules_cc's cc_library returns its and
+its deps' objects in `_hidden_top_level_INTERNAL_`, which genuine builds for
+every requested target; bazel-rs built only the default runfiles' part of
+that group, docs/RUNFILES.md).
 
 **B20.** `rule(output_to_genfiles=True)` "accepted at load time but not
 analyzed" (capnproto's `capnp_gen`).
