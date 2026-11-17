@@ -1340,6 +1340,7 @@ impl Runner<'_> {
                 parse_xml,
                 interrupt,
                 remote_inputs.as_ref(),
+                &live,
             )? {
                 Attempted::Finished(attempt) => attempt,
                 Attempted::Failed(error) => {
@@ -1412,10 +1413,9 @@ impl Runner<'_> {
                     format: STATUS_FORMAT.to_owned(),
                     key: key.clone(),
                     status: status.name().to_owned(),
-                    // A source the test saw live changed meanwhile: the
-                    // result is not this key's.
-                    cachable: attempt.cachable
-                        && live.iter().all(|input| input.unchanged(self.cache)),
+                    // (False when a source the test saw live changed
+                    // meanwhile, Runner::attempt.)
+                    cachable: attempt.cachable,
                     test_times: test_times.clone(),
                     passed_log: passed.then(|| log.display().to_string()),
                     failed_logs: failed_logs.clone(),
@@ -1589,6 +1589,7 @@ impl Runner<'_> {
         parse_xml: bool,
         interrupt: &std::sync::atomic::AtomicBool,
         remote: Option<&RemoteTestInputs<'_>>,
+        live: &[crate::action::LiveInput],
     ) -> Result<Attempted, String> {
         let options = self.options;
         let base = execroot.join(&paths.base);
@@ -1641,6 +1642,8 @@ impl Runner<'_> {
             Some(RemoteTestRun::Fallback) => crate::sandbox::Strategy::Standalone,
             _ => strategy,
         };
+        // A test the remote executor ran never saw the local sources.
+        let ran_remotely = matches!(remote_run, Some(RemoteTestRun::Done { .. }));
         if let Some(RemoteTestRun::Failed(message)) = remote_run {
             return Ok(Attempted::Failed(message));
         }
@@ -1818,6 +1821,14 @@ impl Runner<'_> {
             };
             (millis, exit_code, timed_out)
         };
+        // The test saw its sources live (crate::action::stage_test_inputs):
+        // when one no longer holds the keyed content, the result is not
+        // this key's, so it is neither stored in the spawn cache (disk or
+        // remote, also after a remote executor's local fallback) nor cached
+        // locally. Checked once a locally run test has exited, before any
+        // store.
+        let sources_unchanged =
+            ran_remotely || live.iter().all(|input| input.unchanged(self.cache));
         // CacheHandle.store: a successful local execution (SUCCESS, exit 0;
         // RemoteExecutionService.commitResultAndDecideWhetherToUpload) is
         // uploaded with test.log and test.err as its stdout and stderr,
@@ -1825,6 +1836,7 @@ impl Runner<'_> {
         if let Some(handle) = store
             && exit_code == 0
             && !timed_out
+            && sources_unchanged
         {
             let stdout = fs::read(&log_path).map_err(|e| io("cannot read", &log_path, e))?;
             let stderr = fs::read(&err_path).unwrap_or_default();
@@ -1837,7 +1849,7 @@ impl Runner<'_> {
         } else {
             TestStatus::Failed
         };
-        let mut cachable = true;
+        let mut cachable = sources_unchanged;
         // TEST_PREMATURE_EXIT_FILE (:668-683).
         let premature = base.join("test.exited_prematurely");
         if fs::remove_file(&premature).is_ok() && test_status == TestStatus::Passed {

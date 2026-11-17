@@ -6552,8 +6552,28 @@ pub fn stage_test_inputs(
     let (root, cas) = cache_store(cache_root)?;
     let mut staged = BTreeMap::new();
     let mut live = BTreeMap::new();
+    // One path, one artifact: a runfile's exec path is staged once for every
+    // runfile linking to it (and for a coverage input at that path); two
+    // different contents there would silently overwrite each other (in
+    // Bazel an exec path names exactly one artifact).
+    let mut seen: BTreeMap<&Path, (String, bool)> = BTreeMap::new();
     for (input, destination) in inputs {
         validate_relative(destination)?;
+        let identity = (input.digest(), input.executable());
+        match seen.entry(destination.as_path()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(identity);
+            }
+            std::collections::btree_map::Entry::Occupied(entry) if *entry.get() == identity => {
+                continue;
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {
+                return Err(format!(
+                    "internal error: two different test inputs at '{}'",
+                    destination.display()
+                ));
+            }
+        }
         match &input.0 {
             Staged::File(file)
                 if file.path.is_absolute()
@@ -10398,6 +10418,39 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
             "The file type of 'in/dir/dangling' is not supported."
         );
         forget_source_directories();
+    }
+
+    #[test]
+    fn test_inputs_with_two_contents_at_one_path_fail() {
+        let fixture = Fixture::new();
+        let a = fixture.0.join("a.txt");
+        let b = fixture.0.join("b.txt");
+        fs::write(&a, "a\n").unwrap();
+        fs::write(&b, "b\n").unwrap();
+        let a = read_content_input(&fixture.cache(), &a).unwrap();
+        let b = read_content_input(&fixture.cache(), &b).unwrap();
+        let execroot = fixture.0.join("execroot");
+        let same = PathBuf::from("bazel-out/k8-fastbuild/bin/x");
+        // The same content twice is one input.
+        stage_test_inputs(
+            &fixture.cache(),
+            &[(a.clone(), same.clone()), (a.clone(), same.clone())],
+            &[],
+            &execroot,
+        )
+        .unwrap();
+        let error = stage_test_inputs(
+            &fixture.cache(),
+            &[(a, same.clone()), (b, same)],
+            &[],
+            &fixture.0.join("execroot2"),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(
+            error,
+            "internal error: two different test inputs at 'bazel-out/k8-fastbuild/bin/x'"
+        );
     }
 
     #[test]

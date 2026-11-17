@@ -240,3 +240,77 @@ edit_test = rule(implementation = _impl, test = True, attrs = {"data": attr.labe
     assert!(second.status.success(), "{text}");
     assert!(!text.contains("(cached)"), "{text}");
 }
+
+#[test]
+fn a_source_changed_while_its_test_ran_is_not_stored_in_the_disk_cache() {
+    // The spawn cache (`--disk_cache`, also `--remote_cache` with
+    // `--remote_upload_local_results`) stores a passing local test right
+    // after it exits: a source the test saw live that changed meanwhile
+    // must keep it out, or another cache would get the edited-bytes result
+    // under the original key. `keep_test` (no edit) shows the store works.
+    let root = Workspace(
+        tempfile::Builder::new()
+            .prefix("runfiles-symlinks-disk-")
+            .tempdir_in(crate::test_temp::root())
+            .unwrap(),
+    );
+    let ws = root.0.path().join("ws");
+    fs::create_dir_all(&ws).unwrap();
+    fs::write(ws.join("MODULE.bazel"), "module(name = \"live\")\n").unwrap();
+    fs::write(ws.join("data.txt"), "before\n").unwrap();
+    fs::write(ws.join("kept.txt"), "kept\n").unwrap();
+    fs::write(
+        ws.join("defs.bzl"),
+        r##"def _impl(ctx):
+    exe = ctx.actions.declare_file(ctx.label.name + ".sh")
+    edit = 'echo during > "$(realpath "$TEST_SRCDIR/_main/data.txt")"' if ctx.attr.edit else ""
+    ctx.actions.write(exe, "#!/bin/bash\necho RAN-" + ctx.label.name + "\n" + edit + "\n", is_executable = True)
+    return [DefaultInfo(executable = exe, runfiles = ctx.runfiles(files = ctx.files.data))]
+
+probe_test = rule(implementation = _impl, test = True, attrs = {"data": attr.label_list(allow_files = True), "edit": attr.bool()})
+"##,
+    )
+    .unwrap();
+    fs::write(
+        ws.join("BUILD.bazel"),
+        "load(\":defs.bzl\", \"probe_test\")\n\
+         probe_test(name = \"edit_test\", data = [\"data.txt\"], edit = True, tags = [\"no-sandbox\"])\n\
+         probe_test(name = \"keep_test\", data = [\"kept.txt\"], tags = [\"no-sandbox\"])\n",
+    )
+    .unwrap();
+    let disk = root.0.path().join("disk");
+    let disk_flag = format!("--disk_cache={}", disk.display());
+    let registry = builtin_registry_flag();
+    let run = |cache: &str| {
+        let cache = root.0.path().join(cache);
+        seed_module_archives(&cache, TOOLCHAIN_CLOSURE_ARCHIVES);
+        let output = root.run(
+            &cache,
+            &["test", &registry, &disk_flag, "--test_output=all", "//:all"],
+        );
+        let text = String::from_utf8_lossy(&output.stdout).into_owned()
+            + &String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{text}");
+        text
+    };
+    let first = run("cache1");
+    assert!(
+        first.contains("RAN-edit_test") && first.contains("RAN-keep_test"),
+        "{first}"
+    );
+    assert_eq!(fs::read_to_string(ws.join("data.txt")).unwrap(), "during\n");
+    // The original bytes again, in a fresh local cache sharing the disk
+    // cache: keep_test is served by the disk cache, edit_test runs again.
+    fs::write(ws.join("data.txt"), "before\n").unwrap();
+    let second = run("cache2");
+    let status = |label: &str| {
+        second
+            .lines()
+            .find(|line| line.starts_with(label) && line.contains("PASSED"))
+            .unwrap_or_else(|| panic!("no status of {label}: {second}"))
+            .to_owned()
+    };
+    assert!(status("//:keep_test ").contains("(cached)"), "{second}");
+    assert!(!status("//:edit_test ").contains("(cached)"), "{second}");
+    assert_eq!(fs::read_to_string(ws.join("data.txt")).unwrap(), "during\n");
+}

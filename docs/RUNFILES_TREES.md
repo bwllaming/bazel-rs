@@ -247,6 +247,27 @@ result when one no longer holds the keyed content (test
 `a_source_changed_while_its_test_ran_is_not_cached`). The earlier snapshot
 guarantee (the test ran on exactly the keyed bytes) is given up for test
 sources only; actions keep their hardlinked copies (docs/HARDLINK_STAGING.md).
+The check runs once a locally run test has exited, before anything is
+stored: a changed source also keeps the result out of the spawn cache
+(`--disk_cache`, `--remote_cache` with `--remote_upload_local_results`, also
+after a remote executor's `--remote_local_fallback`), so no other cache gets
+the edited-bytes result under the original key (test
+`a_source_changed_while_its_test_ran_is_not_stored_in_the_disk_cache`). A
+test the remote executor ran never saw the local files and is not checked.
+Two different contents at one staged path (an exec path named by two
+runfiles or a coverage input) fail the test action with `internal error: two
+different test inputs at '<path>'` instead of one silently replacing the
+other; in Bazel an exec path names one artifact.
+
+**Writes through source runfiles.** A source runfile is the workspace file
+itself, so a test that writes through it changes the workspace, as under
+genuine's local strategy and processwrapper-sandbox. Under the namespace
+sandbox (genuine's linux-sandbox) the workspace is remounted read-only and
+the write fails. The Landlock-restricted processwrapper-sandbox
+(docs/SANDBOX.md) denies writes only outside its writable roots, and `/tmp`
+is one of them: a workspace below `/tmp` can be written through a source
+runfile there, and `standalone`/`no-sandbox` tests can write any workspace.
+The result of such a test is never cached (above).
 
 **Genuine capture.** `tests/fixtures/runfiles_symlinks` (capture.py,
 reference_receipt.json, genuine 9.3.1; test
