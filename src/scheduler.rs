@@ -519,7 +519,30 @@ struct Graph {
     index: BTreeMap<String, usize>,
     remaining: BTreeMap<String, usize>,
     consumers: BTreeMap<String, Vec<String>>,
-    ready: BTreeSet<String>,
+    /// The ready actions, the most urgent first ([`Graph::ready_key`]).
+    ready: BTreeSet<(std::cmp::Reverse<u32>, String)>,
+    /// Per node (by planning position): the number of actions on the
+    /// longest chain from it to an action nothing consumes, itself
+    /// included; all 0 with one job ([`Graph::ready_key`]).
+    levels: Vec<u32>,
+}
+
+impl Graph {
+    /// The ready order: the action heading the longest chain of dependent
+    /// actions first, then by id. A ready action on the critical path (a
+    /// toolchain builder or standard library that many compilations wait
+    /// for) starts before a ready leaf of a short chain: with ids alone it
+    /// waited behind every ready C++ compilation of bazel-gazelle (17 s;
+    /// docs/OSS_CORPUS.md, P2). Bazel's evaluator orders ready work by
+    /// depth likewise (PriorityTracker). With one job the order cannot
+    /// change the wall time: ids alone, as before.
+    fn ready_key(&self, id: &str) -> (std::cmp::Reverse<u32>, String) {
+        let level = self
+            .index
+            .get(id)
+            .map_or(0, |&position| self.levels[position]);
+        (std::cmp::Reverse(level), id.to_owned())
+    }
 }
 
 fn validate(nodes: Vec<PlannedAction>, jobs: usize) -> Result<Graph, String> {
@@ -576,7 +599,7 @@ fn validate(nodes: Vec<PlannedAction>, jobs: usize) -> Result<Graph, String> {
         }
         remaining.insert(id.clone(), count);
     }
-    let ready: BTreeSet<_> = remaining
+    let ready: BTreeSet<String> = remaining
         .iter()
         .filter(|(_, count)| **count == 0)
         .map(|(id, _)| id.clone())
@@ -586,8 +609,10 @@ fn validate(nodes: Vec<PlannedAction>, jobs: usize) -> Result<Graph, String> {
     let mut pending = remaining.clone();
     let mut visit = ready.clone();
     let mut visited = 0;
+    let mut topological: Vec<usize> = Vec::with_capacity(index.len());
     while let Some(id) = visit.pop_first() {
         visited += 1;
+        topological.push(index[&id]);
         if let Some(children) = consumers.get(&id) {
             for child in children {
                 let count = pending.get_mut(child).expect("known consumer");
@@ -609,13 +634,30 @@ fn validate(nodes: Vec<PlannedAction>, jobs: usize) -> Result<Graph, String> {
             blocked.join(", ")
         ));
     }
-    Ok(Graph {
+    // The longest chain below each node, consumers before producers.
+    let mut levels = vec![0u32; nodes.len()];
+    if jobs > 1 {
+        for &position in topological.iter().rev() {
+            let below = consumers
+                .get(&nodes[position].action.id)
+                .into_iter()
+                .flatten()
+                .map(|consumer| levels[index[consumer]])
+                .max()
+                .unwrap_or(0);
+            levels[position] = below.saturating_add(1);
+        }
+    }
+    let mut graph = Graph {
         nodes: nodes.into_iter().map(Some).collect(),
         index,
         remaining,
         consumers,
-        ready,
-    })
+        ready: BTreeSet::new(),
+        levels,
+    };
+    graph.ready = ready.iter().map(|id| graph.ready_key(id)).collect();
+    Ok(graph)
 }
 
 /// Execute a fully validated graph with at most `jobs` concurrent actions.
@@ -1079,7 +1121,7 @@ where
                 let id = match leaf {
                     Some(_) => None,
                     None => match graph.ready.pop_first() {
-                        Some(id) => Some(id),
+                        Some((_, id)) => Some(id),
                         None => break,
                     },
                 };
@@ -1181,7 +1223,8 @@ where
                                         graph.remaining.get_mut(child).expect("known consumer");
                                     *count -= 1;
                                     if *count == 0 {
-                                        graph.ready.insert(child.clone());
+                                        let key = graph.ready_key(child);
+                                        graph.ready.insert(key);
                                     }
                                 }
                             }
@@ -1403,6 +1446,40 @@ mod tests {
             .environment
             .insert("bad=key".into(), "value".into());
         invalid(vec![shell], 2, "environment key");
+    }
+
+    /// With several jobs the ready action heading the longest chain starts
+    /// first (`Graph::ready_key`); with one job the order stays by id.
+    #[test]
+    fn the_head_of_the_longest_chain_is_dispatched_first() {
+        let graph = || {
+            // `z0 -> z1 -> z2 -> z3` and ready leaves `a0`..`a5` (ids
+            // before the chain's head).
+            let mut graph: Vec<PlannedAction> = (0..6).map(|i| node(&format!("a{i}"))).collect();
+            for i in 0..4 {
+                let mut link = node(&format!("z{i}"));
+                if i > 0 {
+                    link.dependencies = vec![dependency(&format!("z{}", i - 1), 0, "in")];
+                }
+                graph.push(link);
+            }
+            graph
+        };
+        for (jobs, first) in [(2, "z0"), (1, "a0")] {
+            let order = Mutex::new(Vec::new());
+            let worker = |_: &Path, action: &Action| {
+                order.lock().unwrap().push(action.id.clone());
+                success(action)
+            };
+            execute_with(Path::new("unused"), graph(), jobs, &worker).unwrap();
+            let order = order.into_inner().unwrap();
+            assert_eq!(order.len(), 10);
+            assert_eq!(order[0], first, "jobs={jobs}: {order:?}");
+        }
+        let validated = validate(graph(), 4).unwrap();
+        let levels: Vec<u32> = validated.levels.clone();
+        assert_eq!(levels, vec![1, 1, 1, 1, 1, 1, 4, 3, 2, 1]);
+        assert_eq!(validate(graph(), 1).unwrap().levels, vec![0; 10]);
     }
 
     #[test]
