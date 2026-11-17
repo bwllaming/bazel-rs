@@ -1,6 +1,24 @@
 {
  "bazel": "9.3.1",
  "cases": {
+  "android_common_toplevel": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/android/show.txt": "[\"create_dex_merger_actions\", \"resource_source_directory\"]\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//android:show"
+   ],
+   "workspace": "workspace"
+  },
   "flag_alias_agreeing_values": {
    "command": "build",
    "exit": 0,

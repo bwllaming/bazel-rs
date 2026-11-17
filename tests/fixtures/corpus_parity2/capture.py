@@ -59,6 +59,7 @@ CASES = {
         [], 'build', BUILD, ['@ext//:g'], [], ['g.out'], 'local_repo'),
     'local_repository_query': (
         [], 'query', [], ['@ext//...'], [], [], 'local_repo'),
+    'android_common_toplevel': ([], 'build', BUILD, ['//android:show'], [], ['show.txt']),
     'rules_cc_main_private_initializer': (
         [], 'build', BUILD, ['//use:t'], [], ['t.txt'], 'rules_cc_main'),
     'other_main_private_initializer': (

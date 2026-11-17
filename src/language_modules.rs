@@ -39,6 +39,7 @@ pub(crate) enum Domain {
     Cc,
     Java,
     Apple,
+    Android,
     Python,
     Platform,
     Config,
@@ -52,6 +53,7 @@ impl Domain {
             Domain::Cc => "analysis-time C++ API",
             Domain::Java => "analysis-time Java API",
             Domain::Apple => "analysis-time Apple API",
+            Domain::Android => "analysis-time Android API",
             Domain::Python => "analysis-time Python API",
             Domain::Platform => "analysis-time platform/toolchain API",
             Domain::Config => "analysis-time configuration API",
@@ -1825,6 +1827,38 @@ pub(crate) fn apple_platform_tables(heap: &FrozenHeap) -> (FrozenValue, FrozenVa
     (platform_type, platform)
 }
 
+/// `android_common` (AndroidStarlarkCommon, rules/android/
+/// AndroidStarlarkCommon.java:44-213): a `.bzl` toplevel of
+/// BazelRuleClassProvider.ANDROID_RULES (:267-285), guarded by
+/// `--incompatible_stop_exporting_language_modules` (default false, so
+/// visible everywhere; rules_android re-exports it at load time,
+/// rules/android_common/reexport_android_common.bzl:23). Its two methods
+/// create Android dexing actions and read resource paths, which the native
+/// profile does not implement: calling either fails explicitly.
+fn android_common(heap: &FrozenHeap) -> FrozenValue {
+    let unimplemented = |name: &'static str, qualified: &'static str| {
+        heap.alloc(BuiltinMethod {
+            receiver: "android_common",
+            name,
+            qualified_owner: qualified,
+            behavior: Behavior::Unimplemented(Domain::Android),
+        })
+    };
+    sorted_struct(
+        heap,
+        vec![
+            (
+                "create_dex_merger_actions",
+                unimplemented("create_dex_merger_actions", "android_common"),
+            ),
+            (
+                "resource_source_directory",
+                unimplemented("resource_source_directory", "android_common"),
+            ),
+        ],
+    )
+}
+
 /// builtins_bzl/common/objc/apple_common.bzl `apple_common_bazel`.
 fn apple_common(heap: &FrozenHeap) -> FrozenValue {
     let (platform_type, platform) = apple_platform_tables(heap);
@@ -2162,6 +2196,8 @@ pub fn install(builder: &mut GlobalsBuilder) {
         );
         (apple_common(heap), py_internal(heap), proto)
     };
+    let android = android_common(builder.frozen_heap());
+    builder.set("android_common", android);
     builder.set("apple_common", apple);
     builder.set("py_internal", python);
     builder.set("proto_common_do_not_use", proto);
