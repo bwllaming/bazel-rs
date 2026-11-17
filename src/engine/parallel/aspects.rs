@@ -706,6 +706,7 @@ fn analyze(job: Job) -> Outcome {
         run_under,
     } = job;
     let outputs = crate::analysis::ConfiguredOutputs {
+        allow_analysis_failures: false,
         output_root: &output_root,
         action_owner: &action_owner,
         action_env,

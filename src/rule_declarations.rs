@@ -1167,6 +1167,18 @@ pub(crate) fn is_starlark_transition(value: Value<'_>) -> bool {
     Transition::from_value(value).is_some_and(|t| !t.analysis_test)
 }
 
+/// Whether a retained transition is an `analysis_test_transition`.
+pub(crate) fn is_analysis_test_transition(value: &starlark::values::OwnedFrozenValue) -> bool {
+    Transition::from_value(value.value().to_value()).is_some_and(|t| t.analysis_test)
+}
+
+/// Whether `value` is any Starlark-defined transition object, including an
+/// `analysis_test_transition` (StarlarkAttributeTransitionProvider): the
+/// transition value an attribute retains for analysis.
+pub(crate) fn is_any_starlark_transition(value: Value<'_>) -> bool {
+    Transition::from_value(value).is_some()
+}
+
 /// A fresh transition identity.
 fn next_transition_id() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);

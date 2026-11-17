@@ -710,6 +710,27 @@ pub const VALUE_OPTIONS: &[ValueOption] = &[
         exec: ExecValue::Default,
         exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
     },
+    // `--allow_analysis_failures` (CoreOptions.java:790-802): an analysis
+    // failure of a rule target in this configuration becomes the target's
+    // AnalysisFailureInfo (crate::analysis_failures). skylib's
+    // `analysistest.make(expect_failure = True)` sets it through an
+    // analysis_test_transition.
+    ValueOption {
+        option: OptionDef {
+            name: "allow_analysis_failures",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "false",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/analysis/config/CoreOptions.java:790-802",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:267",
+    },
 ];
 
 /// The table-driven option named `name` (its canonical name only).
@@ -1100,6 +1121,13 @@ pub struct NativeOptions {
     /// the identity when false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub is_exec: bool,
+    /// CoreOptions.evaluatingForAnalysisTest (`evaluating for analysis
+    /// test`, an internal option, CoreOptions.java:804-816): set by an
+    /// analysis_test_transition that changes the configuration
+    /// (FunctionTransitionUtil.java:776-781). Not propagated by the exec
+    /// transition. Omitted from the identity when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub evaluating_for_analysis_test: bool,
     /// CoreOptions.platformSuffix (`--platform_suffix`, default null; the
     /// exec transition sets `exec`, analysis/config/ExecutionTransitionFactory.java:229-258).
     /// Omitted from the identity when unset.
@@ -1509,6 +1537,7 @@ impl Default for NativeOptions {
             extra_execution_platforms: Vec::new(),
             host_compilation_mode: DEFAULT_HOST_COMPILATION_MODE,
             is_exec: false,
+            evaluating_for_analysis_test: false,
             platform_suffix: None,
             java: JavaVersions::default(),
             plugins: Vec::new(),
@@ -3507,7 +3536,8 @@ mod tests {
                 "experimental_platform_in_output_dir",
                 "collect_code_coverage",
                 "apple_platform_type",
-                "dynamic_mode"
+                "dynamic_mode",
+                "allow_analysis_failures"
             ]
         );
         let defaults = NativeOptions::default();

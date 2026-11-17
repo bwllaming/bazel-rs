@@ -2497,6 +2497,16 @@ impl<'v> StarlarkValue<'v> for TargetValue {
                 .providers
                 .get(crate::output_group_info::PROVIDER_ID)
                 .map(|provider| heap.access_owned_frozen_value(provider))?,
+            // RuleConfiguredTarget.rawGetStarlarkProvider (:270-281): the
+            // registered actions (crate::target_actions).
+            "actions" => self
+                .0
+                .providers
+                .get(crate::target_actions::PROVIDER_ID)
+                .and_then(|provider| {
+                    crate::target_actions::TargetActions::from_value(provider.value())
+                })
+                .map(|actions| actions.alloc_list(heap))?,
             _ => return None,
         })
     }
@@ -2518,6 +2528,14 @@ impl<'v> StarlarkValue<'v> for TargetValue {
             .contains_key(crate::output_group_info::PROVIDER_ID)
         {
             fields.push("output_groups".to_owned());
+        }
+        // RuleConfiguredTarget.addExtraStarlarkKeys (:254-263).
+        if self
+            .0
+            .providers
+            .contains_key(crate::target_actions::PROVIDER_ID)
+        {
+            fields.push("actions".to_owned());
         }
         fields
     }

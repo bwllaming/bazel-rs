@@ -2823,10 +2823,9 @@ fn attribute_edges(rule: &Rule) -> Vec<Edge> {
                         // (DeclaredExecGroup.DEFAULT_EXEC_GROUP_NAME).
                         .filter(|group| group != "default-exec-group"),
                 ),
-                Some(crate::rule_declarations::Cfg::Starlark {
-                    analysis_test: false,
-                    ..
-                }) => EdgeCfg::Starlark(name.clone()),
+                Some(crate::rule_declarations::Cfg::Starlark { .. }) => {
+                    EdgeCfg::Starlark(name.clone())
+                }
                 _ => EdgeCfg::Target,
             };
             // As crate::package::custom_dependency_labels, per attribute.
@@ -2957,6 +2956,8 @@ struct ComputeSnapshot {
     repositories: Arc<RepositorySet>,
     /// ConfiguredOutputs.run_under.
     run_under: Option<Arc<analysis::RunUnderPrerequisite>>,
+    /// ConfiguredOutputs.allow_analysis_failures.
+    allow_analysis_failures: bool,
 }
 
 /// The compute of one custom rule: the analysis result (or error) and
@@ -5518,7 +5519,12 @@ impl Engine {
         let Some(custom) = &rule.custom else {
             return Ok(());
         };
-        if custom.transitions.is_empty() {
+        // analysis_test_transitions need no allowlist (StarlarkAttrModule.java:489-498).
+        if custom
+            .transitions
+            .values()
+            .all(crate::rule_declarations::is_analysis_test_transition)
+        {
             return Ok(());
         }
         // Allowlist.getAttributeNameFromAllowlistName: `$whitelist_` then
@@ -5947,10 +5953,7 @@ impl Engine {
                     .get(&(key.clone(), group.clone()))
                     .copied()
                     .unwrap_or(config),
-                crate::rule_declarations::Cfg::Starlark {
-                    analysis_test: false,
-                    ..
-                } => cx.engine()
+                crate::rule_declarations::Cfg::Starlark { .. } => cx.engine()
                     .edge_configs
                     .get(key)
                     .and_then(|configs| configs.get(name))
@@ -8560,6 +8563,7 @@ impl Engine {
             runfiles: snapshot.runfiles,
             loaded_functions: Some(&snapshot.loaded_functions),
             run_under: snapshot.run_under.clone(),
+            allow_analysis_failures: snapshot.allow_analysis_failures,
         };
         crate::platforms::take_deferred_read();
         let (analyzed, printed) = analysis::analyze_buffered(
@@ -9131,6 +9135,12 @@ impl Engine {
             loaded_functions,
             repositories: engine.repositories.clone(),
             run_under: engine.run_under_dependency_key(config),
+            allow_analysis_failures: engine
+                .configurations
+                .get(config)
+                .native
+                .value("allow_analysis_failures")
+                == Some(crate::configuration::OptionValue::Bool(true)),
         };
         Ok(PreparedTarget {
             key,

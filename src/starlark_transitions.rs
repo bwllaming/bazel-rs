@@ -59,6 +59,7 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "cpu",
     "collect_code_coverage",
     "build_runfile_links",
+    "allow_analysis_failures",
     "build_runfile_manifests",
     "enable_runfiles",
     "java_runtime_version",
@@ -125,6 +126,11 @@ pub(crate) struct TransitionDef {
     /// is an ImmutableSortedMap, :183).
     pub inputs: Vec<Setting>,
     pub outputs: Vec<Setting>,
+    /// An `analysis_test_transition(settings=...)` (AnalysisTestTransition,
+    /// StarlarkDefinedConfigTransition.java:311-370): its result is the
+    /// settings dictionary, and a configuration it changes is
+    /// `evaluating for analysis test`.
+    pub analysis_test: bool,
 }
 
 impl fmt::Debug for TransitionDef {
@@ -199,6 +205,7 @@ impl TransitionDef {
             location: transition.location.clone(),
             inputs: settings(&transition.inputs, &transition.canonical_inputs)?,
             outputs: settings(&transition.outputs, &transition.canonical_outputs)?,
+            analysis_test: transition.analysis_test,
         })
     }
 
@@ -733,6 +740,18 @@ fn finish(
             apply_changes(def, application, changes, location).map(|config| (key, config))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    // FunctionTransitionUtil.applyTransition (:766-781): a changed
+    // configuration of an analysis-test transition is `evaluating for
+    // analysis test`; an unchanged one is the original.
+    if def.analysis_test {
+        for (_, config) in &mut configurations {
+            if config.id != application.from.id {
+                let mut native = config.native.clone();
+                native.evaluating_for_analysis_test = true;
+                *config = Configuration::new(native, config.starlark.clone());
+            }
+        }
+    }
     // FunctionPatchTransition.patch unwraps exactly one result, independently
     // of whether its implementation returned a patch, named or list form.
     if application.kind == Kind::Rule {
@@ -852,7 +871,7 @@ pub(crate) fn native_input<'v>(
         "stamp" => heap.alloc(native.stamp),
         "force_pic" => heap.alloc(native.force_pic),
         "collect_code_coverage" => heap.alloc(native.collect_code_coverage),
-        "build_runfile_links" | "build_runfile_manifests" => {
+        "build_runfile_links" | "build_runfile_manifests" | "allow_analysis_failures" => {
             heap.alloc(native.value(name) == Some(OptionValue::Bool(true)))
         }
         "enable_runfiles" => match native.raw_value(name) {
@@ -1059,9 +1078,25 @@ fn evaluate(
         let settings = heap.access_owned_frozen_value(&frozen.0);
         let attrs = heap.access_owned_frozen_value(&frozen.1);
         let transition = heap.access_owned_frozen_value(&def.value);
-        let implementation = crate::rule_declarations::Transition::from_value(transition)
-            .map(|transition| transition.implementation.to_value())
+        let transition = crate::rule_declarations::Transition::from_value(transition)
             .ok_or_else(|| Failure::message("internal error: not a transition".to_owned()))?;
+        if transition.analysis_test {
+            // AnalysisTestTransition.evaluate (:340-347): the settings,
+            // keyed by the canonical outputs.
+            let settings = transition.settings.to_value();
+            if DictRef::from_value(settings).is_none_or(|dict| dict.is_empty()) {
+                return Ok(Outcome::NoOp);
+            }
+            return canonical_dict(def, settings, application.repositories, heap)
+                .map(Outcome::Patch)
+                .map_err(|message| {
+                    Failure::event(
+                        &def.location,
+                        format!("invalid result from transition function: {message}"),
+                    )
+                });
+        }
+        let implementation = transition.implementation.to_value();
         let context = TransitionContext { repositories };
         let mut eval = Evaluator::new(&module);
         eval.set_max_callstack_size(128)
@@ -1714,7 +1749,8 @@ fn convert_native(
             | "force_pic"
             | "collect_code_coverage"
             | "build_runfile_links"
-            | "build_runfile_manifests" => {
+            | "build_runfile_manifests"
+            | "allow_analysis_failures" => {
                 let field = match name {
                     "stamp" => {
                         "com.google.devtools.build.lib.analysis.config.CoreOptions.stampBinaries"
@@ -1725,6 +1761,9 @@ fn convert_native(
                     }
                     "build_runfile_manifests" => {
                         "com.google.devtools.build.lib.analysis.config.CoreOptions.buildRunfileManifests"
+                    }
+                    "allow_analysis_failures" => {
+                        "com.google.devtools.build.lib.analysis.config.CoreOptions.allowAnalysisFailures"
                     }
                     _ => {
                         "com.google.devtools.build.lib.analysis.config.CoreOptions.collectCodeCoverage"
@@ -1794,7 +1833,8 @@ fn convert_native(
         | "force_pic"
         | "collect_code_coverage"
         | "build_runfile_links"
-        | "build_runfile_manifests" => {
+        | "build_runfile_manifests"
+        | "allow_analysis_failures" => {
             let value = match &raw.kind {
                 RawKind::Bool(flag) => *flag,
                 RawKind::String(text) => {
@@ -1816,10 +1856,12 @@ fn convert_native(
             match name {
                 "stamp" => native.stamp = value,
                 "force_pic" => native.force_pic = value,
-                "build_runfile_links" | "build_runfile_manifests" => native.set_value(
-                    crate::configuration::value_option(name).expect("runfiles option"),
-                    OptionValue::Bool(value),
-                ),
+                "build_runfile_links" | "build_runfile_manifests" | "allow_analysis_failures" => {
+                    native.set_value(
+                        crate::configuration::value_option(name).expect("value option"),
+                        OptionValue::Bool(value),
+                    )
+                }
                 _ => native.collect_code_coverage = value,
             }
         }

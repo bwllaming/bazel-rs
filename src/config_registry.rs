@@ -525,6 +525,8 @@ pub fn exec_transition(
         extra_execution_platforms: from.native.extra_execution_platforms.clone(),
         host_compilation_mode: from.native.host_compilation_mode,
         is_exec: true,
+        // Not in CoreOptions' propagate list: the default.
+        evaluating_for_analysis_test: false,
         platform_suffix: Some("exec"),
         // `_java_options` (builtin_exec_platforms.bzl:350-360): java_* from
         // tool_java_*; tool_java_* propagate (:362-385).
@@ -718,6 +720,10 @@ pub(crate) fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static
         per_label_options(&native.host_per_file_copts),
     );
     options.insert("is exec configuration", format!("={}", native.is_exec));
+    options.insert(
+        "evaluating for analysis test",
+        format!("={}", native.evaluating_for_analysis_test),
+    );
     options.insert(
         "platform_suffix",
         native

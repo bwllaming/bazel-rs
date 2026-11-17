@@ -105,6 +105,8 @@ pub(crate) enum Behavior {
     ExecGroup,
     ConfigurationField,
     TestEnvironment,
+    /// testing.analysis_test (crate::custom_rule::analysis_test).
+    AnalysisTest,
     /// coverage_common.instrumented_files_info (crate::instrumented_files).
     InstrumentedFilesInfo,
     /// C++ toolchain features, variables and tools (`crate::cc_features`).
@@ -293,6 +295,7 @@ impl Namespace {
             (Namespace::CoverageCommon, _) => method(Behavior::Unimplemented(Domain::Coverage)),
             (Namespace::Testing, "ExecutionInfo") => provider(Domain::Testing),
             (Namespace::Testing, "TestEnvironment") => method(Behavior::TestEnvironment),
+            (Namespace::Testing, "analysis_test") => method(Behavior::AnalysisTest),
             (Namespace::Testing, _) => method(Behavior::Unimplemented(Domain::Testing)),
             (Namespace::CcInternal, "check_private_api") => method(Behavior::CheckPrivateApi),
             (Namespace::CcInternal, "create_header_info") => method(Behavior::CreateHeaderInfo),
@@ -1376,6 +1379,35 @@ fn call<'v>(
         Behavior::ConfigurationField => configuration_field(args, eval),
         Behavior::InstrumentedFilesInfo => {
             crate::instrumented_files::instrumented_files_info(style, args, eval)
+        }
+        Behavior::AnalysisTest => {
+            let bound = bind_styled(
+                style,
+                name,
+                &[
+                    param("name", true, true, true),
+                    param("implementation", true, true, true),
+                    param("attrs", true, true, false),
+                    param("fragments", true, true, false),
+                    param("toolchains", true, true, false),
+                    param("attr_values", true, true, false),
+                ],
+                args,
+                heap,
+            )?;
+            let empty_dict = || heap.alloc(starlark::values::dict::AllocDict::EMPTY);
+            let empty_list = || heap.alloc(starlark::values::list::AllocList::EMPTY);
+            crate::custom_rule::analysis_test(
+                bound[0].expect("required"),
+                bound[1].expect("required"),
+                bound[2].unwrap_or_else(empty_dict),
+                bound[3].unwrap_or_else(empty_list),
+                bound[4].unwrap_or_else(empty_list),
+                bound[5].unwrap_or_else(empty_dict),
+                eval,
+            )
+            .map_err(starlark::Error::new_other)?;
+            Ok(Value::new_none())
         }
         Behavior::TestEnvironment => {
             let bound = bind_styled(

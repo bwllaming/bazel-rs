@@ -254,10 +254,7 @@ impl AttrDeclaration {
             self.cfg,
             crate::rule_declarations::Cfg::Target
                 | crate::rule_declarations::Cfg::Exec(_)
-                | crate::rule_declarations::Cfg::Starlark {
-                    analysis_test: false,
-                    ..
-                }
+                | crate::rule_declarations::Cfg::Starlark { .. }
         ) {
             features.push(format!(
                 "attribute '{name}' cfg={} (configuration transition)",
@@ -4094,7 +4091,7 @@ fn dependency_descriptor<'v>(
     crate::repository_budget::HostBudget::default()
         .spec(&descriptor.0)
         .map_err(anyhow::Error::msg)?;
-    let transition = if crate::rule_declarations::is_starlark_transition(options.cfg) {
+    let transition = if crate::rule_declarations::is_any_starlark_transition(options.cfg) {
         Some(options.cfg)
     } else {
         None
@@ -4531,6 +4528,9 @@ struct RuleArguments<'v> {
     subrules: Value<'v>,
     /// `doc=` (untrimmed; crate::starlark_doc_extract).
     doc: Option<String>,
+    /// A `testing.analysis_test` rule class, defined on a BUILD thread
+    /// (StarlarkTestingModule.analysisTest).
+    build_thread: bool,
 }
 
 /// StarlarkRuleClassFunctions.rule + createRule (StarlarkRuleClassFunctions.java:548-1171).
@@ -4576,7 +4576,12 @@ fn define_rule<'v>(
         ));
     }
     require_sequence("rule", "subrules", args.subrules)?;
-    let Some(definition) = definition_package(eval) else {
+    let definition = if args.build_thread {
+        crate::loading::definition_label(eval)
+    } else {
+        definition_package(eval)
+    };
+    let Some(definition) = definition else {
         bail!(
             "rule() definitions are only allowed during extension initialization, not BUILD evaluation"
         );
@@ -4704,6 +4709,7 @@ fn define_rule<'v>(
     let mut computed_functions = Vec::new();
     let mut transitions = Vec::new();
     let mut transition_keys = Vec::new();
+    let mut function_transitions = false;
     let mut budget = crate::repository_budget::HostBudget::default();
     budget.node().map_err(anyhow::Error::msg)?;
     let subrules = crate::subrule::snapshot(args.subrules, &mut budget)?;
@@ -4779,6 +4785,11 @@ fn define_rule<'v>(
                 computed_functions.push(function);
             }
             if let Some(transition) = transition {
+                // An analysis_test_transition does not need the function
+                // transition allowlist (StarlarkAttrModule.java:489-498:
+                // hasAnalysisTestTransition, not hasStarlarkDefinedTransition).
+                function_transitions |=
+                    crate::rule_declarations::is_starlark_transition(transition);
                 transition_keys.push(name.to_owned());
                 transitions.push(transition);
             }
@@ -4824,6 +4835,7 @@ fn define_rule<'v>(
     }
     let rule_cfg = crate::rule_declarations::rule_cfg(cfg)?;
     if crate::rule_declarations::is_starlark_transition(cfg) {
+        function_transitions = true;
         transition_keys.push(String::new());
         transitions.push(cfg);
     }
@@ -4884,7 +4896,7 @@ fn define_rule<'v>(
     function_transition_allowlist(
         &mut schema,
         &mut attr_order,
-        !transitions.is_empty(),
+        function_transitions,
         &environment,
         test,
     )?;
@@ -5091,11 +5103,115 @@ mod definitions {
                     extendable,
                     subrules,
                     doc: doc.map(str::to_owned),
+                    build_thread: false,
                 },
                 eval,
             )
         }
     }
+}
+
+/// StarlarkTestingModule.analysisTest (rules/test/StarlarkTestingModule.java:56-160):
+/// on a BUILD thread, define a rule class with `analysis_test = True`
+/// (createRule with `test = True`), export it as `NAME_test` and
+/// instantiate its one target `NAME` with `attr_values`.
+pub(crate) fn analysis_test<'v>(
+    name: Value<'v>,
+    implementation: Value<'v>,
+    attrs: Value<'v>,
+    fragments: Value<'v>,
+    toolchains: Value<'v>,
+    attr_values: Value<'v>,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> anyhow::Result<()> {
+    use crate::rule_declarations::param_type_error;
+    let Some(name_text) = name.unpack_str() else {
+        return Err(param_type_error("analysis_test", "name", name, "string"));
+    };
+    if implementation.get_type() != "function" {
+        return Err(param_type_error(
+            "analysis_test",
+            "implementation",
+            implementation,
+            "function",
+        ));
+    }
+    if DictRef::from_value(attrs).is_none() {
+        return Err(param_type_error("analysis_test", "attrs", attrs, "dict"));
+    }
+    for (param, value) in [("fragments", fragments), ("toolchains", toolchains)] {
+        crate::rule_declarations::require_sequence("analysis_test", param, value)?;
+    }
+    let Some(values) = DictRef::from_value(attr_values) else {
+        return Err(param_type_error(
+            "analysis_test",
+            "attr_values",
+            attr_values,
+            "dict",
+        ));
+    };
+    if crate::package::custom_label_context(eval).is_err() {
+        bail!("analysis_test can only be called in a BUILD thread");
+    }
+    // RULE_NAME_PATTERN: a Starlark identifier.
+    if name_text.is_empty()
+        || !name_text
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| b == b'_' || b.is_ascii_alphabetic() || (i > 0 && b.is_ascii_digit()))
+    {
+        bail!("'name' is limited to Starlark identifiers, got {name_text}");
+    }
+    let mut named = Vec::new();
+    for (key, value) in values.iter() {
+        let Some(key) = key.unpack_str() else {
+            bail!(
+                "got dict<{}, {}> for 'attr_values', want dict<string, unknown>",
+                key.get_type(),
+                value.get_type()
+            );
+        };
+        named.push((key.to_owned(), value));
+    }
+    if named.iter().any(|(key, _)| key == "name") {
+        bail!("'name' cannot be set or overridden in 'attr_values'");
+    }
+    let rule = define_rule(
+        RuleArguments {
+            implementation,
+            test: Some(true),
+            attrs: Some(attrs),
+            outputs: Value::new_none(),
+            executable: Some(false),
+            output_to_genfiles: false,
+            fragments,
+            host_fragments: eval.heap().alloc(AllocList::EMPTY),
+            skylark_testable: false,
+            toolchains,
+            provides: eval.heap().alloc(AllocList::EMPTY),
+            dependency_resolution_rule: false,
+            exec_compatible_with: eval.heap().alloc(AllocList::EMPTY),
+            analysis_test: true,
+            build_setting: Value::new_none(),
+            cfg: Value::new_none(),
+            exec_groups: Value::new_none(),
+            initializer: Value::new_none(),
+            parent: Value::new_none(),
+            extendable: Value::new_none(),
+            subrules: eval.heap().alloc(AllocList::EMPTY),
+            doc: None,
+            build_thread: true,
+        },
+        eval,
+    )?;
+    let exported = format!("{name_text}_test");
+    rule.export_as(&exported, eval)
+        .map_err(|error| anyhow!("Errors in exporting {name_text}: \n{error}"))?;
+    let mut arguments: Vec<(&str, Value<'v>)> = vec![("name", name)];
+    arguments.extend(named.iter().map(|(key, value)| (key.as_str(), *value)));
+    eval.eval_function(rule, &[], &arguments)
+        .map_err(|error| anyhow!(error.into_anyhow()))?;
+    Ok(())
 }
 
 /// Install only into .bzl globals; BUILD may invoke loaded definitions, not create them.

@@ -585,14 +585,12 @@ fn item_file(item: &crate::starlark_types::Item) -> Option<File> {
     }
 }
 
-/// Whether `spec`'s `cfg` is a Starlark (non analysis-test) transition.
+/// Whether `spec`'s `cfg` is a Starlark transition (an
+/// analysis_test_transition included).
 fn starlark_transition(spec: &AttrSpec) -> bool {
     matches!(
         spec.declaration.cfg,
-        crate::rule_declarations::Cfg::Starlark {
-            analysis_test: false,
-            ..
-        }
+        crate::rule_declarations::Cfg::Starlark { .. }
     )
 }
 
@@ -2035,6 +2033,7 @@ pub fn analyze_in(
 ) -> Result<AnalysisResult, String> {
     let owner = rule.label.to_string();
     let target = ConfiguredOutputs {
+        allow_analysis_failures: false,
         output_root: crate::label::GENERATED_EXEC_ROOT,
         action_owner: &owner,
         action_env: Arc::new(crate::configuration::NativeOptions::default().action_environment()),
@@ -2782,6 +2781,59 @@ pub(crate) struct ConfiguredOutputs<'a> {
     /// A LabelRunUnder in this configuration (crate::engine; `None` without
     /// a label `--run_under` and in exec configurations).
     pub run_under: Option<Arc<RunUnderPrerequisite>>,
+    /// `--allow_analysis_failures` in this configuration
+    /// (crate::analysis_failures).
+    pub allow_analysis_failures: bool,
+}
+
+/// The suppressed rule errors of a target analyzed with
+/// `--allow_analysis_failures` (RuleContext.getSuppressedErrorMessages).
+#[derive(Debug)]
+struct SuppressedErrors(Vec<String>);
+
+impl std::fmt::Display for SuppressedErrors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0.join("\n"))
+    }
+}
+
+impl std::error::Error for SuppressedErrors {}
+
+/// The configured target of a rule whose analysis failed (or one of whose
+/// prerequisites failed) in a configuration that allows analysis
+/// failures: only its AnalysisFailureInfo (and the empty runfiles), no
+/// files and no actions (ConfiguredTargetFactory.java:567-622).
+fn failure_result(info: OwnedFrozenValue) -> AnalysisResult {
+    AnalysisResult {
+        files: Vec::new(),
+        declared: Vec::new(),
+        actions: Vec::new(),
+        providers: BTreeMap::from([
+            (crate::analysis_failures::PROVIDER_ID.to_owned(), info),
+            (
+                crate::target_actions::PROVIDER_ID.to_owned(),
+                crate::target_actions::TargetActions::empty_frozen(),
+            ),
+        ]),
+        provider_keys: Vec::new(),
+        runfiles: crate::runfiles::TargetRunfiles::default(),
+    }
+}
+
+/// depAnalysisFailures (ConfiguredTargetFactory.java:545-565): the causes
+/// of every prerequisite carrying an AnalysisFailureInfo.
+fn dependency_failures(
+    dependencies: &BTreeMap<String, DependencyTarget>,
+) -> Vec<Arc<crate::starlark_types::DepsetNode>> {
+    dependencies
+        .values()
+        .filter_map(|dependency| {
+            dependency
+                .providers
+                .get(crate::analysis_failures::PROVIDER_ID)
+                .and_then(crate::analysis_failures::causes)
+        })
+        .collect()
 }
 
 /// A LabelRunUnder as a configured target sees it: its label and the
@@ -2814,12 +2866,44 @@ pub(crate) fn analyze_buffered(
     target: &ConfiguredOutputs<'_>,
 ) -> (Result<AnalysisResult, String>, Vec<String>) {
     let prints = BufferedPrints::default();
-    let result = analyze_inner(rule, dependencies, repositories, target, &prints).map_err(
-        |error| match error.downcast_ref::<crate::rule_errors::ReportedErrors>() {
-            Some(reported) => reported.0.clone(),
-            None => format!("analysis of {}: {error:#}", rule.label),
-        },
-    );
+    if target.allow_analysis_failures {
+        let failures = dependency_failures(dependencies);
+        if !failures.is_empty() {
+            let result = crate::analysis_failures::propagated(failures)
+                .map(failure_result)
+                .map_err(|error| format!("analysis of {}: {error:#}", rule.label));
+            return (result, Vec::new());
+        }
+    }
+    let result = analyze_inner(rule, dependencies, repositories, target, &prints);
+    let result = match result {
+        Err(error) if target.allow_analysis_failures => {
+            let messages = match error.downcast_ref::<SuppressedErrors>() {
+                Some(suppressed) => Some(suppressed.0.clone()),
+                None => {
+                    let text = match error.downcast_ref::<crate::rule_errors::ReportedErrors>() {
+                        Some(reported) => reported.0.clone(),
+                        None => format!("{error:#}"),
+                    };
+                    crate::analysis_failures::suppressible(&text).then(|| vec![text])
+                }
+            };
+            match messages {
+                Some(messages) => crate::analysis_failures::failure_info(&rule.label, &messages)
+                    .map(failure_result)
+                    .map_err(|error| anyhow!(error)),
+                None => Err(error),
+            }
+        }
+        other => other,
+    };
+    let result =
+        result.map_err(
+            |error| match error.downcast_ref::<crate::rule_errors::ReportedErrors>() {
+                Some(reported) => reported.0.clone(),
+                None => format!("analysis of {}: {error:#}", rule.label),
+            },
+        );
     (result, prints.0.into_inner())
 }
 
@@ -2830,6 +2914,7 @@ fn analyze_inner(
     target: &ConfiguredOutputs<'_>,
     prints: &BufferedPrints,
 ) -> anyhow::Result<AnalysisResult> {
+    let failure_repositories = repositories.clone();
     let invocation = rule
         .custom
         .as_ref()
@@ -2998,6 +3083,25 @@ fn analyze_inner(
             // after it returns (StarlarkRuleConfiguredTargetUtil.buildRule
             // checks RuleContext.hasErrors), reported before an evaluation error.
             let reported = surface.take_errors();
+            if target.allow_analysis_failures
+                && (returned.is_err() || !reported.is_empty())
+                && returned
+                    .as_ref()
+                    .err()
+                    .is_none_or(|error| crate::analysis_failures::suppressible(&error.to_string()))
+            {
+                // The SuppressingErrorReporter's messages, in order: the
+                // reported rule errors, then the evaluation error
+                // (StarlarkRuleConfiguredTargetUtil.evalRule).
+                let mut messages = reported;
+                if let Err(error) = &returned {
+                    messages.push(crate::analysis_failures::message_with_stack(
+                        error,
+                        &failure_repositories,
+                    ));
+                }
+                return Err(anyhow::Error::new(SuppressedErrors(messages)));
+            }
             if !reported.is_empty() {
                 // StarlarkRuleConfiguredTargetUtil.buildRule (:97-115):
                 // the events at the rule's location (crate::rule_errors).
@@ -3238,6 +3342,16 @@ fn analyze_inner(
             // Artifact (crate::engine). Only the values this analysis
             // allocated are checked, for what the freeze cannot carry.
             crate::providers::check_freezable_payloads(custom.values().copied())?;
+            // Target.actions (crate::target_actions): the registered actions.
+            custom.insert(
+                crate::target_actions::PROVIDER_ID.to_owned(),
+                module
+                    .heap()
+                    .alloc(crate::target_actions::TargetActions::new(
+                        &context.actions.borrow(),
+                        repositories.clone(),
+                    )),
+            );
             let mut slots = Vec::new();
             for (identity, provider) in custom {
                 let slot = format!("$provider:{}", slots.len());
