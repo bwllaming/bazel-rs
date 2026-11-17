@@ -560,7 +560,7 @@ fn conflicting_select_and_transition_expectations_fail() {
     let out = f.run("build", &["//:transitioned"]);
     assert!(!out.status.success());
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("alias have different values"),
+        String::from_utf8_lossy(&out.stderr).contains("have different values: 'b' and 'a'"),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );

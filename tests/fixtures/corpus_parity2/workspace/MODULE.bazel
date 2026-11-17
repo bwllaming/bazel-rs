@@ -1,1 +1,9 @@
 module(name = "corpus_parity2")
+
+# B7: a flag alias written by a transition in both forms (rules_python's
+# build_python_zip; that name itself is a builtin alias of rules_python's
+# flag in genuine 9.3.1, so the fixture uses its own).
+flag_alias(
+    name = "zip_alias",
+    starlark_flag = "//alias:zip",
+)

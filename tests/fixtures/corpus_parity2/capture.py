@@ -50,6 +50,11 @@ CASES = {
         [], 'build', BUILD, ['//selfsrc:self', '//selfsrc:self_label', '//selfsrc:via_filegroup'],
         [], ['self.txt', 'self_label.txt', 'via_filegroup.txt']),
     'self_source_label_query': ([], 'query', [], ['//selfsrc:all + //selfsrc:*'], [], []),
+    'flag_alias_agreeing_values': (
+        [], 'build', BUILD, ['//alias:false_false', '//alias:true_one', '//alias:false_zero'], [],
+        ['show.txt']),
+    'flag_alias_disagreeing_values': (
+        [], 'build', BUILD, ['//alias:mismatch'], [r'have different values'], []),
     'rules_cc_main_private_initializer': (
         [], 'build', BUILD, ['//use:t'], [], ['t.txt'], 'rules_cc_main'),
     'other_main_private_initializer': (

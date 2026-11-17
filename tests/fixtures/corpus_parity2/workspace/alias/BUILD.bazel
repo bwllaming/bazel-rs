@@ -1,0 +1,36 @@
+load(":defs.bzl", "bool_flag", "both", "show")
+
+bool_flag(
+    name = "zip",
+    build_setting_default = True,
+)
+
+show(name = "show")
+
+both(
+    name = "false_false",
+    native = "false",
+    starlark = False,
+    deps = [":show"],
+)
+
+both(
+    name = "true_one",
+    native = "1",
+    starlark = True,
+    deps = [":show"],
+)
+
+both(
+    name = "false_zero",
+    native = "0",
+    starlark = False,
+    deps = [":show"],
+)
+
+both(
+    name = "mismatch",
+    native = "false",
+    starlark = True,
+    deps = [":show"],
+)

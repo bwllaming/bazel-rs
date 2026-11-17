@@ -597,6 +597,18 @@ struct Raw {
 }
 
 impl Raw {
+    /// Java `toString` of the converted transition value: a String as is,
+    /// a Boolean `true`/`false`, a number in decimal, otherwise the repr.
+    fn java_to_string(&self) -> String {
+        match &self.kind {
+            RawKind::String(text) => text.clone(),
+            RawKind::Bool(flag) => flag.to_string(),
+            RawKind::Int(Some(number)) => number.to_string(),
+            RawKind::Label(label) => crate::rule_declarations::canonical_form(label),
+            _ => self.repr.clone(),
+        }
+    }
+
     fn of<'v>(value: Value<'v>, heap: Heap<'v>) -> Self {
         let kind = if value.is_none() {
             RawKind::None
@@ -1360,18 +1372,77 @@ fn apply_changes(
     let mut native = from.native.clone();
     let mut platforms_changed = false;
     // The canonicalized dict is an ImmutableSortedMap (:700).
-    let mut keyed = changes
-        .into_iter()
-        .map(|(given, raw)| {
-            let key = def
-                .outputs
-                .iter()
-                .find(|setting| setting.given == given)
-                .map(|setting| setting.key.clone())
-                .expect("validated output");
-            (key, raw)
-        })
-        .collect::<Vec<_>>();
+    let mut keyed = Vec::with_capacity(changes.len());
+    // FunctionTransitionUtil.applyStarlarkFlagsAliases (:333-385): a write
+    // through the native form of a flag alias and one through the Starlark
+    // label must agree (a Boolean Starlark value agrees with the native
+    // value's lower-case toString in {"true", "1"} / {"false", "0"}, any
+    // other value by equals); the native value then wins, parsed with
+    // Boolean.parseBoolean when the Starlark value is a Boolean.
+    let mut aliased: Vec<(SettingKey, String, Raw)> = Vec::new();
+    for (given, raw) in changes {
+        let key = def
+            .outputs
+            .iter()
+            .find(|setting| setting.given == given)
+            .map(|setting| setting.key.clone())
+            .expect("validated output");
+        let through_alias = matches!(&key, SettingKey::Starlark(_))
+            && given.starts_with(COMMAND_LINE_OPTION_PREFIX);
+        if through_alias {
+            aliased.push((key, given, raw));
+        } else {
+            keyed.push((key, raw));
+        }
+    }
+    for (key, given, native_raw) in aliased {
+        let SettingKey::Starlark(label) = &key else {
+            unreachable!("an alias names a Starlark flag")
+        };
+        let native_text = native_raw.java_to_string();
+        let merged = match keyed.iter().position(|(existing, _)| *existing == key) {
+            Some(index) => {
+                let starlark_raw = &keyed[index].1;
+                let mismatch = match starlark_raw.kind {
+                    RawKind::Bool(true) => {
+                        !["true", "1"].contains(&native_text.to_lowercase().as_str())
+                    }
+                    RawKind::Bool(false) => {
+                        !["false", "0"].contains(&native_text.to_lowercase().as_str())
+                    }
+                    _ => {
+                        starlark_raw.type_name != native_raw.type_name
+                            || starlark_raw.repr != native_raw.repr
+                    }
+                };
+                if mismatch {
+                    return Err(Failure::event(
+                        location,
+                        format!(
+                            "Starlark flag '{}' and its alias '{given}' have different values: '{}' and '{}'",
+                            crate::rule_declarations::canonical_form(label),
+                            starlark_raw.java_to_string(),
+                            native_text
+                        ),
+                    ));
+                }
+                let boolean = matches!(starlark_raw.kind, RawKind::Bool(_));
+                keyed.remove(index);
+                if boolean {
+                    let flag = native_text.eq_ignore_ascii_case("true");
+                    Raw {
+                        kind: RawKind::Bool(flag),
+                        repr: if flag { "True" } else { "False" }.to_owned(),
+                        type_name: "bool".to_owned(),
+                    }
+                } else {
+                    native_raw
+                }
+            }
+            None => native_raw,
+        };
+        keyed.push((key, merged));
+    }
     // handleImplicitPlatformChange (:254-277): a changed `--cpu` without
     // `--platforms` clears `--platforms` (the raw value compared with the
     // current one).
@@ -1398,21 +1469,6 @@ fn apply_changes(
         ));
     }
     keyed.sort_by_key(|(key, _)| sort_key(key));
-    // FunctionTransitionUtil.applyStarlarkFlagsAliases rejects disagreeing
-    // writes through the native-form alias and the explicit Starlark label.
-    for pair in keyed.windows(2) {
-        if pair[0].0 == pair[1].0
-            && (pair[0].1.type_name != pair[1].1.type_name || pair[0].1.repr != pair[1].1.repr)
-        {
-            return Err(Failure::event(
-                location,
-                format!(
-                    "Starlark flag and its alias have different values: {} and {}",
-                    pair[0].1.repr, pair[1].1.repr
-                ),
-            ));
-        }
-    }
     let parse = |text: &str| package_label(def, application.repositories, text);
     let mut options: BTreeMap<Label, OptionSlot> = from
         .starlark
