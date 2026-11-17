@@ -961,8 +961,9 @@ where
 // ready action is a channel send, and the dispatching thread no longer
 // copies generated inputs or tree listings (the worker assembles them from
 // the shared producer results). Which actions run, in which order and how
-// many at once is exactly as before: ready actions in id order, at most
-// `jobs` in flight, none after a failure is observed.
+// many at once: ready actions by `Graph::ready_key` (the head of the longest
+// chain first; in id order with one job), at most `jobs` in flight, none
+// after a failure is observed.
 #[cfg(test)]
 fn execute_with<F>(
     cache: &Path,
