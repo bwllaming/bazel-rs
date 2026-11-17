@@ -626,9 +626,14 @@ impl KeepGoingResult {
             .saturating_sub(self.plan.failed.len() + self.unbuilt.len())
     }
 
-    /// Whether requested `label` was analyzed and built.
-    pub fn built(&self, label: &Label) -> bool {
-        !self.unbuilt.contains(label) && !self.plan.failed.iter().any(|(failed, _)| failed == label)
+    /// The requested targets that were not analyzed or not built: a set,
+    /// because the report checks every requested artifact against it (an
+    /// OpenROAD `--keep_going` build has ~5,000 failed targets).
+    pub fn not_built(&self) -> HashSet<&Label> {
+        self.unbuilt
+            .iter()
+            .chain(self.plan.failed.iter().map(|(failed, _)| failed))
+            .collect()
     }
 }
 
@@ -1200,9 +1205,12 @@ pub fn execute_with_tests(
         BTreeSet::new()
     };
     summary.action_failed = action_failed;
+    let not_built = keep_going.as_ref().map(KeepGoingResult::not_built);
     let reported = |label: &Label| {
         !failed_requested.contains(label)
-            && keep_going.as_ref().is_none_or(|result| result.built(label))
+            && not_built
+                .as_ref()
+                .is_none_or(|not_built| !not_built.contains(label))
     };
     let published = |produced: &Produced| executed_path(&results, execute, produced);
     for (label, produced) in &requested {
