@@ -186,7 +186,7 @@ sample.
 | rules_cc | RS-FAIL¹³ | 24.9 (exit 1) / 22.1 (exit 1) | 5.1 / 0.4 / 2.5 (all exit 1) | 57.9 (exit 1) / 64.0 (exit 1) | 2724 / 685 | 452, 1532, 0, 2 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:2 FAILED TO BUILD:1 PASSED:50 | B29 (= B13d), B13e |
 | examples-rust-deps-cargo | RS-FAIL | 44.0 / 0.3 (exit 1) | 2.9 / 0.2 / 0.3 (exit 1) | 28.8 / 0.3 (exit 1) | 1034 / 29 | 0, 103, 0, 0 | — | B9, (B2) |
 | protobuf | RS-FAIL¹³ | 43.3 (exit 1) / 5.2 (exit 1) | 8.7 / 0.6 / 3.8 (all exit 1) | 296.5 (exit 1) / 4.4 (exit 1) | 2965 / 57 | 0, 41087, 0, 0 | — | B2 (`--incompatible_check_testonly_for_output_files`) |
-| openroad | RS-FAIL¹¹ | 108.4 / 252.7 (exit 1) | 9.8 / 0.9 / 62.0 (exit 1) | — | 3347 / 3512 | — | — | B27 TBD |
+| openroad | RS-FAIL¹¹ | 75.2 / 211.0 (exit 1) | 8.5 / 0.8 / 64.7 (exit 1) | — | 3764 / 3980 | — | — | B18, B30 |
 | rules_kotlin | RS-FAIL¹³ | 38.0 / 17.0 (exit 1) | — | — | 1663 / 336 | — | — | B4 |
 | riegeli | BOTH-FAIL⁶ | 30.2 (exit 1) / 31.0 (exit 1) | 4.1 / 0.2 / 3.7 (all exit 1) | 78.2 (exit 1) / 92.5 (exit 1) | 1427 / 794 | 2800, 0, 0, 0 | PASSED:2 / PASSED:2 | |
 | examples-frontend | DIFF⁷ | 89.7 (exit 1) / 129.3 (exit 1) | 60.6 / 110.6 / 100.7 (all exit 1) | 60.7 (exit 1) / 208.3 (exit 1) | 1350 / 1838 | 44827, 170986, 2, 0 | PASSED:14 / — | B8, B25, (B2) |
@@ -246,6 +246,11 @@ Notes:
     analyse. rules_cc as the main module additionally hits B29 (4 targets)
     and B13 `testing.analysis_test` (17 targets); genuine fails there too
     (its `//tests/integration` targets need a `bazel` on PATH).
+    Rerun 2026-11-17 on branch corpus-runfiles (B26 from main, B27 fixed),
+    phases `nobuild_cold,nobuild_warm,server,query`: `query //...` still
+    matches (7,079 labels) and `@openssl` analyses. The next analysis errors
+    are B30 (13 targets) and B18 (9 `cc_shared_library` targets under
+    `@llvm//runtimes/glibc` and `@llvm-project//libcxxabi`).
 13. Rerun on 2026-11-17 on branch corpus-analysistest (bazel-rs 0.4.27 plus
     the B13 fix). bazel-skylib's `nonexistent_subdirectory_test` fails in
     that run and passes after its last commit: 154 of 158 pass. rules_kotlin
@@ -307,6 +312,7 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B12 | 1 (flatbuffers) | `@local_config_platform` unknown |
 | B24 | 1 (examples-configurations) | no PROJECT.scl project-file check |
 | B25 | 1 (examples-frontend) | "needs-repository: repository @@rules_diff+ is unfetched and this thread does not fetch" on a warm `test` |
+| B30 | 1 (openroad) | `provider in target` fails "Target membership requires an exported provider constructor" in with_cfg's `transitioning_alias.bzl:55` (toolchains_llvm's `*_with_cfg` glibc/libunwind/libcxxabi targets; one of with_cfg's forwarded builtin providers is not an exported constructor natively) |
 | B27 | fixed (corpus-runfiles) | `depset` was not a BUILD-file global, and list-typed attributes did not accept depsets (`@openssl//:BUILD.bazel:508`, `select({...: depset([...])})`) |
 | B28 | fixed (corpus-runfiles) | `build //...` missed genuine's `.pic.o`/`.pic.d` of external C++ deps: the rule-returned `_hidden_top_level_INTERNAL_` group (rules_cc cc_library's transitive objects) was not built |
 
