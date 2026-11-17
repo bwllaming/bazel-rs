@@ -191,6 +191,12 @@ every access, so the same comparison is `False` (FileConfiguredTarget.java:85-10
   cc_helper._collect_library_hidden_top_level_artifacts, so `build //...`
   compiles the objects of external libraries no link uses, like Bazel;
   tests/output_group_info.rs `a_rules_hidden_top_level_group_is_built_but_not_reported`).
+  Cost on riegeli's `build --keep_going //...`: 1,067 → 1,534 sandboxed
+  spawns (+467 compiles, +44%; 1,789 → 2,257 processes), exactly genuine's
+  1,534; the extra compiles are the objects of external libraries (curl,
+  google_cloud_cpp, xz, bzip2) reachable only through top-level
+  `cc_library` targets. A project whose libraries are all linked by
+  something it builds anyway compiles nothing extra.
   `run` exists since N23f (not
   for test targets); `test` exists since N23g (docs/TEST_COMMAND.md). Simple `args` (whitespace
   separated) are passed by `run`.
