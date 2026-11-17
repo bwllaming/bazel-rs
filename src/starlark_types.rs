@@ -2499,14 +2499,13 @@ impl<'v> StarlarkValue<'v> for TargetValue {
                 .map(|provider| heap.access_owned_frozen_value(provider))?,
             // RuleConfiguredTarget.rawGetStarlarkProvider (:270-281): the
             // registered actions (crate::target_actions).
-            "actions" => match self
-                .0
-                .providers
-                .get(crate::target_actions::PROVIDER_ID)
-                .and_then(|provider| {
-                    crate::target_actions::TargetActions::from_value(provider.value())
-                }) {
-                Some(actions) => actions.alloc_list(heap),
+            "actions" => match self.0.providers.get(crate::target_actions::PROVIDER_ID) {
+                // The views, or the "not kept" marker of a Starlark rule
+                // target no analysis test of the request names (no field).
+                Some(provider) => {
+                    crate::target_actions::TargetActions::from_value(provider.value())?
+                        .alloc_list(heap)
+                }
                 // A native rule target: the native rules but genrule,
                 // genquery and starlark_doc_extract register no actions
                 // (theirs are not retained: no field).

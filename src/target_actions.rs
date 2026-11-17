@@ -31,6 +31,26 @@ pub(crate) const NATIVE_RULES_WITH_ACTIONS: &[&str] =
 /// The reserved provider key of a target's actions.
 pub(crate) const PROVIDER_ID: &str = "builtin:Target.actions";
 
+/// The shared marker of a Starlark rule target whose actions are not kept
+/// (no analysis test of the request names it): one frozen value for the
+/// whole process, so a target pays one map entry, never its actions.
+pub(crate) fn not_kept() -> starlark::values::OwnedFrozenValue {
+    static NOT_KEPT: std::sync::OnceLock<starlark::values::OwnedFrozenValue> =
+        std::sync::OnceLock::new();
+    NOT_KEPT
+        .get_or_init(|| {
+            starlark::environment::Module::with_temp_heap(|module| {
+                module.set("value", Value::new_none());
+                module
+                    .freeze()
+                    .expect("freezing None cannot fail")
+                    .get("value")
+                    .expect("the frozen module has the value")
+            })
+        })
+        .clone()
+}
+
 /// What `Action` exposes of one registered action.
 #[derive(Debug, Allocative)]
 pub(crate) struct ActionView {

@@ -2960,6 +2960,8 @@ struct ComputeSnapshot {
     allow_analysis_failures: bool,
     /// ConfiguredOutputs.evaluating_for_analysis_test.
     evaluating_for_analysis_test: bool,
+    /// ConfiguredOutputs.retain_actions.
+    retain_actions: bool,
 }
 
 /// The compute of one custom rule: the analysis result (or error) and
@@ -3456,6 +3458,11 @@ pub struct Engine {
     /// Top-level functions of every loaded package (Args `map_each`,
     /// crate::analysis_runtime::LoadedFunctions).
     loaded_functions: Arc<crate::analysis_runtime::LoadedFunctions>,
+    /// The targets whose `Target.actions` views the analysis keeps
+    /// (crate::target_actions): the attribute dependencies of the requested
+    /// analysis-test rules, decided before the analysis
+    /// ([`Engine::inspected_targets`]).
+    inspected_targets: Arc<HashSet<Label>>,
     generated: Shared<BTreeMap<Label, (Label, String)>>,
     group_nodes: Shared<BTreeMap<Label, Arc<GroupNode>>>,
     group_budget: HostBudget,
@@ -3778,6 +3785,7 @@ impl Engine {
             rule_targets: Default::default(),
             analyzed_sources: Default::default(),
             loaded_functions: Arc::default(),
+            inspected_targets: Arc::default(),
             generated: Default::default(),
             group_nodes: Default::default(),
             group_budget: HostBudget::default(),
@@ -8567,6 +8575,7 @@ impl Engine {
             run_under: snapshot.run_under.clone(),
             allow_analysis_failures: snapshot.allow_analysis_failures,
             evaluating_for_analysis_test: snapshot.evaluating_for_analysis_test,
+            retain_actions: snapshot.retain_actions,
         };
         crate::platforms::take_deferred_read();
         let (analyzed, printed) = analysis::analyze_buffered(
@@ -9149,6 +9158,7 @@ impl Engine {
                 .get(config)
                 .native
                 .evaluating_for_analysis_test,
+            retain_actions: engine.inspected_targets.contains(&rule.label),
         };
         Ok(PreparedTarget {
             key,
@@ -11159,11 +11169,45 @@ impl Engine {
         }
     }
 
+    /// The targets an analysis test of the request can inspect with
+    /// `Target.actions` (crate::target_actions): every label an attribute
+    /// of a requested `rule(analysis_test = True)` target names (select()
+    /// branches included), resolved in its package. A function of the
+    /// requested labels and their (already loaded) packages, decided before
+    /// the analysis, so a target's views never depend on the analysis
+    /// order. Only these targets keep views: the others answer no field.
+    fn inspected_targets(&self, labels: &[Label]) -> HashSet<Label> {
+        let mut inspected = HashSet::new();
+        for label in labels {
+            let Some(rule) = self
+                .packages
+                .get(&label.package_id())
+                .and_then(|package| package.get(label))
+            else {
+                continue;
+            };
+            let Some(custom) = rule.custom.as_ref() else {
+                continue;
+            };
+            if !custom.declaration.analysis_test {
+                continue;
+            }
+            for text in &rule.srcs {
+                if let Ok(dependency) = self.resolve_rule_src(rule, text) {
+                    inspected.insert(dependency);
+                }
+            }
+            inspected.extend(custom.declaration.configurable_labels.iter().cloned());
+        }
+        inspected
+    }
+
     fn plan_build_with_checkpoint(
         &mut self,
         labels: &[Label],
         checkpoint: Option<&mut root_checkpoint::Callback<'_>>,
     ) -> Result<root_checkpoint::Outcome<BuildPlan>, String> {
+        self.inspected_targets = Arc::new(self.inspected_targets(labels));
         // BAZEL_RS_ANALYSIS / BAZEL_RS_EVAL_VERIFY (docs/EVALUATOR.md):
         // the walk below unless the evaluator is asked for.
         let mode = match self.eval_mode {

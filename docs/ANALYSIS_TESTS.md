@@ -68,11 +68,26 @@ values (`RuleConfiguredTarget.rawGetStarlarkProvider`,
 `starlarkbuildapi/ActionApi.java`). skylib reads it with
 `_action_retrieving_aspect`, rules_testing with `testing_aspect`.
 
-The analysis of a Starlark rule keeps a compact view of each registered
-action under a reserved provider key, `builtin:Target.actions`
+The analysis keeps a compact view of each registered action only for the
+targets an analysis test of the request can inspect: every label an
+attribute of a requested `rule(analysis_test = True)` target names
+(`select()` branches included). The engine decides that set from the
+requested labels and their packages before the analysis
+(`Engine::inspected_targets`), so it never depends on the analysis order.
+A snapshot holds no providers, and an incremental re-analysis requests
+every dirty analysis test again, so neither can see a different set. The
+views sit under a reserved provider key, `builtin:Target.actions`
 (`crate::target_actions`). No exported provider can have that key, and the
 cquery provider listings skip it. `dir(target)` lists `actions` for rule
 targets, as genuine does.
+
+Every other Starlark rule target holds one shared "not kept" marker under
+that key, and `target.actions` fails there as an unknown field. That is a
+deliberate, explicit gap: genuine answers the actions for any rule target.
+It is reached only by a rule that is not an analysis test reading
+`dep.actions`, or by an analysis test that is not requested itself (only a
+dependency of the request). skylib's and rules_testing's aspects read the
+direct attribute dependencies of the requested tests, which are kept.
 
 | field | value |
 |---|---|
@@ -89,10 +104,13 @@ except `genrule`, `genquery` and `starlark_doc_extract`, which register
 actions: for those, `actions` is not a field. A failed target in a
 configuration that allows analysis failures has no actions.
 
-Cost: the views are kept for every Starlark rule target, whether or not
-anything reads them. On abseil-cpp (`build --nobuild //...`, 3,722 actions,
-about 2,000 of them registered by Starlark rules), peak RSS went from 436–441
-to 445–447 MB, with no change in wall or CPU time.
+Cost: on abseil-cpp (`build --nobuild //...`, 3,722 actions, about 2,000
+of them registered by Starlark rules, no analysis tests), the retained
+memory (`BAZEL_RS_TIMING_ALLOC=1`, PERF-ALLOC-SUMMARY `total`) is 182,838,914
+bytes against 182,771,274 without the feature. The difference, +68 KB, is
+the marker's map entries, one per Starlark rule target. Keeping every
+target's views had cost +4.5 MB (about 2.2 KB per action). Peak RSS is
+441–445 MB against 440–444 MB, which is within noise.
 
 `ctx.created_actions()` of a `_skylark_testable` rule (skylib's
 `unittest.make`) still fails explicitly.

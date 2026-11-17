@@ -475,6 +475,7 @@ impl Engine {
             rule_targets: self.rule_targets.clone(),
             analyzed_sources: self.analyzed_sources.clone(),
             loaded_functions: self.loaded_functions.clone(),
+            inspected_targets: self.inspected_targets.clone(),
             generated: self.generated.clone(),
             group_nodes: self.group_nodes.clone(),
             group_budget: self.group_budget.clone(),

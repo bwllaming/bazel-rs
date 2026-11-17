@@ -2035,6 +2035,7 @@ pub fn analyze_in(
     let target = ConfiguredOutputs {
         allow_analysis_failures: false,
         evaluating_for_analysis_test: false,
+        retain_actions: true,
         output_root: crate::label::GENERATED_EXEC_ROOT,
         action_owner: &owner,
         action_env: Arc::new(crate::configuration::NativeOptions::default().action_environment()),
@@ -2789,6 +2790,9 @@ pub(crate) struct ConfiguredOutputs<'a> {
     /// The configuration is `evaluating for analysis test` (below an
     /// analysis_test_transition): an analysis test rule fails in it.
     pub evaluating_for_analysis_test: bool,
+    /// Keep the target's `Target.actions` views (crate::target_actions):
+    /// an analysis test of the request names it.
+    pub retain_actions: bool,
 }
 
 /// The suppressed rule errors of a target analyzed with
@@ -3361,16 +3365,20 @@ fn analyze_inner(
             // Artifact (crate::engine). Only the values this analysis
             // allocated are checked, for what the freeze cannot carry.
             crate::providers::check_freezable_payloads(custom.values().copied())?;
-            // Target.actions (crate::target_actions): the registered actions.
-            custom.insert(
-                crate::target_actions::PROVIDER_ID.to_owned(),
-                module
-                    .heap()
-                    .alloc(crate::target_actions::TargetActions::new(
-                        &context.actions.borrow(),
-                        repositories.clone(),
-                    )),
-            );
+            // Target.actions (crate::target_actions): the registered
+            // actions' views, kept only for a target an analysis test of
+            // the request names (docs/ANALYSIS_TESTS.md).
+            if target.retain_actions {
+                custom.insert(
+                    crate::target_actions::PROVIDER_ID.to_owned(),
+                    module
+                        .heap()
+                        .alloc(crate::target_actions::TargetActions::new(
+                            &context.actions.borrow(),
+                            repositories.clone(),
+                        )),
+                );
+            }
             let mut slots = Vec::new();
             for (identity, provider) in custom {
                 let slot = format!("$provider:{}", slots.len());
@@ -3398,6 +3406,15 @@ fn analyze_inner(
             Ok((files, providers, provider_keys, target_runfiles))
         },
     )?;
+    let mut providers = providers;
+    if !target.retain_actions {
+        // A Starlark rule target no analysis test of the request names:
+        // its actions are not kept, and `target.actions` is no field.
+        providers.insert(
+            crate::target_actions::PROVIDER_ID.to_owned(),
+            crate::target_actions::not_kept(),
+        );
+    }
     let declared = context.take_declared();
     let actions = std::mem::take(&mut *context.actions.borrow_mut());
     // StarlarkProviderValidationUtil.validateArtifacts
