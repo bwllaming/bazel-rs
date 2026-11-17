@@ -11777,11 +11777,15 @@ impl Engine {
             ));
             let group_key = self.output_group_key(label, top)?;
             for group in &selected {
+                // HIDDEN_TOP_LEVEL is built like any hidden group: the
+                // rule's own files in it (rules_cc's cc_library puts its
+                // and its deps' objects there,
+                // cc_helper._collect_library_hidden_top_level_artifacts)
+                // and the default runfiles' artifacts the framework merged
+                // into it (also added below).
                 if matches!(
                     group.as_str(),
-                    crate::output_group_info::DEFAULT
-                        | crate::output_group_info::TEMP_FILES
-                        | crate::output_group_info::HIDDEN_TOP_LEVEL
+                    crate::output_group_info::DEFAULT | crate::output_group_info::TEMP_FILES
                 ) {
                     continue;
                 }

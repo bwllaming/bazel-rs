@@ -184,7 +184,14 @@ every access, so the same comparison is `False` (FileConfiguredTarget.java:85-10
 * `bazel build` of an executable or test target builds its files to build and,
   like OutputGroupInfo.HIDDEN_TOP_LEVEL (RuleConfiguredTargetBuilder.java:144-171),
   the artifacts of its default runfiles and its runfiles tree without
-  reporting them (N23f, docs/RUNFILES_TREES.md). `run` exists since N23f (not
+  reporting them (N23f, docs/RUNFILES_TREES.md). The files a rule itself
+  returns in `OutputGroupInfo(_hidden_top_level_INTERNAL_ = ...)` are built
+  (unreported) too, for every requested rule target (B28: rules_cc's
+  cc_library puts its own and its dependencies' objects there,
+  cc_helper._collect_library_hidden_top_level_artifacts, so `build //...`
+  compiles the objects of external libraries no link uses, like Bazel;
+  tests/output_group_info.rs `a_rules_hidden_top_level_group_is_built_but_not_reported`).
+  `run` exists since N23f (not
   for test targets); `test` exists since N23g (docs/TEST_COMMAND.md). Simple `args` (whitespace
   separated) are passed by `run`.
 

@@ -560,3 +560,44 @@ fn validation_and_hidden_groups_deeper_than_the_depset_limit_compose() {
     assert_eq!(ws.read("deep.b.validated").as_deref(), Some("b"));
     assert_eq!(ws.read("c19.validated").as_deref(), Some("c19"));
 }
+
+const HIDDEN: &str = r#"
+def _impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".out")
+    hidden = ctx.actions.declare_file(ctx.label.name + ".hidden")
+    ctx.actions.write(out, "out")
+    ctx.actions.write(hidden, "hidden")
+    transitive = [dep[OutputGroupInfo]._hidden_top_level_INTERNAL_ for dep in ctx.attr.deps]
+    return [
+        DefaultInfo(files = depset([out])),
+        OutputGroupInfo(_hidden_top_level_INTERNAL_ = depset([hidden], transitive = transitive)),
+    ]
+
+r = rule(implementation = _impl, attrs = {"deps": attr.label_list()})
+"#;
+
+#[test]
+fn a_rules_hidden_top_level_group_is_built_but_not_reported() {
+    // B28: rules_cc's cc_library puts its own and its dependencies' objects
+    // in `_hidden_top_level_INTERNAL_`
+    // (cc_helper._collect_library_hidden_top_level_artifacts), so genuine
+    // `build //...` compiles the objects of external libraries no link
+    // uses. Genuine 9.3.1 on this fixture: `bazel-bin` holds dep.hidden,
+    // top.hidden and top.out (4 actions), only top.out is reported; with
+    // `--output_groups=default` the group is not built (2 actions).
+    let build = "load(':defs.bzl', 'r')\nr(name = 'dep')\nr(name = 'top', deps = [':dep'])\n";
+    let ws = Workspace::new(HIDDEN, build);
+    let output = ws.build(&[":top"]);
+    let text = ok(&output);
+    assert!(text.contains("4 total actions"), "{text}");
+    let reported = stdout(&output) + &text;
+    assert!(reported.contains("top.out"), "{reported}");
+    assert!(!reported.contains(".hidden"), "{reported}");
+    assert_eq!(ws.read("top.hidden").as_deref(), Some("hidden"));
+    assert_eq!(ws.read("dep.hidden").as_deref(), Some("hidden"));
+    assert!(ws.read("dep.out").is_none());
+    let ws = Workspace::new(HIDDEN, build);
+    let text = ok(&ws.build_with(&["--output_groups=default"], &[":top"]));
+    assert!(text.contains("2 total actions"), "{text}");
+    assert!(ws.read("top.hidden").is_none());
+}
