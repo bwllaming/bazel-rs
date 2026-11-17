@@ -7287,9 +7287,12 @@ impl RepositorySet {
             if bound.explicit_attributes.get(&recorded.name) != Some(&explicit) {
                 return Err(format!("{}: its explicit attributes differ", recorded.name));
             }
-            let Some(canonical_name) = bound.generated_mapping.get(&recorded.name) else {
+            if !bound.generated_mapping.contains_key(&recorded.name) {
                 return Err(format!("{}: not generated", recorded.name));
-            };
+            }
+            // Its own canonical name: the mapping may carry a root module
+            // override_repo of this name instead.
+            let canonical_name = &format!("{}+{}", group.prefix, recorded.name);
             let attributes = repository_rule::bind_recorded_attributes_where(
                 &recorded.definition,
                 &recorded.attributes,

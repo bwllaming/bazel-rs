@@ -78,6 +78,10 @@ impl Fixture {
     }
 
     fn run(&self, args: &[&str]) -> Output {
+        self.run_env(args, &[])
+    }
+
+    fn run_env(&self, args: &[&str], envs: &[(&str, &str)]) -> Output {
         let output = Command::new("/usr/bin/timeout")
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")
@@ -94,6 +98,7 @@ impl Fixture {
             .env("TMPDIR", self.temp.path().join("tmp"))
             .env("LC_ALL", "C")
             .env("BAZEL_RS_PROGRESS", "0")
+            .envs(envs.iter().copied())
             .explicit_modules()
             .output()
             .unwrap();
@@ -182,6 +187,26 @@ fn override_repo_and_inject_repo_redirect_extension_repositories() {
                 .collect::<std::collections::BTreeMap<_, _>>()
         );
     }
+}
+
+#[test]
+fn overridden_generated_repositories_rebind_from_their_lockfile_entry() {
+    // A reproducible extension is evaluated in every command; its result
+    // is re-probed against the entry the next command would read, which
+    // binds each generated repository under its own canonical name even
+    // where the mapping carries an override (`gen_a`, `mine`).
+    let f = Fixture::new("repo_override");
+    let ext = fs::read_to_string(f.ws.join("ext.bzl")).unwrap().replace(
+        "    plain(name = \"gen_d\", tag = \"unused\")\n",
+        "    plain(name = \"gen_d\", tag = \"unused\")\n    return mctx.extension_metadata(reproducible = True)\n",
+    );
+    fs::write(f.ws.join("ext.bzl"), ext).unwrap();
+    let output = f.run_env(&["build", "//:g"], &[("BAZEL_RS_SNAPSHOT_EXPLAIN", "1")]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stderr(&output);
+    assert!(text.contains("bazel-rs-snapshot: "), "{text}");
+    assert!(!text.contains("not re-probed"), "{text}");
+    assert!(!text.contains("extension-evaluated"), "{text}");
 }
 
 #[test]
