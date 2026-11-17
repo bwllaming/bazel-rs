@@ -973,6 +973,19 @@ pub struct StartupState {
     /// `--[no]experimental_remote_repo_contents_cache` (RemoteStartupOptions;
     /// the last value wins, rc files included): crate::remote_repo_cache.
     pub remote_repo_contents_cache: bool,
+    /// `--host_jvm_args` values, accepted without effect (no JVM) except
+    /// `-DBAZEL_TRACK_SOURCE_DIRECTORIES=0`, which fails.
+    pub host_jvm_args: Vec<String>,
+}
+
+/// The value of JVM system property `name` set by one `--host_jvm_args`
+/// value (`-DNAME=VALUE`; `-DNAME` sets the empty string).
+fn jvm_property<'a>(arg: &'a str, name: &str) -> Option<&'a str> {
+    let rest = arg.strip_prefix("-D")?.strip_prefix(name)?;
+    if rest.is_empty() {
+        return Some("");
+    }
+    rest.strip_prefix('=')
 }
 
 /// StartupOptions::ProcessArgs (startup_options.cc:419-445) over the rc
@@ -1061,7 +1074,7 @@ fn process_startup_flags(
                 "unsupported startup option {arg:?} from rc file {file}:{line}; startup options are never silently ignored"
             ),
             None => format!(
-                "unsupported startup option {arg:?}; the native client models only --[no]system_rc, --[no]workspace_rc, --[no]home_rc, --ignore_all_rc_files, --[no]quiet, --[no]experimental_remote_repo_contents_cache, --bazelrc and --output_base"
+                "unsupported startup option {arg:?}; the native client models only --[no]system_rc, --[no]workspace_rc, --[no]home_rc, --ignore_all_rc_files, --[no]quiet, --[no]experimental_remote_repo_contents_cache, --[no]windows_enable_symlinks, --host_jvm_args, --bazelrc and --output_base"
             ),
         };
         if check_valid_nullary(arg)? {
@@ -1076,6 +1089,12 @@ fn process_startup_flags(
                 "experimental_remote_repo_contents_cache" => {
                     state.remote_repo_contents_cache = enabled;
                 }
+                // BlazeServerStartupOptions.enableWindowsSymlinks (:467-476):
+                // the client sets it on Windows only, where it makes the
+                // server create real symlinks instead of copies. bazel-rs
+                // runs on Linux and macOS, which always have symlinks: no
+                // effect (docs/RC_OPTIONS.md, "Startup options").
+                "windows_enable_symlinks" => {}
                 "home_rc" | "system_rc" | "workspace_rc" => {
                     if enabled {
                         explicit.insert(key.to_owned());
@@ -1116,6 +1135,30 @@ fn process_startup_flags(
                 return Err("Can't specify --bazelrc in the RC file.".to_owned());
             }
             user_bazelrc = value.to_owned();
+        } else if name == "host_jvm_args" {
+            // HostJvmStartupOptions.hostJvmArgs (:41-49, allowMultiple):
+            // flags for the server's JVM, which bazel-rs does not have.
+            // The one JVM flag with a build-visible effect is the
+            // TrackSourceDirectoriesFlag property (skyframe/
+            // TrackSourceDirectoriesFlag.java:28-33): `1` (and any other
+            // value but `0`) is Bazel's default, which bazel-rs models
+            // (docs/SOURCE_DIRECTORIES.md); `0` is not modelled.
+            if jvm_property(value, "BAZEL_TRACK_SOURCE_DIRECTORIES") == Some("0") {
+                let form = if from_next {
+                    format!("{arg}={value}")
+                } else {
+                    arg.clone()
+                };
+                return Err(match source {
+                    Some((file, line)) => format!(
+                        "unsupported startup option {form:?} from rc file {file}:{line}: source directories are always tracked (Bazel's default); startup options are never silently ignored"
+                    ),
+                    None => format!(
+                        "unsupported startup option {form:?}: source directories are always tracked (Bazel's default)"
+                    ),
+                });
+            }
+            state.host_jvm_args.push(value.to_owned());
         } else if name == "output_base" {
             if value.is_empty() {
                 return Err("--output_base requires a nonempty path".to_owned());
@@ -2229,6 +2272,72 @@ mod tests {
         };
         assert!(process_startup_options(&[], &line, &mut warnings, &mut provenance).is_ok());
         assert!(provenance.is_empty());
+    }
+
+    #[test]
+    fn jvm_and_windows_startup_options_have_no_effect() {
+        let option = |text: &str, line: usize| RcOption {
+            command: "startup".into(),
+            option: text.into(),
+            source: "/w/.bazelrc".into(),
+            line,
+        };
+        let run = |options: Vec<RcOption>, args: &[&str]| {
+            let rc = RcFile {
+                canonical_source_paths: vec!["/w/.bazelrc".into()],
+                options,
+            };
+            let line = CommandLine {
+                startup_args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+                ..CommandLine::default()
+            };
+            process_startup_options(&[rc], &line, &mut Vec::new(), &mut Vec::new())
+        };
+        let state = run(
+            vec![
+                option("--host_jvm_args=-DBAZEL_TRACK_SOURCE_DIRECTORIES=1", 1),
+                option("--host_jvm_args", 2),
+                option("-Xmx2g", 2),
+                option("--windows_enable_symlinks", 3),
+                option("--nowindows_enable_symlinks", 4),
+            ],
+            &["--host_jvm_args=-Duser.home=/h"],
+        )
+        .unwrap();
+        assert_eq!(
+            state.host_jvm_args,
+            [
+                "-DBAZEL_TRACK_SOURCE_DIRECTORIES=1",
+                "-Xmx2g",
+                "-Duser.home=/h"
+            ]
+        );
+        let error = run(
+            vec![option(
+                "--host_jvm_args=-DBAZEL_TRACK_SOURCE_DIRECTORIES=0",
+                7,
+            )],
+            &[],
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("from rc file /w/.bazelrc:7: source directories are always tracked"),
+            "{error}"
+        );
+        assert_eq!(
+            jvm_property(
+                "-DBAZEL_TRACK_SOURCE_DIRECTORIESX=0",
+                "BAZEL_TRACK_SOURCE_DIRECTORIES"
+            ),
+            None
+        );
+        assert_eq!(
+            jvm_property(
+                "-DBAZEL_TRACK_SOURCE_DIRECTORIES",
+                "BAZEL_TRACK_SOURCE_DIRECTORIES"
+            ),
+            Some("")
+        );
     }
 
     #[test]
