@@ -50,6 +50,7 @@ tests/fixtures/config_setting_features/workspace
 tests/fixtures/console_action_output/workspace
 tests/fixtures/console_text/workspace
 tests/fixtures/corpus_options/workspace
+tests/fixtures/corpus_parity2/local_repo
 tests/fixtures/corpus_parity2/other_main
 tests/fixtures/corpus_parity2/rules_cc_main
 tests/fixtures/corpus_parity2/workspace

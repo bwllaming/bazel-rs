@@ -55,6 +55,10 @@ CASES = {
         ['show.txt']),
     'flag_alias_disagreeing_values': (
         [], 'build', BUILD, ['//alias:mismatch'], [r'have different values'], []),
+    'local_repository_symlinked_root': (
+        [], 'build', BUILD, ['@ext//:g'], [], ['g.out'], 'local_repo'),
+    'local_repository_query': (
+        [], 'query', [], ['@ext//...'], [], [], 'local_repo'),
     'rules_cc_main_private_initializer': (
         [], 'build', BUILD, ['//use:t'], [], ['t.txt'], 'rules_cc_main'),
     'other_main_private_initializer': (

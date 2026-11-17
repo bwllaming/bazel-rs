@@ -2189,6 +2189,76 @@ impl Context {
         })
     }
 
+    /// `rctx.symlink(directory, ".")` (bazel_tools' Starlark
+    /// `local_repository`, local.bzl:61-64): Bazel makes the repository
+    /// directory itself a symlink to the directory, so the repository shows
+    /// the directory's current contents. The native repository directory is
+    /// a published tree whose BUILD and REPO.bazel files must lie inside it,
+    /// so it gets a copy of the directory instead (symlinks copied as
+    /// symlinks), and the directory is a recorded `watch_tree` input: any
+    /// change to it executes the rule again at the next command, which
+    /// then sees what Bazel's link shows. Only on an empty repository
+    /// directory and only to a directory; anything else stays the explicit
+    /// failure. A repository directory without a boundary file fails like
+    /// Bazel's linked one (RepositoryFetchFunction.java:734-743, which
+    /// creates no REPO.bazel through a symlink).
+    fn link_repository_directory(
+        &self,
+        target: &[u8],
+        link: &[u8],
+        failure: &dyn Fn(&dyn fmt::Display) -> anyhow::Error,
+    ) -> anyhow::Result<()> {
+        let host_target = path_buf(target);
+        let empty = fs::read_dir(&self.stage)
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(false);
+        if !empty || !fs::metadata(&host_target).is_ok_and(|metadata| metadata.is_dir()) {
+            return Err(failure(
+                &"the repository directory itself cannot be a symlink (only an empty repository directory linked to a directory is modelled)",
+            ));
+        }
+        if !["MODULE.bazel", "REPO.bazel", "WORKSPACE.bazel", "WORKSPACE"]
+            .iter()
+            .any(|name| fs::metadata(host_target.join(name)).is_ok())
+        {
+            bail!(
+                "No MODULE.bazel, REPO.bazel, or WORKSPACE file found in {}",
+                display(link)
+            );
+        }
+        self.mark_created()?;
+        fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+            let mut names = fs::read_dir(from)?
+                .map(|entry| entry.map(|entry| entry.file_name()))
+                .collect::<Result<Vec<_>, _>>()?;
+            names.sort();
+            for name in names {
+                let source = from.join(&name);
+                let destination = to.join(&name);
+                let metadata = fs::symlink_metadata(&source)?;
+                if metadata.file_type().is_symlink() {
+                    std::os::unix::fs::symlink(fs::read_link(&source)?, &destination)?;
+                } else if metadata.is_dir() {
+                    fs::create_dir(&destination)?;
+                    copy_tree(&source, &destination)?;
+                } else if metadata.is_file() {
+                    fs::copy(&source, &destination)?;
+                }
+            }
+            Ok(())
+        }
+        copy_tree(&host_target, &self.stage).map_err(|error| failure(&error))?;
+        if let Some(key) = self.watch_key(target, ShouldWatch::Yes)? {
+            self.record(key.clone(), "file", file_state(&host_target)?)?;
+            self.record(
+                key,
+                "dirtree",
+                format!("dirtree:{}", tree_digest(&host_target)?),
+            )?;
+        }
+        Ok(())
+    }
+
     /// RepoRecordedInput.File of `path` (java:1721-1738).
     fn watch(&self, path: &[u8], watch: ShouldWatch) -> anyhow::Result<()> {
         let Some(key) = self.watch_key(path, watch)? else {
@@ -4478,10 +4548,11 @@ fn repository_methods(builder: &mut MethodsBuilder) {
                 display(&link)
             )
         };
-        ensure!(
-            !relative.is_empty(),
-            failure(&"the repository directory itself cannot be a symlink")
-        );
+        if relative.is_empty() {
+            return context
+                .link_repository_directory(&target, &link, &failure)
+                .map(|()| NoneType);
+        }
         let _writable = context.writable_holding(&relative);
         let host_link = context.output_parents(&relative).map_err(|e| failure(&e))?;
         context.mark_created()?;

@@ -89,3 +89,24 @@ cleanup are recorded there.
 The subsequent [extension introspection increment](EXISTING_RULES.md) executes
 that original extension and advances to a missing `macro` global in generated
 code. The separate proof boundaries above remain unchanged.
+
+## The repository directory itself as a symlink
+
+bazel_tools' Starlark `local_repository` (`tools/build_defs/repo/local.bzl:61-64`)
+calls `rctx.symlink(path, ".")`: Bazel makes `external/<name>` a symlink to
+the directory, so the repository always shows that directory's current
+contents, and creates no `REPO.bazel` through the link
+(`RepositoryFetchFunction.java:734-743`: without a boundary file the fetch
+fails). Native repository directories are published trees whose BUILD and
+REPO.bazel files must lie inside them, so the native callback copies the
+directory into the repository directory instead (symlinks copied as
+symlinks) and records the directory as a `watch_tree` input: any change to
+the tree (a file's content, an added or removed entry, a link target)
+executes the rule again at the next command, which then shows what Bazel's
+link shows. Differences: the copy costs a read of the tree on every
+command that checks the repository and a copy on every change; a mode-only
+change is not seen; and relative symlinks inside the tree resolve against
+the copy, not the original location. Only an empty repository directory
+linked to a directory is modelled; any other `rctx.symlink(..., ".")`
+fails explicitly. Receipt: `tests/fixtures/corpus_parity2` (`local_repo`
+cases; OSS corpus B5, diff.bzl).

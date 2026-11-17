@@ -42,6 +42,37 @@
    ],
    "workspace": "workspace"
   },
+  "local_repository_query": {
+   "command": "query",
+   "exit": 0,
+   "flags": [],
+   "outputs": {},
+   "startup": [],
+   "stderr": [],
+   "stdout": "@ext//:g\n",
+   "targets": [
+    "@ext//..."
+   ],
+   "workspace": "local_repo"
+  },
+  "local_repository_symlinked_root": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/external/+local_repository+ext/g.out": "one\ntwo\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "@ext//:g"
+   ],
+   "workspace": "local_repo"
+  },
   "minimum_os_version_default": {
    "command": "build",
    "exit": 0,

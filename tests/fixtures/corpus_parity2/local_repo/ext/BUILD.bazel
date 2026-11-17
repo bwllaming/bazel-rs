@@ -1,0 +1,6 @@
+genrule(
+    name = "g",
+    srcs = glob(["*.txt"]) + ["//sub:data.txt"],
+    outs = ["g.out"],
+    cmd = "cat $(SRCS) > $@",
+)
