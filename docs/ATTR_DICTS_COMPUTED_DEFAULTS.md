@@ -103,7 +103,8 @@ or `allow_single_file`. The types are `BuildType.LABEL_DICT_UNARY`
   / tag values are immutable dicts of `Label` (lists of `Label`)
   (`Attribute.valueToStarlark`, `packages/Attribute.java:2442-2450`).
   `attr.label_keyed_string_dict` is supported there since N29 (Label-keyed
-  frozen dicts, docs/GLOB_SYMLINKS.md); `attr.int_list` remains unsupported.
+  frozen dicts, docs/GLOB_SYMLINKS.md); `attr.int_list` values are lists of ints
+  (tests/fixtures/repository_int_list).
 
 `attr.label_keyed_string_dict` rule values are analyzed since N50: `ctx.attr`
 is a frozen dict of the prerequisite Targets to their strings

@@ -1,0 +1,10 @@
+module(name = "int_list_probe")
+
+repo = use_repo_rule("//:repo.bzl", "repo")
+
+repo(name = "direct", lengths = [3, -1, 0])
+
+repo(name = "defaulted")
+
+ext = use_extension("//:repo.bzl", "ext")
+use_repo(ext, "from_ext")

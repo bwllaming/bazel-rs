@@ -1,0 +1,44 @@
+{
+ "schema": "repository-int-list-reference-receipt/v1",
+ "fixture": "repository_int_list",
+ "purpose": "attr.int_list in repository rules: an explicit value (use_repo_rule in MODULE.bazel), the default, and a module extension's call; rctx.attr is a list of ints. Motivation: rules_zig zig_toolchains exec_lengths (OSS corpus B21).",
+ "reference": {
+  "binary": "bazel-9.3.1-linux-x86_64",
+  "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch>",
+  "command_flags": "<command> --noshow_progress <argv[1:]>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8; fresh fixture copy per case"
+ },
+ "normalization": "<WS> = the workspace copy. stdout = the query output lines. debug_sorted = the analysis DEBUG lines without the `DEBUG: <file>:L:C: ` prefix, sorted (repository fetch order is not deterministic); errors = the `ERROR: <WS>...` lines.",
+ "script": {
+  "path": "/tmp/opencode/w/cs-il/capture.py (not committed)",
+  "sha256": "bf0d37d9aec2e741839b1f97a8b8f6aeeb1baf0618de31644b00fdd6e301faaa"
+ },
+ "fixture_files_sha256": {
+  "BUILD.bazel": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "MODULE.bazel": "6a29d2b1a10d8af0e0b484269b26cf212f699bb0ad10a1dcc11cdb560b5f2a7c",
+  "repo.bzl": "c4b9e2c1f04c7b3057a2ce41fea4e6e14b53010c7f9fc7ee89239395a9fa032c"
+ },
+ "cases": {
+  "fetch": {
+   "argv": [
+    "query",
+    "@direct//:all + @defaulted//:all + @from_ext//:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "debug_sorted": [
+     "VALUE defaulted list [1, 2] 2",
+     "VALUE direct list [3, -1, 0] 3",
+     "VALUE from_ext list [7, 8, 9] 3"
+    ],
+    "stdout": [
+     "@from_ext//:files",
+     "@defaulted//:files",
+     "@direct//:files"
+    ],
+    "errors": []
+   }
+  }
+ }
+}

@@ -223,7 +223,8 @@ Native (`repository_rule::label_dict_json` and
   docs/STARLARK_VENDOR.md).
 * Provenance: bound values serialize as the existing
   `LabelKeyedStringDict` attribute variant, present only when the attribute is
-  declared. `attr.int_list` remains unsupported in repository rules and tags.
+  declared. `attr.int_list` values are lists of ints in repository rules and
+  tags (tests/fixtures/repository_int_list).
 
 ## Tests
 

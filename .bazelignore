@@ -128,6 +128,7 @@ tests/fixtures/repo_cache_friendly_paths/workspace
 tests/fixtures/repositories/p
 tests/fixtures/repositories/repos
 tests/fixtures/repository_cache/workspace
+tests/fixtures/repository_int_list/workspace
 tests/fixtures/repository_slots/workspace
 tests/fixtures/runfiles_repo_links/workspace
 tests/fixtures/runfiles_transitions/workspace

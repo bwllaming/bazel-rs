@@ -4812,7 +4812,7 @@ fn is_latin1(text: &str) -> bool {
     crate::repository_rule::is_latin1(text)
 }
 
-fn alloc_attr_value<'v>(heap: Heap<'v>, name: &str, attr: &AttrValue) -> anyhow::Result<Value<'v>> {
+fn alloc_attr_value<'v>(heap: Heap<'v>, attr: &AttrValue) -> anyhow::Result<Value<'v>> {
     Ok(match attr {
         AttrValue::String(value) => {
             ensure!(
@@ -4832,11 +4832,8 @@ fn alloc_attr_value<'v>(heap: Heap<'v>, name: &str, attr: &AttrValue) -> anyhow:
         AttrValue::LabelKeyedStringDict(entries) => {
             crate::attribute_values::alloc_label_keyed_string_dict(heap, entries)?
         }
-        AttrValue::Ints(_) => {
-            anyhow::bail!(
-                "attribute {name:?} kind is not supported for repository rules by the native profile"
-            )
-        }
+        // `attr.int_list`: a list of ints, like a string list.
+        AttrValue::Ints(values) => heap.alloc(values.clone()),
         AttrValue::StringKeyedLabelDict(entries) => {
             crate::attribute_values::alloc_string_keyed_label_dict(heap, entries)?
         }
@@ -4883,7 +4880,7 @@ fn alloc_attrs<'v>(
 ) -> anyhow::Result<Value<'v>> {
     let mut values = BTreeMap::new();
     for (name, attr) in attrs {
-        values.insert(name.clone(), alloc_attr_value(heap, name, attr)?);
+        values.insert(name.clone(), alloc_attr_value(heap, attr)?);
     }
     values.insert("name".to_owned(), heap.alloc(canonical_name));
     let fields = heap.alloc(AllocStruct(values));
@@ -4916,7 +4913,7 @@ fn resolved_event<'v>(
         if name == "name" || name.starts_with('_') {
             continue;
         }
-        let default = alloc_attr_value(heap, name, &spec.default)?;
+        let default = alloc_attr_value(heap, &spec.default)?;
         let current = attr
             .get_attr(name, heap)
             .map_err(|e| anyhow!("{e}"))?
