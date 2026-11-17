@@ -905,6 +905,30 @@ impl Converter<'_> {
         self.budget.string(text).map_err(anyhow::Error::msg)
     }
 
+    /// BuildType.OutputType.convert (packages/BuildType.java:561-569): an
+    /// output is a label in the current package (`name`, `:name`,
+    /// `//pkg:name` or a Label value); the package-relative name is kept.
+    fn output(&mut self, value: Value<'_>, what: What<'_>) -> anyhow::Result<String> {
+        let shown = match value.unpack_str() {
+            Some(text)
+                if !text.contains(':') && !text.starts_with("//") && !text.starts_with('@') =>
+            {
+                return self.string(value, what);
+            }
+            Some(text) => text.to_owned(),
+            None if crate::starlark_types::label_parts(value).is_some() => {
+                crate::starlark_types::unpack_label(value).unwrap_or_default()
+            }
+            None => return self.string(value, what),
+        };
+        let canonical = self.label(value, what)?;
+        let label = Label::parse_canonical(&canonical).map_err(anyhow::Error::msg)?;
+        if label.repository != self.package.repository || label.package != self.package.package {
+            bail!("label '{shown}' is not in the current package");
+        }
+        Ok(label.name)
+    }
+
     /// BuildType.LabelType.convert (packages/BuildType.java:412-429) with the
     /// package's LabelConverter. Returns the canonical label text, or the raw
     /// text when its apparent repository is not visible: like Bazel's
@@ -1078,7 +1102,11 @@ impl Converter<'_> {
                 let items = self.sequence(shape, value, what)?;
                 let mut values = Vec::with_capacity(items.len());
                 for (index, item) in items.iter().enumerate() {
-                    values.push(self.string(*item, What::Element(index, what))?);
+                    if ty == NativeType::OutputList {
+                        values.push(self.output(*item, What::Element(index, what))?);
+                    } else {
+                        values.push(self.string(*item, What::Element(index, what))?);
+                    }
                 }
                 if ty == NativeType::License {
                     parse_license(&values)?;

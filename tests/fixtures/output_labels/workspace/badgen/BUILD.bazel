@@ -1,0 +1,1 @@
+genrule(name = "g", outs = ["//other:x.txt"], cmd = "touch $@")

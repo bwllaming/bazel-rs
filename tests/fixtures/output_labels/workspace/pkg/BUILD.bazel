@@ -1,0 +1,9 @@
+load(":defs.bzl", "FISH", "hashes")
+
+hashes(
+    name = "h",
+    outs = [":dog.md5", "cat.md5", "//pkg:sub/bird.md5", FISH],
+    out = ":single.md5",
+)
+
+genrule(name = "g", outs = [":gen.txt", "//pkg:gen2.txt"], cmd = "touch $(OUTS)")

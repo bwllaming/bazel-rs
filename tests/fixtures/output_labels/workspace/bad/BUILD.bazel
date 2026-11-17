@@ -1,0 +1,3 @@
+load("//pkg:defs.bzl", "hashes")
+
+hashes(name = "h", outs = ["//other:dog.md5"], out = "x.md5")

@@ -3457,9 +3457,16 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
             "", "..", "../x", "/x", "x/", "x//y", "x/./y", "x/../y", "//else:x", ":x", "a\\b",
         ] {
             rejected(&format!("filegroup(name={name:?})"), "rule name");
+            // Outputs are labels in the package (BuildType.OutputType.convert):
+            // `:x` names the output `x`; `//else:x` is in another package.
+            let expected = match name {
+                ":x" => continue,
+                "//else:x" => "label '//else:x' is not in the current package",
+                _ => "output path",
+            };
             rejected(
                 &format!("genrule(name='ok', outs=[{name:?}], cmd='true')"),
-                "output path",
+                expected,
             );
         }
         rejected(
@@ -4625,7 +4632,10 @@ r = rule(implementation=impl, attrs={
             ),
             ("r(name='x', s='', dep=1)", "string"),
             ("r(name='x', s='', deps=[1])", "list of strings"),
-            ("r(name='x', s='', out='../escape')", "output path"),
+            (
+                "r(name='x', s='', out='../escape')",
+                "invalid target name '../escape': target names may not contain up-level references '..'",
+            ),
             ("r(name='x', s='', outputs=[1])", "list of strings"),
             (
                 "r(name='x', s='', unknown=1)",

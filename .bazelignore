@@ -106,6 +106,7 @@ tests/fixtures/native_aspects/workspace
 tests/fixtures/native_rules
 tests/fixtures/nobuild/published_workspace
 tests/fixtures/nobuild/workspace
+tests/fixtures/output_labels/workspace
 tests/fixtures/persistent_workers/workspace
 tests/fixtures/pre_platforms_flags/workspace
 tests/fixtures/print_locations/workspace

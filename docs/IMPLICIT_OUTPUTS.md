@@ -130,3 +130,15 @@ read `ctx.outputs.stripped_binary`/`ctx.outputs.dwp_file`
   explicitly. `--incompatible_no_rule_outputs_param` is not modelled.
 * `query --output=label_kind` and `//pkg:*` patterns are not implemented
   natively (reference-only rows in the capture).
+
+## Explicit output attributes are labels
+
+`attr.output`, `attr.output_list` and the native `outs` (genrule and the
+other OUTPUT_LIST attributes) convert their values like Bazel's
+BuildType.OutputType (packages/BuildType.java:561-569): LABEL.convert, then
+the label must be in the current package. `name`, `:name`, `//pkg:name`
+and Label values all declare the package's output file `name`; another
+package fails with `label 'X' is not in the current package`, an invalid
+label with the label error. Genuine 9.3.1 capture:
+tests/fixtures/output_labels (bazelbuild/examples
+`rules/predeclared_outputs/hash.bzl:68`, OSS corpus B23).

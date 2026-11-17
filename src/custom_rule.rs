@@ -833,6 +833,35 @@ fn label_value(value: Value<'_>, resolver: Option<&LabelResolver<'_>>) -> anyhow
         .map_err(anyhow::Error::msg)
 }
 
+/// BuildType.OutputType.convert (packages/BuildType.java:561-569): an
+/// output is a label (`name`, `:name`, `//pkg:name` or a Label) that must be
+/// in the current package; the package-relative name is kept.
+fn output_name(value: Value<'_>, resolver: Option<&LabelResolver<'_>>) -> anyhow::Result<String> {
+    let Some(resolve) = resolver else {
+        return value
+            .unpack_str()
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow!("expected a string"));
+    };
+    let shown = match crate::starlark_types::unpack_label(value) {
+        Some(label) => label,
+        None => value
+            .unpack_str()
+            .ok_or_else(|| anyhow!("expected a string"))?
+            .to_owned(),
+    };
+    let label = match crate::starlark_types::unpack_label(value) {
+        Some(label) => crate::label::Label::parse_canonical(&label).map_err(anyhow::Error::msg)?,
+        None => resolve(&shown)?,
+    };
+    // `:x` always names a target of the current (base) package.
+    let base = resolve(":x")?;
+    if label.repository != base.repository || label.package != base.package {
+        bail!("label '{shown}' is not in the current package");
+    }
+    Ok(label.name)
+}
+
 impl AttrKind {
     /// The `attr` module function name (Descriptor repr `<attr.NAME>`).
     pub(crate) fn starlark_name(&self) -> &'static str {
@@ -935,8 +964,10 @@ impl AttrKind {
                 )
             }),
             Self::Label => label(value, what),
-            Self::Output => string(value, what),
-            Self::StringList | Self::OutputList => list(value, &string),
+            // BuildType.OutputType.convert is LABEL.convert (BuildType.java:561-569).
+            Self::Output => label(value, what),
+            Self::OutputList => list(value, &label),
+            Self::StringList => list(value, &string),
             Self::LabelList => list(value, &label),
             Self::IntList => list(value, &int),
             Self::StringDict => dict(&string, &string),
@@ -990,9 +1021,15 @@ impl AttrKind {
         }
         let expected = match self {
             Self::String if value.unpack_str().is_none() => Some("a string"),
-            Self::StringList | Self::OutputList
+            Self::StringList
                 if !sequence_ref(value)
                     .is_some_and(|list| list.iter().all(|v| v.unpack_str().is_some())) =>
+            {
+                Some("a list of strings")
+            }
+            // Outputs are labels (BuildType.OutputType.convert).
+            Self::OutputList
+                if !sequence_ref(value).is_some_and(|list| list.iter().copied().all(is_label)) =>
             {
                 Some("a list of strings")
             }
@@ -1058,7 +1095,7 @@ impl AttrKind {
             {
                 Some("a list of strings or Labels")
             }
-            Self::Output if !value.is_none() && value.unpack_str().is_none() => Some("a string"),
+            Self::Output if !value.is_none() && !is_label(value) => Some("a string"),
             _ => None,
         };
         if let Some(expected) = expected {
@@ -1202,9 +1239,15 @@ impl AttrKind {
             Self::Output => AttrValue::Output(if value.is_none() {
                 None
             } else {
-                Some(string()?)
+                Some(output_name(value, resolver)?)
             }),
-            Self::OutputList => AttrValue::Outputs(string_list(value)?),
+            Self::OutputList => AttrValue::Outputs(
+                sequence_ref(value)
+                    .ok_or_else(|| anyhow!("expected a list of strings"))?
+                    .iter()
+                    .map(|&value| output_name(value, resolver))
+                    .collect::<anyhow::Result<_>>()?,
+            ),
             Self::IntList => AttrValue::Ints(
                 sequence_ref(value)
                     .ok_or_else(|| anyhow!("expected a list of 32-bit ints"))?

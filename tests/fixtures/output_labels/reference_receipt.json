@@ -1,0 +1,90 @@
+{
+ "schema": "output-labels-reference-receipt/v1",
+ "fixture": "output_labels",
+ "purpose": "attr.output / attr.output_list and genrule outs values are labels (BuildType.OutputType.convert, packages/BuildType.java:561-569: LABEL.convert, then the label must be in the current package): `name`, `:name`, `//pkg:name` and Label values name the package's output files; another package is `label 'X' is not in the current package`; an invalid label is the label error. Motivation: bazelbuild/examples rules/predeclared_outputs/hash.bzl:68 passes `:dog.md5`-style outputs (OSS corpus B23).",
+ "reference": {
+  "binary": "bazel-9.3.1-linux-x86_64",
+  "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch>",
+  "command_flags": "<command> --noshow_progress <argv[1:]>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8; fresh fixture copy per case"
+ },
+ "normalization": "<WS> = the workspace copy. stdout = the query output lines; errors = the `ERROR: <WS>...` lines.",
+ "script": {
+  "path": "/tmp/opencode/w/cs-out/capture.py (not committed)",
+  "sha256": "5e18c290c39ae3e095b6ff2b953ed3711e9307bb5f20c4d30fcbed635c287b28"
+ },
+ "fixture_files_sha256": {
+  "MODULE.bazel": "c59327450c146a679f93abe93e34335a753afdb68ceea5373b78ea12d86c705b",
+  "bad/BUILD.bazel": "93503ebbbe9bd516208dd8186cba19d152e5e28b235ada873f1eb824a7aa6d5a",
+  "badgen/BUILD.bazel": "abc6dfd477db3ca8c30ace692266548fbdc39a19b606f9630e5328dbd3de2179",
+  "badlabel/BUILD.bazel": "212d48ccba23cfa2effee37a9ed097007b0af752a2cb833debe95cddc07b6a89",
+  "other/BUILD.bazel": "086628fff29b04bd839c3c2d5a66b61a2084fa2ea8d83f472d2d1033ceb48567",
+  "pkg/BUILD.bazel": "9c1e7969d7810784cdfc1b8134451a753f70cc22d7a58c9f343ec8504f78baa6",
+  "pkg/defs.bzl": "4e786bb240f6891aac3798aa8d239dce7de614ea6a684c43b079b7fcd43e14f4"
+ },
+ "cases": {
+  "outputs": {
+   "argv": [
+    "query",
+    "//pkg:*"
+   ],
+   "genuine": {
+    "exit": 0,
+    "stdout": [
+     "//pkg:BUILD.bazel",
+     "//pkg:cat.md5",
+     "//pkg:dog.md5",
+     "//pkg:fish.md5",
+     "//pkg:g",
+     "//pkg:gen.txt",
+     "//pkg:gen2.txt",
+     "//pkg:h",
+     "//pkg:single.md5",
+     "//pkg:sub/bird.md5"
+    ],
+    "errors": []
+   }
+  },
+  "other_package": {
+   "argv": [
+    "query",
+    "//bad:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "errors": [
+     "ERROR: <WS>/bad/BUILD.bazel:3:7: //bad:h: label '//other:dog.md5' is not in the current package"
+    ]
+   }
+  },
+  "invalid_label": {
+   "argv": [
+    "query",
+    "//badlabel:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "errors": [
+     "ERROR: <WS>/badlabel/BUILD.bazel:3:7: //badlabel:h: invalid label 'a:b:c' in element 0 of attribute 'outs' of 'hashes': invalid target name 'b:c': target names may not contain ':'"
+    ]
+   }
+  },
+  "genrule_other_package": {
+   "argv": [
+    "query",
+    "//badgen:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "errors": [
+     "ERROR: <WS>/badgen/BUILD.bazel:1:8: //badgen:g: label '//other:x.txt' is not in the current package",
+     "ERROR: <WS>/badgen/BUILD.bazel:1:8: //badgen:g: missing value for mandatory attribute 'outs' in 'genrule' rule"
+    ]
+   }
+  }
+ }
+}
