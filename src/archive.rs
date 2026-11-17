@@ -664,15 +664,18 @@ fn link_text(raw: &[u8]) -> Result<&str, String> {
     Ok(text)
 }
 
+/// StripPrefixedPath.maybeDeprefix (bazel/repository/decompressor/
+/// StripPrefixedPath.java:44-60) compares the entry with the prefix as a
+/// relativized PathFragment: a leading or trailing `/`, `//` and `.`
+/// segments do not matter (BCR boringssl's `"strip_prefix":
+/// "boringssl-0.20261105.0/"`). `..` stays unsupported.
 fn prefix_components(prefix: &str) -> Result<Vec<&str>, String> {
-    if prefix.is_empty() {
+    let relative = prefix.trim_start_matches('/');
+    if relative.is_empty() {
         return Ok(Vec::new());
     }
-    let parts = safe_components(prefix.as_bytes())?;
-    if parts.is_empty() || parts.join("/") != prefix {
-        return Err("strip_prefix must contain only normal path components".into());
-    }
-    Ok(parts)
+    safe_components(relative.as_bytes())
+        .map_err(|_| "strip_prefix must contain only normal path components".to_owned())
 }
 
 fn safe_components(raw: &[u8]) -> Result<Vec<&str>, String> {
@@ -2124,7 +2127,6 @@ mod tests {
     fn invalid_prefixes_and_file_prefixes_are_rejected() {
         let bytes = tar_fixture(&[("root", b'0', 0o644, b"data")]);
         for prefix in [
-            ".",
             "./root",
             "root/",
             "root//child",
@@ -2138,6 +2140,25 @@ mod tests {
         ] {
             assert!(run(&bytes, "tar", prefix).is_err(), "accepted {prefix:?}");
         }
+    }
+
+    #[test]
+    fn prefixes_compare_as_relativized_path_fragments() {
+        // StripPrefixedPath.maybeDeprefix: BCR boringssl's trailing `/`,
+        // `.` segments, doubled and leading slashes.
+        let bytes = tar_fixture(&[("pkg/sub/file", b'0', 0o644, b"hello")]);
+        for prefix in ["pkg/", "./pkg", "pkg//", "/pkg", "pkg/./"] {
+            let destination = tempfile::tempdir().unwrap();
+            extract(&bytes, "tar", prefix, destination.path()).unwrap();
+            assert_eq!(
+                fs::read(destination.path().join("sub/file")).unwrap(),
+                b"hello",
+                "{prefix}"
+            );
+        }
+        let destination = tempfile::tempdir().unwrap();
+        extract(&bytes, "tar", ".", destination.path()).unwrap();
+        assert!(destination.path().join("pkg/sub/file").exists());
     }
 
     #[test]
