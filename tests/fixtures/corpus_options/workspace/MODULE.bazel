@@ -1,0 +1,12 @@
+module(name = "corpus_options")
+
+archive = use_repo_rule("//:repo.bzl", "archive")
+
+# Served by --distdir=dist (the URL does not resolve); BCR boringssl's
+# trailing-slash strip_prefix.
+archive(
+    name = "pre",
+    sha256 = "30e92be34b33680e5a32e132bb5b3a3a2bccda50ca1b7af075f0dfeda413d555",
+    strip_prefix = "pre-1.0/",
+    urls = ["https://example.invalid/releases/pre-1.0.tar.gz"],
+)

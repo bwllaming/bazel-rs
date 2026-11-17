@@ -1,0 +1,582 @@
+{
+ "bazel": "9.3.1",
+ "cases": {
+  "accepted_options": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--http_timeout_scaling=2.5",
+    "--http_connector_attempts=3",
+    "--terminal_columns=143",
+    "--grpc_keepalive_time=30s",
+    "--noexperimental_check_external_repository_files",
+    "--noexperimental_merged_skyframe_analysis_execution",
+    "--incompatible_use_cc_configure_from_rules_cc",
+    "--incompatible_enforce_starlark_utf8=error",
+    "--incompatible_default_to_explicit_init_py",
+    "--module_mirrors="
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/g.txt": "bazel-out/p-opt-exec/bin/tool.sh\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//:g"
+   ]
+  },
+  "config_setting_private_default": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--nobuild",
+    "--incompatible_config_setting_private_default_visibility"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "target '//vis/a:cs' is not visible from",
+     "pattern": "is not visible from"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//vis/b:g"
+   ]
+  },
+  "config_setting_public_default": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--nobuild"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//vis/b:g"
+   ]
+  },
+  "converter --experimental_platform_in_output_dir=bogus": {
+   "command": "build",
+   "exit": 2,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--experimental_platform_in_output_dir=bogus"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: While parsing option --experimental_platform_in_output_dir=bogus: 'bogus' is not a boolean",
+     "pattern": "While parsing option"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:g"
+   ]
+  },
+  "converter --grpc_keepalive_time=x": {
+   "command": "build",
+   "exit": 2,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--grpc_keepalive_time=x"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: While parsing option --grpc_keepalive_time=x: Illegal duration 'x'.",
+     "pattern": "While parsing option"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:g"
+   ]
+  },
+  "converter --http_connector_attempts=x": {
+   "command": "build",
+   "exit": 2,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--http_connector_attempts=x"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: While parsing option --http_connector_attempts=x: 'x' is not an int",
+     "pattern": "While parsing option"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:g"
+   ]
+  },
+  "converter --http_timeout_scaling=x": {
+   "command": "build",
+   "exit": 2,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--http_timeout_scaling=x"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: While parsing option --http_timeout_scaling=x: 'x' is not a double",
+     "pattern": "While parsing option"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:g"
+   ]
+  },
+  "converter --incompatible_enforce_starlark_utf8=bogus": {
+   "command": "build",
+   "exit": 2,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--incompatible_enforce_starlark_utf8=bogus"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: While parsing option --incompatible_enforce_starlark_utf8=bogus: Not a valid UTF-8 enforcement mode: 'bogus' (should be off, warning or error)",
+     "pattern": "While parsing option"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:g"
+   ]
+  },
+  "converter --module_mirrors=a,,b": {
+   "command": "build",
+   "exit": 2,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--module_mirrors=a,,b"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: While parsing option --module_mirrors=a,,b: Variable definitions must not contain empty strings or leading / trailing commas",
+     "pattern": "While parsing option"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:g"
+   ]
+  },
+  "converter --terminal_columns=x": {
+   "command": "build",
+   "exit": 2,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--terminal_columns=x"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: While parsing option --terminal_columns=x: 'x' is not an int",
+     "pattern": "While parsing option"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:g"
+   ]
+  },
+  "default_output_dirs": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/g.txt": "bazel-out/p-opt-exec/bin/tool.sh\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//:g"
+   ]
+  },
+  "distdir_and_strip_prefix_slash": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--distdir=missing",
+    "--distdir=dist"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/arch.txt": "x\n"
+   },
+   "startup": [],
+   "stderr": [
+    {
+     "line": "INFO: non-existent distdir <WS>/missing",
+     "pattern": "non-existent distdir"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:arch"
+   ]
+  },
+  "downloader_config_blocks": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--downloader_config=block.cfg"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "Error in download_and_extract: java.io.IOException: Cache miss and no url specified - Configured URL rewriter blocked all URLs: [https://example.invalid/releases/pre-1.0.tar.gz] - use --distdir",
+     "pattern": "Cache miss and no url specified"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:arch"
+   ]
+  },
+  "downloader_config_missing": {
+   "command": "build",
+   "exit": 2,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--downloader_config=missing.cfg"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: Failed to parse downloader config: Unable to find downloader config file <WS>/missing.cfg",
+     "pattern": "Failed to parse downloader config"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:g"
+   ]
+  },
+  "downloader_config_parse_error": {
+   "command": "build",
+   "exit": 2,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--downloader_config=bad.cfg"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: Failed to parse downloader config at bad.cfg:1: Only the host name is allowed after `allow`: allow",
+     "pattern": "Failed to parse downloader config"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:g"
+   ]
+  },
+  "downloader_config_rewrite": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--downloader_config=rewrite.cfg",
+    "--distdir=dist"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/arch.txt": "x\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//:arch"
+   ]
+  },
+  "empty_glob_default": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "Error in glob: glob pattern '*.nope' didn't match anything, but allow_empty is set to False (the default value of allow_empty can be set with --incompatible_disallow_empty_glob).",
+     "pattern": "didn't match anything"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//empty_default:e"
+   ]
+  },
+  "empty_glob_false": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--incompatible_disallow_empty_glob=false"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//empty_default:e"
+   ]
+  },
+  "empty_glob_off": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--noincompatible_disallow_empty_glob"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//empty_default:e"
+   ]
+  },
+  "empty_glob_off_explicit": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--noincompatible_disallow_empty_glob"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "Error in glob: glob pattern '*.nope' didn't match anything, but allow_empty is set to False (the default value of allow_empty can be set with --incompatible_disallow_empty_glob).",
+     "pattern": "didn't match anything"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//empty_explicit:e"
+   ]
+  },
+  "info_starlark_semantics": {
+   "command": "info",
+   "exit": 0,
+   "flags": [
+    "--noincompatible_disallow_empty_glob",
+    "--incompatible_enforce_starlark_utf8=error",
+    "--incompatible_use_cc_configure_from_rules_cc"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [],
+   "stdout": "StarlarkSemantics{incompatible_disallow_empty_glob=false, incompatible_use_cc_configure_from_rules=true, internal_bazel_only_utf_8_byte_strings=true, incompatible_enforce_starlark_utf8=ERROR}\n",
+   "targets": [
+    "starlark-semantics"
+   ]
+  },
+  "module_mirrors_unknown_registry": {
+   "command": "build",
+   "exit": 2,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--module_mirrors=https://x.invalid=https://m.invalid"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: --module_mirrors references registries not listed in --registries: https://x.invalid",
+     "pattern": "--module_mirrors references registries"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:g"
+   ]
+  },
+  "old_names_warn": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--experimental_downloader_config=rewrite.cfg",
+    "--experimental_distdir=dist"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/arch.txt": "x\n"
+   },
+   "startup": [],
+   "stderr": [
+    {
+     "line": "WARNING: Option 'experimental_downloader_config' is deprecated: Use --downloader_config instead",
+     "pattern": "Option 'experimental_downloader_config' is deprecated"
+    },
+    {
+     "line": "WARNING: Option 'experimental_distdir' is deprecated: Use --distdir instead",
+     "pattern": "Option 'experimental_distdir' is deprecated"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:arch"
+   ]
+  },
+  "platform_in_output_dir": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--experimental_platform_in_output_dir"
+   ],
+   "outputs": {
+    "p-fastbuild/bin/g.txt": "bazel-out/p-opt-exec/bin/tool.sh\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//:g"
+   ]
+  },
+  "query_profile_options": {
+   "command": "query",
+   "exit": 0,
+   "flags": [
+    "--noslim_profile",
+    "--experimental_profile_include_target_label",
+    "--experimental_profile_include_primary_output"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [],
+   "stdout": "//:g\n",
+   "targets": [
+    "//:g"
+   ]
+  },
+  "show_timestamps": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--show_timestamps"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/g.txt": "bazel-out/p-opt-exec/bin/tool.sh\n"
+   },
+   "startup": [],
+   "stderr": [
+    {
+     "line": "(TIME) INFO: Current date is 2026-11-17",
+     "pattern": "^\\(TIME\\) INFO: Current date is \\d{4}-\\d\\d-\\d\\d$"
+    },
+    {
+     "line": "(TIME) INFO: Build completed successfully, 3 total actions",
+     "pattern": "^\\(TIME\\) INFO: Build completed successfully"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:g"
+   ]
+  },
+  "startup_jvm_and_windows": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/g.txt": "bazel-out/p-opt-exec/bin/tool.sh\n"
+   },
+   "startup": [
+    "--host_jvm_args=-Dx=1",
+    "--host_jvm_args=-DBAZEL_TRACK_SOURCE_DIRECTORIES=1",
+    "--windows_enable_symlinks"
+   ],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//:g"
+   ]
+  },
+  "unknown_repository_load": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--keep_going"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: Skipping '//unknown_repo:u': error loading package 'unknown_repo': Unable to find package for @@[unknown repo 'local_config_platform' requested from @@]//:constraints.bzl: The repository '@@[unknown repo 'local_config_platform' requested from @@]' could not be resolved: No repository visible as '@local_config_platform' from main repository.",
+     "pattern": "Unable to find package for"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//unknown_repo:u"
+   ]
+  }
+ },
+ "elf_sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c"
+}

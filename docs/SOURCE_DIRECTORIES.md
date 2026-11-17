@@ -110,9 +110,10 @@ the spawn).
   directory or an unresolvable chain fails). Digests come from the
   per-process and persistent digest memos (docs/DIGEST_MEMO.md), so a warm
   command stats each file once and hashes nothing.
-  `--host_jvm_args` is not a native startup option, so the unsound mtime
-  mode (and its warning) cannot be selected; the warning never prints, as at
-  Bazel's default.
+  `--host_jvm_args` is accepted without effect (there is no JVM), except
+  `-DBAZEL_TRACK_SOURCE_DIRECTORIES=0`, which fails explicitly: the unsound
+  mtime mode (and its warning) cannot be selected; the warning never prints,
+  as at Bazel's default (docs/RC_OPTIONS.md, "Options of the OSS corpus").
 * **Change tracking** (fixture case `incremental`, across invocations like
   genuine's `--batch` action cache): `touch` of files or directories runs
   nothing again; new content, a new or removed empty directory, a retargeted

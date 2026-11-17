@@ -1,0 +1,1 @@
+filegroup(name = "e", srcs = glob(["*.nope"]))

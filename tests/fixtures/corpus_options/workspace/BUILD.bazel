@@ -1,0 +1,23 @@
+platform(name = "p")
+
+genrule(
+    name = "tool",
+    outs = ["tool.sh"],
+    cmd = "echo 'echo hi' > $@",
+    executable = True,
+)
+
+# Records the exec configuration's output directory.
+genrule(
+    name = "g",
+    outs = ["g.txt"],
+    cmd = "echo $(location :tool) > $@",
+    tools = [":tool"],
+)
+
+genrule(
+    name = "arch",
+    srcs = ["@pre//:x"],
+    outs = ["arch.txt"],
+    cmd = "cat $< > $@",
+)

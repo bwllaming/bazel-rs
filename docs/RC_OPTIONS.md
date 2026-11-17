@@ -33,7 +33,7 @@ Paths are relative to `src/main/java/com/google/devtools/build/lib/`.
 | `--subcommands`, `-s` | `ExecutionOptions.showSubcommands` (BoolOrEnumConverter, `true`/`pretty_print`/`false`), `ActionExecutionContext.maybeReportSubcommand` (:459-499). | Each spawn that reaches a runner (not a cache hit) prints `SUBCOMMAND: # KIND rule target L [action 'PROGRESS', configuration: C, execution platform: P, mnemonic: M]` (ActionOwner.getDescription, AbstractAction.describe; crate::action_console) and Bazel's `describeCommand` body verbatim: `(cd EXECROOT && exec env - VARS ARGV)`, one argument per line under `pretty_print`, then `# Configuration:`, `# Execution platform:` and `# Runner:` (genuine capture tests/fixtures/console_action_output). Differences: the configuration is the native ConfigId, and `cd` names the spawn's own execution root. Test spawns and remote cache hits are not reported. |
 | `--build_tag_filters` | `LoadingOptions` (:57-70); `TargetPatternPhaseFunction.mergeAll` (:372-373) with `TargetUtils.tagFilter`. | The selected targets are filtered by their rule tags (a test rule's include size, timeout, `[no]flaky`, `[no]local`); non-rules pass only without required tags; tests determined by `test` are not filtered. |
 | `--incompatible_python_disallow_native_rules` | `PythonOptions` (:71-81): fails the builtin `py_*` rules, which Bazel 9.3 no longer has. | A configuration value option (`config_setting` matches it; propagated to exec configurations); no other effect. |
-| Bazel no-op booleans (`--enable_bzlmod`, `--enable_workspace`, `--legacy_external_runfiles`, `--incompatible_enable_cc_toolchain_resolution`, … 97 in all) and server-state booleans (`--discard_analysis_cache`, `--[no]track_incremental_state`, `--[no]keep_state_after_build`, `--heap_dump_on_oom`, `--watchfs`) | `help = "No-op"` or the `NO_OP` effect tag; the others act on the server's Skyframe state, JVM or file watching. | `crate::rc_options::no_effect_option`: any boolean value is accepted with no effect for the commands genuine registers them for (others: `Unrecognized option`). `--fetch` and `--incompatible_disallow_empty_glob` are accepted at their default only. |
+| Bazel no-op booleans (`--enable_bzlmod`, `--enable_workspace`, `--legacy_external_runfiles`, `--incompatible_enable_cc_toolchain_resolution`, … 97 in all) and server-state booleans (`--discard_analysis_cache`, `--[no]track_incremental_state`, `--[no]keep_state_after_build`, `--heap_dump_on_oom`, `--watchfs`) | `help = "No-op"` or the `NO_OP` effect tag; the others act on the server's Skyframe state, JVM or file watching. | `crate::rc_options::no_effect_option`: any boolean value is accepted with no effect for the commands genuine registers them for (others: `Unrecognized option`). `--fetch` is accepted at its default only; `--[no]incompatible_disallow_empty_glob` is modelled ("Options of the OSS corpus"). |
 | `--repository_cache`, `--repo_contents_cache`, `--experimental_repository_cache_hardlinks`, `--experimental_repository_downloader_retries`, `--disk_cache` | `RepositoryOptions`, `RemoteOptions` | Modelled with genuine's on-disk layouts, shared with genuine Bazel ([REPOSITORY_CACHE.md](REPOSITORY_CACHE.md)). |
 | `--java_runtime_version` | `JavaOptions` (:373) | main models it in N28b (8301936), which this branch's base predates. Here it stays an explicit unsupported option, and integration takes main's model. |
 
@@ -123,6 +123,42 @@ as not modelled; see [Remaining rejected options](#remaining-rejected-options).
   are compared after URL normalization (lower case), whereas Java compares the
   URI's host as written.
 
+## Options of the OSS corpus
+
+The open-source corpus (docs/OSS_CORPUS.md, B2) found these options in
+projects' rc files, where bazel-rs used to stop at the first command. Pinned
+source: `/tmp/opencode/bazel-9.3.1-reference` (9.3.1); paths are relative to
+`src/main/java/com/google/devtools/build/lib/`. Genuine capture:
+`tests/fixtures/corpus_options/` (capture.py, reference_receipt.json), replayed
+by `tests/corpus_options.rs`. Every option keeps genuine's converter and its
+error text (`While parsing option …: 'x' is not an int`, …) and its command
+registration. Implementation: `src/download_options.rs`, `src/rc_options.rs`,
+`src/ui.rs`, `src/bazelrc.rs`, `src/config_registry.rs`, `src/package.rs`.
+
+| Option | Bazel 9.3.1 | Native |
+| --- | --- | --- |
+| startup `--host_jvm_args` | HostJvmStartupOptions (:41-49): flags of the server JVM | **Accepted without effect**: there is no JVM. The one JVM flag with a build-visible effect, `-DBAZEL_TRACK_SOURCE_DIRECTORIES=0` (skyframe/TrackSourceDirectoriesFlag.java:28-33), fails explicitly; `=1` is Bazel's default, which bazel-rs always models (docs/SOURCE_DIRECTORIES.md). |
+| startup `--[no]windows_enable_symlinks` | BlazeServerStartupOptions (:467-476): real symlinks instead of copies, on Windows | **Accepted without effect**: bazel-rs runs on Linux and macOS, which always have symlinks. |
+| `--show_timestamps` | UiOptions (:202-208), UiEventHandler (:104-105, 368-377, 463-468, 1151-1160) | **Implemented**: every event line (INFO, WARNING, ERROR, DEBUG, `INFO: From …` with an action's output, the plain progress lines) starts with the local time `(HH:mm:ss) `, and the command's first line is `INFO: Current date is yyyy-MM-dd`. The prefix is added when a line reaches the console, so a snapshot replay shows the replay time, as a warm genuine server would. The local time zone is `date +%z`'s, once per command. Differences: the curses status area has no timestamp; `query` prints the date once (genuine twice). |
+| `--http_connector_attempts` | CommonCommandOptions (:675-681), HttpConnector (:83): attempts per URL, 0 or less is the default 8 | **Implemented** for every HTTP download (registry files, archives, `repository_ctx`/`module_ctx`). |
+| `--http_timeout_scaling` | CommonCommandOptions (:667-673), CommandEnvironment (:302-307), HttpConnector.scale (:105-107) | **Implemented**: the connect (10 s) and read (20 s) timeouts are scaled; a non-positive factor is 1.0 (genuine's warning about it is reported before the UI listens and never shows). A NaN factor is 1.0 (genuine: no timeout). |
+| `--downloader_config` (old name `--experimental_downloader_config`, which warns like genuine) | RepositoryOptions (:278-291), UrlRewriter, UrlRewriterConfig | **Implemented**: `allow`, `block` (`*`), `rewrite` (Java regex and replacement semantics through fancy-regex: full match, `$N`/`${name}`, repeated patterns collect their replacements) and `all_blocked_message`, with genuine's parse errors (`Failed to parse downloader config at FILE:LINE: …`, exit 2). Applied to repository downloads and archive sources (`Cache miss and no url specified - Configured URL rewriter blocked all URLs: […] - MESSAGE`) and to registry files. Difference: a rewritten URL gets neither the original URL's `auth` entry nor netrc credentials (genuine adds netrc credentials and the URL's user info); credential helpers still apply. |
+| `--distdir` (old name `--experimental_distdir`) | RepositoryOptions (:190-201), DownloadManager (:278-329) | **Implemented**: after a cache miss, each directory (relative to the workspace) is searched for the main URL's base name and the download's own file name; a file with the expected checksum is used and stored in the cache. `INFO: non-existent distdir D` and `WARNING: distdir D is not a directory` like genuine. |
+| `--module_mirrors` | RepositoryOptions (:112-133), BazelRepositoryModule (:623-652), IndexRegistry (:460-485) | **Implemented**: `[registry=]mirror,…` assignments (later wins per registry, the empty key is every other registry, an empty value no mirrors); each mirror precedes the registry's `bazel_registry.json` mirrors for module source archives. `--module_mirrors references registries not listed in --registries: R` (exit 2). |
+| `--[no]experimental_check_external_repository_files` | RepositoryOptions (:321-331): false stops a server from checking external repository files for changes | **Accepted without effect**: native commands check fetched repositories with their own tamper check (crate::repository_store); the results equal genuine's unless repository files are edited by hand, which genuine then misses. |
+| `--incompatible_default_to_explicit_init_py` | PythonOptions (:46-57), read only through `ctx.fragments.py` | **Implemented** as a configuration value (config_setting, exec propagation, builtin_exec_platforms.bzl:444). rules_python releases with MODULE `flag_alias` declarations (e.g. the corpus's ea4234e) route it to their Starlark flag. `ctx.fragments.py` is not modelled (as before), and neither are genuine's hard-coded Python aliases for rules_python releases without MODULE aliases. |
+| `--incompatible_enforce_starlark_utf8` | BuildLanguageOptions (:812-842), BoolOrEnumConverter | Converted (`off`/`warning`/`error`, booleans); shown by `info starlark-semantics`. The native loader always fails a file that is not UTF-8 (genuine's `error`, with the native message); genuine's default `warning` and `off` decode it as Latin-1, which the native loader does not (unchanged). |
+| `--incompatible_config_setting_private_default_visibility` | PackageOptions (:132-143), Rule.getDefaultVisibility | **Implemented**: a `config_setting` without `visibility` gets the package default visibility (docs/CONFIGURATION.md "Visibility"). |
+| `--incompatible_use_cc_configure_from_rules_cc` | BuildLanguageOptions (:534-544): only the hidden `__do_not_use_fail_with_incompatible_use_cc_configure_from_rules_cc` builtin reads it (StarlarkRepositoryModule.java:195-207) | **No effect beyond `info starlark-semantics`**: Bazel 9.3's @bazel_tools no longer calls the builtin (cc_configure moved to rules_cc), and the native profile does not define it. |
+| `--[no]experimental_merged_skyframe_analysis_execution` | BuildRequestOptions (:405-415): Skymeld, interleaved analysis and execution | **Accepted without effect**: the native engine schedules analysis and execution itself; build results are the same either way. |
+| `--experimental_platform_in_output_dir` | CoreOptions (:162-180, 1146-1156), OutputPathMnemonicComputer, BuildConfigurationFunction (:151-160) | **Implemented** (TriState, propagated to exec configurations): `yes` names a target configuration's output directory after its platform (`p-fastbuild`, the legacy heuristic's default names keep the CPU), `auto` only exec configurations, `no` neither (docs/CONFIGURATION.md "Exec output roots"). |
+| `--grpc_keepalive_time` | AuthAndTLSOptions (:117-128): keep-alive pings of gRPC connections with a pending call | Converted (DurationConverter), **no effect**: the native gRPC channels (remote cache and execution, BES) keep their own HTTP/2 keep-alive settings. |
+| `--terminal_columns` | UiOptions (:166-173): a client-supplied width for the curses progress bar | Converted (int), **no effect**: the native display measures the terminal itself. |
+| `--[no]incompatible_disallow_empty_glob` | BuildLanguageOptions (:436-449), StarlarkNativeModule.glob (:108-117) | **Implemented**: the default of `glob(allow_empty)`; an explicit `allow_empty = False` still fails. Shown by `info starlark-semantics`. |
+| profile options on `query`, `cquery`, `info`, … (`--noslim_profile`, `--experimental_profile_include_*`, `--memory_profile`, …) | CommonCommandOptions: every command's | Commands that build nothing write no profile: the options that only shape one are **accepted without effect** (as on `build` without `--profile`); `--profile` and `--generate_json_trace_profile` fail explicitly (docs/PROFILE.md). |
+| `strip_prefix` with a trailing `/` (B11) | StripPrefixedPath.maybeDeprefix (:44-60): a relativized PathFragment | **Implemented**: leading and trailing `/`, `//` and `.` segments do not matter (BCR boringssl's `"boringssl-0.20261105.0/"`). |
+| `load("@local_config_platform//…")` (B12) | Bazel 9 removed the repository; a load from a non-visible repository is a package loading error | **Implemented** genuine's message: `Unable to find package for @@[unknown repo 'local_config_platform' requested from @@R]//:constraints.bzl: The repository '…' could not be resolved: No repository visible as '@local_config_platform' from …`. |
+
 ## Remaining rejected options
 
 `scripts/option_sweep.py` over the genuine 9.3.1 options of `build`, `test`,
@@ -132,7 +168,7 @@ whether the probe spelled the genuine default). Every probe below still fails
 with the explicit `unsupported option … options are never silently ignored`
 error (or a native limitation message). Rejected even at the default: only the
 deliberate exclusions of crate::option_defaults (client-supplied
-`--isatty`/`--emacs`/`--terminal_columns`/`--command_wait_time`/`--startup_time`/
+`--isatty`/`--emacs`/`--command_wait_time`/`--startup_time`/
 `--extract_data_time`/`--restart_reason`, the deprecated `--fat_apk_cpu`).
 Every other row is an unmodelled option at a non-default value. Probe values
 are placeholders (`x`, `//:x`, `1`), so a converter error may stand for a
@@ -197,8 +233,6 @@ rejection of any value.
 | `--default_override=x` | other | build,test,run,query,cquery |
 | `--default_test_resources=x` | other | build,test,run,cquery |
 | `--desugar_java8_libs` | other | build,test,run,cquery |
-| `--distdir=/tmp/x` | other | build,test,run,query,cquery |
-| `--downloader_config=/tmp/x` | other | build,test,run,query,cquery |
 | `--dynamic_local_strategy=x=y` | other | build,test,run,cquery |
 | `--dynamic_remote_strategy=x=y` | other | build,test,run,cquery |
 | `--emacs` | other | build,test,run,query,cquery |
@@ -237,9 +271,6 @@ rejection of any value.
 | `--experimental_cc_shared_library` | other | build,test,run,query,cquery |
 | `--experimental_cc_skylark_api_enabled_packages=x` | other | build,test,run,query,cquery |
 | `--experimental_circuit_breaker_strategy=x` | other | build,test,run,query,cquery |
-| `--experimental_collect_pressure_stall_indicators` | other | query,cquery |
-| `--experimental_collect_resource_estimation` | other | query,cquery |
-| `--experimental_collect_skyframe_counts_in_profiler` | other | query,cquery |
 | `--experimental_command_profile=x` | other | query,cquery |
 | `--experimental_convenience_symlinks` | other | build,test,run |
 | `--experimental_cpp_compile_resource_estimation` | other | build,test,run,cquery |
@@ -289,13 +320,8 @@ rejection of any value.
 | `--experimental_oom_sensitive_skyfunctions_semaphore_size=HOST_CPUS` | other | build,test,run,cquery |
 | `--experimental_override_platform_cpu_name=x` | other | build,test,run,query,cquery |
 | `--experimental_persistent_aar_extractor` | other | build,test,run,cquery |
-| `--experimental_platform_in_output_dir` | other | build,test,run,query,cquery |
 | `--experimental_platforms_api` | other | build,test,run,query,cquery |
 | `--experimental_process_wrapper_graceful_sigterm` | other | build,test,run,cquery |
-| `--experimental_profile_additional_tasks=x` | other | query,cquery |
-| `--experimental_profile_include_primary_output` | other | query,cquery |
-| `--experimental_profile_include_target_configuration` | other | query,cquery |
-| `--experimental_profile_include_target_label` | other | query,cquery |
 | `--experimental_propagate_custom_flag=x` | other | build,test,run,query,cquery |
 | `--experimental_publish_package_metrics_in_bep` | other | build,test,run,query,cquery |
 | `--experimental_py_binaries_include_label` | other | build,test,run,cquery |
@@ -317,7 +343,6 @@ rejection of any value.
 | `--experimental_repository_ctx_execute_wasm` | other | build,test,run,query,cquery |
 | `--experimental_reuse_include_scanning_threads` | other | build,test,run,cquery |
 | `--experimental_run_android_lint_on_java_rules` | other | build,test,run,cquery |
-| `--experimental_run_bep_event_include_residue` | other | query,cquery |
 | `--experimental_sandbox_enforce_resources_regexp=x` | other | build,test,run,cquery |
 | `--experimental_sandbox_limits=x=y` | other | build,test,run,cquery |
 | `--experimental_save_feature_state` | other | build,test,run,cquery |
@@ -384,8 +409,6 @@ rejection of any value.
 | `--incompatible_bep_cpu_from_platform` | other | build,test,run,query,cquery |
 | `--incompatible_check_external_repo_source_dir_package_boundary` | other | build,test,run,query,cquery |
 | `--incompatible_check_testonly_for_output_files` | other | build,test,run,query,cquery |
-| `--incompatible_config_setting_private_default_visibility` | other | build,test,run,query,cquery |
-| `--incompatible_default_to_explicit_init_py` | other | build,test,run,cquery |
 | `--incompatible_disable_native_android_rules` | other | build,test,run,cquery |
 | `--incompatible_disable_select_on=x` | other | build,test,run,query,cquery |
 | `--incompatible_disable_target_default_provider_fields` | other | build,test,run,query,cquery |
@@ -393,7 +416,6 @@ rejection of any value.
 | `--incompatible_disallow_java_import_exports` | other | build,test,run,cquery |
 | `--incompatible_disallow_sdk_frameworks_attributes` | other | build,test,run,cquery |
 | `--incompatible_enable_apple_toolchain_resolution` | other | build,test,run,cquery |
-| `--incompatible_enforce_starlark_utf8` | other | build,test,run,query,cquery |
 | `--incompatible_exclude_starlark_flags_from_exec_config` | other | build,test,run,query,cquery |
 | `--incompatible_limit_platforms_in_output_dir_to=//:x` | other | build,test,run,query,cquery |
 | `--incompatible_no_implicit_file_export` | other | build,test,run,query,cquery |
@@ -406,7 +428,6 @@ rejection of any value.
 | `--incompatible_stop_exporting_build_file_path` | other | build,test,run,query,cquery |
 | `--incompatible_stop_exporting_language_modules` | other | build,test,run,query,cquery |
 | `--incompatible_strip_executable_safely` | other | build,test,run,cquery |
-| `--incompatible_use_cc_configure_from_rules_cc` | other | build,test,run,query,cquery |
 | `--incompatible_use_cpp_compile_header_mnemonic` | other | build,test,run,cquery |
 | `--infer_universe_scope` | other | cquery |
 | `--inject_repository=x` | other | build,test,run,query,cquery |
@@ -439,11 +460,9 @@ rejection of any value.
 | `--macos_cpus=x` | other | build,test,run,cquery |
 | `--macos_minimum_os=1.0` | other | build,test,run,cquery |
 | `--materialize_param_files` | other | build,test,run,cquery |
-| `--memory_profile=/tmp/x` | other | query,cquery |
 | `--memprof_profile=//:x` | other | build,test,run,cquery |
 | `--merge_android_manifest_permissions` | other | build,test,run,cquery |
 | `--minimum_os_version=x` | other | build,test,run,cquery |
-| `--module_mirrors=x=y` | other | build,test,run,query,cquery |
 | `--noallow_analysis_cache_discard` | other | build,test,run,cquery |
 | `--noallow_one_action_on_resource_unavailable` | other | build,test,run,cquery |
 | `--noallow_unresolved_symlinks` | other | build,test,run,query,cquery |
@@ -478,11 +497,7 @@ rejection of any value.
 | `--noexperimental_cc_implementation_deps` | other | build,test,run,cquery |
 | `--noexperimental_check_desugar_deps` | other | build,test,run,cquery |
 | `--noexperimental_check_external_other_files` | other | build,test,run,query,cquery |
-| `--noexperimental_check_external_repository_files` | other | build,test,run,query,cquery |
 | `--noexperimental_check_output_files` | other | build,test,run,query,cquery |
-| `--noexperimental_collect_load_average_in_profiler` | other | query,cquery |
-| `--noexperimental_collect_system_network_usage` | other | query,cquery |
-| `--noexperimental_collect_worker_data_in_profiler` | other | query,cquery |
 | `--noexperimental_convenience_symlinks_bep_event` | other | build,test,run,cquery |
 | `--noexperimental_docker_use_customized_images` | other | build,test,run,cquery |
 | `--noexperimental_dynamic_exclude_tools` | other | build,test,run,cquery |
@@ -499,8 +514,6 @@ rejection of any value.
 | `--noexperimental_inmemory_dotd_files` | other | build,test,run,cquery |
 | `--noexperimental_inmemory_jdeps_files` | other | build,test,run,cquery |
 | `--noexperimental_link_static_libraries_once` | other | build,test,run,cquery |
-| `--noexperimental_merged_skyframe_analysis_execution` | other | build,test,run,cquery |
-| `--noexperimental_platform_in_output_dir` | other | build,test,run,query,cquery |
 | `--noexperimental_prefer_mutual_xcode` | other | build,test,run,cquery |
 | `--noexperimental_python_import_all_repositories` | other | build,test,run,cquery |
 | `--noexperimental_remote_discard_merkle_trees` | other | build,test,run,query,cquery |
@@ -514,7 +527,6 @@ rejection of any value.
 | `--noexperimental_use_dex_splitter_for_incremental_dexing` | other | build,test,run,cquery |
 | `--noexperimental_use_platforms_in_output_dir_legacy_heuristic` | other | build,test,run,query,cquery |
 | `--nofetch` | other | build,test,run,query,cquery |
-| `--nogenerate_json_trace_profile` | other | query,cquery |
 | `--nograph:factored` | other | cquery |
 | `--nogrpc_tcp_keepalive` | other | build,test,run,query,cquery |
 | `--noguard_against_concurrent_changes` | other | build,test,run,query,cquery |
@@ -529,13 +541,11 @@ rejection of any value.
 | `--noincompatible_disable_nocopts` | other | build,test,run,cquery |
 | `--noincompatible_disable_objc_library_transition` | other | build,test,run,query,cquery |
 | `--noincompatible_disallow_ctx_resolve_tools` | other | build,test,run,query,cquery |
-| `--noincompatible_disallow_empty_glob` | other | build,test,run,query,cquery |
 | `--noincompatible_do_not_split_linking_cmdline` | other | build,test,run,query,cquery |
 | `--noincompatible_dont_enable_host_nonhost_crosstool_features` | other | build,test,run,cquery |
 | `--noincompatible_enable_deprecated_label_apis` | other | build,test,run,query,cquery |
 | `--noincompatible_enable_proto_toolchain_resolution` | other | build,test,run,query,cquery |
 | `--noincompatible_enforce_config_setting_visibility` | other | build,test,run,query,cquery |
-| `--noincompatible_enforce_starlark_utf8` | other | build,test,run,query,cquery |
 | `--noincompatible_fail_on_unknown_attributes` | other | build,test,run,query,cquery |
 | `--noincompatible_filegroup_runfiles_for_data` | other | build,test,run,query,cquery |
 | `--noincompatible_fix_package_group_reporoot_syntax` | other | build,test,run,query,cquery |
@@ -581,7 +591,6 @@ rejection of any value.
 | `--nosandbox_enable_loopback_device` | other | build,test,run,cquery |
 | `--noshare_native_deps` | other | build,test,run,cquery |
 | `--noshow_loading_progress` | other | build,test,run,query,cquery |
-| `--noslim_profile` | other | query,cquery |
 | `--nostart_end_lib` | other | build,test,run,cquery |
 | `--notrim_test_configuration` | other | build,test,run,cquery |
 | `--nouse_action_cache` | other | build,test,run,cquery |
@@ -621,7 +630,6 @@ rejection of any value.
 | `--python_top=x` | other | build,test,run,cquery |
 | `--python_version=x` | other | build,test,run,query,cquery |
 | `--rc_source=x` | other | build,test,run,query,cquery |
-| `--record_full_profiler_data` | other | query,cquery |
 | `--record_metrics_for_all_packages` | other | build,test,run,query,cquery |
 | `--redirect_local_instrumentation_output_writes` | other | build,test,run,query,cquery |
 | `--relative_locations` | other | cquery |
@@ -644,7 +652,6 @@ rejection of any value.
 | `--save_temps` | other | build,test,run,cquery |
 | `--scl_config=x` | other | build,test,run,query,cquery |
 | `--serialized_frontier_profile=x` | other | build,test,run,cquery |
-| `--show_timestamps` | other | build,test,run,query,cquery |
 | `--split_bytecode_optimization_pass` | other | build,test,run,cquery |
 | `--starlark:expr=x` | other | cquery |
 | `--starlark:file=x` | other | cquery |
@@ -656,7 +663,6 @@ rejection of any value.
 | `--stripopt=x` | other | build,test,run,cquery |
 | `--target_environment=//:x` | other | build,test,run,query,cquery |
 | `--target_platform_fallback=x` | other | build,test,run,cquery |
-| `--terminal_columns=80` | default | build,test,run,query,cquery |
 | `--tool_tag=x` | other | build,test,run,query,cquery |
 | `--tvos_cpus=x` | other | build,test,run,cquery |
 | `--tvos_minimum_os=1.0` | other | build,test,run,cquery |

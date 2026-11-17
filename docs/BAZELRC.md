@@ -25,7 +25,11 @@ Command-level values override the startup default; see
   still accepted.
 * **Modelled startup options**: `--[no]system_rc`, `--[no]workspace_rc`,
   `--[no]home_rc`, `--[no]ignore_all_rc_files`, `--[no]quiet`
-  ([`STARTUP_QUIET.md`](STARTUP_QUIET.md)) and `--bazelrc`. Any other valid
+  ([`STARTUP_QUIET.md`](STARTUP_QUIET.md)), `--bazelrc`, `--output_base`,
+  `--[no]experimental_remote_repo_contents_cache`, and, accepted without
+  effect, `--host_jvm_args` (but `-DBAZEL_TRACK_SOURCE_DIRECTORIES=0`) and
+  `--[no]windows_enable_symlinks` ([`RC_OPTIONS.md`](RC_OPTIONS.md), "Options
+  of the OSS corpus"). Any other valid
   startup option fails explicitly, also when it comes from a `startup` or
   `startup:linux` rc line (the error names the rc file:line).
 * **rc file order** (`option_processor.cc:374-490`): `/etc/bazel.bazelrc`,
@@ -93,7 +97,7 @@ After expansion every option goes through the existing native parsers
 (`src/main.rs` `NativeOptions`, `crate::configuration`, `crate::module_cli`).
 Options those parsers do not model fail explicitly, for example:
 
-    unsupported option "--distdir=…" from rc file /ws/.bazelrc:3 ('build' options); options are never silently ignored
+    unsupported option "--binary_path=…" from rc file /ws/.bazelrc:3 ('build' options); options are never silently ignored
     unsupported option --sandbox_add_mount_pair from rc file /ws/.bazelrc:1 (config definition 'build:cross'): only identity mounts of an absolute path (PATH or PATH:PATH) are modelled …
 
 The options of real rc files (`--repo_env`, `--attempt_to_print_relative_paths`,

@@ -264,7 +264,7 @@ Done since the last increment recorded under "History", one line each:
       (docs/RC_OPTIONS.md, sweep `scripts/option_sweep.py`).
 - [ ] The remaining rejected options of the sweep (docs/RC_OPTIONS.md
       "Remaining rejected options"): non-default values of unmodelled options,
-      `--override_module`/`--override_repository`, `--distdir`,
+      `--override_module`/`--override_repository`,
       `--strategy_regexp`, `--explain`, Android/Apple/FDO/LTO options, query-only
       gaps (`--profile`, `--run_under`, `--bes_*` on `query`).
 - [x] `--bes_backend` (gRPC Build Event Service upload, docs/BEP.md).

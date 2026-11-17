@@ -495,6 +495,12 @@ path: must not contain /` (`OutputPathMnemonicComputer.java:55-61`,
 two execution platforms with the same name share a root (with
 `--extra_execution_platforms` a build can have several execution
 platforms); action cache keys differ by the configuration (`LABEL[CONFIG8]`).
+The option is modelled (a configuration value, propagated to exec
+configurations; genuine capture tests/fixtures/corpus_options): under `yes`
+a target configuration names its output root after its platform the same way
+(`--platforms=//:p` gives `p-fastbuild`), its mnemonic baseline carrying that
+platform (BuildConfigurationFunction.java:151-160); under `no` an exec
+configuration uses the CPU.
 
 **Remaining exec divergences (paired capture, tests/fixtures/exec_transition/reference_receipt.json):**
 `File.root` is absent (an interpreter unknown-field error, with Bazel's
@@ -1297,7 +1303,9 @@ These are AliasConfiguredTargets (`rules/AliasConfiguredTarget.java:50-123`):
 (`pkgcache/PackageOptions.java:117-140`), the policy is DEFAULT_PUBLIC: a
 `config_setting` without explicit `visibility` is public regardless of the
 package default (`packages/Rule.java:694-710`); an explicit visibility is
-enforced on the select edge.
+enforced on the select edge. `--incompatible_config_setting_private_default_visibility`
+(DEFAULT_STANDARD) gives such a `config_setting` the package default
+visibility, like any other rule (genuine capture tests/fixtures/corpus_options).
 
 ## Consumers
 

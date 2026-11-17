@@ -317,7 +317,8 @@ hit's wall stayed within the noise (0.60–0.70 s vs 0.60–0.78 s; B2
 A **live server** re-checks, before every command, the files of external
 repositories that are in its Skyframe graph:
 `--experimental_check_external_repository_files` (default true,
-RepositoryOptions.java ~322) makes
+RepositoryOptions.java ~322; natively accepted without effect,
+docs/RC_OPTIONS.md) makes
 SkyframeExecutor.handleDiffsWithMissingDiffInformation
 (SkyframeExecutor.java ~3938–4033) check the `EXTERNAL_REPO` file states,
 and a file whose type, size, digest (where the file system supplies one),

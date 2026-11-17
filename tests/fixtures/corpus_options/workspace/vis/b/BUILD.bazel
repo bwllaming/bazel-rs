@@ -1,0 +1,8 @@
+genrule(
+    name = "g",
+    outs = ["g.txt"],
+    cmd = select({
+        "//vis/a:cs": "echo opt > $@",
+        "//conditions:default": "echo other > $@",
+    }),
+)

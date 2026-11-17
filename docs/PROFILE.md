@@ -29,7 +29,11 @@ when the name ends in `.gz` (`src/profile.rs`). chrome://tracing, Perfetto
 default (`auto`) writes no profile — Bazel writes one on every command. The
 other profiler options (`--slim_profile`, `--record_full_profiler_data`,
 `--experimental_profile_additional_tasks`, `--experimental_collect_*`,
-`--memory_profile`, ...) are accepted and ignored.
+`--memory_profile`, ...) are accepted and ignored. Commands that build
+nothing (`query`, `info`, `mod`, ...) write no profile: they accept the
+options that only shape one (`--noslim_profile`,
+`--experimental_profile_include_*`, ...) with no effect, and fail explicitly
+on `--profile` and `--generate_json_trace_profile`.
 
 Recording: each thread appends spans to its own buffer (registered once; an
 uncontended mutex per thread), the file is written when the command ends.
