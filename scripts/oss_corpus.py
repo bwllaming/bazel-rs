@@ -17,8 +17,9 @@ bazel-rs: --cache-dir), HOME and TMPDIR, then runs the phases in order:
 
   nobuild_cold  `build --nobuild --keep_going TARGETS` in fresh state
                 (module resolution, every fetch, loading, analysis)
-  nobuild_warm  the same again (genuine: --batch, so the JVM is cold but its
-                on-disk state warm; bazel-rs: a fresh process as always)
+  nobuild_warm  the same twice more, the second measured (genuine: --batch, so
+                the JVM is cold but its on-disk state warm; bazel-rs: a fresh
+                process as always, its analysis snapshot saved by the first)
   server        genuine only: the same twice in server mode, the second one
                 measured (a warm server), then `shutdown`
   query         `query //...` (label sets compared)
@@ -530,9 +531,17 @@ class ProjectRun:
         for phase in phases:
             if phase not in self.p["phases"]:
                 continue
-            if phase in ("nobuild_cold", "nobuild_warm"):
+            if phase == "nobuild_cold":
                 for tool in TOOLS:
                     self.res["tools"][tool][phase] = self.run(tool, phase, "build", nb + flags, targets)
+            elif phase == "nobuild_warm":
+                # Twice: bazel-rs does not save the analysis snapshot of a command that
+                # wrote MODULE.bazel.lock (the cold one), so its first repeat re-analyses.
+                for tool in TOOLS:
+                    first = self.run(tool, phase, "build", nb + flags, targets, tag="nobuild_warm1")
+                    rec = self.run(tool, phase, "build", nb + flags, targets)
+                    rec["first"] = {k: first[k] for k in ("exit", "wall", "rss_kb")}
+                    self.res["tools"][tool][phase] = rec
             elif phase == "server":
                 self.run("genuine", phase, "build", nb + flags, targets, batch=False, tag="server1")
                 rec = self.run("genuine", phase, "build", nb + flags, targets, batch=False, tag="server2")
