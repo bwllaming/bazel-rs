@@ -731,6 +731,12 @@ pub struct Recorder {
     /// part of every view of the taints until confirmed
     /// ([`confirm_provisional`]).
     provisional: Mutex<BTreeSet<String>>,
+    /// Provisional [`Taint::Network`] taints by their confirmation key
+    /// ([`HeldTaint::provisional`]): the network details of a registry
+    /// file transfer that the lockfile this command writes may settle;
+    /// part of every view of the taints until confirmed
+    /// ([`confirm_network`]).
+    provisional_network: Mutex<BTreeMap<String, Vec<String>>>,
     /// The plan-dependent taints analysis registered, once the planned
     /// request decided them ([`settle_plan_taints`]).
     plan_registered: Mutex<Option<BTreeMap<Taint, TaintRecord>>>,
@@ -835,6 +841,7 @@ impl Recorder {
             repository_roots: Mutex::default(),
             taints: Mutex::default(),
             provisional: Mutex::default(),
+            provisional_network: Mutex::default(),
             plan_registered: Mutex::default(),
             window: Mutex::default(),
             walks: Mutex::default(),
@@ -1005,10 +1012,33 @@ impl Recorder {
         lock(&self.provisional).insert(detail);
     }
 
+    /// [`HeldTaint::provisional`] (through a frame like any taint).
+    fn provisional_network(&self, key: String, details: Vec<String>) {
+        if self.redirected() {
+            push_event(Event::ProvisionalNetwork(key, details));
+            return;
+        }
+        lock(&self.provisional_network)
+            .entry(key)
+            .or_default()
+            .extend(details);
+    }
+
     /// The taints with the unconfirmed provisional ones
-    /// ([`Taint::ExtensionEvaluated`], `<detail> (unconfirmed)`).
+    /// ([`Taint::ExtensionEvaluated`] and [`Taint::Network`],
+    /// `<detail> (unconfirmed)`).
     fn taints_with_provisional(&self) -> BTreeMap<Taint, TaintRecord> {
         let mut taints = lock(&self.taints).clone();
+        for details in lock(&self.provisional_network).values() {
+            let record = taints.entry(Taint::Network).or_default();
+            for detail in details {
+                record.count += 1;
+                let detail = format!("{detail} (unconfirmed)");
+                if record.details.len() < TAINT_DETAILS && !record.details.contains(&detail) {
+                    record.details.push(detail);
+                }
+            }
+        }
         let provisional = lock(&self.provisional);
         if !provisional.is_empty() {
             let record = taints.entry(Taint::ExtensionEvaluated).or_default();
@@ -1657,6 +1687,12 @@ impl Recorder {
             Event::Provisional(detail) => {
                 lock(&self.provisional).insert(detail);
             }
+            Event::ProvisionalNetwork(key, details) => {
+                lock(&self.provisional_network)
+                    .entry(key)
+                    .or_default()
+                    .extend(details);
+            }
             Event::Env(name, observation) => self.store_env(&name, observation),
             Event::Claim(claim) => self.apply_claim(claim),
             Event::Supersede(path) => self.store_supersede(&path),
@@ -1828,6 +1864,8 @@ enum Event {
     Taint(Taint, String),
     /// [`provisional_taint`].
     Provisional(String),
+    /// [`HeldTaint::provisional`]: its confirmation key and details.
+    ProvisionalNetwork(String, Vec<String>),
     Env(OsString, EnvObservation),
     Claim(ClaimEvent),
     /// [`supersede`].
@@ -1877,6 +1915,7 @@ impl Events {
                 Event::SupersedeSelection(..)
                     | Event::Supersede(_)
                     | Event::Provisional(_)
+                    | Event::ProvisionalNetwork(..)
                     | Event::Taint(..)
             )
         }) || self
@@ -2854,6 +2893,31 @@ pub fn note_lockfile_entries(
     );
 }
 
+/// Record the workspace lockfile `path` as the command will leave it,
+/// holding `bytes` (crate::registry_session::RegistrySession
+/// ::note_written_lockfile, also after the window): what was recorded for
+/// `path` — the READ of the bytes it replaces, or of their absence — is
+/// superseded by a READ of `bytes` with no trusted stat key (racy), so a
+/// validation reads and hashes the file. The outcome depends on the
+/// arguments only: every save path may note it, and a repeat changes
+/// nothing.
+pub fn note_written_lockfile(path: &Path, bytes: &[u8]) {
+    let Some(recorder) = after_window() else {
+        return;
+    };
+    wait_commits();
+    recorder.store_supersede(path);
+    recorder.store_observation(
+        path,
+        Op::Read,
+        Outcome::Read {
+            sha256: sha256(bytes),
+            key: StatKey::default(),
+            racy: true,
+        },
+    );
+}
+
 /// Record a hidden lockfile the command read from a seed (crate::worktree)
 /// and does not write: its own `path` was absent (STAT) and the seed's
 /// bytes (`sha256`, read with stat key `key`) are what a later command
@@ -3045,6 +3109,16 @@ pub fn confirm_provisional(detail: &str) {
     }
 }
 
+/// Confirm the provisional network taints of `key` ([`HeldTaint::provisional`];
+/// also after the window closed): they no longer taint the run. A later
+/// replay of the same provisional event (a captured set) taints again.
+pub fn confirm_network(key: &str) {
+    wait_commits();
+    if let Some(recorder) = active().or_else(|| RECORDER.get()) {
+        lock(&recorder.provisional_network).remove(key);
+    }
+}
+
 thread_local! {
     static REGISTRY_SINK: std::cell::RefCell<Option<Arc<NetworkSink>>> =
         const { std::cell::RefCell::new(None) };
@@ -3106,6 +3180,30 @@ impl HeldTaint {
     /// The sink of the covered work's network taints ([`with_registry_sink`]).
     pub fn sink(&self) -> Option<Arc<NetworkSink>> {
         self.network.clone()
+    }
+
+    /// The covered work's network taints become provisional under `key`
+    /// ([`confirm_network`] settles them; unconfirmed they taint the run
+    /// like any taint): a registry file transfer whose bytes the lockfile
+    /// this command writes will name by their checksum, so that the next
+    /// command reads them from the content-addressed cache
+    /// (crate::registry_session). The held taint (none for a transfer) is
+    /// recorded; a transfer that still holds the sink records everything.
+    pub fn provisional(mut self, key: impl FnOnce() -> String) {
+        let Some(network) = self.network.take() else {
+            return;
+        };
+        if Arc::strong_count(&network) > 1 {
+            self.network = Some(network);
+            return;
+        }
+        let details = std::mem::take(&mut *lock(&network.0));
+        if details.is_empty() {
+            return;
+        }
+        if let Some(recorder) = active() {
+            recorder.provisional_network(key(), details);
+        }
     }
 
     /// Nothing is recorded — unless a transfer still holds the sink (it is

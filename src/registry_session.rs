@@ -77,6 +77,8 @@ pub struct RegistrySession {
     target: LockfileTarget,
     proof_store: Option<PathBuf>,
     lockfile: Lockfile,
+    /// The lockfile [`Self::open`] read (or found absent).
+    read_path: PathBuf,
     write_path: Option<PathBuf>,
     cas: Option<PathBuf>,
     allowed_yanked: AllowedYanked,
@@ -127,6 +129,10 @@ pub struct RegistrySession {
     /// until [`Self::note_hidden_lockfile`] confirms the entry stands where
     /// the next command reads it.
     settled_extensions: Mutex<Vec<SettledExtension>>,
+    /// The selected module versions whose yanked status this command read
+    /// from metadata.json ([`YankedLookup::Fetch`]): (metadata.json URL,
+    /// module key, source.json URL), for [`Self::note_written_lockfile`].
+    yanked_fetches: Mutex<Vec<(String, String, String)>>,
     /// `--native-lockfile=readonly`: a stateless probe mode that writes no
     /// lockfile at all, not even the hidden one (reads are kept).
     readonly: bool,
@@ -236,12 +242,14 @@ impl RegistrySession {
         } else {
             lockfile::read(&read_path, mode)?
         };
+        let read_path = read_path.clone();
         Ok(Self {
             mode,
             workspace: workspace.to_path_buf(),
             target: target.clone(),
             proof_store: None,
             lockfile,
+            read_path,
             write_path,
             cas: repository_cache
                 .map(|cache| crate::materializer::download_cache_dir(&cache, "sha256")),
@@ -258,6 +266,7 @@ impl RegistrySession {
             hidden_consulted: Mutex::default(),
             extension_results: Mutex::default(),
             settled_extensions: Mutex::default(),
+            yanked_fetches: Mutex::default(),
             readonly: *target == LockfileTarget::ReadOnly,
         })
     }
@@ -617,7 +626,20 @@ impl RegistrySession {
         // metadata.json is not immutable (IndexRegistry.java:586-592).
         let hashed = !relative.ends_with("/metadata.json");
         if !hashed {
-            return direct(registry, relative);
+            // Its transfer's network taints are settled when the lockfile
+            // this command writes decides the yanked status of every
+            // selected version it was read for, so that the next command
+            // does not read it ([`Self::note_written_lockfile`]).
+            let transfer = crate::observed_fs::HeldTaint::network();
+            let result = crate::observed_fs::with_registry_sink(transfer.sink(), || {
+                direct(registry, relative)
+            });
+            if self.lockfile_may_settle(self.hashes_mode(registry), url)
+                && self.mode != LockfileMode::Refresh
+            {
+                transfer.provisional(|| registry_metadata_key(url));
+            }
+            return result;
         }
         let mode = self.hashes_mode(registry);
         let known = if mode == HashesMode::Ignore {
@@ -659,6 +681,12 @@ impl RegistrySession {
         }) {
             Ok(Some(bytes)) => bytes,
             Ok(None) => {
+                // Recorded as absent: the next command reads that from the
+                // lockfile (`--lockfile_mode=refresh` asks again).
+                if mode != HashesMode::UseImmutableAndUpdate && self.lockfile_may_settle(mode, url)
+                {
+                    transfer.provisional(|| registry_transfer_key(url, ABSENT));
+                }
                 self.record(url, None);
                 return Ok(Fetch::NotFound(format!("{url}: not found")));
             }
@@ -682,6 +710,8 @@ impl RegistrySession {
         }
         if checksum.is_some() {
             transfer.settle();
+        } else if self.lockfile_may_settle(mode, url) {
+            transfer.provisional(|| registry_transfer_key(url, &actual));
         }
         self.record(url, Some(actual));
         Ok(Fetch::Found(Arc::new(fetched)))
@@ -769,8 +799,24 @@ impl RegistrySession {
         }
         if checksum.is_some() {
             transfer.settle();
+        } else if registry.local_path().is_none() && self.lockfile_may_settle(mode, &url) {
+            transfer.provisional(|| registry_transfer_key(&url, &actual));
         }
         Some(Arc::new(fetched))
+    }
+
+    /// Whether the lockfile this command writes may settle the network
+    /// taints of a transfer of registry file `url` that the lockfile had no
+    /// checksum for ([`Self::note_written_lockfile`]): the session writes
+    /// the lockfile it read, records the file's checksum there (not a
+    /// `file:` URL) and the next command looks it up in the
+    /// content-addressed cache this command filled (`mode`, the registry's
+    /// hashes mode, is not Ignore: never for a local registry or `off`).
+    fn lockfile_may_settle(&self, mode: HashesMode, url: &str) -> bool {
+        mode != HashesMode::Ignore
+            && self.mode.writes()
+            && !url.starts_with("file:")
+            && self.write_path.as_ref() == Some(&self.read_path)
     }
 
     fn record(&self, url: &str, hash: Option<String>) {
@@ -1037,6 +1083,16 @@ impl RegistrySession {
         {
             return YankedLookup::Known(None);
         }
+        if let Some((name, _)) = module_key.split_once('@')
+            && let Ok(metadata) =
+                registry.download_location(&format!("modules/{name}/metadata.json"))
+        {
+            self.yanked_fetches.lock().expect("yanked fetches").push((
+                metadata,
+                module_key.to_owned(),
+                source_json_url.to_owned(),
+            ));
+        }
         YankedLookup::Fetch
     }
 
@@ -1063,6 +1119,61 @@ impl RegistrySession {
     pub fn mark_module_extensions_resolved(&self, resolved: usize) {
         self.resolved_extensions.store(resolved, Ordering::Release);
         self.extensions_evaluated.store(true, Ordering::Release);
+    }
+
+    /// Record the workspace lockfile this command writes when it ends
+    /// ([`Self::finish`]) as it will stand once written, for the analysis
+    /// snapshot (crate::snapshot::save): every observation of the file this
+    /// command made — its READ of the old bytes, or of their absence — is
+    /// replaced by a READ of the bytes it writes, which a validation always
+    /// re-reads (crate::observed_fs::note_written_lockfile). The next
+    /// command reads exactly these bytes, and its analysis is this one's:
+    /// what the write adds are this command's own results (its registry
+    /// file hashes, its module extensions' entries, which the next command
+    /// reuses — an evaluated extension whose entry it would not reuse
+    /// taints the run, `confirm_settled_extensions`), and a write that
+    /// fails, or other bytes there, make that READ a miss. `false` when the
+    /// write cannot be recorded so: the lockfile is read from one path and
+    /// written to another (`--native-lockfile=<path>` before that path
+    /// exists) or never written (`readonly`). Nothing to write: `true`.
+    pub fn note_written_lockfile(&self) -> bool {
+        let Some(lockfile) = self.updated_lockfile() else {
+            return true;
+        };
+        match &self.write_path {
+            Some(path) if *path == self.read_path => {
+                crate::observed_fs::note_written_lockfile(path, lockfile.serialize().as_bytes());
+                // The registry files whose checksums it records are read
+                // from the content-addressed cache by the next command:
+                // their transfers' network taints are settled
+                // (`lockfile_may_settle`).
+                for (url, hash) in &lockfile.registry_file_hashes {
+                    let hash = hash.as_deref().unwrap_or(ABSENT);
+                    crate::observed_fs::confirm_network(&registry_transfer_key(url, hash));
+                }
+                // A metadata.json read for the yanked status of selected
+                // versions: settled when, for each of them, the lockfile
+                // records it as yanked or names its source.json, which is
+                // what the next command looks up instead (`yanked_lookup`).
+                let fetches = self.yanked_fetches.lock().expect("yanked fetches").clone();
+                let mut decided: BTreeMap<&str, bool> = BTreeMap::new();
+                for (metadata, key, source) in &fetches {
+                    let known = lockfile
+                        .selected_yanked_versions
+                        .iter()
+                        .any(|(yanked, _)| yanked == key)
+                        || lockfile.registry_file_hashes.contains_key(source);
+                    *decided.entry(metadata.as_str()).or_insert(true) &= known;
+                }
+                for (metadata, known) in decided {
+                    if known {
+                        crate::observed_fs::confirm_network(&registry_metadata_key(metadata));
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
     }
 
     /// The lockfile BazelLockFileModule.afterCommand would write, if any.
@@ -1198,6 +1309,23 @@ impl RegistrySession {
         }
         (!warnings.is_empty()).then(|| warnings.join("\n"))
     }
+}
+
+/// The `hash` of [`registry_transfer_key`] for a registry file found absent.
+const ABSENT: &str = "absent";
+
+/// The confirmation key of the provisional network taints of a transfer of
+/// registry file `url` that yielded bytes with SHA-256 `hash` (or found it
+/// absent: [`ABSENT`])
+/// (crate::observed_fs::HeldTaint::provisional).
+fn registry_transfer_key(url: &str, hash: &str) -> String {
+    format!("registry file {url} sha256:{hash}")
+}
+
+/// The confirmation key of the provisional network taints of a transfer of
+/// the metadata.json at `url` (crate::observed_fs::HeldTaint::provisional).
+fn registry_metadata_key(url: &str) -> String {
+    format!("registry metadata {url}")
 }
 
 /// How a hidden lockfile was read without being observed

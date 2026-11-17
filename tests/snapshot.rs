@@ -880,10 +880,11 @@ def _ext(module_ctx):
 ext = module_extension(implementation = _ext)
 "#;
 
-/// Fixture 9: a run that writes the lockfile is not saved; a lockfile edit
-/// and a MODULE.bazel edit miss.
+/// Fixture 9: a run that writes the lockfile is saved with the lockfile as
+/// written (the next run hits); a lockfile edit and a MODULE.bazel edit
+/// miss.
 #[test]
-fn lockfile_and_module_edits_miss_and_lockfile_writes_do_not_save() {
+fn lockfile_and_module_edits_miss_and_lockfile_writes_save_as_written() {
     let twin = fixture();
     twin.write("ext.bzl", EXTENSION);
     twin.write(
@@ -896,12 +897,11 @@ fn lockfile_and_module_edits_miss_and_lockfile_writes_do_not_save() {
     );
     let args = &["build", "//ext:e"];
     let cold = twin.same(args, &[]);
-    cold.assert_success().assert_not_saved("taint");
+    cold.assert_success().assert_saved();
     assert!(twin.side(ON).join("ws/MODULE.bazel.lock").exists());
-    twin.same(args, &[]).assert_saved();
     twin.same(args, &[]).assert_hit();
-    // An edited lockfile (still valid JSON) is read again: a miss; the run
-    // that rewrites it is not saved.
+    // An edited lockfile (still valid JSON) is read again: a miss, saved
+    // with the lockfile as it leaves it.
     twin.each(|root| {
         let path = root.join("ws/MODULE.bazel.lock");
         let text = fs::read_to_string(&path).unwrap();
@@ -909,14 +909,24 @@ fn lockfile_and_module_edits_miss_and_lockfile_writes_do_not_save() {
     });
     let edited = twin.same(args, &[]);
     edited.assert_miss("MODULE.bazel.lock");
-    let rewrote = edited
-        .line("not saved")
-        .is_some_and(|line| line.contains("lockfile-write-pending"));
-    if rewrote {
-        twin.same(args, &[]).assert_saved();
-    } else {
-        edited.assert_saved();
-    }
+    edited.assert_saved();
+    twin.same(args, &[]).assert_hit();
+    // A lockfile the run rewrites (its extension entries removed, so the
+    // extension evaluates and its entry is written back): saved as written.
+    twin.each(|root| {
+        let path = root.join("ws/MODULE.bazel.lock");
+        let mut lockfile: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        lockfile["moduleExtensions"] = serde_json::json!({});
+        fs::write(&path, serde_json::to_string_pretty(&lockfile).unwrap()).unwrap();
+    });
+    let rewritten = twin.same(args, &[]);
+    rewritten.assert_miss("MODULE.bazel.lock");
+    rewritten.assert_saved();
+    twin.each(|root| {
+        let text = fs::read_to_string(root.join("ws/MODULE.bazel.lock")).unwrap();
+        assert!(text.contains("ext.bzl%ext"), "{text}");
+    });
     twin.same(args, &[]).assert_hit();
     twin.write(
         "MODULE.bazel",
@@ -1389,9 +1399,11 @@ impl Registry {
     }
 }
 
-/// Fixture 17: runs that fetched from the network (the cold run of a
-/// remote registry, every run of `--lockfile_mode=off`) or ran a printing
-/// local repository rule are never saved.
+/// Fixture 17: runs that fetched from the network (every run of
+/// `--lockfile_mode=off`) or ran a printing local repository rule are never
+/// saved. The cold run of a remote registry is saved: the lockfile it writes
+/// names the registry files' hashes (and absences), so the next run reads
+/// them from the cache — its hit fetches nothing.
 #[test]
 fn network_and_printing_local_repositories_never_save() {
     let twin = fixture();
@@ -1419,10 +1431,10 @@ fn network_and_printing_local_repositories_never_save() {
     let registry_flag = format!("--registry={}/", server.url);
     let update = &["build", registry_flag.as_str(), "//:all_inputs"];
     let cold = twin.same(update, &[]);
-    cold.assert_success().assert_not_saved("taint");
+    cold.assert_success().assert_saved();
     assert!(server.requests() > 0);
-    twin.same(update, &[]).assert_saved();
     let before = server.requests();
+    twin.same(update, &[]).assert_hit();
     twin.same(update, &[]).assert_hit();
     assert_eq!(server.requests(), before, "a hit fetches nothing");
     let off = &[
@@ -2139,9 +2151,9 @@ fn shared_tool_runfiles_groups_save_and_hit() {
 
 /// L2-W6: `test` writes MODULE.bazel.lock like every command (genuine
 /// Bazel 9.3 does; it exited before the write): the run that wrote it is
-/// not saved, the next one is.
+/// saved with the lockfile as written, the next one hits.
 #[test]
-fn a_test_writes_the_lockfile_and_saves_next_time() {
+fn a_test_writes_the_lockfile_and_saves_it_as_written() {
     let twin = fixture();
     twin.write("ext.bzl", EXTENSION);
     twin.write(
@@ -2154,10 +2166,10 @@ fn a_test_writes_the_lockfile_and_saves_next_time() {
     );
     let args = &["test", "//ext:e_test"];
     let cold = twin.same(args, &[]);
-    cold.assert_success().assert_not_saved("taint");
+    cold.assert_success().assert_saved();
     assert!(twin.side(ON).join("ws/MODULE.bazel.lock").exists());
     assert!(twin.side(OFF).join("ws/MODULE.bazel.lock").exists());
-    twin.same(args, &[]).assert_success().assert_saved();
+    twin.same(args, &[]).assert_hit().assert_success();
     twin.same(args, &[]).assert_hit().assert_success();
 }
 
@@ -5720,8 +5732,8 @@ mod verify_mode {
     }
 
     #[test]
-    fn lockfile_and_module_edits_miss_and_lockfile_writes_do_not_save() {
-        verified(super::lockfile_and_module_edits_miss_and_lockfile_writes_do_not_save);
+    fn lockfile_and_module_edits_miss_and_lockfile_writes_save_as_written() {
+        verified(super::lockfile_and_module_edits_miss_and_lockfile_writes_save_as_written);
     }
 
     #[test]
@@ -5810,8 +5822,8 @@ mod verify_mode {
     }
 
     #[test]
-    fn a_test_writes_the_lockfile_and_saves_next_time() {
-        verified(super::a_test_writes_the_lockfile_and_saves_next_time);
+    fn a_test_writes_the_lockfile_and_saves_it_as_written() {
+        verified(super::a_test_writes_the_lockfile_and_saves_it_as_written);
     }
 
     #[test]
@@ -6196,15 +6208,17 @@ fn a_run_that_evaluated_an_extension_saves_like_its_reuse() {
 }
 
 /// What keeps an evaluated extension's run from being saved: an entry in
-/// MODULE.bazel.lock (non-reproducible: its write is pending), a mode that
-/// writes no entry (`error`, `off`, `--native-lockfile=readonly`), output
-/// the next run would not print. The run after a written entry is saved.
+/// MODULE.bazel.lock the next run would not take as it stands (here a
+/// non-reproducible one: not re-probed), a mode that writes no entry
+/// (`error`, `off`, `--native-lockfile=readonly`), output the next run
+/// would not print. The run after a written entry is saved.
 #[test]
 fn an_evaluated_extension_saves_only_where_the_next_run_reuses_it() {
     let args = &["build", "//ext:e"];
     let twin = versioned_extension_twin(false, false, None);
-    twin.same(args, &[])
-        .assert_not_saved("lockfile-write-pending");
+    // Its entry in MODULE.bazel.lock (non-reproducible) differs from what a
+    // re-probe would take: not saved until the run that reuses it.
+    twin.same(args, &[]).assert_not_saved("extension-evaluated");
     twin.same(args, &[]).assert_saved();
     twin.same(args, &[]).assert_hit();
 
@@ -6327,11 +6341,13 @@ fn a_cold_cache_with_locked_registry_hashes_saves() {
     );
     let registry_flag = format!("--registry={}/", server.url);
     let args = &["build", registry_flag.as_str(), "//dep:d"];
-    // The first run writes the hashes into MODULE.bazel.lock.
-    twin.same(args, &[])
-        .assert_success()
-        .assert_not_saved("taint");
-    twin.same(args, &[]).assert_saved();
+    // The first run writes the hashes into MODULE.bazel.lock: it is saved
+    // with the lockfile as written, whose hashes (and absences) settle its
+    // registry downloads, and its hit fetches nothing.
+    twin.same(args, &[]).assert_success().assert_saved();
+    let before = server.requests();
+    twin.same(args, &[]).assert_hit();
+    assert_eq!(server.requests(), before, "a hit fetches nothing");
     // A cold cache: everything is downloaded again.
     twin.each(|root| sealed_trees::remove_tree(root.join("cache")).unwrap());
     let before = server.requests();

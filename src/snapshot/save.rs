@@ -264,7 +264,9 @@ impl Save {
             ));
         }
         if let Some(session) = self.registry.as_ref().and_then(SessionHandle::session) {
-            if session.updated_lockfile().is_some() {
+            // The workspace lockfile this command writes is recorded as it
+            // will stand once written (its READ of the old bytes replaced).
+            if !session.note_written_lockfile() {
                 return Err("taint lockfile-write-pending: MODULE.bazel.lock".to_owned());
             }
             // The hidden lockfile is recorded by the entries this command

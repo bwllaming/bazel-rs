@@ -879,9 +879,10 @@ printing protocol —, an evaluated extension, a
 callbacks or a `map_each` of a planned action without a portable
 description — see "Args map_each functions" —, Unstable, and the new
 `workspace-status-stderr`: a status command that wrote to stderr would
-print twice on a hit), no workspace lockfile write is pending (a pending
-hidden lockfile write does not keep a run from saving: see "The hidden
-lockfile" below), the
+print twice on a hit), no workspace lockfile write is pending that cannot
+be recorded as written (see "The workspace lockfile as written" below; a
+pending hidden lockfile write does not keep a run from saving: see "The
+hidden lockfile" below), the
 request has no analysis error, the target pattern phase reported no
 test-suite expansion error (integration-21: such a `build`, `test` or `run`
 fails after its build with `command succeeded, but there were ... errors`,
@@ -911,6 +912,51 @@ CI: the `query` between `affected` and `build` evaluates the extensions of
 every `select()` branch) keep the snapshot valid, and a change of a used
 entry misses. Before, any write tainted the run `lockfile-write-pending`
 and any change of the file missed.
+
+**The workspace lockfile as written** (corpus-perf, P1 of docs/OSS_CORPUS.md:
+the cold run of every project without a committed lockfile used to be
+`lockfile-write-pending`, so the first repeat analysed again — abseil-cpp
+3.2–3.6 s instead of 0.2–0.3 s). When the command writes MODULE.bazel.lock
+at its end (crate::registry_session::RegistrySession::finish) to the very
+path it read it from, every save path
+(`RegistrySession::note_written_lockfile`, in the snapshot's save and the
+record report) replaces what the window recorded for that path — the READ
+of the old bytes, or of their absence — by a READ of the bytes the command
+writes (`lockfile.serialize()` of `updated_lockfile()`, the bytes `finish`
+writes), with no trusted stat key: a validation always reads and hashes the
+file (crate::observed_fs::note_written_lockfile). Why the next run's
+analysis is this run's: the write adds only this run's own results — the
+registry files' hashes it fetched, the selected yanked versions, its
+module extensions' entries and facts — and an evaluated extension whose
+entry the next run would not reuse as written keeps its provisional
+`extension-evaluated` taint (`confirm_settled_extensions` checks the
+workspace lockfile as written first). A failed write, or other bytes there,
+make the READ a miss. Not recorded so (still `lockfile-write-pending`): a
+`--native-lockfile=<path>` read from the workspace lockfile because the
+path does not exist yet, and `readonly` (it never writes). With it the
+registry downloads of such a run settle too:
+
+* a registry file fetched with no checksum in the lockfile it read (or
+  found absent): its transfer's `network` taints become *provisional*
+  under the key `registry file <url> sha256:<hash>` (`absent`)
+  (crate::observed_fs::HeldTaint::provisional; unconfirmed, every view of
+  the taints lists them as `network … (unconfirmed)`), and
+  `note_written_lockfile` confirms each whose URL and hash (or absence) the
+  written lockfile records — the next run reads it from the
+  content-addressed cache this run filled (or knows it absent) and never
+  transfers it. Only where that holds: not a local registry or `off` (hashes
+  ignored), not a `file:` URL (not recorded), not an absence under
+  `refresh` (asked again);
+* a `metadata.json` read for the yanked status of selected versions: its
+  taints become provisional under `registry metadata <url>`, confirmed when
+  the written lockfile, for every selected version it was read for, lists
+  it as yanked or names its `source.json` hash — what `yanked_lookup` takes
+  instead of reading it (not under `refresh`, which always reads it).
+
+`BAZEL_RS_SNAPSHOT=verify` (strict) verified the abseil-cpp hit after such a
+cold run; tests/snapshot.rs (fixtures 9 and 17, the `test` and extension
+fixtures, `a_cold_cache_with_locked_registry_hashes_saves`; each also under
+verify mode).
 
 **An executed non-local repository rule is re-probed** (snapshot-real-hits):
 once its publication is complete (tree, manifest, specification pointer),
@@ -976,8 +1022,8 @@ run uses to reuse it runs in this run and is recorded instead:
   MODULE.bazel.lock names: the next run reads those bytes from the
   content-addressed cache (unrecorded, checked against the hash) and records
   the same URL and hash, so the download settles (also the module-root
-  warm-up's). An unknown checksum taints as before (its lockfile write is
-  pending anyway). Registry transfers use their own sink
+  warm-up's). An unknown checksum is settled by the lockfile this run
+  writes ("The workspace lockfile as written" above). Registry transfers use their own sink
   (crate::observed_fs::with_registry_sink), never a repository rule's.
 * *A published registry source tree, Git tree or `@bazel_tools`*: the warm
   check runs again after the publication and records its REPO + INTEGRITY

@@ -166,7 +166,7 @@ impl Session {
             observed_fs::taint_after_window(Taint::Errors, || "the command failed".to_owned());
         }
         if let Some(session) = self.registry.as_ref().and_then(SessionHandle::session) {
-            if session.updated_lockfile().is_some() {
+            if !session.note_written_lockfile() {
                 observed_fs::taint_after_window(Taint::LockfileWritePending, || {
                     "MODULE.bazel.lock (workspace or --native-lockfile target)".to_owned()
                 });
