@@ -224,3 +224,66 @@ fn lane_ahead_keeps_an_invalid_registration_before_a_valid_one() {
         assert_eq!((on.0, &on.1, &on.2, &on.3), (off.0, &off.1, &off.2, &off.3));
     }
 }
+
+/// A recursive registration pattern into an extension's repository
+/// (`@tcs//...`, OpenROAD's `@pycross_toolchains//...`) that nothing else
+/// demands (with a reusable lockfile entry, or before one is written): the
+/// pool's RegToolchains
+/// attempt reaches the repository's ignored subdirectories before the
+/// extension group is prepared and stops at the no-demand sentinel. That
+/// worker answer is never cached: the sequential pass prepares the group
+/// and expands the pattern, so the build succeeds instead of failing with
+/// "invalid registered toolchain '@tcs//...': needs-repository: … this
+/// thread does not fetch".
+#[test]
+fn recursive_registration_into_an_unprepared_extension_repository() {
+    let ws = Workspace::new();
+    ws.file(
+        "MODULE.bazel",
+        "module(name = 'main')\ntcs = use_extension('//:ext.bzl', 'tcs')\nuse_repo(tcs, 'tcs')\nregister_toolchains('@tcs//...')\n",
+    );
+    ws.file("BUILD", "");
+    ws.file(
+        "ext.bzl",
+        r#"def _local_impl(rctx):
+    rctx.file("BUILD", "")
+    rctx.file("x86/BUILD", 'load("//:defs.bzl", "impl")\nimpl(name = "impl")\ntoolchain(name = "tc", toolchain_type = "@@//tt:type", toolchain = ":impl")\n')
+    rctx.file("defs.bzl", "def _impl(ctx):\n    return [platform_common.ToolchainInfo()]\nimpl = rule(implementation = _impl)\n")
+
+_local = repository_rule(implementation = _local_impl, local = True)
+
+def _tcs_impl(mctx):
+    _local(name = "tcs")
+
+tcs = module_extension(implementation = _tcs_impl)
+"#,
+    );
+    ws.file(
+        "tt/BUILD",
+        "toolchain_type(name = 'type', visibility = ['//visibility:public'])\n",
+    );
+    ws.file(
+        "rules/defs.bzl",
+        "def _impl(ctx):\n    return DefaultInfo()\nmy_rule = rule(implementation = _impl, toolchains = ['//tt:type'])\n",
+    );
+    ws.file("rules/BUILD", "");
+    ws.file("p/BUILD", "platform(name = 'p')\n");
+    ws.file(
+        "u/BUILD",
+        "load('//rules:defs.bzl', 'my_rule')\n[my_rule(name = 'r%d' % i) for i in range(8)]\n",
+    );
+    let args = ["build", "--host_platform=//p", "--platforms=//p", "//u:all"];
+    // Without a lockfile entry first (this cold run writes it), then with.
+    let primed = ws.cold(false, &[], &args);
+    assert_eq!(primed.0, Some(0), "{}", primed.2);
+    for ahead in [false, true, false] {
+        let run = ws.cold(ahead, &[], &args);
+        assert!(
+            !run.2.contains("needs-repository"),
+            "a no-demand sentinel reached the user (ahead {ahead}): {}",
+            run.2
+        );
+        assert_eq!(run.0, Some(0), "ahead {ahead}: {}", run.2);
+        assert_eq!(run.3, primed.3, "lockfile");
+    }
+}

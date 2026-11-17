@@ -1831,6 +1831,13 @@ impl RepositorySet {
     /// Likewise what the miss observed for the analysis snapshot is kept
     /// with the entry and replayed at every hit (W6R): into the hitting
     /// load unit, or the recording on the coordinator.
+    ///
+    /// A miss that raised a no-demand sentinel (a worker that may not
+    /// obtain the root, e.g. a generated repository whose extension group
+    /// is not prepared yet) or took an order-dependent link decision is
+    /// that thread's answer only: it is returned, never cached, so the
+    /// sequential engine's own miss demands (fetches) the root instead of
+    /// hitting the worker's sentinel forever.
     pub fn ignored_subdirectories(&self, repository: &str) -> IgnoredResult {
         let cached = self
             .state
@@ -1846,13 +1853,18 @@ impl RepositorySet {
             }
             return result;
         }
+        let sentinels = crate::repository_demand::sentinels_raised();
+        let order_dependent = crate::repository_demand::take_order_dependent();
         let (computed, observations) = crate::observed_fs::capture(|| {
             crate::ignored::for_repository(&Arc::new(self.clone()), repository).map(Arc::new)
         });
+        let raised = crate::repository_demand::sentinels_raised() != sentinels;
+        let order = crate::repository_demand::take_order_dependent();
+        crate::repository_demand::restore_order_dependent(order_dependent || order);
         // A speculative extension preparation may read a root its commit
         // drops (another group's speculative preparation it used): what it
         // computed is never shared.
-        if crate::extension_speculation::active() {
+        if crate::extension_speculation::active() || raised || order {
             return computed;
         }
         self.state
