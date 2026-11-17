@@ -60,8 +60,12 @@ def bazel_rs_integration_test(name, data = [], size = "medium", args = []):
         crate_root = src,
         data = [":bazel-rs"] + data,
         edition = "2024",
-        # .cargo/config.toml [env]: native LABEL<TAB>PATH result lines.
-        env = {"BAZEL_RS_RESULT_LINES": "1"},
+        # .cargo/config.toml [env]: native LABEL<TAB>PATH result lines, no
+        # clock-timed plain progress lines.
+        env = {
+            "BAZEL_RS_PROGRESS": "0",
+            "BAZEL_RS_RESULT_LINES": "1",
+        },
         lint_config = ":lints",
         proc_macro_deps = all_crate_deps(proc_macro_dev = True),
         rustc_env_files = [":cargo_pkg_version"],

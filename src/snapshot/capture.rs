@@ -124,8 +124,8 @@ impl DrainState {
 struct Drained {
     state: Mutex<DrainState>,
     finished: Condvar,
-    /// The reader holds a chunk it read and has not forwarded yet
-    /// ([`settle`]).
+    /// The reader is taking bytes out of the pipe or holds a chunk it has
+    /// not forwarded yet ([`settle`]).
     busy: AtomicBool,
 }
 
@@ -238,10 +238,20 @@ fn spawn_reader(
         .spawn(move || {
             let mut chunk = vec![0u8; 64 << 10];
             loop {
+                // Wait for bytes without taking them, then mark the reader
+                // busy before the read takes them out of the pipe: [`settle`]
+                // sees them queued or the reader busy, never neither.
+                {
+                    let mut fds = [rustix::event::PollFd::new(
+                        &reader,
+                        rustix::event::PollFlags::IN,
+                    )];
+                    let _ = rustix::event::poll(&mut fds, None);
+                }
+                drained.busy.store(true, Ordering::SeqCst);
                 match reader.read(&mut chunk) {
                     Ok(0) => break,
                     Ok(count) => {
-                        drained.busy.store(true, Ordering::SeqCst);
                         let chunk = &chunk[..count];
                         let forward = {
                             let mut state = drained.lock();
@@ -277,11 +287,14 @@ fn spawn_reader(
                         }
                         drained.busy.store(false, Ordering::SeqCst);
                     }
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                        drained.busy.store(false, Ordering::SeqCst);
+                    }
                     Err(_) => break,
                 }
             }
             forward_pending(&drained, &original, true, line_limit);
+            drained.busy.store(false, Ordering::SeqCst);
             let mut state = drained.lock();
             state.finished = true;
             drained.finished.notify_all();

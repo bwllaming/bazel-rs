@@ -91,6 +91,9 @@ impl Workspace {
             .args(startup)
             .args(args)
             .env("HOME", self.home())
+            // No clock-timed plain progress lines in the compared stderr
+            // (whatever the test runner's environment).
+            .env("BAZEL_RS_PROGRESS", "0")
             .env_remove("BAZELRC")
             .env_remove("COLUMNS")
             .env_remove("EMACS")

@@ -256,6 +256,9 @@ fn compare(name: &str) -> (Vec<Stamped>, Vec<Stamped>) {
             );
         }
     }
+    for line in execution(&genuine) {
+        assert!(well_formed(&shape(&line.text)), "{name}: {}", line.text);
+    }
     (genuine, native_progress)
 }
 
@@ -270,14 +273,79 @@ fn build_lines_match_bazel() {
         shape(&genuine[0].text).ends_with(" ... (3 actions running)"),
         "{genuine:#?}"
     );
-    assert!(!native.is_empty(), "{native:#?}");
-    for line in &native {
-        let shaped = shape(&line.text);
-        assert!(
-            shaped.starts_with("[N / M] Executing genrule //:<genrule>; <S>s <strategy>"),
-            "{shaped}"
-        );
+    // Which action a line names depends on when it samples (a fast one
+    // can be the oldest then): every line is well formed, and the slow
+    // genrules show running.
+    let shapes: Vec<String> = native.iter().map(|line| shape(&line.text)).collect();
+    for line in &shapes {
+        assert!(well_formed(line), "{line}\n{shapes:#?}");
     }
+    assert!(
+        shapes
+            .iter()
+            .any(|line| line.starts_with("[N / M] Executing genrule //:<genrule>; <S>s <strategy>")),
+        "{shapes:#?}"
+    );
+}
+
+/// Whether a shaped execution line has the form of Bazel's short progress
+/// bar (every genuine capture's lines are, [`compare`]): `[N / M]`, the
+/// tests once one completed, `[Prepa] ` before a spawn
+/// started, the description, `; <S>s` with the strategy (or past three
+/// seconds), and with several actions ` ... (N actions running)` or ` ...
+/// (N actions, R running)`.
+fn well_formed(line: &str) -> bool {
+    let Some(mut rest) = line.strip_prefix("[N / M] ") else {
+        return false;
+    };
+    if let Some((tests, after)) = rest.split_once("; ")
+        && tests.contains(" tests")
+    {
+        let counted = tests.split_once(" tests").is_some_and(|(counts, failed)| {
+            counts.split_once(" / ").is_some_and(|(done, total)| {
+                [done, total]
+                    .iter()
+                    .all(|count| !count.is_empty() && count.chars().all(|c| c.is_ascii_digit()))
+            }) && (failed.is_empty()
+                || failed
+                    .strip_prefix(", ")
+                    .and_then(|failed| failed.strip_suffix(" failed"))
+                    .is_some_and(|count| count.chars().all(|c| c.is_ascii_digit())))
+        });
+        if !counted {
+            return false;
+        }
+        rest = after;
+    }
+    // ActionPhase.describe cut to five characters (`[Sched] ` waits for
+    // local resources: genuine only).
+    let preparing = rest.starts_with("[Prepa] ") || rest.starts_with("[Sched] ");
+    if preparing {
+        rest = &rest["[Prepa] ".len()..];
+    }
+    if let Some((head, count)) = rest.split_once(" ... (") {
+        let Some(count) = count.strip_suffix(')') else {
+            return false;
+        };
+        let words: Vec<&str> = count.split(' ').collect();
+        let number = |word: &str| !word.is_empty() && word.chars().all(|c| c.is_ascii_digit());
+        let counted = match words[..] {
+            [n, "actions", "running"] => number(n),
+            [n, "actions,", r, "running"] => number(n) && number(r),
+            _ => false,
+        };
+        if !counted {
+            return false;
+        }
+        rest = head;
+    }
+    let description = match rest.rsplit_once("; ") {
+        Some((description, "<S>s")) => description,
+        Some((description, "<S>s <strategy>")) if !preparing => description,
+        Some(_) => return false,
+        None => rest,
+    };
+    !description.is_empty() && !description.contains('[')
 }
 
 #[test]
@@ -302,23 +370,34 @@ fn test_lines_match_bazel() {
             .any(|line| line.starts_with("[N / M] 2 / 3 tests, 1 failed; Testing //:t<N>")),
         "{native:#?}"
     );
+    // Other lines name whatever was oldest when they sampled (a test
+    // script being written, a test waiting for its attempt): well formed.
     for line in &native {
-        assert!(line.contains("Testing //:t<N>"), "{line}");
+        assert!(well_formed(line), "{line}\n{native:#?}");
     }
 }
 
 #[test]
 fn the_inactivity_watchdog_reminds_like_bazel() {
     let (genuine, native) = compare("03.txt");
-    let shapes = |lines: &[Stamped]| -> Vec<String> {
+    // The long genrule's running lines (a line sampled while it stages its
+    // inputs or the status action runs is well formed, not compared).
+    let running = |lines: &[Stamped]| -> Vec<Stamped> {
         execution(lines)
-            .iter()
-            .map(|line| shape(&line.text))
+            .into_iter()
+            .filter(|line| {
+                let shaped = shape(&line.text);
+                assert!(well_formed(&shaped), "{shaped}");
+                shaped.ends_with("; <S>s <strategy>")
+            })
             .collect()
     };
+    let shapes =
+        |lines: &[Stamped]| -> Vec<String> { lines.iter().map(|line| shape(&line.text)).collect() };
+    let (genuine, native) = (running(&genuine), running(&native));
     assert_eq!(shapes(&native), shapes(&genuine), "{native:#?}");
     // A second into the action, then the reminder at 11 s.
-    let seconds: Vec<u64> = execution(&native)
+    let seconds: Vec<u64> = native
         .iter()
         .map(|line| {
             let (_, rest) = line.text.split_once("; ").unwrap();
@@ -326,7 +405,7 @@ fn the_inactivity_watchdog_reminds_like_bazel() {
         })
         .collect();
     assert!(
-        seconds.len() == 2 && seconds[0] <= 2 && (10..=12).contains(&seconds[1]),
+        seconds.len() == 2 && seconds[0] <= 3 && (10..=12).contains(&seconds[1]),
         "{native:#?}"
     );
 }

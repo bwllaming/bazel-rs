@@ -261,7 +261,7 @@ impl Emitter {
         }
         // What the process printed into an analysis snapshot's capture
         // before this line goes out before it.
-        crate::snapshot::capture::settle(Duration::from_millis(20));
+        crate::snapshot::capture::settle(Duration::from_millis(100));
         crate::snapshot::diag::write(&bytes);
         self.last = Some(now);
         self.force = false;

@@ -99,6 +99,9 @@ make = repository_rule(_impl)
             .env_remove("BAZEL_RS_TIMING")
             .env_remove("BAZEL_RS_DUMP_ACTIONS")
             .env_remove("BAZEL_RS_DEBUG_NO_DEFINITION_CACHE")
+            // No clock-timed plain progress lines in the compared stderr
+            // (whatever the test runner's environment).
+            .env("BAZEL_RS_PROGRESS", "0")
             .current_dir(&self.0);
         if uncached {
             command.env("BAZEL_RS_DEBUG_NO_DEFINITION_CACHE", "1");
