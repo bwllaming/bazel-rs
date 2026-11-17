@@ -174,6 +174,11 @@ check_test = rule(_impl, analysis_test = True, attrs = {
 
 def make(name, **kwargs):
     testing.analysis_test(name = name, implementation = _impl, **kwargs)
+
+def _reader(ctx):
+    return [DefaultInfo(files = depset([])), OutputGroupInfo(n = depset([str(len(ctx.attr.dep.actions))]))]
+
+reader = rule(_reader, attrs = {"dep": attr.label()})
 "#,
     );
     f.file(
@@ -197,6 +202,10 @@ check_test(name = "outer_test", target_under_test = ":inner_test")
         "def _impl(ctx):\n    return []\ntesting.analysis_test(name = \"x\", implementation = _impl)\n",
     );
     f.file("toplevel/BUILD", "load(\":defs.bzl\", \"testing\")\n");
+    f.file(
+        "reader/BUILD",
+        "load(\"//:defs.bzl\", \"reader\", \"subject\")\nsubject(name = \"s\")\nreader(name = \"r\", dep = \":s\")\n",
+    );
     let stderr = |output: &Output| String::from_utf8_lossy(&output.stderr).into_owned();
     // Genuine: `in check_test rule //nested:inner_test: analysis_test rule
     // '//nested:inner_test' cannot be transitively depended on by another
@@ -208,6 +217,16 @@ check_test(name = "outer_test", target_under_test = ":inner_test")
             "{}/nested/BUILD:3:11: in check_test rule //nested:inner_test: analysis_test rule '//nested:inner_test' cannot be transitively depended on by another analysis test rule",
             f.workspace().display()
         )),
+        "{}",
+        stderr(&output)
+    );
+    // Target.actions of a target no requested analysis test names is not
+    // kept natively (docs/ANALYSIS_TESTS.md): an explicit failure, where
+    // genuine answers the target's actions.
+    let output = f.run("build", &["--nobuild", "//reader:r"]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("has no field or method 'actions'"),
         "{}",
         stderr(&output)
     );
