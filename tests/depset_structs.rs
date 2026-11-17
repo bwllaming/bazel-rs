@@ -27,7 +27,7 @@ impl Workspace {
                 .tempdir_in(base)
                 .unwrap(),
         );
-        for package in ["ds", "df"] {
+        for package in ["ds", "df", "dc"] {
             let source = manifest()
                 .join("tests/fixtures/depset_structs/workspace")
                 .join(package);
@@ -165,9 +165,20 @@ fn element_checks_and_gaps() {
             "//df:bad_order_second",
             "Order 'preorder' is incompatible with order 'topological'",
         ),
+        // Built-in functions and bound methods are mutable
+        // (StarlarkValue.isImmutable default; genuine 9.3.1,
+        // tests/fixtures/depset_structs/closures_receipt.json).
         (
-            "lambda_field",
-            "a depset element containing a function that is not a global def of a loaded .bzl file is not implemented in the native profile",
+            "//dc:bad_bound_method",
+            "depset elements must not be mutable values",
+        ),
+        (
+            "//dc:bad_builtin_element",
+            "depset elements must not be mutable values",
+        ),
+        (
+            "//dc:bad_dict_get",
+            "depset elements must not be mutable values",
         ),
     ] {
         let label = if kind.contains(':') {
@@ -183,6 +194,49 @@ fn element_checks_and_gaps() {
             "{kind}: {stderr}"
         );
     }
+}
+
+/// Functions that are not top-level defs inside depset elements (closures,
+/// lambdas, nested defs; skylib's DirectoryInfo shape): kept by identity,
+/// deduplicated by StructImpl equality with identity-compared functions,
+/// callable after `to_list()`, from a dependency's frozen provider, from this
+/// implementation before its freeze and from a consumer after it, and from
+/// a `.bzl` module's top level across its garbage collections. The expected
+/// report is genuine Bazel 9.3.1's
+/// (tests/fixtures/depset_structs/closures_receipt.json).
+#[test]
+fn closures_lambdas_and_nested_defs_follow_bazel() {
+    let ws = Workspace::fixture();
+    let mut report = String::new();
+    for target in ["r_default", "r_post", "r_pre", "r_topo", "t"] {
+        let label = format!("//dc:{target}");
+        let output = ws.run(&[&label]);
+        assert!(
+            output.status.success(),
+            "{label}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let path = stdout.lines().next().unwrap().split_once('\t').unwrap().1;
+        report.push_str(&format!("== {target}\n"));
+        report.push_str(&fs::read_to_string(path).unwrap());
+    }
+    assert_eq!(
+        report,
+        fs::read_to_string(manifest().join("tests/fixtures/depset_structs/closures_expected.txt"))
+            .unwrap()
+    );
+    // N49's declared gap (reference_receipt.json G/lambda_field) is closed:
+    // genuine writes "1".
+    let output = ws.run(&["//ds:bad_lambda_field"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let path = stdout.lines().next().unwrap().split_once('\t').unwrap().1;
+    assert_eq!(fs::read_to_string(path).unwrap(), "1\n");
 }
 
 /// N49b: frozen lists/dicts inside struct elements and the single-transitive

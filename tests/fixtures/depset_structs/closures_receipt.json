@@ -1,0 +1,41 @@
+{
+ "schema": "depset-closures-reference-receipt/v1",
+ "purpose": "Genuine Bazel 9.3.1 capture of depsets whose struct/provider elements hold functions that are not top-level defs (closures, lambdas, nested defs; skylib DirectoryInfo shape as rules_cc cc_args uses it): identity equality and dedup in every order, calls after to_list(), a dependency's pre-freeze depset combined with its frozen struct and closure, this implementation's closures before and (in a consumer) after the freeze, struct method values, .bzl top-level depsets across garbage-collecting statements, and the mutable built-in/bound-method errors. Evidence only.",
+ "reference": {
+  "binary": "bazel-9.3.1-linux-x86_64",
+  "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+  "argv": "--batch --ignore_all_rc_files --output_user_root=<private> build <targets>",
+  "workspace": "MODULE.bazel `module(name = \"depset_structs\")` + tests/fixtures/depset_structs/workspace/dc (+ ds for //ds:bad_lambda_field)",
+  "env": "env PATH=/usr/bin:/bin HOME=<private> TMPDIR=<private>"
+ },
+ "fixture_sha256": {
+  "tests/fixtures/depset_structs/workspace/dc/BUILD.bazel": "9204b1887a076ad5f04fcb0ad5b0ecaec083efdd3fe49e0cc8bbb16f36ba8f0e",
+  "tests/fixtures/depset_structs/workspace/dc/defs.bzl": "5777486680d60fb6dd49fdff59aa06c04f271e9a0c941bf964505c9a63ce6ea8"
+ },
+ "scenarios": {
+  "reports": {
+   "targets": ["//dc:r_default", "//dc:r_post", "//dc:r_pre", "//dc:r_topo", "//dc:t"],
+   "reference_exit": 0,
+   "reference_outputs": "closures_expected.txt (each target's bazel-bin/dc/<name>.txt after a `== <name>` line)",
+   "closures_expected_sha256": "0c8ab68c75de88545307c4b9c87a03b455c98b97a3b405ac135897c8045dca1d",
+   "native": "equal bytes (tests/depset_structs.rs closures_lambdas_and_nested_defs_follow_bazel)"
+  },
+  "errors": {
+   "//dc:bad_bound_method": "Error in depset: depset elements must not be mutable values",
+   "//dc:bad_builtin_element": "Error in depset: depset elements must not be mutable values",
+   "//dc:bad_dict_get": "Error in depset: depset elements must not be mutable values",
+   "native": "error: depset elements must not be mutable values (tests/depset_structs.rs element_checks_and_gaps)"
+  },
+  "N49 G/lambda_field": {
+   "target": "//ds:bad_lambda_field",
+   "reference_exit": 0,
+   "reference_outputs": [["bazel-out/k8-fastbuild/bin/ds/bad_lambda_field.txt", "1\n"]],
+   "native": "equal (the N49 declared gap of reference_receipt.json is closed)"
+  }
+ },
+ "findings": [
+  "Every Starlark function is immutable (StarlarkFunction.isImmutable); equality is the per-instantiation token: twins with equal fields and distinct lambdas are 2 elements, one provider instance twice is 1.",
+  "A dependency's depset built before its freeze deduplicates against the same closures and struct read from its frozen provider (dep_combined=2, top=2).",
+  "Built-in functions and bound methods (\"x\".upper, {}.get, len) are rejected as mutable."
+ ]
+}

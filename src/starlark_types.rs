@@ -1046,12 +1046,12 @@ impl Item {
     /// Depset.checkElement (collect/nestedset/Depset.java:125-152) with the
     /// strict `--incompatible_always_check_depset_elements` (default true),
     /// then the owned snapshot of the element (crate::depset_items).
-    pub(crate) fn unpack(
-        value: Value<'_>,
-        functions: &dyn Fn(Value<'_>) -> Option<OwnedFrozenValue>,
+    pub(crate) fn unpack<'v>(
+        value: Value<'v>,
+        eval: &Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Self> {
         crate::depset_items::check_element(value)?;
-        crate::depset_items::snapshot(value, functions, 0)
+        crate::depset_items::snapshot(value, eval, 0)
     }
 
     pub(crate) fn alloc<'v>(&self, heap: Heap<'v>) -> Value<'v> {
@@ -1070,7 +1070,7 @@ impl Item {
             Self::Depset(item) => heap.alloc(item.0.clone()),
             Self::Target(item) => heap.alloc(TargetValue(item.0.clone())),
             Self::Runfiles(item) => heap.alloc(item.0.as_ref().clone()),
-            Self::Function(item) => heap.access_owned_frozen_value(&item.0),
+            Self::Function(item) => item.alloc(heap),
             Self::HeaderInfo(item) => heap.alloc(item.0.as_ref().clone()),
             Self::List(_) | Self::Dict(_) => {
                 crate::depset_items::alloc_frozen_container(heap, self)
@@ -1304,7 +1304,7 @@ impl fmt::Display for Item {
             Self::Depset(item) => write!(f, "{}", item.0),
             Self::Target(item) => write!(f, "{}", item.0),
             Self::Runfiles(item) => write!(f, "{}", item.0),
-            Self::Function(item) => f.write_str(&item.0.value().to_repr()),
+            Self::Function(item) => f.write_str(&item.repr()),
             Self::HeaderInfo(item) => write!(f, "{}", item.0),
             Self::List(items) => {
                 f.write_str("[")?;
@@ -2818,13 +2818,11 @@ pub fn analysis_globals(builder: &mut GlobalsBuilder) {
         }
         // Depset.fromDirectAndTransitive (:354-376): each element is checked
         // and type-checked in turn.
-        let functions =
-            |value: Value<'_>| crate::analysis_runtime::owned_top_level_function(eval, value);
         let mut items = Vec::new();
         let mut element_type: Option<ItemType> = None;
         {
             for value in direct_items {
-                let item = Item::unpack(value, &functions)?;
+                let item = Item::unpack(value, eval)?;
                 let kind = item.kind();
                 if let Some(expected) = element_type
                     && expected != kind

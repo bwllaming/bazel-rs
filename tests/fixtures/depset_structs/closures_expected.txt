@@ -1,0 +1,91 @@
+== r_default
+len=2
+names=["a", "b"]
+calls=[("a", "a/x", ["a/a", "a/c"], "y-a"), ("b", "b/x", ["b/a", "b/c"], "y-b")]
+eq=True True False
+in=True False
+types=function function
+repr=[<function lambda from //dc:defs.bzl>, <function inner from //dc:defs.bzl>]
+nested=["a", "b"]
+twins=2 same=1
+twins_eq=False
+dep_depset=2 [("shared-a", 1), ("other", 1)]
+dep_combined=2
+dep_fn_eq=True True
+local=2 ["mine-r_default", "mine-r_default"] True True
+local_repr=depset([struct(f = <function lambda from //dc:defs.bzl>), struct(f = <function lambda from //dc:defs.bzl>)])
+local_fn=2 "mine-r_default" "z?"
+method=2
+module=2 ["module-lambda", "top:m"]
+module_fns=3 "depset([<function top from //dc:defs.bzl>, <function lambda from //dc:defs.bzl>, <function inner from //dc:defs.bzl>])"
+gc=gc-lambda True True ["x#", "top:x"]
+gc_after_freeze=gc-lambda True
+== r_post
+len=2
+names=["a", "b"]
+calls=[("a", "a/x", ["a/a", "a/c"], "y-a"), ("b", "b/x", ["b/a", "b/c"], "y-b")]
+eq=True True False
+in=True False
+types=function function
+repr=[<function lambda from //dc:defs.bzl>, <function inner from //dc:defs.bzl>]
+nested=["a", "b"]
+twins=2 same=1
+twins_eq=False
+dep_depset=2 [("shared-a", 1), ("other", 1)]
+dep_combined=2
+dep_fn_eq=True True
+local=2 ["mine-r_post", "mine-r_post"] True True
+local_repr=depset([struct(f = <function lambda from //dc:defs.bzl>), struct(f = <function lambda from //dc:defs.bzl>)], order = "postorder")
+local_fn=2 "mine-r_post" "z?"
+method=2
+module=2 ["module-lambda", "top:m"]
+module_fns=3 "depset([<function top from //dc:defs.bzl>, <function lambda from //dc:defs.bzl>, <function inner from //dc:defs.bzl>])"
+gc=gc-lambda True True ["x#", "top:x"]
+gc_after_freeze=gc-lambda True
+== r_pre
+len=2
+names=["b", "a"]
+calls=[("b", "b/x", ["b/a", "b/c"], "y-b"), ("a", "a/x", ["a/a", "a/c"], "y-a")]
+eq=True True False
+in=True False
+types=function function
+repr=[<function lambda from //dc:defs.bzl>, <function inner from //dc:defs.bzl>]
+nested=["b", "a"]
+twins=2 same=1
+twins_eq=False
+dep_depset=2 [("shared-b", 1), ("other", 1)]
+dep_combined=2
+dep_fn_eq=True True
+local=2 ["mine-r_pre", "mine-r_pre"] True True
+local_repr=depset([struct(f = <function lambda from //dc:defs.bzl>), struct(f = <function lambda from //dc:defs.bzl>)], order = "preorder")
+local_fn=2 "mine-r_pre" "z?"
+method=2
+module=2 ["module-lambda", "top:m"]
+module_fns=3 "depset([<function top from //dc:defs.bzl>, <function lambda from //dc:defs.bzl>, <function inner from //dc:defs.bzl>])"
+gc=gc-lambda True True ["x#", "top:x"]
+gc_after_freeze=gc-lambda True
+== r_topo
+len=2
+names=["a", "b"]
+calls=[("a", "a/x", ["a/a", "a/c"], "y-a"), ("b", "b/x", ["b/a", "b/c"], "y-b")]
+eq=True True False
+in=True False
+types=function function
+repr=[<function lambda from //dc:defs.bzl>, <function inner from //dc:defs.bzl>]
+nested=["a", "b"]
+twins=2 same=1
+twins_eq=False
+dep_depset=2 [("shared-a", 1), ("other", 1)]
+dep_combined=2
+dep_fn_eq=True True
+local=2 ["mine-r_topo", "mine-r_topo"] True True
+local_repr=depset([struct(f = <function lambda from //dc:defs.bzl>), struct(f = <function lambda from //dc:defs.bzl>)], order = "topological")
+local_fn=2 "mine-r_topo" "z?"
+method=2
+module=2 ["module-lambda", "top:m"]
+module_fns=3 "depset([<function top from //dc:defs.bzl>, <function lambda from //dc:defs.bzl>, <function inner from //dc:defs.bzl>])"
+gc=gc-lambda True True ["x#", "top:x"]
+gc_after_freeze=gc-lambda True
+== t
+top=2 ["mine-r_default", "mine-r_default"]
+top_eq=True True

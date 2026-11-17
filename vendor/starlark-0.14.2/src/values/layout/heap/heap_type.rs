@@ -15,6 +15,10 @@
  * limitations under the License.
  */
 
+// Modified (bazel-rs): a heap can retain values for embedder data that lives
+// outside it ([`RetainedValue`]): garbage-collection roots, frozen with the
+// module, after which the handle owns the frozen value; see vendor provenance.
+
 use std::any::Any;
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -120,18 +124,90 @@ struct OwnedHeap {
     /// Memory I depend on.
     refs: RefCell<SmallSet<FrozenHeapRef>>,
     ban_gc: Cell<bool>,
+    /// Modified (bazel-rs): this heap's unique identity ([`RetainedValue`]).
+    id: u64,
+    /// Modified (bazel-rs): whether [`Heap::retain`] may retain values.
+    retention: Cell<bool>,
+    /// Modified (bazel-rs): the retained values, by their identity.
+    retained: RefCell<RetainedRoots<'static>>,
+    /// Modified (bazel-rs): a frozen heap referencing every heap in `refs`
+    /// when `refs` had that many heaps ([`Heap::owned_frozen_value`]).
+    refs_owner: RefCell<Option<(usize, FrozenHeapRef)>>,
 }
 
 impl OwnedHeap {
     /// Create a new [`OwnedHeap`].
     fn new() -> Self {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
             peak_allocated: Default::default(),
             arena: Default::default(),
             str_interner: Default::default(),
             refs: Default::default(),
             ban_gc: Cell::new(true),
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            retention: Cell::new(false),
+            retained: Default::default(),
+            refs_owner: Default::default(),
         }
+    }
+}
+
+/// Modified (bazel-rs): the values a heap retains ([`Heap::retain`]), each
+/// with its one handle, and their index by value identity.
+#[derive(Default)]
+struct RetainedRoots<'v> {
+    values: Vec<(Value<'v>, RetainedValue)>,
+    by_identity: HashMap<usize, usize>,
+}
+
+/// Modified (bazel-rs): a value of a heap held by data outside that heap.
+///
+/// [`Heap::retain`] gives one handle per value (by identity) and heap. The
+/// heap keeps the value alive as a garbage-collection root, so
+/// [`Heap::retained_value`] gives it back on that heap; freezing the module of
+/// the heap ([`Module::freeze`](crate::environment::Module::freeze)) freezes
+/// it and the handle then owns the frozen value ([`RetainedValue::owned`]),
+/// which any heap can access. A handle whose heap is gone without a freeze
+/// gives nothing back.
+#[derive(Clone, Dupe, Debug)]
+pub struct RetainedValue(Arc<RetainedInner>);
+
+#[derive(Debug)]
+struct RetainedInner {
+    heap: u64,
+    index: usize,
+    /// The address of the value when it was retained frozen.
+    frozen_address: Option<usize>,
+    frozen: std::sync::OnceLock<OwnedFrozenValue>,
+}
+
+impl RetainedValue {
+    /// The frozen value, once the module of the retaining heap froze (or the
+    /// value retained frozen, once that module froze).
+    pub fn owned(&self) -> Option<&OwnedFrozenValue> {
+        self.0.frozen.get()
+    }
+
+    /// The identity of the frozen value ([`Value::identity_address`]): known
+    /// from the start for a value retained frozen, otherwise once the module
+    /// froze.
+    pub fn frozen_address(&self) -> Option<usize> {
+        self.0.frozen_address.or_else(|| {
+            self.0
+                .frozen
+                .get()
+                .map(|owned| owned.value().identity_address())
+        })
+    }
+
+    /// The identity of this handle (one per retained value and heap).
+    pub fn handle_address(&self) -> usize {
+        Arc::as_ptr(&self.0) as usize
+    }
+
+    pub(crate) fn set_frozen(&self, owned: OwnedFrozenValue) {
+        let _ = self.0.frozen.set(owned);
     }
 }
 
@@ -195,6 +271,113 @@ impl<'v> Heap<'v> {
 
     pub(crate) fn referenced_heaps(self) -> Vec<FrozenHeapRef> {
         self.0.refs.borrow().iter().duped().collect()
+    }
+
+    fn retained_roots(self) -> RefMut<'v, RetainedRoots<'v>> {
+        // SAFETY: The retained values live on this heap (or a frozen heap it
+        // references) for the lifetime of the heap.
+        unsafe {
+            transmute!(
+                RefMut<'v, RetainedRoots<'static>>,
+                RefMut<'v, RetainedRoots<'v>>,
+                self.0.retained.borrow_mut()
+            )
+        }
+    }
+
+    /// Modified (bazel-rs): `value`, a frozen value this heap reaches, owned
+    /// by a frozen heap that references every frozen heap this heap
+    /// references now (shared until this heap references another one).
+    /// Every frozen value a heap reaches lives on a frozen heap it
+    /// references, directly or through the references of those (the
+    /// invariant [`Heap::access_owned_frozen_value`] maintains and a module
+    /// freeze relies on), or on a static heap.
+    pub fn owned_frozen_value(self, value: FrozenValue) -> OwnedFrozenValue {
+        let refs = self.0.refs.borrow();
+        let mut owner = self.0.refs_owner.borrow_mut();
+        let owner = match &*owner {
+            Some((count, heap)) if *count == refs.len() => heap.dupe(),
+            _ => {
+                let heap = FrozenHeap::new();
+                for r in refs.iter() {
+                    heap.add_reference(r);
+                }
+                let heap = heap.into_ref_impl(None, None);
+                *owner = Some((refs.len(), heap.dupe()));
+                heap
+            }
+        };
+        // SAFETY: see above.
+        unsafe { OwnedFrozenValue::new(owner, value) }
+    }
+
+    /// Modified (bazel-rs): allow [`Heap::retain`] on this heap. Only the
+    /// heap of a module that is frozen once its evaluation succeeded should
+    /// enable it: the handles of a heap dropped without a freeze give
+    /// nothing back.
+    pub fn enable_retention(self) {
+        self.0.retention.set(true);
+    }
+
+    /// Modified (bazel-rs): retain `value` for data outside this heap: the
+    /// value's one handle on this heap, or `None` unless
+    /// [`Heap::enable_retention`] was called.
+    pub fn retain(self, value: Value<'v>) -> Option<RetainedValue> {
+        if !self.0.retention.get() {
+            return None;
+        }
+        let mut roots = self.retained_roots();
+        let identity = value.identity_address();
+        if let Some(&index) = roots.by_identity.get(&identity) {
+            return Some(roots.values[index].1.dupe());
+        }
+        let index = roots.values.len();
+        let handle = RetainedValue(Arc::new(RetainedInner {
+            heap: self.0.id,
+            index,
+            frozen_address: value.unpack_frozen().map(|_| identity),
+            frozen: std::sync::OnceLock::new(),
+        }));
+        roots.values.push((value, handle.dupe()));
+        roots.by_identity.insert(identity, index);
+        Some(handle)
+    }
+
+    /// Modified (bazel-rs): the value of `handle` on this heap: the frozen
+    /// value once its module froze, the retained value on the retaining
+    /// heap before that, otherwise `None`.
+    pub fn retained_value(self, handle: &RetainedValue) -> Option<Value<'v>> {
+        if let Some(owned) = handle.0.frozen.get() {
+            return Some(self.access_owned_frozen_value(owned));
+        }
+        if handle.0.heap != self.0.id {
+            return None;
+        }
+        self.retained_roots()
+            .values
+            .get(handle.0.index)
+            .map(|(value, _)| *value)
+    }
+
+    /// Garbage collection: the retained values are roots.
+    pub(crate) fn trace_retained(self, tracer: &Tracer<'v>) {
+        let mut roots = self.retained_roots();
+        let roots = &mut *roots;
+        if roots.values.is_empty() {
+            return;
+        }
+        roots.by_identity.clear();
+        for (index, (value, _)) in roots.values.iter_mut().enumerate() {
+            tracer.trace(value);
+            roots.by_identity.insert(value.identity_address(), index);
+        }
+    }
+
+    /// The retained values, to freeze with the module.
+    pub(crate) fn take_retained(self) -> Vec<(Value<'v>, RetainedValue)> {
+        let mut roots = self.retained_roots();
+        roots.by_identity.clear();
+        mem::take(&mut roots.values)
     }
 
     /// Get access to the underlying value within the context of this heap.

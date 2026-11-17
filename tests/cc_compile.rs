@@ -418,13 +418,14 @@ fn cc_binary_links_and_the_workspace_status_stamps() {
 
     // The recorded remaining cc boundary: a cc_library `linkstamp` attribute
     // puts the LinkstampInfo provider (rules_cc's private-API wrapper
-    // functions) in a linker-input depset, which cannot cross analyses
-    // natively; the failure is explicit.
+    // closures, created by this analysis) in a depset — supported — and then
+    // `cc_internal.freeze`s the list of them: a frozen list cannot hold
+    // functions that are not frozen yet natively; the failure is explicit.
     let output = ws.build("cache", &[&script, "//bin:stamped_tool"]);
     let text = stderr(&output);
     assert!(!output.status.success(), "{text}");
     assert!(
-        text.contains("a depset element containing a function that is not a global def of a loaded .bzl file is not implemented in the native profile"),
+        text.contains("cc_internal.freeze of a list containing a function of this evaluation (not frozen yet, while Bazel's copy holds it) is not implemented in the native profile"),
         "{text}"
     );
 }

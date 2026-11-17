@@ -19,6 +19,7 @@
 // Modified for native Bazel 9.3 `dict | select` and unknown-attribute messages
 // (including Bazel's `'T' value has no field or method 'x'` text); see vendor
 // provenance.
+// Modified (bazel-rs): `Value::identity_address`; see vendor provenance.
 
 // Possible optimisations:
 // Avoid the Box duplication
@@ -561,6 +562,14 @@ impl<'v> Value<'v> {
     #[inline]
     pub fn identity(self) -> ValueIdentity<'v> {
         ValueIdentity::new(self)
+    }
+
+    /// Modified (bazel-rs): the identity of this [`Value`] as an integer
+    /// ([`Value::identity`]'s pointer): equal for two values exactly when
+    /// [`Value::ptr_eq`], while they are alive and until the next GC.
+    #[inline]
+    pub fn identity_address(self) -> usize {
+        self.ptr_value().ptr_value()
     }
 
     /// Get the underlying pointer.

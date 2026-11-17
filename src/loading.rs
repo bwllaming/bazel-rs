@@ -2407,6 +2407,9 @@ impl<'a> Loader<'a> {
             echo: self.prints.is_none(),
         };
         let evaluated = Module::with_temp_heap(|module| {
+            // Depset elements may hold this module's functions until it
+            // freezes (crate::depset_items::FunctionItem::retained).
+            module.heap().enable_retention();
             let visibility = {
                 let context = ExtensionContext {
                     label: label.clone(),

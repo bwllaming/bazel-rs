@@ -30,6 +30,7 @@ use allocative::Allocative;
 use anyhow::bail;
 use starlark::collections::SmallMap;
 use starlark::environment::Module;
+use starlark::eval::Evaluator;
 use starlark::values::dict::{Dict, DictRef};
 use starlark::values::list::{AllocList, ListRef};
 use starlark::values::structs::StructRef;
@@ -56,6 +57,15 @@ pub(crate) struct StructItem {
     /// ([`StructItem::alloc`]); never compared.
     #[allocative(skip)]
     pub frozen: std::sync::OnceLock<OwnedFrozenValue>,
+    /// The element value itself, retained by the heap that evaluates it
+    /// (starlark::values::RetainedValue), when a field holds a function of
+    /// that evaluation, not frozen yet ([`Item::has_pending_function`]): a
+    /// copy cannot live on a frozen heap of its own before that function
+    /// is frozen, so [`StructItem::alloc`] gives the element object itself,
+    /// as Bazel does — on that heap until its module froze, then the
+    /// frozen element. Never compared.
+    #[allocative(skip)]
+    pub retained: Option<starlark::values::RetainedValue>,
 }
 
 impl StructItem {
@@ -69,6 +79,7 @@ impl StructItem {
             fields,
             location,
             frozen: std::sync::OnceLock::new(),
+            retained: None,
         }
     }
 }
@@ -119,6 +130,9 @@ impl StructItem {
     /// containers, per call (MEM3: rules_rust's `to_list()` over transitive
     /// CrateInfo depsets held ~8 GB of such copies on ~/code).
     pub(crate) fn alloc<'v>(&self, heap: Heap<'v>) -> Value<'v> {
+        if let Some(retained) = &self.retained {
+            return heap.retained_value(retained).expect(RETAINED_REACH);
+        }
         let frozen = self.frozen.get_or_init(|| {
             Module::with_temp_heap(|module| {
                 let value = self.alloc_fresh(module.heap());
@@ -380,14 +394,119 @@ impl Ord for HeaderInfoItem {
     }
 }
 
-/// A global `def` of a loaded `.bzl` file (StarlarkFunction.equals compares
-/// identity tokens, net/starlark/java/eval/StarlarkFunction.java:255-270).
+/// A Starlark function (StarlarkFunction.isImmutable is always true,
+/// net/starlark/java/eval/StarlarkFunction.java:272-276): a global `def` of
+/// a loaded `.bzl` file, or any other `def`/`lambda` — a closure, a nested
+/// def, a lambda — retained by the heap that evaluates the depset call
+/// ([`FunctionRef::Retained`]). Equality is identity
+/// (StarlarkFunction.equals/hashCode compare the per-instantiation identity
+/// token, :255-270): two items are equal exactly when they are the same
+/// function object.
 #[derive(Clone, Debug, Allocative)]
-pub(crate) struct FunctionItem(#[allocative(skip)] pub OwnedFrozenValue);
+pub(crate) struct FunctionItem(#[allocative(skip)] FunctionRef);
+
+#[derive(Clone, Debug)]
+enum FunctionRef {
+    /// A frozen global `def`, with the frozen heap that owns it.
+    Owned(OwnedFrozenValue),
+    /// A function the evaluating heap retains until its module freezes
+    /// (starlark::values::RetainedValue): the module of an analysis, a
+    /// `.bzl` file or a BUILD file, which is frozen once its evaluation
+    /// succeeded, so the depset (owned Rust data, outside every heap) can
+    /// hold the function past that heap. Before the freeze only that heap
+    /// can reach the depset; after it the handle owns the frozen function
+    /// (the frozen module heap, which also keeps every heap the evaluation
+    /// referenced alive — the function of a dependency's frozen provider
+    /// included).
+    Retained(Arc<RetainedFunction>),
+}
+
+/// Unreachable: a depset holding a value retained by a heap
+/// ([`FunctionRef::Retained`], [`StructItem::retained`]) is reachable from
+/// that heap only until the heap's module froze — the depset was created by
+/// an evaluation of that heap, and nothing carries a depset out of an
+/// evaluation but the frozen module's values — and after the freeze the
+/// handle owns the frozen value.
+const RETAINED_REACH: &str =
+    "a retained depset element value is reached before its module froze, on another heap";
+
+#[derive(Debug)]
+struct RetainedFunction {
+    handle: starlark::values::RetainedValue,
+    /// The function's repr (`<function NAME from MODULE>`), which its
+    /// freeze keeps.
+    repr: Box<str>,
+}
+
+/// An item's identity: the frozen function's address, known for a global
+/// def and for a function that was frozen when retained (a dependency's or
+/// a loaded module's), and for every retained function once its module
+/// froze; before that, the retention handle (one per function and heap).
+/// An unfrozen function is never the same object as a frozen one, and a
+/// handle resolves to the address of the same function after the freeze,
+/// so equality is the same relation before and after (only the order of
+/// unequal items may change; it orders transient sets only).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum FunctionIdentity {
+    Frozen(usize),
+    Pending(usize),
+}
+
+impl FunctionItem {
+    /// A frozen global `def` with its owner.
+    pub(crate) fn owned(function: OwnedFrozenValue) -> Self {
+        FunctionItem(FunctionRef::Owned(function))
+    }
+
+    /// `function` retained by `heap` (None unless the heap retains,
+    /// starlark::values::Heap::enable_retention).
+    pub(crate) fn retained<'v>(heap: Heap<'v>, function: Value<'v>) -> Option<Self> {
+        let repr = function.to_repr().into_boxed_str();
+        let handle = heap.retain(function)?;
+        Some(FunctionItem(FunctionRef::Retained(Arc::new(
+            RetainedFunction { handle, repr },
+        ))))
+    }
+
+    fn identity(&self) -> FunctionIdentity {
+        match &self.0 {
+            FunctionRef::Owned(function) => {
+                FunctionIdentity::Frozen(function.value().identity_address())
+            }
+            FunctionRef::Retained(function) => match function.handle.frozen_address() {
+                Some(address) => FunctionIdentity::Frozen(address),
+                None => FunctionIdentity::Pending(function.handle.handle_address()),
+            },
+        }
+    }
+
+    /// The function on `heap`.
+    pub(crate) fn alloc<'v>(&self, heap: Heap<'v>) -> Value<'v> {
+        match &self.0 {
+            FunctionRef::Owned(function) => heap.access_owned_frozen_value(function),
+            FunctionRef::Retained(function) => {
+                heap.retained_value(&function.handle).expect(RETAINED_REACH)
+            }
+        }
+    }
+
+    /// Whether the function is retained and not frozen yet.
+    fn pending(&self) -> bool {
+        matches!(&self.0, FunctionRef::Retained(function) if function.handle.owned().is_none())
+    }
+
+    /// The function's repr.
+    pub(crate) fn repr(&self) -> String {
+        match &self.0 {
+            FunctionRef::Owned(function) => function.value().to_repr(),
+            FunctionRef::Retained(function) => function.repr.to_string(),
+        }
+    }
+}
 
 impl PartialEq for FunctionItem {
     fn eq(&self, other: &Self) -> bool {
-        self.0.value().ptr_eq(other.0.value())
+        self.identity() == other.identity()
     }
 }
 
@@ -401,11 +520,48 @@ impl PartialOrd for FunctionItem {
 
 impl Ord for FunctionItem {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        if self == other {
+        let (left, right) = (self.identity(), other.identity());
+        if left == right {
             return std::cmp::Ordering::Equal;
         }
-        (self.0.value().to_repr(), identity_hash(self.0.value()))
-            .cmp(&(other.0.value().to_repr(), identity_hash(other.0.value())))
+        (self.repr(), left).cmp(&(other.repr(), right))
+    }
+}
+
+/// The depset item of a Starlark function `value` (a `def` or lambda) in
+/// `eval`: a global def of a loaded `.bzl` file with its owner, else the
+/// function retained by the evaluating heap when that heap retains
+/// ([`FunctionItem::retained`]).
+pub(crate) fn function_item<'v>(
+    eval: &Evaluator<'v, '_, '_>,
+    value: Value<'v>,
+) -> Option<FunctionItem> {
+    if let Some(function) = crate::analysis_runtime::owned_top_level_function(eval, value) {
+        return Some(FunctionItem::owned(function));
+    }
+    match value.unpack_frozen() {
+        // A frozen closure (a dependency's provider's, a loaded module's):
+        // owned by the frozen heaps this heap references.
+        Some(frozen) => Some(FunctionItem::owned(eval.heap().owned_frozen_value(frozen))),
+        None => FunctionItem::retained(eval.heap(), value),
+    }
+}
+
+impl Item {
+    /// Whether the item holds a function retained by the evaluating heap
+    /// and not frozen yet (outside of a retained struct element, which
+    /// already stands for its contents).
+    pub(crate) fn has_pending_function(&self) -> bool {
+        match self {
+            Item::Function(function) => function.pending(),
+            Item::Tuple(items) | Item::List(items) => items.iter().any(Item::has_pending_function),
+            Item::Dict(dict) => dict
+                .0
+                .iter()
+                .any(|(key, value)| key.has_pending_function() || value.has_pending_function()),
+            Item::Struct(item) => item.retained.is_some(),
+            _ => false,
+        }
     }
 }
 
@@ -523,11 +679,11 @@ pub(crate) fn check_element(value: Value<'_>) -> anyhow::Result<()> {
 /// (N55) re-allocates as the same instance. Otherwise the error names the
 /// offending element.
 pub(crate) fn frozen_copy<'v>(
-    heap: Heap<'v>,
+    eval: &Evaluator<'v, '_, '_>,
     elements: &[Value<'v>],
     pairs: bool,
-    functions: &dyn Fn(Value<'_>) -> Option<OwnedFrozenValue>,
 ) -> Result<Value<'v>, String> {
+    let heap = eval.heap();
     let mut items = Vec::with_capacity(elements.len());
     for &value in elements {
         let kind = value.get_type();
@@ -544,7 +700,7 @@ pub(crate) fn frozen_copy<'v>(
                 ));
             }
         }
-        let item = snapshot(value, functions, 0).map_err(|error| {
+        let item = snapshot(value, eval, 0).map_err(|error| {
             let error = error.to_string();
             match error
                 .strip_prefix("a depset element containing ")
@@ -569,13 +725,42 @@ pub(crate) fn frozen_copy<'v>(
     } else {
         Item::List(items)
     };
+    if container.has_pending_function() {
+        // A frozen container cannot hold a value that is not frozen yet.
+        return Err(
+            "a function of this evaluation (not frozen yet, while Bazel's copy holds it)"
+                .to_owned(),
+        );
+    }
     Ok(alloc_frozen_container(heap, &container))
 }
 
+/// `item`, the snapshot of the struct or provider instance `value`: holding
+/// a function of this evaluation that is not frozen yet, it keeps `value`
+/// itself, retained by the evaluating heap ([`StructItem::retained`]).
+fn struct_item<'v>(
+    eval: &Evaluator<'v, '_, '_>,
+    value: Value<'v>,
+    mut item: StructItem,
+) -> anyhow::Result<Item> {
+    if item
+        .fields
+        .iter()
+        .any(|(_, field)| field.has_pending_function())
+    {
+        item.retained = Some(eval.heap().retain(value).ok_or_else(|| {
+            anyhow::anyhow!(
+                "a depset element containing a function of an evaluation whose module is not frozen is not implemented in the native profile"
+            )
+        })?);
+    }
+    Ok(Item::Struct(Arc::new(item)))
+}
+
 /// The owned snapshot of a checked (immutable) element.
-pub(crate) fn snapshot(
-    value: Value<'_>,
-    functions: &dyn Fn(Value<'_>) -> Option<OwnedFrozenValue>,
+pub(crate) fn snapshot<'v>(
+    value: Value<'v>,
+    eval: &Evaluator<'v, '_, '_>,
     depth: usize,
 ) -> anyhow::Result<Item> {
     if depth > MAX_DEPTH {
@@ -604,7 +789,7 @@ pub(crate) fn snapshot(
         Item::Tuple(
             tuple
                 .iter()
-                .map(|item| snapshot(item, functions, depth + 1))
+                .map(|item| snapshot(item, eval, depth + 1))
                 .collect::<anyhow::Result<_>>()?,
         )
     } else if let Some(depset) = Depset::from_value(value) {
@@ -616,32 +801,32 @@ pub(crate) fn snapshot(
     } else if let Some(info) = crate::cc_common::HeaderInfo::from_value(value) {
         Item::HeaderInfo(HeaderInfoItem(Arc::new(info.clone())))
     } else if is_starlark_def(value) {
-        match functions(value) {
-            Some(function) => Item::Function(FunctionItem(function)),
-            None => return gap("a function that is not a global def of a loaded .bzl file"),
+        match function_item(eval, value) {
+            Some(function) => Item::Function(function),
+            None => {
+                return gap(
+                    "a function that is not a global def of a loaded .bzl file, outside a rule, aspect, .bzl or BUILD evaluation",
+                );
+            }
         }
     } else if let Some(structure) = StructRef::from_value(value) {
         let mut fields = structure
             .iter()
-            .map(|(name, value)| {
-                Ok((
-                    name.as_str().to_owned(),
-                    snapshot(value, functions, depth + 1)?,
-                ))
-            })
+            .map(|(name, value)| Ok((name.as_str().to_owned(), snapshot(value, eval, depth + 1)?)))
             .collect::<anyhow::Result<Vec<_>>>()?;
         fields.sort_by(|a, b| a.0.cmp(&b.0));
-        Item::Struct(Arc::new(StructItem::new(None, fields, None)))
+        struct_item(eval, value, StructItem::new(None, fields, None))?
     } else if let Some((identity, name, fields, location)) = crate::providers::instance_parts(value)
     {
-        Item::Struct(Arc::new(StructItem::new(
+        let item = StructItem::new(
             Some((identity, name)),
             fields
                 .into_iter()
-                .map(|(name, value)| Ok((name, snapshot(value, functions, depth + 1)?)))
+                .map(|(name, value)| Ok((name, snapshot(value, eval, depth + 1)?)))
                 .collect::<anyhow::Result<Vec<_>>>()?,
             location,
-        )))
+        );
+        struct_item(eval, value, item)?
     } else if let Some(list) = ListRef::from_value(value) {
         // Only a frozen list passes the element check; a frozen list's
         // contents are frozen too.
@@ -650,7 +835,7 @@ pub(crate) fn snapshot(
         }
         Item::List(
             list.iter()
-                .map(|item| snapshot(item, functions, depth + 1))
+                .map(|item| snapshot(item, eval, depth + 1))
                 .collect::<anyhow::Result<_>>()?,
         )
     } else if let Some(dict) = DictRef::from_value(value) {
@@ -661,8 +846,8 @@ pub(crate) fn snapshot(
             dict.iter()
                 .map(|(key, value)| {
                     Ok((
-                        snapshot(key, functions, depth + 1)?,
-                        snapshot(value, functions, depth + 1)?,
+                        snapshot(key, eval, depth + 1)?,
+                        snapshot(value, eval, depth + 1)?,
                     ))
                 })
                 .collect::<anyhow::Result<_>>()?,
@@ -931,6 +1116,64 @@ def f():
                 assert_eq!(repr_first(*value), expected, "{name}");
             }
         });
+    }
+
+    /// Functions of an evaluation whose module is not frozen yet: retained
+    /// by its heap across a garbage collection of the module evaluation,
+    /// the element struct itself given back, and owned by the frozen module
+    /// afterwards, the same objects (identity equality) on another heap.
+    #[test]
+    fn retained_functions_survive_gc_and_freeze() {
+        let globals = crate::starlark_types::analysis_test_globals();
+        let code = r#"
+f = lambda: "x"
+S = struct(f = f, t = (f,))
+D = depset([S, struct(f = f, t = (f,))])
+T = depset([(f, 1), (f, 1), (lambda: "y", 1)])
+N1 = len([[str(i)] for i in range(50000)])
+N2 = len([(i, str(i)) for i in range(50000)])
+L = D.to_list()
+R = "%s %s %s %s %s" % (len(L), L[0] == S, L[0].f(), L[0].t[0] == f, len(T.to_list()))
+"#;
+        let frozen = Module::with_temp_heap(|module| {
+            module.heap().enable_retention();
+            let ast = AstModule::parse("m.bzl", code.to_owned(), &Dialect::Standard).unwrap();
+            let mut evaluator = Evaluator::new(&module);
+            evaluator.eval_module(ast, &globals).unwrap();
+            drop(evaluator);
+            // The evaluation collected garbage with the depsets alive.
+            assert!(module.heap().peak_allocated_bytes() > module.heap().allocated_bytes());
+            module.freeze().unwrap()
+        });
+        assert_eq!(
+            frozen.get("R").unwrap().unpack_str(),
+            Some("1 True x True 2")
+        );
+        let after = r#"
+l = D.to_list()
+"%s %s %s %s %s %r" % (len(l), l[0] == S, l[0].f(), len(depset([S, struct(f = S.f, t = S.t)], transitive = [D]).to_list()), [x[0]() for x in T.to_list()], D)
+"#;
+        let ast = AstModule::parse("t.bzl", after.to_owned(), &Dialect::Standard).unwrap();
+        let result = Module::with_temp_heap(|module| {
+            for name in ["D", "S", "T"] {
+                let value = frozen.get(name).unwrap();
+                module.set(name, module.heap().access_owned_frozen_value(&value));
+            }
+            Evaluator::new(&module)
+                .eval_module(ast, &globals)
+                .map(|value| value.to_str())
+                .map_err(|e| e.to_string())
+        });
+        assert_eq!(
+            result,
+            Ok("1 True x 1 [\"x\", \"y\"] depset([struct(f = <function lambda from m.bzl>, t = (<function lambda from m.bzl>,))])".to_owned())
+        );
+        // Without retention (an evaluation that is not frozen), the gap.
+        let error = eval("depset([struct(f = lambda: 1)])").unwrap_err();
+        assert!(
+            error.contains("outside a rule, aspect, .bzl or BUILD evaluation is not implemented in the native profile"),
+            "{error}"
+        );
     }
 
     #[test]

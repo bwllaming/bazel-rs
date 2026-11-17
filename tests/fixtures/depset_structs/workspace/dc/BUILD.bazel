@@ -1,0 +1,21 @@
+load(":defs.bzl", "bad", "leaf", "report", "top_rule")
+
+leaf(name = "a")
+
+leaf(name = "b")
+
+report(name = "r_default", deps = [":a", ":b"])
+
+report(name = "r_post", deps = [":a", ":b"], order = "postorder")
+
+report(name = "r_pre", deps = [":b", ":a"], order = "preorder")
+
+report(name = "r_topo", deps = [":a", ":b"], order = "topological")
+
+top_rule(name = "t", dep = ":r_default")
+
+[bad(name = "bad_" + kind, kind = kind) for kind in [
+    "bound_method",
+    "builtin_element",
+    "dict_get",
+]]

@@ -19,6 +19,8 @@
 // Modified (bazel-rs): every module keeps the `DefInfo` of each `def` and `lambda`
 // it compiled, so a frozen function can be found again in a re-evaluated module
 // (crate::eval::PortableDef); see vendor provenance.
+// Modified (bazel-rs): freezing a module freezes the values its heap retained
+// (Heap::retain) and hands them to their handles; see vendor provenance.
 
 //! The environment, called "Module" in [this spec](
 //! https://github.com/bazelbuild/starlark/blob/master/spec.md)
@@ -567,6 +569,13 @@ impl<'v> Module<'v> {
         }
         let slots = slots.freeze(&freezer)?;
         let extra_value = extra_value.into_inner().freeze(&freezer)?;
+        // Modified (bazel-rs): the values the heap retained (Heap::retain),
+        // owned by the frozen heap once it exists.
+        let retained = heap
+            .take_retained()
+            .into_iter()
+            .map(|(value, handle)| Ok((value.freeze(&freezer)?, handle)))
+            .collect::<FreezeResult<Vec<_>>>()?;
         let stacks = if let Some(mode) = heap_profile_on_freeze.get() {
             // TODO(nga): retained heap profile does not store information about data
             //   allocated in frozen heap before freeze starts.
@@ -590,8 +599,14 @@ impl<'v> Module<'v> {
             frozen_def.post_freeze(frozen_module_ref, heap, freezer.heap);
         }
 
+        let frozen_heap = frozen_heap.into_ref_impl(name, Some(heap.peak_allocated_bytes()));
+        for (value, handle) in retained {
+            // SAFETY: the value was frozen on this frozen heap (or is a value
+            // of a heap it references).
+            handle.set_frozen(unsafe { OwnedFrozenValue::new(frozen_heap.dupe(), value) });
+        }
         Ok(FrozenModule {
-            heap: frozen_heap.into_ref_impl(name, Some(heap.peak_allocated_bytes())),
+            heap: frozen_heap,
             module: frozen_module_ref,
             extra_value,
             #[cfg(not(target_arch = "wasm32"))]
@@ -677,6 +692,8 @@ impl<'v> Module<'v> {
         }
 
         self.heap().trace_interner(tracer);
+        // Modified (bazel-rs): retained values are roots (Heap::retain).
+        self.heap().trace_retained(tracer);
     }
 
     /// Field that can be used for any purpose you want.

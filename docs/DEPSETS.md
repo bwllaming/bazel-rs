@@ -69,7 +69,8 @@ identity. So two equal-looking structs holding separately created depsets
 are both kept.
 
 Explicit gaps (Bazel accepts them): a frozen set inside an element, a
-closure or lambda, and any other value whose immutability is not modelled
+closure or lambda outside a rule, aspect, `.bzl` or BUILD evaluation (see
+"Functions inside elements" below), and any other value whose immutability is not modelled
 (provider constructors, built-in provider instances such as DefaultInfo,
 built-in functions inside a frozen list, ...): `a depset element containing
 ... is not implemented in the native profile`. Known approximations: native
@@ -104,6 +105,82 @@ value-stable where Bazel's is per-edge; the base target's own value, and
 every depset snapshot holding it, keeps the per-`ConfiguredTargetKey` N55
 identity above.
 
+## Functions inside elements (closures, lambdas, nested defs)
+
+StarlarkFunction.isImmutable is true for every Starlark function
+(`net/starlark/java/eval/StarlarkFunction.java:272-276`), so a depset
+element may hold closures: skylib's `DirectoryInfo`
+(`rules/directory/providers.bzl`, `_init_directory_info`) carries four
+lambdas capturing the struct of its fields, and rules_cc's `cc_args`
+(`cc/toolchains/args.bzl`) puts its dependencies' DirectoryInfos in a
+depset (OpenROAD). Equality is identity: StarlarkFunction.equals/hashCode
+compare the per-instantiation identity token (`:255-270`), so equal-looking
+structs with separately created lambdas are both kept and the same provider
+instance twice is one element.
+
+A depset is owned Rust data outside every Starlark heap, so its element
+snapshot must keep each function alive and reachable from any heap
+(`depset_items::FunctionItem`):
+
+- a **global def** of a loaded `.bzl` file keeps the frozen module that
+  owns it (the build's function registry, as before);
+- any other **frozen** function — a dependency's provider's closure, a
+  loaded module's lambda — is owned by a frozen heap that references every
+  frozen heap the evaluating heap references
+  (starlark::values::Heap::owned_frozen_value, docs/STARLARK_VENDOR.md): every
+  frozen value a heap reaches lives on one of those heaps, the invariant a
+  module freeze relies on, and the evaluation's own frozen module keeps the
+  same heaps alive anyway;
+- a function **of this evaluation**, not frozen yet (a lambda of the rule
+  implementation, a `.bzl` file's top-level lambda while it evaluates), is
+  retained by the evaluating heap (starlark::values::RetainedValue): a
+  garbage-collection root of a module evaluation, frozen with the module,
+  after which the handle owns the frozen function. A struct or provider
+  element holding such a function keeps the element object itself, retained
+  the same way (`StructItem::retained`): `to_list()` returns that very object
+  (Bazel's element), on the evaluating heap before the freeze and frozen
+  after it, instead of a copy on a frozen heap of its own, which could not
+  hold an unfrozen function. Only the heaps of evaluations that freeze their
+  module once they succeed retain: rule and aspect analyses, `.bzl` and
+  BUILD files (`Heap::enable_retention`); elsewhere such a function stays the
+  explicit gap. Before the freeze only the evaluating heap can reach the
+  depset — nothing carries a depset out of an evaluation but its frozen
+  module's values — so the retained value is always found.
+
+An item's identity is the frozen function's address — known for global and
+other frozen functions, and for a retained one once its module froze — or,
+before that freeze, its retention handle (one per function and heap). An
+unfrozen function is never the same object as a frozen one, and a handle
+resolves to the same function's frozen address after the freeze, so the
+equality relation is the same before and after; across the freeze a
+dependency's pre-freeze depset deduplicates against the same closures read
+from its frozen provider, as in Bazel. The order of unequal function items
+(their repr, then the identity) may change at the freeze; it orders only
+transient deduplication sets.
+
+`cc_internal.freeze` of a list holding a function of this evaluation that is
+not frozen yet stays an explicit gap: Bazel's shallow immutable copy holds
+the function, natively a frozen list cannot (rules_cc's cc_library
+`linkstamp`, whose LinkstampInfo wraps this analysis's private-API
+closures). Built-in functions and bound methods (`"x".upper`, `{}.get`,
+`len`) are mutable as in Bazel (StarlarkValue.isImmutable default):
+`depset elements must not be mutable values`.
+
+The analysis snapshot never stores depsets: a planned action holds expanded
+command-line strings and files (crate::command_line::Item), so no element
+function needs a portable form; nothing new is read during loading or
+analysis, so nothing new needs observing.
+
+Paired capture (genuine Bazel 9.3.1): `tests/fixtures/depset_structs/workspace/dc`,
+`closures_receipt.json`, `closures_expected.txt` (tests/depset_structs.rs
+`closures_lambdas_and_nested_defs_follow_bazel`): DirectoryInfo-shaped
+provider instances from dependencies in every order, `get`/`glob`/nested-def
+calls after `to_list()`, identity equality and `in`, distinct twins, a
+dependency's pre-freeze depset combined with its frozen struct and closure,
+this implementation's closures, a consumer reading them after the freeze,
+struct method values, `.bzl` top-level depsets across the module's garbage
+collections, and the mutable built-in/bound-method errors.
+
 ## Frozen lists and dicts inside elements (N49b)
 
 A frozen list or dict is immutable (`Starlark.isImmutable`), so it may sit
@@ -134,7 +211,8 @@ shallow, so an element without a native frozen copy fails explicitly
 instead of yielding a mutable copy: a mutable value (`cc_internal.freeze of
 a list containing a mutable value of type 'list' (Bazel's shallow immutable
 copy keeps it mutable) is not implemented in the native profile`), a
-closure, or a value whose immutability is not modelled. A configured target
+closure of this evaluation that is not frozen yet (see above), or a value
+whose immutability is not modelled. A configured target
 keeps its identity through the copy (N55: the snapshot shares the
 configured target's one allocation), so a list or dict holding a Target
 freezes like any other immutable element. On this base every `freeze`

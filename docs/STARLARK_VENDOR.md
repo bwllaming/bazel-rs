@@ -627,3 +627,36 @@ fragments followed by a fresh chunk of a few KiB. The provenance records
 the three files' hashes. The same update records the current hash of
 `src/stdlib/funcs/other.rs`, which `File.tree_relative_path` changed earlier
 without updating it.
+
+## Values held outside the heap (depset elements holding functions)
+
+bazel-rs depsets are owned Rust data outside every heap; an element may hold
+a closure or lambda (docs/DEPSETS.md "Functions inside elements"). Four
+vendored files carry the support (each with a header notice):
+
+* `src/values/layout/heap/heap_type.rs`:
+  * `Heap::owned_frozen_value(frozen)`: an `OwnedFrozenValue` of a frozen
+    value the heap reaches, owned by a frozen heap that references every
+    frozen heap this heap references (one such heap per heap, made again
+    only when the heap references another one). Its soundness is the
+    invariant `access_owned_frozen_value` maintains and `Module::freeze`
+    relies on (the frozen module heap references the same heaps).
+  * `RetainedValue` with `Heap::enable_retention`, `Heap::retain(value)` and
+    `Heap::retained_value(&handle)`: a heap with retention enabled keeps a
+    retained value as a root (one handle per value identity and heap);
+    `retained_value` gives it back on that heap (each heap has a unique id;
+    a stale handle never matches another heap), or anywhere the frozen value
+    once the module froze. `Heap::retain` returns `None` unless enabled. The
+    roots are traced by a garbage collection (`trace_retained`, which also
+    re-indexes them by their moved identity).
+* `src/environment/modules.rs`: `Module::trace` traces the retained roots;
+  `Module::freeze` freezes them with the module's slots (before the module
+  data, so a retained `def` is post-frozen like any other) and hands each
+  handle its `OwnedFrozenValue` on the frozen module heap.
+* `src/values/layout/value.rs`: `Value::identity_address`, the identity
+  pointer as an integer (equal exactly when `ptr_eq`, while alive).
+* `src/values.rs`: the `RetainedValue` re-export.
+
+A heap without retention behaves exactly as before; a module freeze with no
+retained values does no extra work.
+

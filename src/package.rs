@@ -2767,6 +2767,9 @@ fn evaluate_at(
     // Canonical label texts parse once per package evaluation.
     let parse_memo = crate::label::package_parse_memo();
     let evaluated = Module::with_temp_heap(|module| {
+        // Depset elements may hold this module's functions until it freezes
+        // (crate::depset_items::FunctionItem::retained).
+        module.heap().enable_retention();
         let mut evaluator = Evaluator::new(&module);
         evaluator.extra = Some(&declarations);
         evaluator.set_loader(&loader);

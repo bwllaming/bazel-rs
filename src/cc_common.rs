@@ -706,8 +706,6 @@ pub(crate) fn freeze<'v>(
 ) -> starlark::Result<Value<'v>> {
     use starlark::values::dict::DictRef;
     let heap = eval.heap();
-    let functions =
-        |value: Value<'_>| crate::analysis_runtime::owned_top_level_function(eval, value);
     let kind = value.get_type();
     let unsupported = |what: String| {
         starlark::Error::new_other(anyhow::anyhow!(
@@ -716,8 +714,7 @@ pub(crate) fn freeze<'v>(
     };
     if let Some(dict) = DictRef::from_value(value) {
         let flat = dict.iter().flat_map(|(k, v)| [k, v]).collect::<Vec<_>>();
-        return crate::depset_items::frozen_copy(heap, &flat, true, &functions)
-            .map_err(unsupported);
+        return crate::depset_items::frozen_copy(eval, &flat, true).map_err(unsupported);
     }
     if matches!(kind, "list" | "tuple" | "range" | "set") {
         let items: Vec<Value<'v>> = value.iterate(heap)?.collect();
@@ -725,8 +722,7 @@ pub(crate) fn freeze<'v>(
             // StarlarkList.immutableCopyOf of nothing: the shared empty list.
             return Ok(crate::subrule_fragments::empty_list());
         }
-        return crate::depset_items::frozen_copy(heap, &items, false, &functions)
-            .map_err(unsupported);
+        return crate::depset_items::frozen_copy(eval, &items, false).map_err(unsupported);
     }
     Ok(value)
 }
@@ -997,7 +993,7 @@ _li = depset([struct(user_link_flags = _flags, opts = _opts, libraries = cc_inte
             ),
             (
                 "cc_internal.freeze([lambda: 1])",
-                "cc_internal.freeze of a list containing a function that is not a global def of a loaded .bzl file is not implemented in the native profile",
+                "cc_internal.freeze of a list containing a function that is not a global def of a loaded .bzl file, outside a rule, aspect, .bzl or BUILD evaluation is not implemented in the native profile",
             ),
             (
                 // N60: the compile action factory needs the analysis context

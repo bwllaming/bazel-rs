@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified (bazel-rs): re-exports `RetainedValue`; see vendor provenance.
+
 //! Defines a runtime Starlark value ([`Value`]) and traits for defining custom values ([`StarlarkValue`]).
 //!
 //! This module contains code for working with Starlark values:
@@ -64,6 +66,7 @@ pub use crate::values::layout::heap::heap_type::FrozenHeap;
 pub use crate::values::layout::heap::heap_type::FrozenHeapName;
 pub use crate::values::layout::heap::heap_type::FrozenHeapRef;
 pub use crate::values::layout::heap::heap_type::Heap;
+pub use crate::values::layout::heap::heap_type::RetainedValue;
 pub use crate::values::layout::heap::heap_type::SingletonFrozenHeapName;
 pub use crate::values::layout::heap::heap_type::Tracer;
 pub use crate::values::layout::heap::send::DynStarlark;

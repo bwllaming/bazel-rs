@@ -2250,6 +2250,9 @@ fn analyze_aspect_inner(
         analysis_test: false,
     };
     Module::with_temp_heap(|module| -> anyhow::Result<_> {
+        // Depset elements may hold this analysis's functions until the
+        // module freezes (crate::depset_items::FunctionItem::retained).
+        module.heap().enable_retention();
         let ctx = make_aspect_ctx(application, &context, module.heap(), aspect_surface.clone())?;
         let mut eval = Evaluator::new(&module);
         eval.set_max_callstack_size(128)
@@ -2971,6 +2974,9 @@ fn analyze_inner(
     }
     let (files, providers, provider_keys, target_runfiles) = Module::with_temp_heap(
         |module| -> anyhow::Result<_> {
+            // Depset elements may hold this analysis's functions until the
+            // module freezes (crate::depset_items::FunctionItem::retained).
+            module.heap().enable_retention();
             let ctx = make_ctx(rule, &context, dependencies, module.heap(), surface.clone())?;
             // Bazel's implicit DefaultInfo includes only predeclared outputs.
             let predeclared = context.declared.borrow().clone();
