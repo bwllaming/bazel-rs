@@ -52,6 +52,7 @@ tests/fixtures/cpp_flag_options/workspace
 tests/fixtures/cquery_artifacts/workspace
 tests/fixtures/cquery_aspect_edges/workspace
 tests/fixtures/cquery_fragments/workspace
+tests/fixtures/cquery_main_platform/workspace
 tests/fixtures/cquery_output/workspace
 tests/fixtures/cquery_proto/workspace
 tests/fixtures/custom
