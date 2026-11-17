@@ -166,6 +166,28 @@ pub(crate) trait Phase1: Host {
             }
             self.active_pop();
         }
+        // `rule(cfg = config.none())` (NoConfigTransition: a patch to the
+        // empty options, RuleTransitionApplier): the target requested in
+        // any other configuration is the target analyzed in the no-config
+        // one, where the transition is the identity.
+        if key.apply_rule_transition
+            && rule
+                .custom
+                .as_ref()
+                .is_some_and(|custom| custom.declaration.no_config_transition)
+        {
+            let no_config = self.intern_no_config();
+            if no_config != config {
+                let owner = ConfiguredTargetKey::new(rule.label.clone(), no_config);
+                self.active_push(&key);
+                self.analyze_key(&rule.label, owner.config, owner.apply_rule_transition)?;
+                self.active_pop();
+                let node = self.configured_node(&owner).unwrap_or_default();
+                self.publish_node(&key, node);
+                self.record_delegation(key, owner);
+                return Ok(());
+            }
+        }
         let configuration = self.configuration(config);
         let no_config = configuration.native.no_config;
         self.active_push(&key);

@@ -222,9 +222,10 @@ cfg="target")` are analyzed since N23a (docs/RUNFILES.md).
 A target fails analysis with the message above if it uses any of these:
 
 * rule level: `analysis_test=True`, `_skylark_testable=True`,
-  `dependency_resolution_rule=True`, `cfg =
-  config.none()` (a Starlark `transition()` is applied since N18c,
-  docs/CONFIGURATION.md) (`outputs` implicit outputs are analyzed since
+  `dependency_resolution_rule=True` (a Starlark `transition()` is applied
+  since N18c, docs/CONFIGURATION.md; `cfg = config.none()` analyzes the
+  target in the no-config configuration, genuine capture
+  tests/fixtures/rule_cfg_none) (`outputs` implicit outputs are analyzed since
   N46, docs/IMPLICIT_OUTPUTS.md; `output_to_genfiles=True` is analyzed: with
   `--incompatible_merge_genfiles_directory`, default true and the only
   supported value, its outputs stay in the bin root, genuine capture

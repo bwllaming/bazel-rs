@@ -1,0 +1,15 @@
+load(":defs.bzl", "leaf", "none_act", "none_rule", "use")
+
+leaf(name = "files", srcs = glob(["hdr/**"]))
+
+filegroup(name = "src_dir", srcs = ["hdr"])
+
+none_rule(name = "n", dep = ":files", srcs = ":src_dir")
+
+none_act(name = "na")
+
+use(name = "u", dep = ":n")
+
+use(name = "u2", dep = ":n")
+
+use(name = "u3", dep = ":na")

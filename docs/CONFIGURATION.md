@@ -345,8 +345,13 @@ Code: `src/config_registry.rs`, `src/engine.rs`, `src/analysis.rs`,
   and every dependency edge (attributes, select() keys, toolchain types and
   implementations, platforms, registered toolchains) keeps its parent's
   configuration, except exec-transition edges (N18b, below) and Starlark
-  rule/attribute transitions (N18c, below). `config.none()` (rule or
-  attribute) and `analysis_test_transition` keep failing explicitly.
+  rule/attribute transitions (N18c, below). A rule-level `config.none()`
+  (NoConfigTransition) analyzes the target in the no-config configuration
+  (`fastbuild-noconfig`, its dependencies following it; delegated like an
+  incoming Starlark rule transition, genuine capture
+  tests/fixtures/rule_cfg_none). An attribute-level `config.none()` and
+  `analysis_test_transition` keep failing explicitly; so does select() in a
+  no-config target.
 * **Action identities.** Action ids feed the action cache key
   (`src/action.rs`). They stay `LABEL#N` (`LABEL` for genrules) in the
   top-level configuration and become `LABEL[CONFIG8]#N` (the first eight hex
@@ -986,8 +991,8 @@ confirmed by the paired capture (`D10/gap_order`, `T10`):
 
 1. Load-time target checks (namespace, visibility of the target itself).
    A rule `cfg` transition is applied first: it decides the configuration
-   that everything else is evaluated in (N18c below; `config.none()` fails
-   explicitly here).
+   that everything else is evaluated in (N18c below; `config.none()`
+   delegates to the no-config configuration here).
 2. **Configuration conditions** (`ConfigConditionsProducer.java:91-172`): every
    `$config_dependencies` label (select keys of every attribute in rule-class
    attribute order, deduplicated, without `//conditions:default`;
@@ -1479,7 +1484,7 @@ inputs/outputs. Query records declarations without applying MODULE aliases.
   `--incompatible_exclude_starlark_flags_from_exec_config`. Option names are loaded with the native target-pattern subset
   (`//pkg:all`, `//pkg/...` must then match exactly one rule: `user-defined
   flags must reference exactly one target`).
-* `config.none()` and
+* attribute-level `config.none()` and
   `analysis_test_transition`, `transition.and_then`, Starlark
   transitions on native options outside the modelled ones (writing
   `objccopt`, `compiler`, `grte_top`, `--features`, `action_env` or any

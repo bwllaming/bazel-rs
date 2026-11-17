@@ -432,6 +432,10 @@ pub struct InvocationDeclaration {
     /// A rule `cfg` transition: it decides the configuration the target and
     /// its select() conditions are analyzed in, so it fails first.
     pub transition_gaps: Vec<String>,
+    /// `rule(cfg = config.none())` (NoConfigTransition): the target is
+    /// analyzed in the no-config configuration, whatever configuration it
+    /// is requested in (crate::engine's rule-transition delegation).
+    pub no_config_transition: bool,
     /// Rule-level execution platform features the native toolchain
     /// resolution does not model (exec groups), which Bazel runs after the
     /// select() conditions and before attribute validation
@@ -1936,6 +1940,8 @@ mod values {
                     skylark_testable: self.declaration.skylark_testable,
                     analysis_test: self.declaration.analysis_test,
                     transition_gaps,
+                    no_config_transition: self.declaration.cfg
+                        == crate::rule_declarations::Cfg::NoConfig,
                     toolchain_gaps,
                     toolchain_types: self.declaration.toolchains.clone(),
                     fragments: self.declaration.fragments.clone(),
@@ -2053,10 +2059,14 @@ impl RuleDeclaration {
         // rule(toolchains=...), rule(exec_compatible_with=...) and
         // rule(exec_groups=...) are resolved natively (crate::toolchains,
         // docs/TOOLCHAINS.md, docs/EXEC_GROUPS.md). A Starlark rule
-        // transition is modelled (crate::starlark_transitions); config.none()
-        // is not.
+        // transition is modelled (crate::starlark_transitions), and so is
+        // config.none() (the no-config configuration, NoConfigTransition).
         if !self.cfg.is_target()
-            && !matches!(self.cfg, crate::rule_declarations::Cfg::Starlark { .. })
+            && !matches!(
+                self.cfg,
+                crate::rule_declarations::Cfg::Starlark { .. }
+                    | crate::rule_declarations::Cfg::NoConfig
+            )
         {
             transition.push(format!(
                 "rule(cfg={}) (configuration transition)",

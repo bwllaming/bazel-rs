@@ -1,0 +1,77 @@
+{
+ "schema": "rule-cfg-none-reference-receipt/v1",
+ "fixture": "rule_cfg_none",
+ "purpose": "rule(cfg = config.none()) (NoConfigTransition, StarlarkConfig.none): the target is analyzed once, in the no-config configuration (output root bazel-out/fastbuild-noconfig, aquery `Configuration: fastbuild-noconfig`), whatever configuration requests it; its label dependencies follow it there. Motivation: toolchains_llvm's _headers_directory (OSS corpus: OpenROAD).",
+ "reference": {
+  "binary": "bazel-9.3.1-linux-x86_64",
+  "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch>",
+  "command_flags": "<command> --noshow_progress <argv[1:]>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8; fresh fixture copy per case"
+ },
+ "normalization": "<WS> = the workspace copy. stdout = the query output lines (aquery: only the `  Target:`, `  Configuration:` and `  Outputs:` lines, in order). debug_sorted = the analysis DEBUG lines without the `DEBUG: <file>:L:C: ` prefix, sorted; errors = the `ERROR: <WS>...` lines.",
+ "script": {
+  "path": "/tmp/opencode/w/ort-cn/cap/capture.py (not committed)",
+  "sha256": "e8370f47c1c16f47e61584448aabb7748d7ca61049fa18f1bd5c83f7c9029d2a"
+ },
+ "fixture_files_sha256": {
+  "BUILD.bazel": "6fb1c87236b54beb0c05a7c8e20aaae885e634300aab45a211b93d69a5982101",
+  "MODULE.bazel": "9f2ed39fbeca8f84b66b57e613e4e1fef0b16ae11c50e1219a7c9789c7d2c2f2",
+  "pkg/BUILD.bazel": "2658b3f1b0a4fa18c35f606de829e4c72bde4421b4945ca501e3e3342a867125",
+  "pkg/defs.bzl": "7d1665231f67e3ed8dadf866f230a205d531fff49c2d8c01db9e58521401759d",
+  "pkg/hdr/inc/a.h": "386593f1475dc210d45a5f3d4b6bb11c065fc6fe2e08ebdd00ab4cf3a0848744",
+  "pkg/hdr/inc/b.h": "9f0576e20ec48d16fa8aac96a27e3c83a0b019fc9bc7abd1accd44287c157381"
+ },
+ "cases": {
+  "files": {
+   "argv": [
+    "cquery",
+    "--output=files",
+    "--platforms=//:p",
+    "//pkg:n + //pkg:na + //pkg:u + //pkg:u2 + //pkg:u3"
+   ],
+   "genuine": {
+    "exit": 0,
+    "debug_sorted": [
+     "ACT na bazel-out/fastbuild-noconfig/bin",
+     "LEAF files bazel-out/fastbuild-noconfig/bin",
+     "NONE n bazel-out/fastbuild-noconfig/bin pkg/hdr/inc/a.h pkg/hdr/inc/b.h",
+     "USE u bazel-out/k8-fastbuild/bin @@//pkg:files pkg/hdr/inc/a.h pkg/hdr/inc/b.h pkg/hdr",
+     "USE u2 bazel-out/k8-fastbuild/bin @@//pkg:files pkg/hdr/inc/a.h pkg/hdr/inc/b.h pkg/hdr",
+     "USE u3 bazel-out/k8-fastbuild/bin bazel-out/fastbuild-noconfig/bin/pkg/na.out"
+    ],
+    "stdout": [
+     "pkg/hdr",
+     "bazel-out/fastbuild-noconfig/bin/pkg/na.out",
+     "bazel-out/k8-fastbuild/bin/pkg/u.txt",
+     "bazel-out/k8-fastbuild/bin/pkg/u2.txt",
+     "bazel-out/k8-fastbuild/bin/pkg/u3.txt"
+    ],
+    "errors": []
+   }
+  },
+  "aquery": {
+   "argv": [
+    "aquery",
+    "--platforms=//:p",
+    "//pkg:na + //pkg:u3"
+   ],
+   "genuine": {
+    "exit": 0,
+    "debug_sorted": [
+     "ACT na bazel-out/fastbuild-noconfig/bin",
+     "USE u3 bazel-out/k8-fastbuild/bin bazel-out/fastbuild-noconfig/bin/pkg/na.out"
+    ],
+    "stdout": [
+     "  Target: //pkg:na",
+     "  Configuration: fastbuild-noconfig",
+     "  Outputs: [bazel-out/fastbuild-noconfig/bin/pkg/na.out]",
+     "  Target: //pkg:u3",
+     "  Configuration: k8-fastbuild",
+     "  Outputs: [bazel-out/k8-fastbuild/bin/pkg/u3.txt]"
+    ],
+    "errors": []
+   }
+  }
+ }
+}
