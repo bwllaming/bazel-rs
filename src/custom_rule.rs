@@ -2043,9 +2043,10 @@ impl RuleDeclaration {
         // rule(_skylark_testable=True) (bazel_skylib unittest.make) is
         // analyzed natively; only ctx.created_actions() of such a rule (the
         // Actions provider) fails explicitly (crate::analysis_ctx_surface).
-        if self.output_to_genfiles {
-            features.push("rule(output_to_genfiles=True)".to_owned());
-        }
+        // rule(output_to_genfiles=True) puts outputs in the genfiles root,
+        // which --incompatible_merge_genfiles_directory (default true; the
+        // only supported value) folds into the bin root
+        // (BuildConfigurationValue.java:430-434): outputs stay in bin.
         if self.dependency_resolution_rule {
             features.push("rule(dependency_resolution_rule=True)".to_owned());
         }

@@ -1,0 +1,44 @@
+{
+ "schema": "output-to-genfiles-reference-receipt/v1",
+ "fixture": "output_to_genfiles",
+ "purpose": "rule(output_to_genfiles=True): with --incompatible_merge_genfiles_directory (default true) the genfiles root is the bin root (BuildConfigurationValue.java:430-434), so declared and predeclared outputs and ctx.genfiles_dir are in bazel-out/<cfg>/bin. Motivation: capnproto's capnp_gen (OSS corpus B20).",
+ "reference": {
+  "binary": "bazel-9.3.1-linux-x86_64",
+  "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch>",
+  "command_flags": "<command> --noshow_progress <argv[1:]>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8; fresh fixture copy per case"
+ },
+ "normalization": "<WS> = the workspace copy. stdout = the query output lines. debug_sorted = the analysis DEBUG lines without the `DEBUG: <file>:L:C: ` prefix, sorted ; errors = the `ERROR: <WS>...` lines.",
+ "script": {
+  "path": "/tmp/opencode/w/cs-gf/capture.py (not committed)",
+  "sha256": "db699b5013dedd89fb341e15e3b517a6f656637ef145df50cb0ba87ba6cadb37"
+ },
+ "fixture_files_sha256": {
+  "BUILD.bazel": "6fb1c87236b54beb0c05a7c8e20aaae885e634300aab45a211b93d69a5982101",
+  "MODULE.bazel": "ba6d3a0cf42b56a41d8a7cd5a8648dce84f6b2baaf3f9fcd38ae89a0423616cf",
+  "pkg/BUILD.bazel": "86cb4796f0aa4f8f90b2ab70395b63b64353718bc1f5b8279c775e5c87b997ae",
+  "pkg/defs.bzl": "365c06c620299a57e12e270c8699314b355d2ff5fa8ea59d9538b3536bddcac8"
+ },
+ "cases": {
+  "files": {
+   "argv": [
+    "cquery",
+    "--output=files",
+    "--platforms=//:p",
+    "//pkg:g"
+   ],
+   "genuine": {
+    "exit": 0,
+    "debug_sorted": [
+     "ROOTS g bazel-out/k8-fastbuild/bin bazel-out/k8-fastbuild/bin bazel-out/k8-fastbuild/bin"
+    ],
+    "stdout": [
+     "bazel-out/k8-fastbuild/bin/pkg/g.txt",
+     "bazel-out/k8-fastbuild/bin/pkg/g.out"
+    ],
+    "errors": []
+   }
+  }
+ }
+}

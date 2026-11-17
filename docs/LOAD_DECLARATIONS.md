@@ -221,11 +221,14 @@ cfg="target")` are analyzed since N23a (docs/RUNFILES.md).
 
 A target fails analysis with the message above if it uses any of these:
 
-* rule level: `analysis_test=True`, `_skylark_testable=True`, `output_to_genfiles=True`,
+* rule level: `analysis_test=True`, `_skylark_testable=True`,
   `dependency_resolution_rule=True`, `cfg =
   config.none()` (a Starlark `transition()` is applied since N18c,
   docs/CONFIGURATION.md) (`outputs` implicit outputs are analyzed since
-  N46, docs/IMPLICIT_OUTPUTS.md);
+  N46, docs/IMPLICIT_OUTPUTS.md; `output_to_genfiles=True` is analyzed: with
+  `--incompatible_merge_genfiles_directory`, default true and the only
+  supported value, its outputs stay in the bin root, genuine capture
+  tests/fixtures/output_to_genfiles);
 * attribute level, when the attribute's resolved value (explicit, default or
   chosen `select()` branch, docs/CONFIGURATION.md) is non-empty:
   `cfg` other than target, exec and a Starlark `transition()` (N18c:
