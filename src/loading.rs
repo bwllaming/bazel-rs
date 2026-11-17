@@ -979,6 +979,22 @@ fn dependencies(
     ast.loads()
         .into_iter()
         .map(|load| {
+            // BzlLoadFunction (getLoadLabels, then the load's package
+            // lookup): an apparent repository the file's repository does not
+            // see fails the load like a missing package (PackageLookupFunction,
+            // RepositoryFetchFunction.java:149-153), e.g. Bazel 9's removed
+            // `@local_config_platform`.
+            if let Ok(deferred) =
+                repositories.parse_deferred(load.module_id, &package.repository, &package.package)
+                && let Some(unresolvable) =
+                    crate::label::unresolvable_repository(&deferred.repository)
+            {
+                return Err(format!(
+                    "Unable to find package for {deferred}: The repository '@@{}' could not be resolved: {}.",
+                    deferred.repository,
+                    unresolvable.not_visible()
+                ));
+            }
             let label = repositories
                 .parse(load.module_id, &package.repository, &package.package)
                 .map_err(|e| {
@@ -3364,7 +3380,7 @@ scalar = 42
         external.file("defs.bzl", "load('@alias//:defs.bzl', 'public')\n");
         main.error(
             "load('@alias//:defs.bzl', 'public')",
-            "unknown apparent repository",
+            "Unable to find package for @@[unknown repo 'alias' requested from @@dep+]//:defs.bzl: The repository '@@[unknown repo 'alias' requested from @@dep+]' could not be resolved: No repository visible as '@alias' from repository '@@dep+'.",
         );
     }
 
