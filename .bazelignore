@@ -46,6 +46,7 @@ tests/fixtures/config_flag_options/workspace
 tests/fixtures/config_setting_features/workspace
 tests/fixtures/console_action_output/workspace
 tests/fixtures/console_text/workspace
+tests/fixtures/corpus_options/workspace
 tests/fixtures/coverage_command/workspace
 tests/fixtures/cpp_flag_options/workspace
 tests/fixtures/cquery_artifacts/workspace
@@ -156,4 +157,3 @@ tests/fixtures/validation_actions
 tests/fixtures/value_options/workspace
 tests/fixtures/workspace_status/workspace
 tests/fixtures/xcode_dotted/workspace
-tests/fixtures/corpus_options/workspace
