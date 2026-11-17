@@ -1,0 +1,3 @@
+load("//private:defs.bzl", "private_init")
+
+private_init(name = "t")

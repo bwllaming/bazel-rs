@@ -2353,19 +2353,34 @@ fn builtin_gaps(builtin: &crate::native_rules::NativeTarget) -> Vec<String> {
 
 /// ALLOWLIST_RULE_EXTENSION_API_EXPERIMENTAL (StarlarkRuleClassFunctions.java:249-253)
 /// with BuiltinRestriction.AllowlistEntry.allows (BuiltinRestriction.java:124-150).
-fn private_initializer_allowed(definition: &crate::label::Label) -> bool {
-    if definition.repository.is_empty() {
-        [
-            "initializer_testing/builtins",
-            "third_party/bazel_rules/rules_cc",
-        ]
-        .iter()
-        .any(|prefix| {
-            definition.package == *prefix || definition.package.starts_with(&format!("{prefix}/"))
-        })
-    } else {
-        definition.repository.starts_with("rules_cc+") || definition.repository == "_builtins"
+fn private_initializer_allowed(
+    definition: &crate::label::Label,
+    eval: &Evaluator<'_, '_, '_>,
+) -> bool {
+    // ALLOWLIST_RULE_EXTENSION_API_EXPERIMENTAL (StarlarkRuleClassFunctions
+    // .java:249-253) through BuiltinRestriction.failIfLabelOutsideAllowlist
+    // with the main repository mapping (:1848-1853): the main repository is
+    // `rules_cc` when the root module is rules_cc (reposMatch,
+    // packages/BuiltinRestriction.java:126-140).
+    if definition.repository == "_builtins" {
+        return true;
     }
+    let repositories = crate::loading::repositories(eval);
+    let main_mapping_target = |apparent: &str| {
+        repositories
+            .as_ref()
+            .and_then(|repositories| repositories.mapping("").ok())
+            .and_then(|mapping| mapping.get(apparent).cloned())
+    };
+    [
+        ("", "initializer_testing/builtins"),
+        ("", "third_party/bazel_rules/rules_cc"),
+        ("rules_cc", ""),
+    ]
+    .iter()
+    .any(|(apparent, prefix)| {
+        crate::cc_common::allowlist_allows(definition, main_mapping_target, apparent, prefix)
+    })
 }
 
 /// Lift a BUILD value like BuildType.copyAndLiftStarlarkValue: label strings
@@ -2522,7 +2537,7 @@ fn run_initializer<'v>(
         if !crate::rule_declarations::is_identifier(key) {
             bail!("attribute name `{key}` is not a valid identifier.");
         }
-        if key.starts_with('_') && !private_initializer_allowed(definition) {
+        if key.starts_with('_') && !private_initializer_allowed(definition, eval) {
             bail!(
                 "file '{}' cannot use private API",
                 crate::rule_declarations::canonical_form(definition)

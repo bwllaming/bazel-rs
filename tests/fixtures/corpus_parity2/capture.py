@@ -24,7 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BUILD = ['--platforms=//:p', '--host_platform=//:p']
 TESTONLY = '--incompatible_check_testonly_for_output_files'
 
-# name: (startup, command, flags, targets, stderr patterns, outputs)
+# name: (startup, command, flags, targets, stderr patterns, outputs[, workspace])
 CASES = {
     'testonly_output_default': (
         [], 'build', BUILD, ['//testonly:use_output', '//testonly:use_alias'], [],
@@ -38,6 +38,10 @@ CASES = {
     'testonly_output_testonly_consumer': (
         [], 'build', BUILD + [TESTONLY], ['//testonly:use_test_output'], [],
         ['use_test_output.txt']),
+    'rules_cc_main_private_initializer': (
+        [], 'build', BUILD, ['//use:t'], [], ['t.txt'], 'rules_cc_main'),
+    'other_main_private_initializer': (
+        [], 'build', BUILD, ['//use:t'], [r'cannot use private API'], [], 'other_main'),
 }
 
 TIME = re.compile(r'^\(\d\d:\d\d:\d\d\) ')
@@ -51,11 +55,12 @@ def main():
     scratch = os.path.abspath(args.scratch)
     shutil.rmtree(scratch, ignore_errors=True)
     cases = {}
-    for index, (name, (startup, command, flags, targets, patterns, outputs)) in enumerate(
-            CASES.items()):
+    for index, (name, case) in enumerate(CASES.items()):
+        startup, command, flags, targets, patterns, outputs = case[:6]
+        source = case[6] if len(case) > 6 else 'workspace'
         root = os.path.join(scratch, str(index))
         workspace = os.path.join(root, 'ws')
-        shutil.copytree(os.path.join(HERE, 'workspace'), workspace)
+        shutil.copytree(os.path.join(HERE, source), workspace)
         home = os.path.join(root, 'home')
         os.makedirs(home)
         env = dict(PATH='/usr/bin:/bin', HOME=home, TMPDIR=home)
@@ -75,7 +80,8 @@ def main():
                 if file in outputs:
                     path = os.path.join(top, file)
                     files[os.path.relpath(path, out)] = open(path).read()
-        cases[name] = dict(startup=startup, command=command, flags=flags, targets=targets,
+        cases[name] = dict(workspace=source, startup=startup, command=command, flags=flags,
+                           targets=targets,
                            exit=result.returncode, stdout=result.stdout, stderr=matched,
                            outputs=files)
     digest = hashlib.sha256(open(args.bazel, 'rb').read()).hexdigest()

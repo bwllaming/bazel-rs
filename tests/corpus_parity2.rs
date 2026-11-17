@@ -121,7 +121,10 @@ fn corpus_parity2_matches_genuine() {
     for (name, case) in reference["cases"].as_object().unwrap() {
         let temp = tempfile::tempdir_in(test_temp::root()).unwrap();
         let workspace = temp.path().join("ws");
-        copy(&fixture().join("workspace"), &workspace);
+        copy(
+            &fixture().join(case["workspace"].as_str().unwrap()),
+            &workspace,
+        );
         for directory in ["home", "tmp"] {
             fs::create_dir(workspace.join(directory)).unwrap();
         }

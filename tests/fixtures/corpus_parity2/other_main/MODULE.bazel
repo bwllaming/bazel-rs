@@ -1,0 +1,2 @@
+# The same rule in a main module not named rules_cc: private API.
+module(name = "not_rules_cc")

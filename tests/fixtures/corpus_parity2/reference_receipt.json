@@ -1,6 +1,45 @@
 {
  "bazel": "9.3.1",
  "cases": {
+  "other_main_private_initializer": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "Error in private_init: file '//private:defs.bzl' cannot use private API",
+     "pattern": "cannot use private API"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//use:t"
+   ],
+   "workspace": "other_main"
+  },
+  "rules_cc_main_private_initializer": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/use/t.txt": "set by the initializer of t"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//use:t"
+   ],
+   "workspace": "rules_cc_main"
+  },
   "testonly_output_alias_checked": {
    "command": "build",
    "exit": 1,
@@ -20,7 +59,8 @@
    "stdout": "",
    "targets": [
     "//testonly:use_alias"
-   ]
+   ],
+   "workspace": "workspace"
   },
   "testonly_output_checked": {
    "command": "build",
@@ -41,7 +81,8 @@
    "stdout": "",
    "targets": [
     "//testonly:use_output"
-   ]
+   ],
+   "workspace": "workspace"
   },
   "testonly_output_default": {
    "command": "build",
@@ -60,7 +101,8 @@
    "targets": [
     "//testonly:use_output",
     "//testonly:use_alias"
-   ]
+   ],
+   "workspace": "workspace"
   },
   "testonly_output_testonly_consumer": {
    "command": "build",
@@ -78,7 +120,8 @@
    "stdout": "",
    "targets": [
     "//testonly:use_test_output"
-   ]
+   ],
+   "workspace": "workspace"
   }
  },
  "elf_sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c"

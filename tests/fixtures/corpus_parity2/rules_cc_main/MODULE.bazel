@@ -1,0 +1,3 @@
+# B29: the root module is rules_cc, so its main repository passes the
+# private-API allowlists that name rules_cc.
+module(name = "rules_cc")
