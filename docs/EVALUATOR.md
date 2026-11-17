@@ -1104,7 +1104,13 @@ Branch `eval-s2-load` (rebased on main `f397e89a`, eval-s2-pass1 merged).
   `LoadPrints`; a difference is the internal error, `bodies::rerun_mismatch`).
   A parked attempt's events stay visible to pass 1 (`Store::carry`) until
   its rerun replaces them; an attempt the pool leaves to the sequential
-  pass (a swallowed sentinel, a flush) keeps only its rerun prefix.
+  pass (a swallowed sentinel, a flush) keeps only its rerun prefix. So
+  does a pool attempt that swallowed a sentinel and then stopped on a
+  `Missing`: its events after the sentinel depended on it. For example, a
+  cquery genrule takes its `$genrule_setup` edge only once `@bazel_tools`
+  has a root. Before this, its rerun failed with "re-emits MemoUse"
+  (`cquery --platforms=` a main-repository platform,
+  tests/cquery_main_platform.rs).
   `active_ct1` is empty on pool threads. `Ct2` is coordinator-only
   (help-first leaves such nodes to the coordinator); memo values are
   published by the linearizer on the coordinator. Each pool round boosts

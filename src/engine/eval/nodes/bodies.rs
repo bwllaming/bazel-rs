@@ -856,6 +856,19 @@ impl Bodies for Phase1Bodies<'_, '_> {
                 });
                 Err(Missing::Repo(INLINE.to_owned()))
             }
+            Err(missing) if raised && !matches!(key, NodeKey::Pkg(_)) => {
+                // Stopped by a `Missing` after a swallowed sentinel: what
+                // it emitted after the sentinel (where is not known) is not
+                // its rerun's either (a cquery genrule's `$genrule_setup`
+                // edge depends on the swallowed `@bazel_tools` root), so
+                // it keeps only a rerun's re-emitted prefix too.
+                with_running(|running| {
+                    if let Some(top) = running.last_mut() {
+                        top.missing_at = Some(top.replay);
+                    }
+                });
+                Err(missing)
+            }
             result => result,
         }
     }

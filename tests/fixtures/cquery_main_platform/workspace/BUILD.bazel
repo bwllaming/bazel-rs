@@ -1,0 +1,14 @@
+platform(name = "p")
+
+genrule(
+    name = "tool",
+    outs = ["tool.sh"],
+    cmd = "echo > $@",
+)
+
+genrule(
+    name = "gt",
+    outs = ["gt.txt"],
+    tools = [":tool"],
+    cmd = "echo > $@",
+)
