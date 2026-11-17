@@ -76,7 +76,11 @@ impl Fixture {
                 "--ignore_all_rc_files",
                 &format!("--cache-dir={cache}"),
             ])
-            .current_dir(self.0.path());
+            .current_dir(self.0.path())
+            // The repository store's warm reuse is what these tests check:
+            // an analysis snapshot hit (since the cold run that writes the
+            // lockfile saves one) would skip it.
+            .env("BAZEL_RS_SNAPSHOT", "off");
         command
     }
 }
