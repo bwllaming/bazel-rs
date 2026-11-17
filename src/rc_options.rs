@@ -428,6 +428,17 @@ const NATIVE_NO_EFFECT_BOOLEANS: &[(&str, &str)] = &[
         "experimental_merged_skyframe_analysis_execution",
         "buildtool/BuildRequestOptions.java:405-415",
     ),
+    // PackageOptions.checkOutputFiles (:181-191): false skips Bazel's check
+    // of the previous build's output files for outside modifications
+    // between commands of one server (rules_zig's CI .bazelrc). Native
+    // commands always verify outputs against the action cache (a modified
+    // output re-executes its action, crate::action); a speed option need
+    // not weaken that: the result is the same unless outputs are edited by
+    // hand, which Bazel then misses.
+    (
+        "experimental_check_output_files",
+        "pkgcache/PackageOptions.java:181-191",
+    ),
 ];
 
 /// Boolean options Bazel 9.3 itself declares as no-ops (`help = "No-op"` or

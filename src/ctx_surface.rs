@@ -1277,6 +1277,15 @@ fn default_javac_flags<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Resu
     Ok(frozen_owned_strings(heap, &flags))
 }
 
+/// JavaConfiguration.explicitJavaTestDepsStarlark (:347-350):
+/// `--explicit_java_test_deps`.
+fn explicit_java_test_deps<'v>(surface: &CtxSurface, _heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    Ok(Value::new_bool(
+        surface.option_value("explicit_java_test_deps")
+            == crate::configuration::OptionValue::Bool(true),
+    ))
+}
+
 fn java_plugins<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
     Ok(heap.alloc(
         surface
@@ -1416,7 +1425,7 @@ fn members(kind: Kind) -> &'static [(&'static str, Member)] {
                 "enforce_explicit_java_test_deps",
                 Method {
                     private: true,
-                    value: V::Bool(false),
+                    value: V::Dyn(explicit_java_test_deps),
                 },
             ),
             ("enforce_proguard_file_extension", Field(V::Bool(false))),

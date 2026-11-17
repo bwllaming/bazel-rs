@@ -1,0 +1,25 @@
+load(":defs.bzl", "string_flag", "tool", "use_tool")
+
+string_flag(
+    name = "plain",
+    build_setting_default = "plain-default",
+)
+
+string_flag(
+    name = "universal",
+    build_setting_default = "universal-default",
+    scope = "universal",
+)
+
+string_flag(
+    name = "target",
+    build_setting_default = "target-default",
+    scope = "target",
+)
+
+tool(name = "tool")
+
+use_tool(
+    name = "use",
+    tool = ":tool",
+)

@@ -65,6 +65,15 @@ impl ScopeAttribute {
     pub fn is_target(&self) -> bool {
         matches!(self, Self::Value(value) if value.eq_ignore_ascii_case("target"))
     }
+
+    /// Scope.ScopeType.UNIVERSAL or PROJECT, explicitly: the only flags the
+    /// exec transition keeps under
+    /// `--incompatible_exclude_starlark_flags_from_exec_config`
+    /// (FunctionTransitionUtil.getExecPropagatingStarlarkFlags, :253-290).
+    pub fn propagates_when_excluded(&self) -> bool {
+        matches!(self, Self::Value(value)
+            if value.eq_ignore_ascii_case("universal") || value.eq_ignore_ascii_case("project"))
+    }
 }
 
 /// The native BuildSettingProvider (analysis/BuildSettingProvider.java:27-58)

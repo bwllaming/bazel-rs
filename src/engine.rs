@@ -5266,12 +5266,7 @@ impl Engine {
     }
 
     fn source_visibility(&self, label: &Label) -> Visibility {
-        let package = &self.packages[&label.package_id()];
-        package
-            .exports
-            .get(label)
-            .unwrap_or(&package.default_visibility)
-            .clone()
+        crate::package::source_visibility(&self.packages[&label.package_id()], label)
     }
 
     /// Resolve every effective group reference, even when a pure scope or the

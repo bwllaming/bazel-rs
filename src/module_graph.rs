@@ -75,6 +75,11 @@ pub struct ResolverOptions {
     /// visibility instead of public (Rule.getDefaultVisibility,
     /// packages/Rule.java:694-710).
     pub config_setting_private_default_visibility: bool,
+    /// `--incompatible_no_implicit_file_export` (a Starlark semantics
+    /// option, packages/semantics/BuildLanguageOptions.java:485-494;
+    /// default false): source files not named by `exports_files` are
+    /// package private (Package.createAssumedInputFiles, :893-960).
+    pub no_implicit_file_export: bool,
     /// The Java Starlark semantics options read by
     /// `java_common.internal_DO_NOT_USE()` (JavaStarlarkCommon.java:383-402):
     /// `--experimental_google_legacy_api`

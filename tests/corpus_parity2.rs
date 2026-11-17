@@ -163,8 +163,11 @@ fn corpus_parity2_matches_genuine() {
                 let Ok(content) = fs::read_to_string(path) else {
                     continue;
                 };
-                let relative = path.split_once("bazel-out/").unwrap().1.to_owned();
-                actual.insert(relative, content);
+                // Source files (a filegroup's) are not below bazel-out.
+                let Some((_, relative)) = path.split_once("bazel-out/") else {
+                    continue;
+                };
+                actual.insert(relative.to_owned(), content);
             }
             let expected: BTreeMap<String, String> = case["outputs"]
                 .as_object()

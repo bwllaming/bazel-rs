@@ -1855,13 +1855,39 @@ pub(crate) trait Phase1: Host {
             .cloned()
             .collect::<BTreeSet<_>>();
         labels.extend(self.configuration(config).starlark.keys().cloned());
+        // --incompatible_exclude_starlark_flags_from_exec_config: only the
+        // flags explicitly scoped "universal" or "project" propagate
+        // (FunctionTransitionUtil.getExecPropagatingStarlarkFlags, :253-290;
+        // `--experimental_propagate_custom_flag` is not modelled).
+        let exclude = self
+            .configuration(config)
+            .native
+            .value("incompatible_exclude_starlark_flags_from_exec_config")
+            == Some(crate::configuration::OptionValue::Bool(true));
         let mut flags = BTreeSet::new();
         for label in labels {
-            if self.flag_scope(&label)? {
+            let reset = if exclude {
+                !self.flag_propagates_when_excluded(&label)?
+            } else {
+                self.flag_scope(&label)?
+            };
+            if reset {
                 flags.insert(label);
             }
         }
         Ok(flags)
+    }
+
+    /// Whether the Starlark flag `label` explicitly sets `scope` to
+    /// "universal" or "project" (read through its package like
+    /// [`Self::compute_flag_scope`]).
+    fn flag_propagates_when_excluded(&mut self, label: &Label) -> Result<bool, String> {
+        Ok(match self.target(label)? {
+            Target::Rule(rule) => self
+                .build_setting_info(&rule)?
+                .is_some_and(|info| info.scope.propagates_when_excluded()),
+            _ => false,
+        })
     }
 
     /// Whether the Starlark flag `label` explicitly sets `scope = "target"`

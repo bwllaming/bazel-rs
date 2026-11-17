@@ -19,6 +19,125 @@
    ],
    "workspace": "workspace"
   },
+  "apple_toolchain_resolution": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--incompatible_enable_apple_toolchain_resolution"
+   ],
+   "outputs": {
+    "p-opt-exec/bin/execflags/tool.txt": "plain-default|universal-default|target-default|bazel-out/p-opt-exec/bin\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//execflags:use"
+   ],
+   "workspace": "workspace"
+  },
+  "exec_starlark_flags_default": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--//execflags:plain=p",
+    "--//execflags:universal=u",
+    "--//execflags:target=t"
+   ],
+   "outputs": {
+    "p-opt-exec/bin/execflags/tool.txt": "p|u|target-default|bazel-out/p-opt-exec/bin\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//execflags:use"
+   ],
+   "workspace": "workspace"
+  },
+  "exec_starlark_flags_excluded": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--//execflags:plain=p",
+    "--//execflags:universal=u",
+    "--//execflags:target=t",
+    "--incompatible_exclude_starlark_flags_from_exec_config"
+   ],
+   "outputs": {
+    "p-opt-exec/bin/execflags/tool.txt": "plain-default|u|target-default|bazel-out/p-opt-exec/bin\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//execflags:use"
+   ],
+   "workspace": "workspace"
+  },
+  "exec_starlark_flags_excluded_old_name": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--//execflags:plain=p",
+    "--experimental_exclude_starlark_flags_from_exec_config"
+   ],
+   "outputs": {
+    "p-opt-exec/bin/execflags/tool.txt": "plain-default|universal-default|target-default|bazel-out/p-opt-exec/bin\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//execflags:use"
+   ],
+   "workspace": "workspace"
+  },
+  "explicit_java_test_deps": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--explicit_java_test_deps"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/third_party/bazel_rules/rules_java/java/explicit.txt": "True\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//third_party/bazel_rules/rules_java/java:explicit"
+   ],
+   "workspace": "workspace"
+  },
+  "explicit_java_test_deps_default": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/third_party/bazel_rules/rules_java/java/explicit.txt": "False\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//third_party/bazel_rules/rules_java/java:explicit"
+   ],
+   "workspace": "workspace"
+  },
   "flag_alias_agreeing_values": {
    "command": "build",
    "exit": 0,
@@ -57,6 +176,27 @@
    "stdout": "",
    "targets": [
     "//alias:mismatch"
+   ],
+   "workspace": "workspace"
+  },
+  "implicit_file_export_default": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/files/b/exported.out": "x\n",
+    "k8-fastbuild/bin/files/b/implicit.out": "y\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//files/b:exported",
+    "//files/b:implicit",
+    "//files/a:local"
    ],
    "workspace": "workspace"
   },
@@ -168,6 +308,63 @@
    "targets": [
     "//minos:unset",
     "//minos:read"
+   ],
+   "workspace": "workspace"
+  },
+  "no_implicit_file_export_exported": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--incompatible_no_implicit_file_export"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/files/b/exported.out": "x\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//files/b:exported",
+    "//files/a:local"
+   ],
+   "workspace": "workspace"
+  },
+  "no_implicit_file_export_implicit": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--incompatible_no_implicit_file_export"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "target '//files/a:implicit.txt' is not visible from",
+     "pattern": "is not visible from"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//files/b:implicit"
+   ],
+   "workspace": "workspace"
+  },
+  "no_implicit_file_export_info": {
+   "command": "info",
+   "exit": 0,
+   "flags": [
+    "--incompatible_no_implicit_file_export"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [],
+   "stdout": "StarlarkSemantics{incompatible_no_implicit_file_export=true, internal_bazel_only_utf_8_byte_strings=true}\n",
+   "targets": [
+    "starlark-semantics"
    ],
    "workspace": "workspace"
   },

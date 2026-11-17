@@ -60,6 +60,38 @@ CASES = {
     'local_repository_query': (
         [], 'query', [], ['@ext//...'], [], [], 'local_repo'),
     'android_common_toplevel': ([], 'build', BUILD, ['//android:show'], [], ['show.txt']),
+    'exec_starlark_flags_default': (
+        [], 'build', BUILD + ['--//execflags:plain=p', '--//execflags:universal=u',
+                              '--//execflags:target=t'], ['//execflags:use'], [], ['tool.txt']),
+    'exec_starlark_flags_excluded': (
+        [], 'build', BUILD + ['--//execflags:plain=p', '--//execflags:universal=u',
+                              '--//execflags:target=t',
+                              '--incompatible_exclude_starlark_flags_from_exec_config'],
+        ['//execflags:use'], [], ['tool.txt']),
+    'exec_starlark_flags_excluded_old_name': (
+        [], 'build', BUILD + ['--//execflags:plain=p',
+                              '--experimental_exclude_starlark_flags_from_exec_config'],
+        ['//execflags:use'], [], ['tool.txt']),
+    'apple_toolchain_resolution': (
+        [], 'build', BUILD + ['--incompatible_enable_apple_toolchain_resolution'],
+        ['//execflags:use'], [], ['tool.txt']),
+    'explicit_java_test_deps_default': (
+        [], 'build', BUILD, ['//third_party/bazel_rules/rules_java/java:explicit'], [],
+        ['explicit.txt']),
+    'explicit_java_test_deps': (
+        [], 'build', BUILD + ['--explicit_java_test_deps'],
+        ['//third_party/bazel_rules/rules_java/java:explicit'], [], ['explicit.txt']),
+    'implicit_file_export_default': (
+        [], 'build', BUILD, ['//files/b:exported', '//files/b:implicit', '//files/a:local'], [],
+        ['exported.out', 'implicit.out']),
+    'no_implicit_file_export_exported': (
+        [], 'build', BUILD + ['--incompatible_no_implicit_file_export'],
+        ['//files/b:exported', '//files/a:local'], [], ['exported.out']),
+    'no_implicit_file_export_implicit': (
+        [], 'build', BUILD + ['--incompatible_no_implicit_file_export'], ['//files/b:implicit'],
+        [r'is not visible from'], []),
+    'no_implicit_file_export_info': (
+        [], 'info', ['--incompatible_no_implicit_file_export'], ['starlark-semantics'], [], []),
     'rules_cc_main_private_initializer': (
         [], 'build', BUILD, ['//use:t'], [], ['t.txt'], 'rules_cc_main'),
     'other_main_private_initializer': (

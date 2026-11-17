@@ -1997,6 +1997,11 @@ impl RepositorySet {
         self.state.options.config_setting_private_default_visibility
     }
 
+    /// `--incompatible_no_implicit_file_export` (ResolverOptions).
+    pub(crate) fn no_implicit_file_export(&self) -> bool {
+        self.state.options.no_implicit_file_export
+    }
+
     /// The Java Starlark semantics options (ResolverOptions::java_semantics).
     pub(crate) fn java_semantics(&self) -> crate::module_graph::JavaSemantics {
         self.state.options.java_semantics

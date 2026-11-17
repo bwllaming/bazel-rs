@@ -775,6 +775,70 @@ pub const VALUE_OPTIONS: &[ValueOption] = &[
         command_line: true,
         exec: ExecValue::Default,
         exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    }, // AppleCommandLineOptions.incompatibleUseToolchainResolution
+    // (`--incompatible_enable_apple_toolchain_resolution`, protobuf's
+    // .bazelrc): only the Apple rules read it (rules_apple's Starlark, the
+    // native objc rules, none of which the native profile analyses), so its
+    // value is configuration data (config_setting, transitions may not
+    // write it here). Propagated to exec configurations.
+    ValueOption {
+        option: OptionDef {
+            name: "incompatible_enable_apple_toolchain_resolution",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "false",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/apple/AppleCommandLineOptions.java:328-336",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:180",
+    },
+    // CoreOptions.excludeStarlarkFlagsFromExecConfig
+    // (`--incompatible_exclude_starlark_flags_from_exec_config`, protobuf's
+    // bazel9.bazelrc): the exec transition keeps only the Starlark flags
+    // whose rule explicitly sets `scope = "universal"` or `"project"`
+    // (FunctionTransitionUtil.getExecPropagatingStarlarkFlags, :231-290;
+    // the phase-1 exec transition). Propagated to exec configurations.
+    ValueOption {
+        option: OptionDef {
+            name: "incompatible_exclude_starlark_flags_from_exec_config",
+            old_name: Some("experimental_exclude_starlark_flags_from_exec_config"),
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "false",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/analysis/config/CoreOptions.java:150-160",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:265",
+    },
+    // JavaOptions.explicitJavaTestDeps (`--explicit_java_test_deps`,
+    // rules_jvm_external's .bazelrc): read by rules_java through
+    // `ctx.fragments.java._enforce_explicit_java_test_deps()`
+    // (JavaConfiguration.java:347-350). Not in JavaOptions' exec propagate
+    // list.
+    ValueOption {
+        option: OptionDef {
+            name: "explicit_java_test_deps",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "false",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/java/JavaOptions.java:191-200",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:350-385 (not propagated)",
     },
 ];
 
@@ -3589,7 +3653,10 @@ mod tests {
                 "dynamic_mode",
                 "allow_analysis_failures",
                 "incompatible_check_testonly_for_output_files",
-                "minimum_os_version"
+                "minimum_os_version",
+                "incompatible_enable_apple_toolchain_resolution",
+                "incompatible_exclude_starlark_flags_from_exec_config",
+                "explicit_java_test_deps"
             ]
         );
         let defaults = NativeOptions::default();

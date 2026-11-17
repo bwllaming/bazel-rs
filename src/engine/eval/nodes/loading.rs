@@ -656,11 +656,7 @@ fn source_lookup(
 /// A source file's visibility (`Engine::source_visibility`) in its loaded
 /// package.
 pub(crate) fn source_visibility(pkg: &PkgValue, label: &Label) -> crate::visibility::Visibility {
-    pkg.package
-        .exports
-        .get(label)
-        .unwrap_or(&pkg.package.default_visibility)
-        .clone()
+    crate::package::source_visibility(&pkg.package, label)
 }
 
 /// The `Group` body (`Engine::resolve_group`): the include graph is

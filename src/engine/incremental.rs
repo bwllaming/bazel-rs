@@ -1720,6 +1720,10 @@ pub(crate) fn fingerprint(package: &Package) -> Fingerprint {
         package.build_file,
         package.direct_loads,
     );
+    // Appended only when set: existing fingerprints stay unchanged.
+    if package.no_implicit_file_export {
+        text.push_str("|no_implicit_file_export");
+    }
     let package_digest = *blake3::hash(text.as_bytes()).as_bytes();
     let mut rules_summary = String::new();
     let mut shared_kinds = false;

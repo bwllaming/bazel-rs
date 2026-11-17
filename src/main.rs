@@ -2021,6 +2021,10 @@ fn info_command(
             resolver.java_semantics.java_info_merge_runtime_module_flags,
         ),
         (
+            "-incompatible_no_implicit_file_export",
+            resolver.no_implicit_file_export,
+        ),
+        (
             "-incompatible_use_cc_configure_from_rules",
             native.rc.use_cc_configure_from_rules_cc,
         ),
@@ -5192,6 +5196,13 @@ impl NativeOptions {
         ) {
             // PackageOptions (pkgcache/PackageOptions.java:132-143).
             self.resolver.config_setting_private_default_visibility = value?;
+            false
+        } else if let Some(value) =
+            bazel_rs::configuration::boolean_option(arg, "incompatible_no_implicit_file_export")
+        {
+            // A Starlark semantics option of every loading command
+            // (packages/semantics/BuildLanguageOptions.java:485-494).
+            self.resolver.no_implicit_file_export = value?;
             false
         } else if let Some(value) =
             bazel_rs::configuration::boolean_option(arg, "experimental_google_legacy_api")

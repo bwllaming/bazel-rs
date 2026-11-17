@@ -231,6 +231,17 @@ impl PackageArgs {
     }
 }
 
+/// A source file's visibility: its `exports_files` visibility, else the
+/// package default (InputFile), or private under
+/// `--incompatible_no_implicit_file_export` (PrivateVisibilityInputFile).
+pub fn source_visibility(package: &Package, label: &Label) -> Visibility {
+    match package.exports.get(label) {
+        Some(visibility) => visibility.clone(),
+        None if package.no_implicit_file_export => Visibility::Private,
+        None => package.default_visibility.clone(),
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Package {
     /// Shared, immutable rule declarations: lookups clone the `Arc`, and
@@ -238,6 +249,11 @@ pub struct Package {
     pub rules: BTreeMap<Label, Arc<Rule>>,
     pub exports: BTreeMap<Label, Visibility>,
     pub default_visibility: Visibility,
+    /// `--incompatible_no_implicit_file_export` (BuildLanguageOptions
+    /// .java:485-494): source files not named by `exports_files` are
+    /// private (PrivateVisibilityInputFile, Package.java:938-960) instead
+    /// of following the package default visibility.
+    pub no_implicit_file_export: bool,
     pub macro_names: BTreeSet<String>,
     /// The in-package labels of the explicit dependency-attribute values of
     /// the top-level symbolic macros: assumed input files like the rules'
@@ -2934,6 +2950,7 @@ fn evaluate_at(
             .collect(),
         exports,
         default_visibility,
+        no_implicit_file_export: declarations.repositories.no_implicit_file_export(),
         macro_names: declarations.macro_names.into_inner(),
         macro_inputs: declarations.macro_inputs.into_inner(),
         args,

@@ -158,6 +158,35 @@ registration. Implementation: `src/download_options.rs`, `src/rc_options.rs`,
 | profile options on `query`, `cquery`, `info`, … (`--noslim_profile`, `--experimental_profile_include_*`, `--memory_profile`, …) | CommonCommandOptions: every command's | Commands that build nothing write no profile: the options that only shape one are **accepted without effect** (as on `build` without `--profile`); `--profile` and `--generate_json_trace_profile` fail explicitly (docs/PROFILE.md). |
 | `strip_prefix` with a trailing `/` (B11) | StripPrefixedPath.maybeDeprefix (:44-60): a relativized PathFragment | **Implemented**: leading and trailing `/`, `//` and `.` segments do not matter (BCR boringssl's `"boringssl-0.20261105.0/"`). |
 | `load("@local_config_platform//…")` (B12) | Bazel 9 removed the repository; a load from a non-visible repository is a package loading error | **Implemented** genuine's message: `Unable to find package for @@[unknown repo 'local_config_platform' requested from @@R]//:constraints.bzl: The repository '…' could not be resolved: No repository visible as '@local_config_platform' from …`. |
+| `--incompatible_check_testonly_for_output_files` (protobuf) | CoreOptions (:690-701), CommonPrerequisiteValidator.validateDirectPrerequisiteForTestOnly (:730-770) | **Implemented** (configuration option, propagated to exec configurations): a non-testonly rule depending on an output file of a testonly rule fails with genuine's `depends on the output file … of a testonly rule …` message (receipt `tests/fixtures/corpus_parity2`). |
+| `--incompatible_enable_apple_toolchain_resolution` (protobuf) | AppleCommandLineOptions (:328-336); read only by the Apple rules | **Configuration value** (config_setting; propagated to exec configurations, builtin_exec_platforms.bzl:180): the native profile analyses no Apple rules. |
+| `--incompatible_exclude_starlark_flags_from_exec_config` (old name `experimental_…`; protobuf's bazel9.bazelrc) | CoreOptions (:150-160), FunctionTransitionUtil.getExecPropagatingStarlarkFlags (:231-290) | **Implemented**: the exec transition keeps only the Starlark flags whose rule explicitly sets `scope = "universal"` or `"project"`. `--experimental_propagate_custom_flag` is not modelled. |
+| `--explicit_java_test_deps` (rules_jvm_external) | JavaOptions (:191-200), JavaConfiguration.explicitJavaTestDepsStarlark (:347-350) | **Implemented**: `ctx.fragments.java.enforce_explicit_java_test_deps()` (private API, rules_java) returns it; not propagated to exec configurations. |
+| `--incompatible_no_implicit_file_export` (rules_python) | BuildLanguageOptions (:485-494), Package.createAssumedInputFiles (:893-960) | **Implemented**: source files not named by `exports_files` are private (PrivateVisibilityInputFile); shown by `info starlark-semantics`. |
+| `--[no]experimental_check_output_files` (rules_zig CI) | PackageOptions (:181-191): false stops a server from checking the previous build's outputs for outside modifications | **Accepted without effect**: native commands verify outputs against the action cache (a modified output re-executes its action); the results equal genuine's unless outputs are edited by hand, which genuine then misses. |
+| `--minimum_os_version` | CppOptions (:140-148), `ctx.fragments.cpp.minimum_os_version()` | **Implemented**: a nullable configuration option (`@null` in the ST hash), readable and writable by Starlark transitions (skylib's unittest tests, B13a). |
+
+Options of the corpus's rc files that bazel-rs still rejects (a scan of every
+`*bazelrc*` file of the 37 projects, sub-workspaces included, branch
+corpus-parity2). None is on an unconditional line of a corpus project's root
+rc file any more. On unconditional lines of sub-workspaces:
+`--experimental_enable_android_migration_apis` and `--nocheck_visibility`
+(the examples repository's `android/*` workspaces), `--override_module`
+(rules_python's gazelle example), `--android_platforms` and
+`--platform_mappings` (rules_kotlin's Android examples). In named configs or
+CI-only rc files: `--experimental_output_paths=strip`, the Android worker
+options `--persistent_android_*`, `--persistent_multiplex_android_*`,
+`--internal_persistent_busybox_tools`, `--experimental_persistent_aar_extractor`,
+the remote-only `--experimental_remote_cache_lease_extension`,
+`--experimental_remote_cache_chunking`, `--remote_grpc_log`,
+`--remote_grpc_service_config` (`remote`/BuildBuddy configs),
+`--experimental_generate_llvm_lcov`, `--experimental_use_llvm_covmap`
+(openroad's `coverage:coverage`), `--xcode_version_config`,
+`--apple_crosstool_top`, `--host_crosstool_top`, `--macos_minimum_os`,
+`--host_macos_minimum_os`, `--compiler=clang-cl|msvc-cl|mingw-gcc` (Windows
+and macOS configs), `--custom_malloc` and `--explain`;
+`--all_incompatible_changes` is rejected by genuine too. Each still fails
+explicitly when used.
 
 ## Remaining rejected options
 

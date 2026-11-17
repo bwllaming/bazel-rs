@@ -1,0 +1,9 @@
+# --incompatible_no_implicit_file_export (rules_python's .bazelrc).
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["exported.txt"])
+
+filegroup(
+    name = "local",
+    srcs = ["implicit.txt"],
+)

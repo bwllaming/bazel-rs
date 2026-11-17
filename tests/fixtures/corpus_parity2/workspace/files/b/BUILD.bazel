@@ -1,0 +1,13 @@
+genrule(
+    name = "exported",
+    srcs = ["//files/a:exported.txt"],
+    outs = ["exported.out"],
+    cmd = "cat $< > $@",
+)
+
+genrule(
+    name = "implicit",
+    srcs = ["//files/a:implicit.txt"],
+    outs = ["implicit.out"],
+    cmd = "cat $< > $@",
+)
