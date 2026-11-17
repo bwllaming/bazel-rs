@@ -1,0 +1,13 @@
+load(":defs.bzl", "argv_test", "gen")
+
+[gen(
+    name = "gen_" + format + "_" + str(i),
+    flag = flag,
+    format = format,
+    tags = ["manual"],
+) for format in ["shell", "multiline"] for i, flag in enumerate(["@%s", "--flagfile=%s"])]
+
+[argv_test(
+    name = "argv_" + format + "_" + str(i),
+    target_under_test = ":gen_" + format + "_" + str(i),
+) for format in ["shell", "multiline"] for i in range(2)]

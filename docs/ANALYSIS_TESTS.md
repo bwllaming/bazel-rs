@@ -92,7 +92,7 @@ direct attribute dependencies of the requested tests, which are kept.
 | field | value |
 |---|---|
 | `mnemonic` | `FileWrite`, `TemplateExpand`, or the spawn's mnemonic |
-| `argv` | the spawn's argv (`/bin/bash -c CMD "" ARGS…` for `run_shell`); `None` for writes and template expansions |
+| `argv` | the spawn's argv (`/bin/bash -c CMD "" ARGS…` for `run_shell`), parameter files expanded like SpawnAction.getArguments (an argument naming one of the action's parameter files is replaced by the arguments it holds; `shell` quoting undone; a `flag_per_line` file's `--flag=value` lines stay single arguments); `None` for writes and template expansions |
 | `content` | the written content; for a template expansion, the source template read when `target.actions` is accessed (an observed read), with the substitutions applied; `None` otherwise |
 | `substitutions` | the template expansion's substitutions; `None` otherwise |
 | `inputs`, `outputs` | depsets of the action's files, in registration order |

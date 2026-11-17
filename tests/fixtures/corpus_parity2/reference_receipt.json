@@ -1,6 +1,27 @@
 {
  "bazel": "9.3.1",
  "cases": {
+  "action_argv_param_files": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/argv/argv_multiline_0.sh": "#!/bin/sh\necho \\[\\\"\\/\\b\\i\\n\\/\\t\\r\\u\\e\\\"\\,\\ \\\"\\f\\i\\r\\s\\t\\\"\\,\\ \\\"\\p\\l\\a\\i\\n\\\"\\,\\ \\\"\\a\\ \\b\\\"\\,\\ \\\"\\c\\'\\d\\\"\\,\\ \\\"\\-\\-\\x\\=\\1\\\"\\,\\ \\\"\\b\\a\\z\\e\\l\\-\\o\\u\\t\\/\\k\\8\\-\\f\\a\\s\\t\\b\\u\\i\\l\\d\\/\\b\\i\\n\\/\\a\\r\\g\\v\\/\\g\\e\\n\\_\\m\\u\\l\\t\\i\\l\\i\\n\\e\\_\\0\\.\\o\\u\\t\\\"\\]\nexit 0",
+    "k8-fastbuild/bin/argv/argv_multiline_1.sh": "#!/bin/sh\necho \\[\\\"\\/\\b\\i\\n\\/\\t\\r\\u\\e\\\"\\,\\ \\\"\\f\\i\\r\\s\\t\\\"\\,\\ \\\"\\p\\l\\a\\i\\n\\\"\\,\\ \\\"\\a\\ \\b\\\"\\,\\ \\\"\\c\\'\\d\\\"\\,\\ \\\"\\-\\-\\x\\=\\1\\\"\\,\\ \\\"\\b\\a\\z\\e\\l\\-\\o\\u\\t\\/\\k\\8\\-\\f\\a\\s\\t\\b\\u\\i\\l\\d\\/\\b\\i\\n\\/\\a\\r\\g\\v\\/\\g\\e\\n\\_\\m\\u\\l\\t\\i\\l\\i\\n\\e\\_\\1\\.\\o\\u\\t\\\"\\]\nexit 0",
+    "k8-fastbuild/bin/argv/argv_shell_0.sh": "#!/bin/sh\necho \\[\\\"\\/\\b\\i\\n\\/\\t\\r\\u\\e\\\"\\,\\ \\\"\\f\\i\\r\\s\\t\\\"\\,\\ \\\"\\p\\l\\a\\i\\n\\\"\\,\\ \\\"\\a\\ \\b\\\"\\,\\ \\\"\\c\\'\\d\\\"\\,\\ \\\"\\-\\-\\x\\=\\1\\\"\\,\\ \\\"\\b\\a\\z\\e\\l\\-\\o\\u\\t\\/\\k\\8\\-\\f\\a\\s\\t\\b\\u\\i\\l\\d\\/\\b\\i\\n\\/\\a\\r\\g\\v\\/\\g\\e\\n\\_\\s\\h\\e\\l\\l\\_\\0\\.\\o\\u\\t\\\"\\]\nexit 0",
+    "k8-fastbuild/bin/argv/argv_shell_1.sh": "#!/bin/sh\necho \\[\\\"\\/\\b\\i\\n\\/\\t\\r\\u\\e\\\"\\,\\ \\\"\\f\\i\\r\\s\\t\\\"\\,\\ \\\"\\p\\l\\a\\i\\n\\\"\\,\\ \\\"\\a\\ \\b\\\"\\,\\ \\\"\\c\\'\\d\\\"\\,\\ \\\"\\-\\-\\x\\=\\1\\\"\\,\\ \\\"\\b\\a\\z\\e\\l\\-\\o\\u\\t\\/\\k\\8\\-\\f\\a\\s\\t\\b\\u\\i\\l\\d\\/\\b\\i\\n\\/\\a\\r\\g\\v\\/\\g\\e\\n\\_\\s\\h\\e\\l\\l\\_\\1\\.\\o\\u\\t\\\"\\]\nexit 0"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//argv:all"
+   ],
+   "workspace": "workspace"
+  },
   "android_common_toplevel": {
    "command": "build",
    "exit": 0,

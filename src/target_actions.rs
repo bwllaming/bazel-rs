@@ -131,7 +131,7 @@ impl ActionView {
         } else {
             (
                 action.extra.mnemonic.clone(),
-                Some(crate::action::arguments(action)),
+                Some(starlark_argv(action)),
                 Content::None,
                 None,
             )
@@ -149,6 +149,46 @@ impl ActionView {
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect(),
         }
+    }
+}
+
+/// SpawnAction.getStarlarkArgv (:229-235): `getArguments()`, the whole
+/// command line, parameter files included: an argument naming one of the
+/// action's parameter files (`@path`, `--flagfile=path`) is replaced by the
+/// arguments the file holds (ParameterFile.writeParameterFile: one per
+/// line, shell-quoted in the `shell` format). A `flag_per_line` file's
+/// `--flag=value` lines stay single arguments.
+fn starlark_argv(action: &crate::action::Action) -> Vec<String> {
+    let argv = crate::action::arguments(action);
+    if action.extra.param_files.is_empty() {
+        return argv;
+    }
+    let mut expanded = Vec::with_capacity(argv.len());
+    for argument in argv {
+        let file = action.extra.param_files.iter().find(|(path, _)| {
+            let path = path.to_string_lossy();
+            argument.len() > path.len() && argument.ends_with(path.as_ref())
+        });
+        match file {
+            Some((_, content)) => {
+                let text = String::from_utf8_lossy(content);
+                expanded.extend(text.lines().map(shell_unquote));
+            }
+            None => expanded.push(argument),
+        }
+    }
+    expanded
+}
+
+/// The inverse of the `shell` parameter file quoting (ShellEscaper): a
+/// `'…'` line with `'\''` for each quote; any other line as written.
+fn shell_unquote(line: &str) -> String {
+    match line
+        .strip_prefix('\'')
+        .and_then(|rest| rest.strip_suffix('\''))
+    {
+        Some(inner) if line.len() >= 2 => inner.replace("'\\''", "'"),
+        _ => line.to_owned(),
     }
 }
 
