@@ -639,7 +639,10 @@ pub(crate) fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static
     // table row read from its typed field).
     for name in crate::configuration::modelled_option_names() {
         match native.value(name) {
-            Some(crate::configuration::OptionValue::DottedVersion(None)) => {
+            Some(
+                crate::configuration::OptionValue::DottedVersion(None)
+                | crate::configuration::OptionValue::Null,
+            ) => {
                 options.insert(name, "@null".to_owned());
             }
             Some(value) => {

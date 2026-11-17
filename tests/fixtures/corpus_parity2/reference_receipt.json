@@ -1,6 +1,86 @@
 {
  "bazel": "9.3.1",
  "cases": {
+  "minimum_os_version_default": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/minos/show.txt": "None\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//minos:show"
+   ],
+   "workspace": "workspace"
+  },
+  "minimum_os_version_flag": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--minimum_os_version=10.1"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/minos/show.txt": "\"10.1\"\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//minos:show"
+   ],
+   "workspace": "workspace"
+  },
+  "minimum_os_version_transition": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild-ST-c0e2e645a4e5/bin/minos/show.txt": "\"1234.5678\"\n",
+    "k8-fastbuild-ST-e6efa4ac1f4e/bin/minos/show.txt": "\"None-read\"\n",
+    "k8-fastbuild/bin/minos/show.txt": "None\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//minos:set",
+    "//minos:unset",
+    "//minos:read"
+   ],
+   "workspace": "workspace"
+  },
+  "minimum_os_version_transition_from_flag": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--minimum_os_version=7"
+   ],
+   "outputs": {
+    "k8-fastbuild-ST-35799f2ebf40/bin/minos/show.txt": "None\n",
+    "k8-fastbuild-ST-a6a163a91203/bin/minos/show.txt": "\"7-read\"\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//minos:unset",
+    "//minos:read"
+   ],
+   "workspace": "workspace"
+  },
   "other_main_private_initializer": {
    "command": "build",
    "exit": 1,

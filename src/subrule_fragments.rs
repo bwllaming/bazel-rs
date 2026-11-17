@@ -635,9 +635,11 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
         Ok(empty_list())
     }
     /// CppConfiguration.java:345-352; --minimum_os_version default null.
-    fn minimum_os_version<'v>(this: Value<'v>) -> anyhow::Result<NoneType> {
-        receiver(this)?;
-        Ok(NoneType)
+    fn minimum_os_version<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        Ok(match &receiver(this)?.view.minimum_os_version {
+            Some(version) => heap.alloc(version.as_str()),
+            None => Value::new_none(),
+        })
     }
     /// CppConfiguration.java:857-861; default false.
     fn objc_enable_binary_stripping<'v>(

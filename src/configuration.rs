@@ -39,6 +39,10 @@ pub enum OptionKind {
     /// DottedVersionConverter (build/lib/rules/apple/DottedVersionConverter.java:21-36),
     /// default null.
     DottedVersion,
+    /// A `@Nullable String` option with the default StringConverter and
+    /// `defaultValue = "null"`: the default is null ([`OptionValue::Null`]),
+    /// any given value is the string as given.
+    NullableString,
     /// CoreOptionConverters.LabelConverter (build/lib/analysis/config/CoreOptionConverters.java:129-140):
     /// convertOptionsLabel without a default for an empty input (`//`, an
     /// invalid label).
@@ -752,6 +756,26 @@ pub const VALUE_OPTIONS: &[ValueOption] = &[
         exec: ExecValue::Propagate,
         exec_source: "builtin_exec_platforms.bzl:245",
     },
+    // CppOptions.minimumOsVersion (`--minimum_os_version`, default null):
+    // read by `ctx.fragments.cpp.minimum_os_version()`
+    // (CppConfiguration.java:345-352); skylib's unittest tests set it
+    // through a transition. Not in CppOptions' exec propagate list.
+    ValueOption {
+        option: OptionDef {
+            name: "minimum_os_version",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::NullableString,
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:140-148",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
 ];
 
 /// The table-driven option named `name` (its canonical name only).
@@ -764,6 +788,9 @@ pub fn value_option(name: &str) -> Option<&'static ValueOption> {
 impl ValueOption {
     /// The converted default (`defaultValue` through the converter).
     pub fn default_value(&self) -> OptionValue {
+        if matches!(self.option.kind, OptionKind::NullableString) && self.option.default == "null" {
+            return OptionValue::Null;
+        }
         convert(&self.option, self.option.default, &|_| {
             Err("value options have no label-typed defaults".to_owned())
         })
@@ -1050,7 +1077,9 @@ pub fn convert(
             input
         })
         .map(OptionValue::Label),
-        OptionKind::String => Ok(OptionValue::String(input.to_owned())),
+        OptionKind::String | OptionKind::NullableString => {
+            Ok(OptionValue::String(input.to_owned()))
+        }
         OptionKind::DottedVersion => validate_dotted_version(input)
             .map(|()| OptionValue::DottedVersion(Some(input.to_owned()))),
         OptionKind::OptionsLabel => label(input).map(OptionValue::Label),
@@ -3559,7 +3588,8 @@ mod tests {
                 "apple_platform_type",
                 "dynamic_mode",
                 "allow_analysis_failures",
-                "incompatible_check_testonly_for_output_files"
+                "incompatible_check_testonly_for_output_files",
+                "minimum_os_version"
             ]
         );
         let defaults = NativeOptions::default();

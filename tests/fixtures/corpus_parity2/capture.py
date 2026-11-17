@@ -38,6 +38,14 @@ CASES = {
     'testonly_output_testonly_consumer': (
         [], 'build', BUILD + [TESTONLY], ['//testonly:use_test_output'], [],
         ['use_test_output.txt']),
+    'minimum_os_version_default': ([], 'build', BUILD, ['//minos:show'], [], ['show.txt']),
+    'minimum_os_version_flag': (
+        [], 'build', BUILD + ['--minimum_os_version=10.1'], ['//minos:show'], [], ['show.txt']),
+    'minimum_os_version_transition': (
+        [], 'build', BUILD, ['//minos:set', '//minos:unset', '//minos:read'], [], ['show.txt']),
+    'minimum_os_version_transition_from_flag': (
+        [], 'build', BUILD + ['--minimum_os_version=7'], ['//minos:unset', '//minos:read'], [],
+        ['show.txt']),
     'rules_cc_main_private_initializer': (
         [], 'build', BUILD, ['//use:t'], [], ['t.txt'], 'rules_cc_main'),
     'other_main_private_initializer': (

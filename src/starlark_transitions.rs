@@ -90,6 +90,9 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     // value only the configuration identity and `config_setting(values)`
     // observe.
     "crosstool_top",
+    // CppOptions.minimumOsVersion: a nullable String
+    // (`ctx.fragments.cpp.minimum_os_version()`; skylib's unittest tests).
+    "minimum_os_version",
 ];
 
 /// Native options a transition may only read: `define` (Bazel forbids
@@ -944,6 +947,11 @@ pub(crate) fn native_input<'v>(
         // An empty `--define` list is a readable empty list (a non-empty
         // one is unreadable, see unreadable_input).
         "define" => heap.alloc(Vec::<String>::new()),
+        // A nullable String field: null reads as None.
+        "minimum_os_version" => match native.raw_value(name) {
+            Some(OptionValue::String(text)) => heap.alloc(text.as_str()),
+            _ => Value::new_none(),
+        },
         other => {
             return Err(anyhow!(
                 "internal error: unmodelled native transition input {other}"
@@ -1785,6 +1793,11 @@ fn convert_native(
             // A null Label field: the raw value is null, `getValue` the
             // default (never null: `@bazel_tools//tools/cpp:toolchain`).
             "crosstool_top" => native.crosstool_top = None,
+            // A nullable String field at its (null) default.
+            "minimum_os_version" => native.set_value(
+                crate::configuration::value_option(name).expect("a value option"),
+                OptionValue::Null,
+            ),
             _ => {
                 return Err(format!(
                     "setting //command_line_option:{name} to None (a null option value) is not implemented in the native profile"
@@ -2035,6 +2048,17 @@ fn convert_native(
             }
             _ => return Err(invalid()),
         },
+        // CppOptions.minimumOsVersion: a String field; a string value is
+        // stored as is (`def.getType().isInstance`, :726-728).
+        "minimum_os_version" => {
+            let RawKind::String(text) = &raw.kind else {
+                return Err(invalid());
+            };
+            native.set_value(
+                crate::configuration::value_option(name).expect("a value option"),
+                OptionValue::String(text.clone()),
+            );
+        }
         // JavaOptions String options: a string value is stored as is
         // (`def.getType().isInstance`, :726-728, before any converter).
         "java_runtime_version"

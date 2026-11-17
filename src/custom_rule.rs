@@ -532,6 +532,8 @@ pub struct CppConfigurationView {
     pub dynamic_mode: &'static str,
     /// CppOptions.perFileCopts (`--per_file_copt`), `filter@options` as given.
     pub per_file_copts: Vec<String>,
+    /// CppOptions.minimumOsVersion (`--minimum_os_version`), `None` for null.
+    pub minimum_os_version: Option<String>,
 }
 
 impl Default for CppConfigurationView {
@@ -547,6 +549,7 @@ impl Default for CppConfigurationView {
             linkopts: Vec::new(),
             dynamic_mode: "DEFAULT",
             per_file_copts: Vec::new(),
+            minimum_os_version: None,
         }
     }
 }
@@ -567,6 +570,10 @@ impl CppConfigurationView {
                 _ => "DEFAULT",
             },
             per_file_copts: native.per_file_copts.clone(),
+            minimum_os_version: match native.raw_value("minimum_os_version") {
+                Some(crate::configuration::OptionValue::String(text)) => Some(text),
+                _ => None,
+            },
         }
     }
 

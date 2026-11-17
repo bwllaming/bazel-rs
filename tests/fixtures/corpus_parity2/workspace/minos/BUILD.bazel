@@ -1,0 +1,19 @@
+load(":defs.bzl", "read_version", "set_version", "show")
+
+show(name = "show")
+
+set_version(
+    name = "set",
+    version = "1234.5678",
+    deps = [":show"],
+)
+
+set_version(
+    name = "unset",
+    deps = [":show"],
+)
+
+read_version(
+    name = "read",
+    deps = [":show"],
+)

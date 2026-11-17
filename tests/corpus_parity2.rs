@@ -100,11 +100,7 @@ fn run(workspace: &Path, case: &serde_json::Value) -> Output {
         .arg("--ignore_all_rc_files")
         .args(strings(&case["startup"]))
         .args(["--cache-dir=cache", command])
-        .args([
-            "--experimental-builtin-modules=false",
-            "--lockfile_mode=off",
-            "--memory-limit=2048",
-        ])
+        .args(["--lockfile_mode=off", "--memory-limit=2048"])
         .args(strings(&case["flags"]))
         .args(strings(&case["targets"]))
         .output()
