@@ -731,9 +731,9 @@ def main(argv=None):
         results[p["name"]] = merge_result(results.get(p["name"]), res)
         save_results(results_path, results)
         logs = os.path.join(args.work, "logs", p["name"])
-        rmtree_force(logs)
         for tool in TOOLS:
-            shutil.copytree(os.path.join(run.state(tool), "logs"), os.path.join(logs, tool))
+            # Merged like results.json: a run of some phases keeps the others' logs.
+            shutil.copytree(os.path.join(run.state(tool), "logs"), os.path.join(logs, tool), dirs_exist_ok=True)
         if not args.keep:
             rmtree_force(run.base)
     print(render_table(load_results(results_path)))
