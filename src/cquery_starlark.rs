@@ -321,6 +321,7 @@ fn globals() -> Globals {
     }
     crate::starlark_types::install_struct_provider(&mut builder);
     crate::json::install(&mut builder);
+    crate::proto_text::install(&mut builder);
     builder.with(dialect_globals).build()
 }
 

@@ -407,6 +407,129 @@
    ],
    "workspace": "other_main"
   },
+  "proto_encode_text": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/prototext/cases.txt": "=== 0\nfield: 123\n=== 1\nfield: true\nother: false\n=== 2\nfield: 1\nfield: 2\nfield: 3\n=== 3\nfield: \"te\\\"x\\\\t\\nline\"\n=== 4\nfield {\n  inner_field: \"text\"\n}\n=== 5\nfield {\n  inner_field: 1\n}\nfield {\n  inner_field: 2\n}\n=== 6\nbar {\n  key: \"k\"\n  value {\n    a: 1\n  }\n}\nfoo {\n  key: 4\n  value: 3\n}\nfoo {\n  key: 2\n  value: 1\n}\n=== 7\nBeta: 3\n_under: 4\nalpha: 2\nzeta: 1\n=== 8\nf: 1.5\ng: inf\nh: -0.0\ni: 1e+30\n=== 9\nr: 0\nr: 1\nr: 2\nt: 1\nt: \"a\"\n=== 10\ninner {\n}\nname: \"n\"\nvalues: \"a\"\nvalues: \"b\"\n=== 11\nbig: 123456789012345678901234567890\nempty {\n}\n[\"encode_text\"]\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//prototext:cases"
+   ],
+   "workspace": "workspace"
+  },
+  "proto_encode_text_bad_key": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "Error in encode_text: in struct field .field: invalid dict key: got float, want int or string",
+     "pattern": "Error in encode_text|encode_text\\(\\)"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//prototext:bad_key"
+   ],
+   "workspace": "workspace"
+  },
+  "proto_encode_text_bad_type": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "Error in encode_text: in struct field .field: got depset, want string, int, float, bool, or struct",
+     "pattern": "Error in encode_text|encode_text\\(\\)"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//prototext:bad_type"
+   ],
+   "workspace": "workspace"
+  },
+  "proto_encode_text_bad_value": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "Error in encode_text: in struct field .field: in value for dict key \"k\": got list, want string, int, float, bool, or struct",
+     "pattern": "Error in encode_text|encode_text\\(\\)"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//prototext:bad_value"
+   ],
+   "workspace": "workspace"
+  },
+  "proto_encode_text_nested_list": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "Error in encode_text: in struct field .field: at list index 0: got list, want string, int, float, bool, or struct",
+     "pattern": "Error in encode_text|encode_text\\(\\)"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//prototext:nested_list"
+   ],
+   "workspace": "workspace"
+  },
+  "proto_encode_text_not_struct": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "Error in encode_text: in call to encode_text(), parameter 'x' got value of type 'list', want 'structure or NativeInfo'",
+     "pattern": "Error in encode_text|encode_text\\(\\)"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//prototext:not_struct"
+   ],
+   "workspace": "workspace"
+  },
   "rules_cc_main_private_initializer": {
    "command": "build",
    "exit": 0,

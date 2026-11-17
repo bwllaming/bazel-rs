@@ -1,0 +1,28 @@
+load(":defs.bzl", "encode")
+
+encode(name = "cases")
+
+encode(
+    name = "nested_list",
+    error = "nested_list",
+)
+
+encode(
+    name = "bad_key",
+    error = "bad_key",
+)
+
+encode(
+    name = "bad_value",
+    error = "bad_value",
+)
+
+encode(
+    name = "bad_type",
+    error = "bad_type",
+)
+
+encode(
+    name = "not_struct",
+    error = "not_struct",
+)

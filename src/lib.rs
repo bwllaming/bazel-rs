@@ -141,6 +141,7 @@ pub mod print_action;
 pub mod process_wrapper;
 pub mod profile;
 pub mod progress;
+mod proto_text;
 pub mod providers;
 mod py_regex;
 pub mod query_language;

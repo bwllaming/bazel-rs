@@ -94,6 +94,12 @@ CASES = {
         [], 'info', ['--incompatible_no_implicit_file_export'], ['starlark-semantics'], [], []),
     'build_thread_attr_label_default': (
         [], 'build', BUILD, ['//buildattr:made'], [], ['made.sh']),
+    'proto_encode_text': ([], 'build', BUILD, ['//prototext:cases'], [], ['cases.txt']),
+    'proto_encode_text_nested_list': ([], 'build', BUILD, ['//prototext:nested_list'], [r'Error in encode_text|encode_text\(\)'], []),
+    'proto_encode_text_bad_key': ([], 'build', BUILD, ['//prototext:bad_key'], [r'Error in encode_text|encode_text\(\)'], []),
+    'proto_encode_text_bad_value': ([], 'build', BUILD, ['//prototext:bad_value'], [r'Error in encode_text|encode_text\(\)'], []),
+    'proto_encode_text_bad_type': ([], 'build', BUILD, ['//prototext:bad_type'], [r'Error in encode_text|encode_text\(\)'], []),
+    'proto_encode_text_not_struct': ([], 'build', BUILD, ['//prototext:not_struct'], [r'Error in encode_text|encode_text\(\)'], []),
     'rules_cc_main_private_initializer': (
         [], 'build', BUILD, ['//use:t'], [], ['t.txt'], 'rules_cc_main'),
     'other_main_private_initializer': (

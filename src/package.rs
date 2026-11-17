@@ -2441,6 +2441,7 @@ pub(crate) fn build_file_globals() -> Globals {
         .with(crate::starlark_types::depset_globals);
     install_build_native_methods(&mut globals);
     crate::json::install(&mut globals);
+    crate::proto_text::install(&mut globals);
     crate::rule_declarations::install_build(&mut globals);
     crate::debug_print::install(&mut globals);
     globals.build()
@@ -2522,6 +2523,7 @@ fn bzl_globals_for(phase: BzlPhase) -> Globals {
     crate::symbolic_macro::globals(&mut bzl);
     crate::subrule::globals(&mut bzl);
     crate::json::install(&mut bzl);
+    crate::proto_text::install(&mut bzl);
     // BazelBuildApiGlobals (Environment.BZL): every .bzl context, never BUILD.
     crate::bzl_visibility::globals(&mut bzl);
     crate::language_modules::install(&mut bzl);
