@@ -2525,12 +2525,23 @@ impl Context {
                 .filter(|(digest, _)| *digest == expected.bytes)
                 .map(|(_, size)| (expected.clone(), size))
         });
-        let cached = match (&reused, &request.expected) {
+        let mut cached = match (&reused, &request.expected) {
             (None, Some(expected)) => self
                 .cache_get(expected, canonical_id, &target)?
                 .map(|size| (expected.clone(), size)),
             _ => None,
         };
+        if reused.is_none() && cached.is_none() {
+            let destination = target
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            cached = match self.before_network(request, &destination, &target, canonical_id) {
+                Ok(found) => found,
+                Err(_) if allow_fail => return Ok(Started::Done(DownloadOutcome::Failed)),
+                Err(error) => return Err(error),
+            };
+        }
         if reused.is_none()
             && cached.is_none()
             && !block
@@ -2714,6 +2725,49 @@ impl Context {
             crate::repository_cache::materialize_hit(&blob, target)
         })();
         Ok(copied.ok().map(|()| size))
+    }
+
+    /// After a cache miss, before the network (DownloadManager.java:280-337):
+    /// a rewriter that blocked every URL fails the download, and `--distdir`
+    /// may serve the file by name and checksum (crate::download_options).
+    /// `destination` is the download's own file name.
+    fn before_network(
+        &self,
+        request: &DownloadRequest,
+        destination: &str,
+        target: &Path,
+        canonical_id: &str,
+    ) -> anyhow::Result<Option<(Checksum, u64)>> {
+        if let Some(expected) = &request.expected {
+            if let Some(message) = &request.blocked {
+                bail!("java.io.IOException: Cache miss and no url specified - {message}");
+            }
+            let main = request.urls.first().map(reqwest::Url::as_str);
+            let names = crate::download_options::candidate_names(main, destination);
+            if let Some(found) = crate::download_options::distdir_lookup(&names, &|candidate| {
+                expected
+                    .algorithm
+                    .hash_file(candidate)
+                    .is_ok_and(|(digest, _)| digest == expected.bytes)
+            }) {
+                if fs::symlink_metadata(target).is_ok_and(|metadata| !metadata.is_dir()) {
+                    fs::remove_file(target)?;
+                }
+                let size = fs::copy(&found, target)?;
+                // DownloadManager.java:308-316: a failing store only warns.
+                if let Err(error) = self.cache_put(expected, target, canonical_id) {
+                    crate::ui::note(&format!(
+                        "WARNING: Failed to copy {} to repository cache: {error}",
+                        found.display()
+                    ));
+                }
+                return Ok(Some((expected.clone(), size)));
+            }
+        }
+        if let Some(message) = &request.blocked {
+            bail!("java.io.IOException: {message}");
+        }
+        Ok(None)
     }
 
     /// DownloadManager.java:381-386: every completed download enters the
@@ -3461,7 +3515,14 @@ fn header_contents(method: &str, headers: Value<'_>) -> anyhow::Result<transport
 /// download_and_extract() (getUrls/checkAllUrls java:443-469,
 /// validateChecksum java:512-541).
 struct DownloadRequest {
+    /// The URLs after `--downloader_config` (crate::download_options).
     urls: Vec<reqwest::Url>,
+    /// The first URL before rewriting (the file name when the rewriter
+    /// blocked every URL, DownloadManager.java:221-232).
+    original_first: Option<reqwest::Url>,
+    /// The rewriter blocked every URL: Bazel's message, raised after a
+    /// cache miss (DownloadManager.java:280-289, 335-337).
+    blocked: Option<String>,
     headers: transport::RequestHeaders,
     expected: Option<Checksum>,
     /// A malformed checksum, raised only after the download attempt
@@ -3497,16 +3558,36 @@ impl DownloadRequest {
         );
         let checksum_given = !sha256.is_empty() || !integrity.is_empty();
         let mut urls = Vec::new();
+        let mut kept = Vec::new();
         for text in &strings {
             let parsed = transport::validate_url(text).map_err(|error| anyhow!("{error}"))?;
             if checksum_given || parsed.scheme() != "http" {
                 urls.push(parsed);
+                kept.push((*text).to_owned());
             }
         }
         ensure!(
             allow_fail || !urls.is_empty(),
             "java.io.IOException: No URLs left after removing plain http URLs due to missing checksum. Please provide either a checksum or an https download location."
         );
+        let original_first = urls.first().cloned();
+        let mut blocked = None;
+        if crate::download_options::rewriting() && !kept.is_empty() {
+            match crate::download_options::rewrite_urls(&kept) {
+                Ok(rewritten) => {
+                    urls = rewritten
+                        .iter()
+                        .map(|text| {
+                            transport::validate_url(text).map_err(|error| anyhow!("{error}"))
+                        })
+                        .collect::<anyhow::Result<_>>()?;
+                }
+                Err(message) => {
+                    urls.clear();
+                    blocked = Some(message);
+                }
+            }
+        }
         if !sha256.is_empty() && !integrity.is_empty() {
             bail!("Expected either 'sha256' or 'integrity', but not both");
         }
@@ -3520,6 +3601,8 @@ impl DownloadRequest {
         };
         Ok(Self {
             urls,
+            original_first,
+            blocked,
             headers: request_headers,
             expected,
             deferred,
@@ -4051,7 +4134,10 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
         // DownloadManager.getDownloadDestination); errors, the suffix check
         // and the decompressor use that name.
         let temp = temp_name();
-        let name = download_basename(request.urls.first(), r#type);
+        let name = download_basename(
+            request.urls.first().or(request.original_first.as_ref()),
+            r#type,
+        );
         let mut archive = output.clone();
         archive.extend_from_slice(format!("/{temp}/{name}").as_bytes());
         context.mark_created()?;
@@ -4061,7 +4147,7 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
         let urls = &request.urls;
         // DownloadManager.java:264-277: a cache hit by checksum is named after
         // the first URL (or Bazel's `cacheprobe` placeholder without URLs).
-        let cached = match &request.expected {
+        let mut cached = match &request.expected {
             Some(expected) => {
                 let name = urls.first().map_or("cacheprobe".to_owned(), storage_name);
                 let file = scratch.path().join(&name);
@@ -4071,6 +4157,16 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
             }
             None => None,
         };
+        if cached.is_none() {
+            let file = scratch.path().join(&name);
+            cached = match context.before_network(&request, &name, &file, canonical_id) {
+                Ok(found) => found.map(|(checksum, size)| (checksum, size, file)),
+                Err(_) if allow_fail => {
+                    return Ok(eval.heap().alloc(AllocStruct([("success", false)])));
+                }
+                Err(error) => return Err(error),
+            };
+        }
         let (checksum, size, file) = match cached {
             Some(cached) => cached,
             None => match context.fetch_to(

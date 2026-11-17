@@ -941,7 +941,7 @@ impl Graph {
                 Ok(line) => writeln!(destination, "{line}").map_err(|e| e.to_string())?,
                 // StarlarkOutputFormatterCallback.processOutput: an error
                 // event per target; formatting continues.
-                Err(error) => eprintln!("ERROR: {error}"),
+                Err(error) => crate::ui::eprint_event(&format!("ERROR: {error}")),
             }
         }
         Ok(())

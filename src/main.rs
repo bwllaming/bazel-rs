@@ -6,6 +6,18 @@ use std::sync::Arc;
 // default; README "Global allocator"). No `unsafe` here: the GlobalAlloc impl
 // lives in tikv-jemallocator, so unsafe_code stays "deny" (its one exception
 // is the arena binding, src/alloc_arena.rs).
+/// This file's `eprintln!`: an event line (`ERROR: `, `WARNING: `, `INFO: `,
+/// …) gets the `--show_timestamps` prefix (crate::ui::event_line); every
+/// line is one write.
+macro_rules! eprintln {
+    () => {
+        bazel_rs::ui::eprint_line("")
+    };
+    ($($arg:tt)*) => {
+        bazel_rs::ui::eprint_event(&::std::format!($($arg)*))
+    };
+}
+
 #[cfg(feature = "jemalloc")]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
@@ -540,6 +552,10 @@ fn run() -> Result<(), String> {
         &ui_options,
         &terminal_environment,
     ));
+    // --show_timestamps (crate::ui): the time prefix of every event line,
+    // and the date first (UiEventHandler.maybeAddDate).
+    bazel_rs::ui::set_show_timestamps(ui_options.show_timestamps);
+    bazel_rs::ui::announce_date();
     if let Some(config) = bazel_rs::progress::decide(&command, &ui_options, &terminal_environment)
         && let Err(error) = bazel_rs::progress::start(config)
     {
@@ -612,6 +628,31 @@ fn run() -> Result<(), String> {
                 .map(|(name, value)| (name.as_os_str(), value.as_os_str())),
         ),
     )?;
+    // The downloader options (crate::download_options): HTTP attempts and
+    // timeouts, the URL rewriter, distdirs and module mirrors
+    // (CommandEnvironment.java:302-325, BazelRepositoryModule.beforeCommand
+    // :432-495, 623-652); their failures end the command (exit 2).
+    {
+        let mut settings = bazel_rs::download_options::http_settings(
+            rc_options.http_connector_attempts,
+            rc_options.http_timeout_scaling,
+        );
+        if let Some(config) = &rc_options.downloader_config {
+            settings.rewriter = Some(
+                bazel_rs::download_options::UrlRewriter::load(&root, config)
+                    .map_err(bazel_rs::exit_code::command_line)?,
+            );
+        }
+        settings.distdir = rc_options
+            .distdir
+            .iter()
+            .map(|path| root.join(path))
+            .collect();
+        settings.module_mirrors =
+            bazel_rs::download_options::module_mirrors(&raw_registries, &rc_options.module_mirrors)
+                .map_err(bazel_rs::exit_code::command_line)?;
+        bazel_rs::download_options::install(settings);
+    }
     // The cache root (crate::worktree, docs/WORKTREES.md): `--cache-dir`,
     // else found from the git metadata above the workspace — a linked git
     // worktree shares its main checkout's `bazel-rs-out`, anything else
@@ -825,6 +866,9 @@ fn run() -> Result<(), String> {
     // Option parser warnings (deprecated options) once the native options
     // parsed (runtime/BlazeOptionHandler.java:536-539), after the rc notes.
     for warning in configuration_options.warnings() {
+        warn(warning);
+    }
+    for warning in &rc_options.warnings {
         warn(warning);
     }
     // QueryOptionHelper.readQuery (runtime/commands/QueryOptionHelper.java:
@@ -1951,28 +1995,41 @@ fn info_command(
         }
     }
     let resolver = &native.resolver;
-    let starlark_semantics = [
+    // StarlarkSemantics.toString: the non-default entries by their key, a
+    // boolean's key prefixed with its default (`+` true, `-` false;
+    // crate::info strips the prefix after sorting).
+    let mut starlark_semantics: Vec<String> = [
         (
-            "experimental_google_legacy_api",
+            "-experimental_google_legacy_api",
             resolver.java_semantics.google_legacy_api,
         ),
         (
-            "incompatible_disable_non_executable_java_binary",
+            "-incompatible_disable_non_executable_java_binary",
             resolver.java_semantics.disable_non_executable_java_binary,
         ),
         (
-            "incompatible_disable_starlark_host_transitions",
+            "-incompatible_disable_starlark_host_transitions",
             resolver.disable_starlark_host_transitions,
         ),
         (
-            "incompatible_java_info_merge_runtime_module_flags",
+            "-incompatible_java_info_merge_runtime_module_flags",
             resolver.java_semantics.java_info_merge_runtime_module_flags,
+        ),
+        (
+            "-incompatible_use_cc_configure_from_rules",
+            native.rc.use_cc_configure_from_rules_cc,
         ),
     ]
     .into_iter()
     .filter(|(_, value)| *value)
     .map(|(name, value)| format!("{name}={value}"))
     .collect();
+    if resolver.allow_empty_glob {
+        starlark_semantics.push("+incompatible_disallow_empty_glob=false".to_owned());
+    }
+    if let Some(mode) = native.rc.starlark_utf8.filter(|mode| *mode != "WARNING") {
+        starlark_semantics.push(format!("incompatible_enforce_starlark_utf8={mode}"));
+    }
     // The ceiling a build would install (main's policy), not installed.
     let explicit_mb = match native.memory_limit_mb {
         Some(mb) => Some(bazel_rs::memory_limit::validate_cap_mb(mb)?),
@@ -5115,6 +5172,20 @@ impl NativeOptions {
             self.resolver.disable_starlark_host_transitions = value?;
             false
         } else if let Some(value) =
+            bazel_rs::configuration::boolean_option(arg, "incompatible_disallow_empty_glob")
+        {
+            // A Starlark semantics option of every loading command
+            // (packages/semantics/BuildLanguageOptions.java:436-449).
+            self.resolver.allow_empty_glob = !value?;
+            false
+        } else if let Some(value) = bazel_rs::configuration::boolean_option(
+            arg,
+            "incompatible_config_setting_private_default_visibility",
+        ) {
+            // PackageOptions (pkgcache/PackageOptions.java:132-143).
+            self.resolver.config_setting_private_default_visibility = value?;
+            false
+        } else if let Some(value) =
             bazel_rs::configuration::boolean_option(arg, "experimental_google_legacy_api")
         {
             // Starlark semantics options of every loading command
@@ -5559,6 +5630,21 @@ impl NativeOptions {
             used?
         } else if let Some(used) = reports.then(|| self.profile.parse(arg, next)).flatten() {
             used?
+        } else if let Some(used) = (!reports).then(|| self.profile.parse(arg, next)).flatten() {
+            // CommonCommandOptions' profiler options are every command's.
+            // A command that builds nothing natively writes no profile, so
+            // the options that only shape one (`--noslim_profile`,
+            // `--experimental_profile_include_*`, …) have no effect, as
+            // they have none on `build` without `--profile`; asking for a
+            // profile fails explicitly.
+            let used = used?;
+            if self.profile.path.is_some() || self.profile.generate == Some(true) {
+                return Err(format!(
+                    "unsupported option {arg:?}{}: bazel-rs writes no profile for `{registered_command}`; options are never silently ignored",
+                    unit.option.origin_suffix()
+                ));
+            }
+            used
         } else if let Some(used) = reports.then(|| self.exec_log.parse(arg, next)).flatten() {
             used?
         } else if let Some(used) = self.credentials.parse(arg, next) {

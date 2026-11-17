@@ -394,9 +394,15 @@ fn value(context: &Context, kind: &Kind) -> Result<Vec<u8>, String> {
         // The process that answers (genuine `--batch`: the batch JVM's pid).
         Kind::ServerPid => line(std::process::id()),
         Kind::StarlarkSemantics => {
+            // StarlarkSemantics.toString (StarlarkSemantics.java:233-250):
+            // sorted by key, a boolean's `+`/`-` default prefix dropped.
             let mut entries = context.starlark_semantics.clone();
-            entries.push("internal_bazel_only_utf_8_byte_strings=true".to_owned());
+            entries.push("-internal_bazel_only_utf_8_byte_strings=true".to_owned());
             entries.sort_by(|a, b| crate::native_rules::java_string_cmp(a, b));
+            let entries: Vec<&str> = entries
+                .iter()
+                .map(|entry| entry.strip_prefix(['+', '-']).unwrap_or(entry))
+                .collect();
             line(format!("StarlarkSemantics{{{}}}", entries.join(", ")))
         }
         Kind::WorkerMetrics => line("No persistent workers active."),

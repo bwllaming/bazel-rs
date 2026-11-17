@@ -229,7 +229,7 @@ fn unmodelled_rc_options_name_their_file_and_line() {
     let ws = Workspace::new();
     ws.file(
         ".bazelrc",
-        "# comment\nbuild \\\n  --distdir=/tmp/n41-unmodelled-cache\nbuild:cross --sandbox_add_mount_pair=/usr:/opt/mp\ncommon --repo_env=SECRET=value\n",
+        "# comment\nbuild \\\n  --binary_path=/tmp/n41-unmodelled-cache\nbuild:cross --sandbox_add_mount_pair=/usr:/opt/mp\ncommon --repo_env=SECRET=value\n",
     );
     // --repo_env is modelled (N40, tests/rc_options.rs); its value is never
     // printed.
@@ -238,12 +238,12 @@ fn unmodelled_rc_options_name_their_file_and_line() {
     assert!(!stderr(&output).contains("value"), "{}", stderr(&output));
     ws.file(
         ".bazelrc",
-        "# comment\nbuild \\\n  --distdir=/tmp/n41-unmodelled-cache\nbuild:cross --sandbox_add_mount_pair=/usr:/opt/mp\n",
+        "# comment\nbuild \\\n  --binary_path=/tmp/n41-unmodelled-cache\nbuild:cross --sandbox_add_mount_pair=/usr:/opt/mp\n",
     );
     let error = ws.failed(&[], &["build", ":ok"]);
     assert!(
         error.contains(&format!(
-            "unsupported option \"--distdir=/tmp/n41-unmodelled-cache\" from rc file {}:3 ('build' options)",
+            "unsupported option \"--binary_path=/tmp/n41-unmodelled-cache\" from rc file {}:3 ('build' options)",
             rc_path(&ws, ".bazelrc")
         )),
         "{error}"
@@ -252,7 +252,7 @@ fn unmodelled_rc_options_name_their_file_and_line() {
         &["--noworkspace_rc", "--bazelrc=.bazelrc"],
         &["build", "--config=cross", ":ok"],
     );
-    assert!(error.contains("--distdir"), "{error}");
+    assert!(error.contains("--binary_path"), "{error}");
     // A real remount is modelled now: the namespace sandbox mounts it, the
     // processwrapper-sandbox fallback ignores it like genuine's (docs/SANDBOX.md).
     ws.file(

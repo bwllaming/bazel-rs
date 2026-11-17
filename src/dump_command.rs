@@ -297,7 +297,7 @@ pub fn run(args: &[String], cache_dir: Option<&str>) -> Result<i32, String> {
     let options = match parse(args) {
         Ok(options) => options,
         Err(error) => {
-            eprintln!("ERROR: {error}");
+            crate::ui::eprint_event(&format!("ERROR: {error}"));
             return Ok(2);
         }
     };
@@ -337,7 +337,7 @@ pub fn run(args: &[String], cache_dir: Option<&str>) -> Result<i32, String> {
         Some(true) => {
             print!("{out}");
             out.clear();
-            eprintln!("ERROR: The requested node is not present.");
+            crate::ui::eprint_event("ERROR: The requested node is not present.");
             code = 7;
         }
         Some(false) => out.push_str("{\n}\n"),

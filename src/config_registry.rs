@@ -203,14 +203,25 @@ impl Configurations {
         }
         if configuration.native.is_exec {
             let mut baseline = self.exec_baseline(target_scoped).as_ref().clone();
-            if let [platform] = configuration.native.platforms.as_slice() {
+            if platform_in_output_dir(&configuration.native)
+                && let [platform] = configuration.native.platforms.as_slice()
+            {
                 let mut native = baseline.native.clone();
                 native.platforms = vec![platform.clone()];
                 baseline = Configuration::new(native, baseline.starlark.clone());
             }
             return self.intern(configuration, &baseline);
         }
-        let top = self.top_configuration().as_ref().clone();
+        let mut top = self.top_configuration().as_ref().clone();
+        // BuildConfigurationFunction.getBaselineOptions (:151-160): a target
+        // configuration that uses its platform in the output directory
+        // (`--experimental_platform_in_output_dir=yes`) gets that platform
+        // in its baseline.
+        if platform_in_output_dir(&configuration.native) {
+            let mut native = top.native.clone();
+            native.platforms = vec![target_platform(&configuration.native).clone()];
+            top = Configuration::new(native, top.starlark.clone());
+        }
         self.intern(configuration, &top)
     }
 
@@ -257,7 +268,9 @@ impl Configurations {
         // baseline gets the configuration's own target platform
         // (BuildConfigurationFunction.java:151-160, BaselineOptionsFunction.java:72-77).
         let mut baseline = self.exec_baseline(target_scoped).as_ref().clone();
-        if let [platform] = exec.native.platforms.as_slice() {
+        if platform_in_output_dir(&exec.native)
+            && let [platform] = exec.native.platforms.as_slice()
+        {
             let mut native = baseline.native.clone();
             native.platforms = vec![platform.clone()];
             baseline = Configuration::new(native, baseline.starlark.clone());
@@ -347,15 +360,16 @@ const DEFAULT_PLATFORM_NAMES: [&str; 5] = [
 /// The CPU/platform descriptor of `configuration`
 /// (OutputPathMnemonicComputer.handlePlatformCpuDescriptor,
 /// analysis/config/OutputPathMnemonicComputer.java:247-282) and whether
-/// `platforms` is explicit in the output path. Only exec configurations use
-/// their platform (CoreOptions.usePlatformInOutputDir, CoreOptions.java:1146-1149:
-/// `--experimental_platform_in_output_dir=auto`): with one platform,
+/// `platforms` is explicit in the output path. Exec configurations use
+/// their platform (CoreOptions.usePlatformInOutputDir, CoreOptions.java:1146-1156:
+/// `--experimental_platform_in_output_dir=auto`), target configurations
+/// only under `yes` ([`platform_in_output_dir`]): with one platform,
 /// computePlatformName's legacy heuristic
 /// (`--experimental_use_platforms_in_output_dir_legacy_heuristic`, default
 /// true, CoreOptions.java:182-194; no `--experimental_override_platform_cpu_name`)
 /// gives the platform's name unless it is a default name
 /// (PlatformOptions.platformIsDefault), then the CPU. Target configurations
-/// use the CPU (`cpu` explicit).
+/// use the CPU (`cpu` explicit) otherwise.
 fn cpu_descriptor(configuration: &Configuration) -> (&str, bool) {
     let native = &configuration.native;
     // `--cpu` (the command line's, a Starlark transition's (N18c), or the
@@ -363,15 +377,40 @@ fn cpu_descriptor(configuration: &Configuration) -> (&str, bool) {
     // Bazel (`arm-fastbuild`, `ppc-opt-exec`); the host CPU is `k8` (x86_64)
     // or `aarch64` (arm64).
     let cpu = native.cpu.as_deref().unwrap_or(native_cpu());
-    if !native.is_exec {
+    if !platform_in_output_dir(native) {
         return (cpu, false);
     }
     match native.platforms.as_slice() {
-        [platform] if DEFAULT_PLATFORM_NAMES.contains(&platform.name.as_str()) => (cpu, true),
-        [platform] => (platform.name.as_str(), true),
-        // Not marked explicit, so the ST- hash covers `platforms`.
-        _ => ("multi-platform", false),
+        [_, _, ..] => ("multi-platform", false),
+        _ => {
+            let platform = target_platform(native);
+            if DEFAULT_PLATFORM_NAMES.contains(&platform.name.as_str()) {
+                (cpu, true)
+            } else {
+                (platform.name.as_str(), true)
+            }
+        }
     }
+}
+
+/// CoreOptions.usePlatformInOutputDir (analysis/config/CoreOptions.java
+/// :1146-1156): an exec configuration under `yes` or `auto` (the default),
+/// a target configuration under `yes` (no
+/// `--experimental_limit_output_dir_to_platforms` is modelled).
+fn platform_in_output_dir(native: &crate::configuration::NativeOptions) -> bool {
+    use crate::configuration::OptionValue;
+    let mode = native.raw_value("experimental_platform_in_output_dir");
+    if native.is_exec {
+        !matches!(mode, Some(OptionValue::Enum("NO")))
+    } else {
+        matches!(mode, Some(OptionValue::Enum("YES")))
+    }
+}
+
+/// PlatformOptions.computeTargetPlatform: the first `--platforms` entry,
+/// else the host platform.
+fn target_platform(native: &crate::configuration::NativeOptions) -> &Label {
+    native.platforms.first().unwrap_or(&native.host_platform)
 }
 
 /// OutputPathMnemonicComputer.computeMnemonic

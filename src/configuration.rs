@@ -608,6 +608,50 @@ pub const VALUE_OPTIONS: &[ValueOption] = &[
         exec: ExecValue::Propagate,
         exec_source: "builtin_exec_platforms.bzl:445",
     },
+    // PythonOptions.incompatibleDefaultToExplicitInitPy
+    // (`--incompatible_default_to_explicit_init_py`): read only through
+    // ctx.fragments.py.default_to_explicit_init_py (PythonConfiguration
+    // .java:127-137), which rules_python >= 1.7 replaces with its Starlark
+    // flag (MODULE.bazel flag_alias, crate::flag_alias, which then routes
+    // this option there); otherwise configuration data (config_setting).
+    // Propagated to exec configurations.
+    ValueOption {
+        option: OptionDef {
+            name: "incompatible_default_to_explicit_init_py",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "false",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/python/PythonOptions.java:46-57",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:444",
+    },
+    // CoreOptions.platformInOutputDir (`--experimental_platform_in_output_dir`,
+    // TriState, default auto): `yes` names a target configuration's output
+    // directory after its platform (crate::config_registry::cpu_descriptor,
+    // CoreOptions.usePlatformInOutputDir :1146-1156; exec configurations do
+    // under auto already). Propagated to exec configurations.
+    ValueOption {
+        option: OptionDef {
+            name: "experimental_platform_in_output_dir",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::TriState,
+            default: "auto",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/analysis/config/CoreOptions.java:162-180",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:240",
+    },
     // CoreOptions.collectCodeCoverage: held by the typed field
     // NativeOptions::collect_code_coverage, which only a Starlark
     // transition sets (N47); the command line (and `bazel coverage`) stays
@@ -3459,6 +3503,8 @@ mod tests {
                 "experimental_strict_java_deps",
                 "enable_runfiles",
                 "incompatible_python_disallow_native_rules",
+                "incompatible_default_to_explicit_init_py",
+                "experimental_platform_in_output_dir",
                 "collect_code_coverage",
                 "apple_platform_type",
                 "dynamic_mode"

@@ -168,8 +168,8 @@ fn flags_test_command_and_rc_are_not_silently_ignored() {
     let ws = Workspace::new("filegroup(name='ok')\n");
     for args in [
         &["test", ":ok"][..],
-        // --distdir (extra archive directories) is not modelled.
-        &["build", "--distdir=/tmp/n41-unmodelled-cache", ":ok"],
+        // --binary_path is not modelled.
+        &["build", "--binary_path=/tmp/n41-unmodelled-cache", ":ok"],
         // Stardoc rule_class_info (--proto:rule_classes) is not implemented.
         &["query", "--output=proto", "--proto:rule_classes", ":ok"],
     ] {

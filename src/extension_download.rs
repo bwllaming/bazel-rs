@@ -24,10 +24,16 @@ use std::time::Duration;
 pub(crate) const BUFFER: usize = 64 * 1024;
 /// HttpConnector.MAX_REDIRECTS (HttpConnector.java:57).
 const MAX_REDIRECTS: usize = 40;
-/// HttpConnector.MAX_CONNECT_TIMEOUT_MS (HttpConnector.java:60).
-pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-/// HttpConnector.READ_TIMEOUT_MS (HttpConnector.java:61): per read, not total.
-pub(crate) const READ_TIMEOUT: Duration = Duration::from_secs(20);
+/// HttpConnector.MAX_CONNECT_TIMEOUT_MS (HttpConnector.java:60), scaled by
+/// `--http_timeout_scaling` (crate::download_options).
+pub(crate) fn connect_timeout() -> Duration {
+    crate::download_options::scaled(Duration::from_secs(10))
+}
+/// HttpConnector.READ_TIMEOUT_MS (HttpConnector.java:61): per read, not
+/// total; scaled by `--http_timeout_scaling`.
+pub(crate) fn read_timeout() -> Duration {
+    crate::download_options::scaled(Duration::from_secs(20))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TypedIoError {
@@ -79,9 +85,12 @@ pub(crate) fn io_error(error: io::Error) -> TypedIoError {
     TypedIoError::Completion(format!("filesystem or response stream {:?}", error.kind()))
 }
 
-/// HttpConnector.MAX_ATTEMPTS (HttpConnector.java:57, 274): connection
-/// failures and retryable statuses are tried this often per URL.
-pub(crate) const CONNECT_ATTEMPTS: u32 = 8;
+/// HttpConnector.MAX_ATTEMPTS (HttpConnector.java:57, 274) or
+/// `--http_connector_attempts`: connection failures and retryable statuses
+/// are tried this often per URL.
+pub(crate) fn connect_attempts() -> u32 {
+    crate::download_options::connect_attempts()
+}
 
 /// DownloadManager's default `--experimental_repository_downloader_retries`
 /// (RepositoryOptions.java:180-187; DownloadManager.shouldRetryDownload,
@@ -464,8 +473,8 @@ fn client_builder() -> reqwest::blocking::ClientBuilder {
         .no_brotli()
         .no_deflate()
         .no_zstd()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(READ_TIMEOUT)
+        .connect_timeout(connect_timeout())
+        .timeout(read_timeout())
         // Idle keep-alive connections are reused for a while, then closed.
         .pool_idle_timeout(POOL_IDLE_TIMEOUT)
 }
@@ -665,8 +674,9 @@ pub(crate) fn open_with_headers(
     // Only a validated 301 updates the next attempt's origin. The immutable
     // original URL still controls original-path gzip suffix suppression.
     let mut retry_origin: Option<Url> = None;
-    for attempt in 0..CONNECT_ATTEMPTS {
-        let last = attempt + 1 == CONNECT_ATTEMPTS;
+    let attempts = connect_attempts();
+    for attempt in 0..attempts {
+        let last = attempt + 1 == attempts;
         let start = retry_origin.as_ref().unwrap_or(original);
         let mut current = start.clone();
         let mut redirects = 0;
@@ -1808,7 +1818,7 @@ pub(crate) mod tests {
             ]
             .into_iter()
             // HttpConnector tries a 500 MAX_ATTEMPTS times.
-            .chain((0..CONNECT_ATTEMPTS).map(|_| response(500, b"", "")))
+            .chain((0..connect_attempts()).map(|_| response(500, b"", "")))
             .chain([response(418, b"", "")])
             .collect(),
         );

@@ -31,6 +31,122 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 static QUIET: AtomicBool = AtomicBool::new(false);
 
+/// `--show_timestamps` (UiOptions.showTimestamp, runtime/UiOptions.java:202-208).
+static TIMESTAMPS: AtomicBool = AtomicBool::new(false);
+
+/// Set `--show_timestamps` (UiEventHandler.java:219): every event line the
+/// console prints (INFO, WARNING, ERROR, DEBUG, the progress lines) starts
+/// with the local time as `(HH:mm:ss) ` (TIMESTAMP_FORMAT, :104-105).
+pub fn set_show_timestamps(show: bool) {
+    TIMESTAMPS.store(show, Ordering::SeqCst);
+}
+
+/// Whether `--show_timestamps` is in effect.
+pub fn show_timestamps() -> bool {
+    TIMESTAMPS.load(Ordering::Relaxed)
+}
+
+/// The client's UTC offset in seconds (Java's `ZoneId.systemDefault()`):
+/// `date +%z` once per process (no time zone database in this binary, and
+/// no `unsafe` for `localtime_r`); UTC when that fails. A DST change during
+/// the command is not followed.
+fn utc_offset() -> i64 {
+    static OFFSET: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    *OFFSET.get_or_init(|| {
+        crate::spawn_lock::output(
+            std::process::Command::new("date")
+                .arg("+%z")
+                .stdin(std::process::Stdio::null()),
+        )
+        .ok()
+        .and_then(|output| parse_utc_offset(String::from_utf8_lossy(&output.stdout).trim()))
+        .unwrap_or(0)
+    })
+}
+
+/// `±HHMM` as seconds.
+fn parse_utc_offset(text: &str) -> Option<i64> {
+    let (sign, digits) = match text.as_bytes().first()? {
+        b'+' => (1, &text[1..]),
+        b'-' => (-1, &text[1..]),
+        _ => return None,
+    };
+    if digits.len() != 4 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let hours: i64 = digits[..2].parse().ok()?;
+    let minutes: i64 = digits[2..].parse().ok()?;
+    Some(sign * (hours * 3600 + minutes * 60))
+}
+
+/// The local civil time of `seconds` since the epoch: `(year, month, day,
+/// hour, minute, second)` (days to civil date: Howard Hinnant's algorithm).
+fn civil(seconds: i64) -> (i64, i64, i64, i64, i64, i64) {
+    let days = seconds.div_euclid(86_400);
+    let rest = seconds.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    (year, month, day, rest / 3600, rest % 3600 / 60, rest % 60)
+}
+
+fn local_now() -> (i64, i64, i64, i64, i64, i64) {
+    civil(now_seconds() + utc_offset())
+}
+
+fn now_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(0))
+}
+
+/// `(HH:mm:ss) ` of now when `--show_timestamps` is on, else empty.
+pub fn timestamp_prefix() -> String {
+    if !show_timestamps() {
+        return String::new();
+    }
+    let (_, _, _, hour, minute, second) = local_now();
+    format!("({hour:02}:{minute:02}:{second:02}) ")
+}
+
+/// UiEventHandler.maybeAddDate (:368-377): under `--show_timestamps` the
+/// command's first console line is `INFO: Current date is yyyy-MM-dd`.
+pub fn announce_date() {
+    if !show_timestamps() {
+        return;
+    }
+    let (year, month, day, ..) = local_now();
+    note(&format!(
+        "INFO: Current date is {year:04}-{month:02}-{day:02}"
+    ));
+}
+
+/// An event line Bazel's UiEventHandler prints with its kind (`ERROR: `,
+/// `WARNING: `, `INFO: `, `DEBUG: `, `FATAL: `): `text` with the
+/// `--show_timestamps` prefix; any other text as it is.
+pub fn event_line(text: &str) -> Cow<'_, str> {
+    if show_timestamps()
+        && ["ERROR: ", "WARNING: ", "INFO: ", "DEBUG: ", "FATAL: "]
+            .iter()
+            .any(|kind| text.starts_with(kind))
+    {
+        Cow::Owned(format!("{}{text}", timestamp_prefix()))
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
+/// `eprintln!` of an event line ([`event_line`]) in one write.
+pub fn eprint_event(text: &str) {
+    eprint_line(&event_line(text));
+}
+
 /// Set the command's verbosity (the startup options' `--[no]quiet`).
 pub fn set_quiet(quiet: bool) {
     QUIET.store(quiet, Ordering::SeqCst);
@@ -122,7 +238,11 @@ pub fn note(text: &str) {
         let bytes = marked(text);
         let _ = std::io::stderr().lock().write_all(&bytes);
     } else if !quiet() && !hidden(text.as_bytes()) {
-        eprint_line(text);
+        if show_timestamps() {
+            eprint_line(&format!("{}{text}", timestamp_prefix()));
+        } else {
+            eprint_line(text);
+        }
     }
 }
 
@@ -218,6 +338,7 @@ pub fn event_with_output(text: &str, stdout: &[u8], stderr: &[u8], informational
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut err = std::io::stderr().lock();
+    let _ = err.write_all(timestamp_prefix().as_bytes());
     let _ = err.write_all(text.as_bytes());
     if !text.ends_with('\n') {
         let _ = err.write_all(b"\n");
@@ -656,6 +777,7 @@ impl Filter {
             Some(false) => {}
             None if self.hidden.is_empty() => {
                 self.note_shown = Some(true);
+                out.extend_from_slice(timestamp_prefix().as_bytes());
                 out.extend_from_slice(bytes);
             }
             None => {
@@ -673,6 +795,7 @@ impl Filter {
         let head = std::mem::take(&mut self.note_head);
         let shown = !self.hidden.iter().any(|prefix| head.starts_with(prefix));
         if shown {
+            out.extend_from_slice(timestamp_prefix().as_bytes());
             out.extend_from_slice(&head);
         }
         self.note_shown = Some(shown);
@@ -734,6 +857,17 @@ macro_rules! note {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn civil_time_and_offsets() {
+        assert_eq!(civil(0), (1970, 1, 1, 0, 0, 0));
+        // 2026-11-17T01:12:39Z.
+        assert_eq!(civil(1_794_877_959), (2026, 11, 17, 1, 12, 39));
+        assert_eq!(civil(951_782_400), (2000, 2, 29, 0, 0, 0));
+        assert_eq!(parse_utc_offset("+0530"), Some(19_800));
+        assert_eq!(parse_utc_offset("-0800"), Some(-28_800));
+        assert_eq!(parse_utc_offset("UTC"), None);
+    }
 
     #[test]
     fn writes_of_shared_work_are_tagged_and_replay_as_themselves() {

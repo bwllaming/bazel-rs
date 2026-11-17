@@ -802,6 +802,8 @@ pub struct UiOptions {
     pub title: bool,
     /// None: the native default (3 running actions).
     pub actions_shown: Option<usize>,
+    /// `--show_timestamps` (UiOptions.showTimestamp; crate::ui::set_show_timestamps).
+    pub show_timestamps: bool,
 }
 
 impl Default for UiOptions {
@@ -813,6 +815,7 @@ impl Default for UiOptions {
             rate_limit: 0.2,
             title: false,
             actions_shown: None,
+            show_timestamps: false,
         }
     }
 }
@@ -871,6 +874,12 @@ impl UiOptions {
         if let Some(value) = boolean_option(arg, "show_progress") {
             return Some(value.map(|value| {
                 self.show_progress = value;
+                false
+            }));
+        }
+        if let Some(value) = boolean_option(arg, "show_timestamps") {
+            return Some(value.map(|value| {
+                self.show_timestamps = value;
                 false
             }));
         }

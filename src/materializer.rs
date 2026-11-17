@@ -326,15 +326,27 @@ fn materialize_registry(
         Integrity::parse(value.as_str().ok_or("patch integrity must be a string")?)?;
     }
     let mut urls = Vec::new();
+    let mut registry_mirrors = Vec::new();
     if let Some(config) = &config
         && let Some(mirrors) = config.get("mirrors")
     {
-        let mirrors = mirrors
+        for mirror in mirrors
             .as_array()
-            .ok_or("registry mirrors must be an array")?;
+            .ok_or("registry mirrors must be an array")?
+        {
+            registry_mirrors.push(
+                mirror
+                    .as_str()
+                    .ok_or("registry mirror must be a string")?
+                    .to_owned(),
+            );
+        }
+    }
+    // `--module_mirrors` first (IndexRegistry.java:463-470).
+    let mirrors = crate::download_options::archive_mirrors(registry, &registry_mirrors);
+    if !mirrors.is_empty() {
         let source_url = reqwest::Url::parse(url).map_err(|_| "invalid archive source URL")?;
-        for mirror in mirrors {
-            let mirror = mirror.as_str().ok_or("registry mirror must be a string")?;
+        for mirror in &mirrors {
             let authority = source_url.host_str().unwrap_or("");
             let port = source_url.port().map_or(String::new(), |p| format!(":{p}"));
             let query = source_url
@@ -725,11 +737,50 @@ fn cached_download(
         crate::cache_gc::note_used_path(&path);
         return Ok(path);
     }
+    // --downloader_config, then --distdir (DownloadManager.downloadInExecutor,
+    // java:206-215, 291-329; crate::download_options), before the network.
+    let urls = crate::download_options::rewrite_urls(urls)
+        .map_err(|blocked| format!("Cache miss and no url specified - {blocked}"))?;
+    if crate::download_options::has_distdir() {
+        let main = urls.first().map(String::as_str);
+        let destination = crate::download_options::fs_safe(
+            &main
+                .and_then(crate::download_options::url_base_name)
+                .unwrap_or_else(|| "temp".to_owned()),
+        );
+        let names = crate::download_options::candidate_names(main, &destination);
+        if let Some(found) = crate::download_options::distdir_lookup(&names, &|candidate| {
+            integrity.verify_file(candidate).is_ok()
+        }) {
+            let temp = tempfile::NamedTempFile::new_in(&directory)
+                .map_err(|e| format!("cannot create download file: {e}"))?;
+            fs::copy(&found, temp.path())
+                .map_err(|e| format!("cannot copy {}: {e}", found.display()))?;
+            if integrity.verify_file(temp.path()).is_ok() {
+                reject_symlink(&path)?;
+                temp.persist(&path)
+                    .map_err(|e| format!("cannot publish cache file: {e}"))?;
+                // DownloadManager.java:310-315: a failing cache store warns.
+                if let Err(error) = crate::repository_cache::put(
+                    integrity.kind(),
+                    &integrity.digest,
+                    canonical_id,
+                    &path,
+                ) {
+                    crate::ui::note(&format!(
+                        "WARNING: Failed to copy {} to repository cache: {error}",
+                        found.display()
+                    ));
+                }
+                return Ok(path);
+            }
+        }
+    }
     if !downloads_enabled {
         return Err("repository downloads are disabled by --repository_disable_download; no verified cached blob is available".into());
     }
     let mut failures = Vec::new();
-    for url in urls {
+    for url in &urls {
         crate::module_root_warm::check()?;
         let mut temp = tempfile::NamedTempFile::new_in(&directory)
             .map_err(|e| format!("cannot create download file: {e}"))?;

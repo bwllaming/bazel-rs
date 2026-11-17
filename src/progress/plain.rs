@@ -256,6 +256,11 @@ impl Emitter {
     fn write(&mut self, lines: &[String], now: Instant) {
         let mut bytes = Vec::new();
         for line in lines {
+            // `--show_timestamps`: the progress line starts with the time
+            // too (UiEventHandler.doRefresh, :1151-1160).
+            if !line.is_empty() {
+                bytes.extend_from_slice(crate::ui::timestamp_prefix().as_bytes());
+            }
             bytes.extend_from_slice(line.as_bytes());
             bytes.push(b'\n');
         }

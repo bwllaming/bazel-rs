@@ -64,6 +64,17 @@ pub struct ResolverOptions {
     /// default false): `attr.*(cfg = "host")` fails at .bzl evaluation
     /// (analysis/starlark/StarlarkAttrModule.java:520-531).
     pub disable_starlark_host_transitions: bool,
+    /// `--noincompatible_disallow_empty_glob` (a Starlark semantics option,
+    /// packages/semantics/BuildLanguageOptions.java:436-449; default: the
+    /// flag is true, so this is false): the default of `glob(allow_empty)`
+    /// (StarlarkNativeModule.java:108-117).
+    pub allow_empty_glob: bool,
+    /// `--incompatible_config_setting_private_default_visibility`
+    /// (pkgcache/PackageOptions.java:132-143, default false): a
+    /// `config_setting` without `visibility` gets the package default
+    /// visibility instead of public (Rule.getDefaultVisibility,
+    /// packages/Rule.java:694-710).
+    pub config_setting_private_default_visibility: bool,
     /// The Java Starlark semantics options read by
     /// `java_common.internal_DO_NOT_USE()` (JavaStarlarkCommon.java:383-402):
     /// `--experimental_google_legacy_api`
@@ -1463,7 +1474,9 @@ fn verify_root_direct_deps(
         } else {
             // In the console's order (module resolution may run inside
             // analysis, crate::ui::raw).
-            crate::ui::raw(format!("ERROR: {message}\n").as_bytes());
+            crate::ui::raw(
+                format!("{}\n", crate::ui::event_line(&format!("ERROR: {message}"))).as_bytes(),
+            );
             failure = true;
         }
     }

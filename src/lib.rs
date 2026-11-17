@@ -60,6 +60,7 @@ pub mod debug_print;
 mod depset_items;
 pub mod digest_memo;
 pub mod dir_stamps;
+pub mod download_options;
 pub mod download_proxy;
 pub mod dump_command;
 pub mod engine;

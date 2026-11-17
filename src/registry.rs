@@ -109,6 +109,16 @@ impl Registry {
             Self::Url(base) => {
                 let url = resource_url(base, relative)?;
                 let _span = crate::timeline::span("registry", || url.to_string());
+                // --downloader_config (DownloadManager.downloadAndReadOneUrlForBzlmod,
+                // :436-449): the registry file comes from the rewritten URLs.
+                if crate::download_options::rewriting() {
+                    let original = url.to_string();
+                    let rewritten =
+                        crate::download_options::rewrite_urls(std::slice::from_ref(&original))?;
+                    if rewritten != [original] {
+                        return read_rewritten(&rewritten);
+                    }
+                }
                 read_http(url)
             }
         }
@@ -347,7 +357,7 @@ fn redirect_allowed(target: &Url, previous: &[Url]) -> bool {
 // Pooled keep-alive connections (reqwest's default pool), closed after 30 s
 // idle: below common server keep-alive timeouts (nginx 75 s, CDNs 60 s).
 static CLIENT: LazyLock<Result<Client, String>> =
-    LazyLock::new(|| client_with(crate::extension_download::READ_TIMEOUT));
+    LazyLock::new(|| client_with(crate::extension_download::read_timeout()));
 
 /// The registry client. Timeouts are Bazel's HttpConnector values shared with
 /// the repository transport (10 s connect, `read_timeout` per operation,
@@ -361,7 +371,7 @@ fn client_with(read_timeout: Duration) -> Result<Client, String> {
     crate::download_proxy::configure(Client::builder().no_proxy())
         .user_agent("bazel-rs/0.1")
         .referer(false)
-        .connect_timeout(crate::extension_download::CONNECT_TIMEOUT)
+        .connect_timeout(crate::extension_download::connect_timeout())
         .timeout(read_timeout)
         // Explicit even if another dependency enables these reqwest features.
         .no_gzip()
@@ -388,6 +398,24 @@ fn redirect_policy() -> Policy {
             attempt.follow()
         }
     })
+}
+
+/// A registry file from the rewritten `urls`, tried in order
+/// (HttpDownloader.downloadAndRead): the first found; else the last error,
+/// or not found when every URL answered 404/410.
+fn read_rewritten(urls: &[String]) -> Result<Option<Vec<u8>>, String> {
+    let mut error = None;
+    for text in urls {
+        match http_url(text).and_then(read_http) {
+            Ok(Some(bytes)) => return Ok(Some(bytes)),
+            Ok(None) => {}
+            Err(failure) => error = Some(failure),
+        }
+    }
+    match error {
+        Some(error) => Err(error),
+        None => Ok(None),
+    }
 }
 
 fn read_http(url: Url) -> Result<Option<Vec<u8>>, String> {
@@ -469,8 +497,8 @@ fn warm_http_to(url: Url, writer: &mut dyn Write) -> Result<Option<u64>, String>
                 crate::download_proxy::configure_async(reqwest::Client::builder().no_proxy())
                     .user_agent("bazel-rs/0.1")
                     .referer(false)
-                    .connect_timeout(crate::extension_download::CONNECT_TIMEOUT)
-                    .read_timeout(crate::extension_download::READ_TIMEOUT)
+                    .connect_timeout(crate::extension_download::connect_timeout())
+                    .read_timeout(crate::extension_download::read_timeout())
                     .no_gzip()
                     .no_brotli()
                     .no_deflate()
@@ -497,7 +525,7 @@ fn warm_http_to(url: Url, writer: &mut dyn Write) -> Result<Option<u64>, String>
             .expect("live runtime")
             .block_on(async {
                 let mut response = warm_await(tokio::time::timeout(
-                    crate::extension_download::READ_TIMEOUT,
+                    crate::extension_download::read_timeout(),
                     request.send(),
                 ))
                 .await?
@@ -543,7 +571,7 @@ fn open_http_with(
     // MAX_ATTEMPTS times; 404/410 and other 4xx are final.
     let mut attempt = 0;
     let response = loop {
-        let last = attempt + 1 == crate::extension_download::CONNECT_ATTEMPTS;
+        let last = attempt + 1 == crate::extension_download::connect_attempts();
         let mut request = client
             .get(url.as_str())
             .header(reqwest::header::ACCEPT_ENCODING, "identity");
@@ -968,7 +996,7 @@ mod tests {
             .into_iter()
             // HttpConnector tries a 500 MAX_ATTEMPTS times (404/410 once).
             .chain(
-                (0..crate::extension_download::CONNECT_ATTEMPTS)
+                (0..crate::extension_download::connect_attempts())
                     .map(|_| response(500, "", b"failure")),
             )
             .chain([response(206, "", b"partial"), response(200, "", &[255])])
@@ -997,7 +1025,7 @@ mod tests {
         let requests = server.requests.lock().unwrap();
         assert_eq!(
             requests.len(),
-            6 + crate::extension_download::CONNECT_ATTEMPTS as usize
+            6 + crate::extension_download::connect_attempts() as usize
         );
         assert!(requests[0].starts_with("GET /prefix/modules/a/1/MODULE.bazel HTTP/1.1\r\n"));
         assert!(
@@ -1106,7 +1134,7 @@ mod tests {
     #[test]
     fn registry_reads_retry_a_closed_pooled_connection_or_a_reset() {
         use crate::extension_download::tests::flaky_keepalive_server;
-        let client = client_with(crate::extension_download::READ_TIMEOUT).unwrap();
+        let client = client_with(crate::extension_download::read_timeout()).unwrap();
         let (url, accepted) = flaky_keepalive_server(true, b"module()");
         for _ in 0..2 {
             let response = open_http_with(&client, Url::parse(&format!("{url}/m")).unwrap())

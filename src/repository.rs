@@ -1974,6 +1974,17 @@ impl RepositorySet {
         self.state.options.disable_starlark_host_transitions
     }
 
+    /// `--noincompatible_disallow_empty_glob` (ResolverOptions).
+    pub(crate) fn allow_empty_glob(&self) -> bool {
+        self.state.options.allow_empty_glob
+    }
+
+    /// `--incompatible_config_setting_private_default_visibility`
+    /// (ResolverOptions).
+    pub(crate) fn config_setting_private_default_visibility(&self) -> bool {
+        self.state.options.config_setting_private_default_visibility
+    }
+
     /// The Java Starlark semantics options (ResolverOptions::java_semantics).
     pub(crate) fn java_semantics(&self) -> crate::module_graph::JavaSemantics {
         self.state.options.java_semantics
@@ -2859,20 +2870,30 @@ impl RepositorySet {
                             format!("Missing integrity for module {name}@{version}")
                         })?;
                         let mut urls = Vec::new();
-                        let mirrors = registry_config
-                            .as_ref()
-                            .and_then(|config| config.get("mirrors"))
-                            .and_then(serde_json::Value::as_array)
-                            .cloned()
-                            .unwrap_or_default();
+                        // `--module_mirrors` first (IndexRegistry.java:463-470).
+                        let mirrors = crate::download_options::archive_mirrors(
+                            registry,
+                            &registry_config
+                                .as_ref()
+                                .and_then(|config| config.get("mirrors"))
+                                .and_then(serde_json::Value::as_array)
+                                .map(|mirrors| {
+                                    mirrors
+                                        .iter()
+                                        .filter_map(serde_json::Value::as_str)
+                                        .map(str::to_owned)
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default(),
+                        );
                         let (authority, path_and_query) = url
                             .split_once("://")
                             .map(|(_, rest)| {
                                 rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p))
                             })
                             .unwrap_or(("", ""));
-                        for mirror in mirrors.iter().filter_map(serde_json::Value::as_str) {
-                            let mut mirrored = mirror.to_owned();
+                        for mirror in &mirrors {
+                            let mut mirrored = mirror.clone();
                             for segment in [authority, &format!("/{path_and_query}")] {
                                 if !mirrored.ends_with('/') && !segment.starts_with('/') {
                                     mirrored.push('/');

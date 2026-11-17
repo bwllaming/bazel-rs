@@ -82,7 +82,9 @@ pub const FORMAT: u32 = 6;
 /// * the UI options (crate::progress: `curses`, `color`, `show_progress`,
 ///   `show_progress_rate_limit`, `progress_in_terminal_title`,
 ///   `ui_actions_shown` and its old name): read by the progress display
-///   only, whose lines never enter a snapshot window.
+///   only, whose lines never enter a snapshot window. `show_timestamps`
+///   and `terminal_columns`: console only (the time prefix is added when a
+///   line reaches the console, a replayed one included; crate::ui).
 pub const EXCLUDED: &[&str] = &[
     "jobs",
     "loading_phase_threads",
@@ -184,6 +186,8 @@ pub const EXCLUDED: &[&str] = &[
     "progress_in_terminal_title",
     "ui_actions_shown",
     "experimental_ui_actions_shown",
+    "show_timestamps",
+    "terminal_columns",
     "build_event_json_file",
     "build_event_binary_file",
     "build_event_text_file",

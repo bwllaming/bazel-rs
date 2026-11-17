@@ -37,6 +37,58 @@ pub struct RcOptions {
     /// `--experimental_repository_downloader_retries`
     /// (RepositoryOptions.java:179-188; default 5).
     pub repository_downloader_retries: Option<i32>,
+    /// `--http_connector_attempts` (CommonCommandOptions.java:675-681;
+    /// default 8): crate::download_options.
+    pub http_connector_attempts: Option<i32>,
+    /// `--http_timeout_scaling` (CommonCommandOptions.java:667-673;
+    /// default 1.0): crate::download_options.
+    pub http_timeout_scaling: Option<f64>,
+    /// `--downloader_config` (old name `--experimental_downloader_config`;
+    /// RepositoryOptions.java:278-291), the last value: crate::download_options.
+    pub downloader_config: Option<String>,
+    /// `--distdir` (old name `--experimental_distdir`; RepositoryOptions.java
+    /// :190-201, allowMultiple), in order: crate::download_options.
+    pub distdir: Vec<String>,
+    /// `--module_mirrors` (RepositoryOptions.java:112-133, allowMultiple
+    /// `[registry=]mirror,…` assignments), in order: crate::download_options.
+    pub module_mirrors: Vec<(String, Vec<String>)>,
+    /// Old option names used (OptionsParserImpl.maybeAddOldNameWarning).
+    pub warnings: Vec<String>,
+    /// `--incompatible_enforce_starlark_utf8` (`OFF`, `WARNING`, `ERROR`),
+    /// for `info starlark-semantics` only.
+    pub starlark_utf8: Option<&'static str>,
+    /// `--incompatible_use_cc_configure_from_rules_cc`, for `info
+    /// starlark-semantics` only (no other effect; see [`utf8_enforcement`]'s
+    /// neighbours).
+    pub use_cc_configure_from_rules_cc: bool,
+}
+
+/// `--NAME`'s value through Converters.IntegerConverter.
+fn int_value(form: &str, value: &str) -> Result<i32, String> {
+    value
+        .parse::<i32>()
+        .map_err(|_| format!("While parsing option {form}: '{value}' is not an int"))
+}
+
+/// Converters.AssignmentToListOfValuesConverter with empty keys allowed
+/// (StringToStringListConverter, Converters.java:525-597).
+pub fn string_to_string_list(value: &str) -> Result<(String, Vec<String>), String> {
+    let (key, values) = match value.find('=') {
+        Some(at) if at > 0 => (&value[..at], &value[at + 1..]),
+        Some(at) => ("", &value[at + 1..]),
+        None => ("", value),
+    };
+    let values: Vec<String> = values.split(',').map(str::to_owned).collect();
+    if values.iter().any(String::is_empty) {
+        if values.len() == 1 {
+            return Ok((key.to_owned(), Vec::new()));
+        }
+        return Err(
+            "Variable definitions must not contain empty strings or leading / trailing commas"
+                .to_owned(),
+        );
+    }
+    Ok((key.to_owned(), values))
 }
 
 /// `ARG :: MESSAGE` (BlazeOptionHandler.java:104, 628-637).
@@ -174,6 +226,91 @@ impl RcOptions {
             self.repository_downloader_retries = Some(retries);
             return Ok(Some(used));
         }
+        // CommonCommandOptions' HTTP downloader settings (every command).
+        if let Some(parsed) = value_option(arg, next, "http_connector_attempts") {
+            let (form, value, used) = parsed?;
+            self.http_connector_attempts = Some(int_value(&form, value)?);
+            return Ok(Some(used));
+        }
+        if let Some(parsed) = value_option(arg, next, "http_timeout_scaling") {
+            let (form, value, used) = parsed?;
+            // Converters.DoubleConverter (Double.parseDouble).
+            let scaling = crate::download_options::parse_java_double(value)
+                .ok_or_else(|| format!("While parsing option {form}: '{value}' is not a double"))?;
+            self.http_timeout_scaling = Some(scaling);
+            return Ok(Some(used));
+        }
+        // RepositoryOptions (every command): the downloader's URL rewriter,
+        // distribution directories and module mirrors.
+        for (name, old) in [
+            ("downloader_config", "experimental_downloader_config"),
+            ("distdir", "experimental_distdir"),
+        ] {
+            for given in [name, old] {
+                if let Some(parsed) = value_option(arg, next, given) {
+                    let (_, value, used) = parsed?;
+                    if given == old {
+                        let warning = format!("Option '{old}' is deprecated: Use --{name} instead");
+                        if !self.warnings.contains(&warning) {
+                            self.warnings.push(warning);
+                        }
+                    }
+                    if name == "distdir" {
+                        self.distdir.push(value.to_owned());
+                    } else {
+                        // PathFragmentConverter: the empty value is unset.
+                        self.downloader_config = (!value.is_empty()).then(|| value.to_owned());
+                    }
+                    return Ok(Some(used));
+                }
+            }
+        }
+        if let Some(parsed) = value_option(arg, next, "module_mirrors") {
+            let (form, value, used) = parsed?;
+            let entry = string_to_string_list(value)
+                .map_err(|error| format!("While parsing option {form}: {error}"))?;
+            self.module_mirrors.push(entry);
+            return Ok(Some(used));
+        }
+        // UiOptions.terminalColumns (:166-173): a client-supplied width for
+        // the curses progress bar; the native display measures the terminal
+        // itself. Converted, no effect (docs/RC_OPTIONS.md).
+        if let Some(parsed) = value_option(arg, next, "terminal_columns") {
+            let (form, value, used) = parsed?;
+            int_value(&form, value)?;
+            return Ok(Some(used));
+        }
+        // AuthAndTLSOptions.grpcKeepaliveTime (:117-128): keep-alive pings of
+        // gRPC connections with a pending call. Converted, no effect: the
+        // native gRPC channels (remote cache and execution, BES) keep their
+        // own HTTP/2 keep-alive settings (docs/RC_OPTIONS.md).
+        if let Some(parsed) = value_option(arg, next, "grpc_keepalive_time") {
+            let (form, value, used) = parsed?;
+            crate::cache_gc::parse_duration(value)
+                .map_err(|error| format!("While parsing option {form}: {error}"))?;
+            return Ok(Some(used));
+        }
+        // BuildLanguageOptions.incompatibleEnforceStarlarkUtf8 (:812-842,
+        // BoolOrEnumConverter: true is `error`, false `off`). The native
+        // loader always fails a Starlark file that is not UTF-8 (the `error`
+        // mode, with its own message); `warning` (the default) and `off`
+        // decode such a file as Latin-1 in Bazel, which the native loader
+        // does not (docs/RC_OPTIONS.md).
+        if let Some(result) = utf8_enforcement(arg) {
+            self.starlark_utf8 = Some(result?);
+            return Ok(Some(false));
+        }
+        // BuildLanguageOptions.incompatibleUseCcConfigureFromRulesCc
+        // (:534-544): its only consumer is the hidden `__do_not_use_fail_
+        // with_incompatible_use_cc_configure_from_rules_cc` builtin
+        // (StarlarkRepositoryModule.java:195-207), which Bazel 9.3's
+        // @bazel_tools no longer calls (cc_configure moved to rules_cc) and
+        // the native profile does not define: no effect beyond `info
+        // starlark-semantics`.
+        if let Some(value) = boolean(arg, &["incompatible_use_cc_configure_from_rules_cc"]) {
+            self.use_cc_configure_from_rules_cc = value?;
+            return Ok(Some(false));
+        }
         if let Some(parsed) = value_option(arg, next, "repo_env") {
             let (form, value, used) = parsed?;
             // The only invalid inputs ("" and "=") carry no value.
@@ -236,6 +373,62 @@ impl RcOptions {
         Ok(None)
     }
 }
+
+/// `--[no]incompatible_enforce_starlark_utf8[=MODE]`: the mode when `arg`
+/// is one.
+fn utf8_enforcement(arg: &str) -> Option<Result<&'static str, String>> {
+    const NAME: &str = "incompatible_enforce_starlark_utf8";
+    let rest = arg.strip_prefix("--")?;
+    if rest == NAME {
+        return Some(Ok("ERROR"));
+    }
+    if rest == format!("no{NAME}") {
+        return Some(Ok("OFF"));
+    }
+    if rest
+        .strip_prefix("no")
+        .and_then(|rest| rest.strip_prefix(NAME))
+        .is_some_and(|rest| rest.starts_with('='))
+    {
+        return Some(Err(format!(
+            "{arg} :: Unexpected value after boolean option: {arg}"
+        )));
+    }
+    let value = rest.strip_prefix(NAME)?.strip_prefix('=')?;
+    Some(match value.to_ascii_lowercase().as_str() {
+        "off" => Ok("OFF"),
+        "warning" => Ok("WARNING"),
+        "error" => Ok("ERROR"),
+        "true" | "yes" | "1" => Ok("ERROR"),
+        "false" | "no" | "0" => Ok("OFF"),
+        _ => Err(format!(
+            "While parsing option {arg}: Not a valid UTF-8 enforcement mode: '{value}' (should be off, warning or error)"
+        )),
+    })
+}
+
+/// Boolean options whose Bazel effect does not exist in a native command
+/// (docs/RC_OPTIONS.md, "Accepted without effect"): every value is accepted.
+const NATIVE_NO_EFFECT_BOOLEANS: &[(&str, &str)] = &[
+    // RepositoryOptions.checkExternalRepositoryFiles (:321-331): false skips
+    // Bazel's check of external repository files for changes between
+    // commands of one server. Native commands verify fetched repositories
+    // by their own tamper check (crate::repository_store), which a speed
+    // option need not weaken: the result is the same unless repository
+    // files are edited by hand, which Bazel then misses.
+    (
+        "experimental_check_external_repository_files",
+        "bazel/repository/RepositoryOptions.java:321-331",
+    ),
+    // BuildRequestOptions.mergedSkyframeAnalysisExecution (:405-415):
+    // whether Skyframe interleaves analysis and execution (Skymeld). The
+    // native engine's scheduling is its own; the build's results are the
+    // same either way.
+    (
+        "experimental_merged_skyframe_analysis_execution",
+        "buildtool/BuildRequestOptions.java:405-415",
+    ),
+];
 
 /// Boolean options Bazel 9.3 itself declares as no-ops (`help = "No-op"` or
 /// the `NO_OP` effect tag; generated from the pinned sources, paths below
@@ -367,11 +560,10 @@ const SERVER_STATE_BOOLEANS: &[(&str, &str)] = &[
 
 /// Boolean options accepted at their Bazel 9.3 default only (the other
 /// value changes behaviour the native profile does not model): `fetch`
-/// (PackageOptions.java:169-178; `--nofetch` forbids fetching) and
-/// `incompatible_disallow_empty_glob` (BuildLanguageOptions.java:436-449;
-/// the native glob always rejects an empty result without `allow_empty`).
-const DEFAULT_ONLY_BOOLEANS: &[(&str, bool)] =
-    &[("fetch", true), ("incompatible_disallow_empty_glob", true)];
+/// (PackageOptions.java:169-178; `--nofetch` forbids fetching).
+/// `incompatible_disallow_empty_glob` is a modelled Starlark semantics
+/// option (crate::module_graph::ResolverOptions::allow_empty_glob).
+const DEFAULT_ONLY_BOOLEANS: &[(&str, bool)] = &[("fetch", true)];
 
 /// Whether genuine Bazel registers option `name` for `command`
 /// (crate::option_metadata, `help flags-as-proto`).
@@ -398,6 +590,7 @@ pub fn no_effect_option(command: &str, arg: &str, origin: &str) -> Option<Result
     let names = BAZEL_NO_OP_BOOLEANS
         .iter()
         .chain(SERVER_STATE_BOOLEANS)
+        .chain(NATIVE_NO_EFFECT_BOOLEANS)
         .map(|(name, _)| (*name, None))
         .chain(
             DEFAULT_ONLY_BOOLEANS

@@ -1674,11 +1674,14 @@ fn package_globals(builder: &mut GlobalsBuilder) {
         include: Option<Value<'v>>,
         exclude: Option<Value<'v>>,
         #[starlark(default = 1)] exclude_directories: i32,
-        #[starlark(default = false)] allow_empty: bool,
+        allow_empty: Option<bool>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Vec<String>> {
         let context = declarations(eval)?;
         context.forbid_in_macro("glob")?;
+        // StarlarkNativeModule.glob (:108-117): an unbound `allow_empty` is
+        // `!--incompatible_disallow_empty_glob`.
+        let allow_empty = allow_empty.unwrap_or_else(|| context.repositories.allow_empty_glob());
         let includes = include
             .map(|v| strings(v, "glob include"))
             .transpose()?
@@ -2611,6 +2614,9 @@ fn evaluate_at(
         }
     }
     let default_visibility = declarations.default_visibility.into_inner();
+    let private_config_settings = declarations
+        .repositories
+        .config_setting_private_default_visibility();
     for label in declarations.defaulted_rules.into_inner() {
         if let Some(rule) = rules.get_mut(&label) {
             // Rule.getDefaultVisibility (packages/Rule.java:694-710): with the
@@ -2619,7 +2625,11 @@ fn evaluate_at(
             // --incompatible_config_setting_private_default_visibility=false
             // defaults, pkgcache/PackageOptions.java:117-140), a config_setting
             // without explicit visibility is public.
-            rule.visibility = if matches!(rule.kind, RuleKind::Native("config_setting")) {
+            // --incompatible_config_setting_private_default_visibility
+            // (DEFAULT_STANDARD policy): the package default, like any rule.
+            rule.visibility = if matches!(rule.kind, RuleKind::Native("config_setting"))
+                && !private_config_settings
+            {
                 Visibility::Public
             } else {
                 default_visibility.clone()
