@@ -901,13 +901,12 @@ fn solib_symlink(context: &Context, library: &File, link_path: &str) -> anyhow::
         .rsplit_once('/')
         .map(|(_, base)| base)
         .unwrap_or(&library.short_path);
-    // Link.SHARED_LIBRARY_FILETYPES: versioned and plain .so and no extension.
-    let shared_library = name.ends_with(".so")
-        || name.split_once(".so.").is_some_and(|(prefix, rest)| {
-            !prefix.is_empty()
-                && !rest.is_empty()
-                && rest.bytes().all(|b| b.is_ascii_digit() || b == b'.')
-        })
+    // Link.SHARED_LIBRARY_FILETYPES (rules/cpp/Link.java:39-44): SHARED_LIBRARY
+    // (.so, .dylib, .dll, ...), VERSIONED_SHARED_LIBRARY, INTERFACE_SHARED_LIBRARY
+    // (.ifso, .tbd, .lib, .dll.a) and no extension, whatever the target
+    // platform (rules_cc's cc_import of `mylib.dll`/`mylib.lib` on Linux).
+    let shared_library = crate::java_native_deps::shared(name)
+        || crate::java_native_deps::interface(name)
         || !name.contains('.');
     ensure!(
         shared_library,

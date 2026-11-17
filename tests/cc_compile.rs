@@ -505,3 +505,35 @@ fn aquery_matches_genuine_cc_action_keys() {
         blocks(&expected)
     );
 }
+
+/// OSS corpus B13e: `cc_import` of `mylib.dll`/`mylib.lib` on a Linux target
+/// analyses (Link.SHARED_LIBRARY_FILETYPES, rules/cpp/Link.java:39-44, has
+/// .dll and the interface types .ifso/.tbd/.lib/.dll.a whatever the
+/// platform). genuine_aquery_windows_dll.txt is genuine 9.3.1's `aquery`
+/// of the two targets (BCR rules_cc 0.2.17, same `cdep` BUILD lines).
+#[test]
+fn cc_import_of_windows_library_types_matches_genuine() {
+    let ws = Workspace::new();
+    let output = ws.aquery("cache", &["//cdep:windows_dll + //cdep:system_dll"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let blocks = |text: &str| -> Vec<String> {
+        let mut blocks: Vec<String> = text
+            .split("\n\n")
+            .filter(|block| !block.trim().is_empty())
+            .map(|block| {
+                block
+                    .lines()
+                    .filter(|line| !line.starts_with("  Execution platform: "))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .collect();
+        blocks.sort();
+        blocks
+    };
+    let expected = fs::read_to_string(fixture().join("genuine_aquery_windows_dll.txt")).unwrap();
+    assert_eq!(
+        blocks(&String::from_utf8_lossy(&output.stdout)),
+        blocks(&expected)
+    );
+}

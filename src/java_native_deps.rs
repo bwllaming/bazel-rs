@@ -31,7 +31,7 @@ fn suffix(name: &str, extension: &str) -> bool {
     }
 }
 
-fn interface(name: &str) -> bool {
+pub(crate) fn interface(name: &str) -> bool {
     [".ifso", ".tbd", ".lib", ".dll.a"]
         .iter()
         .any(|ext| suffix(name, ext))
@@ -39,7 +39,7 @@ fn interface(name: &str) -> bool {
 
 /// CppFileTypes.VERSIONED_SHARED_LIBRARY_PATTERN:
 /// `^.+\.((so)|(dylib))(\.\d\w*)+$`, with Java's ASCII \d/\w defaults.
-fn shared(name: &str) -> bool {
+pub(crate) fn shared(name: &str) -> bool {
     if [".so", ".dylib", ".dll", ".pyd", ".wasm", ".tgt", ".vpi"]
         .iter()
         .any(|ext| suffix(name, ext))

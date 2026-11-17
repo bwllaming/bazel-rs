@@ -29,3 +29,18 @@ cc_library(
     srcs = ["prebuilt.c"],
     module_interfaces = ["prebuilt.c"],
 )
+
+# Windows library file types on a Linux target (rules_cc's cc_import
+# docstring examples; OSS corpus B13e): Link.SHARED_LIBRARY_FILETYPES
+# accepts .dll and .lib whatever the platform.
+cc_import(
+    name = "windows_dll",
+    interface_library = "mylib.lib",
+    shared_library = "mylib.dll",
+)
+
+cc_import(
+    name = "system_dll",
+    interface_library = "mylib.lib",
+    system_provided = True,
+)

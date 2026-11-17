@@ -1,0 +1,27 @@
+action 'SolibSymlink _solib_k8/_U_S_Scdep_Cwindows_Udll___Ucdep/mylib.dll'
+  Mnemonic: SolibSymlink
+  Target: //cdep:windows_dll
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: e4ea8667d521dc43c972b864443781ea6e8c1498db1c9fb1751b5fa96d13ef71
+  Inputs: [cdep/mylib.dll]
+  Outputs: [bazel-out/k8-fastbuild/bin/_solib_k8/_U_S_Scdep_Cwindows_Udll___Ucdep/mylib.dll]
+
+action 'SolibSymlink _solib_k8/_U_S_Scdep_Cwindows_Udll___Ucdep/mylib.lib'
+  Mnemonic: SolibSymlink
+  Target: //cdep:windows_dll
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 2669b844390d19e459c5ceecc54170b368e940c7ddaac69f19a956cb2a48d6c8
+  Inputs: [cdep/mylib.lib]
+  Outputs: [bazel-out/k8-fastbuild/bin/_solib_k8/_U_S_Scdep_Cwindows_Udll___Ucdep/mylib.lib]
+
+action 'SolibSymlink _solib_k8/_U_S_Scdep_Csystem_Udll___Ucdep/mylib.lib'
+  Mnemonic: SolibSymlink
+  Target: //cdep:system_dll
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 4ca6e93286297b9ce1ddd54e129d262edd91aa74844227250880907861f1ae77
+  Inputs: [cdep/mylib.lib]
+  Outputs: [bazel-out/k8-fastbuild/bin/_solib_k8/_U_S_Scdep_Csystem_Udll___Ucdep/mylib.lib]
+
