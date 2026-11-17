@@ -2026,6 +2026,10 @@ r(name='sdk', words=[version])
         let working = fs::canonicalize(fixture.root.path())
             .unwrap()
             .join("cache/modextwd/_main+ext");
+        // `timeout` is passed, not raced: with SIGINT inherited ignored
+        // (a background job) every spawn of this many-threaded test process
+        // forks to reset it (crate::signals), which took over 5 s under the
+        // full suite's load.
         let result = fixture
             .run(
                 &format!(
@@ -2041,7 +2045,7 @@ res = ctx.execute(['sh', '-c', 'pwd; cat sub/f.txt; echo err >&2; exit 3'])
 type(res) == 'exec_result' or fail(type(res))
 res.return_code == 3 and res.stdout == {working:?} + '\nhello\n' and res.stderr == 'err\n' or fail(res.stdout)
 ctx.execute(['sh', '-c', 'pwd'], working_directory='sub').stdout == {working:?} + '/sub\n' or fail('working_directory')
-ctx.execute(['sh', '-c', 'echo $X'], environment={{'X': 'y'}}, quiet=True, timeout=5).stdout == 'y\n' or fail('environment')
+ctx.execute(['sh', '-c', 'echo $X'], environment={{'X': 'y'}}, quiet=True, timeout=60).stdout == 'y\n' or fail('environment')
 ctx.which('sh') != None or fail('which')
 ctx.which('definitely-not-a-program-n43') == None or fail('which missing')
 ctx.report_progress('working')

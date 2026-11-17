@@ -272,7 +272,12 @@ fn interrupting_bazel_rs_kills_its_running_test_and_daemons() {
     test_fixture(&ws, "i");
     // bazel-rs leads its own process group, like a shell job: Ctrl-C sends
     // SIGINT to that group only (the spawns run in groups of their own).
-    let mut bazel = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
+    let mut bazel = Command::new(env!("CARGO_BIN_EXE_bazel-rs"));
+    // SIGINT at its default action, as an interactive shell starts a job,
+    // also when this test runs as a background job that ignores it (bazel-rs
+    // keeps an inherited-ignored SIGINT ignored, crate::signals).
+    bazel_rs::signals::reset_in_child(&mut bazel, bazel_rs::signals::Defaults::Client);
+    let mut bazel = bazel
         .args([
             "--ignore_all_rc_files",
             "--cache-dir=cache",

@@ -493,8 +493,12 @@ fn cancelling_required_current_loading_cannot_fall_through_to_a_saved_graph() {
         ),
     )
     .unwrap();
-    let mut child = f
-        .command()
+    let mut command = f.command();
+    // Ctrl-C at an interactive shell: SIGINT at its default action, also
+    // when this test runs as a background job that ignores it (bazel-rs
+    // keeps an inherited-ignored SIGINT ignored, crate::signals).
+    bazel_rs::signals::reset_in_child(&mut command, bazel_rs::signals::Defaults::Client);
+    let mut child = command
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
