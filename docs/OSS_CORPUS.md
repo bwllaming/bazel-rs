@@ -172,7 +172,7 @@ sample.
 | bazel-gazelle | RS-FAIL | 32.6 / 39.9 (exit 1) | 4.4 / 0.3 / 3.0 (exit 1) | 60.6 / 112.6 (exit 1) | 1647 / 1031 | 2545, 6, 0, 0 | FAILED:2 PASSED:194 / FAILED:2 PASSED:192 | B13 |
 | diff.bzl | RS-FAIL | 24.0 / 15.0 (exit 1) | 3.5 / 0.2 / 1.5 (exit 1) | 12.3 / 11.3 (exit 1) | 1105 / 339 | 292, 16, 0, 1 | FAILED:1 PASSED:5 / same | B5, B6, (B2) |
 | rules_python-bzlmod | RS-FAIL | 70.7 / 54.2 (exit 1) | 5.0 / 0.6 / 5.5 (exit 1) | 46.3 / 8.2 (exit 1) | 2547 / 2566 | 306, 13, 0, 0 | PASSED:31 / PASSED:30 | B7, (B2) |
-| with_cfg-examples | RS-FAIL | 34.8 / 28.3 (exit 1) | 4.0 / 0.3 / 3.2 (exit 1) | 9.3 / 7.3 (exit 1) | 1720 / 1547 | 88, 156, 0, 8 | PASSED:20 / PASSED:8 | B3, B16, B17, B18, B19, (B2) |
+| with_cfg-examples | RS-FAIL¹⁰ | 32.9 / 50.8 (exit 1) | 4.0 / 0.3 / 3.4 (exit 1) | 9.4 / 10.1 (exit 1) | 1938 / 1717 | 188, 56, 0, 8 | PASSED:20 / FAILED:2 PASSED:13 | B17, B18, B19, B15 |
 | examples-rules | RS-FAIL | 12.3 / 8.3 (exit 1) | 2.9 / 0.1 / 1.2 (exit 1) | 3.6 / 1.7 (exit 1) | 673 / 250 | 99, 4, 0, 0 | PASSED:1 / PASSED:1 | B23 |
 | googletest | RS-FAIL | 25.4 / 14.7 (exit 1) | 3.2 / 0.2 / 1.5 (exit 1) | 32.0 / 1.1 (exit 1) | 1198 / 453 | 8, 521, 0, 0 | PASSED:44 / — | B1 |
 | re2 | RS-FAIL³ | 13.7 (exit 1) / 9.5 (exit 1) | 2.9 / 0.2 / 1.4 (both exit 1) | 15.3 (exit 1) / 6.6 (exit 1) | 1071 / 313 | 324, 761, 0, 0 | PASSED:21 / PASSED:1 | B1 |
@@ -186,9 +186,9 @@ sample.
 | rules_cc | RS-FAIL | 20.8 (exit 1) / 0.4 (exit 1) | — | — | 2033 / 31 | — | — | B9 |
 | examples-rust-deps-cargo | RS-FAIL | 44.0 / 0.3 (exit 1) | 2.9 / 0.2 / 0.3 (exit 1) | 28.8 / 0.3 (exit 1) | 1034 / 29 | 0, 103, 0, 0 | — | B9, (B2) |
 | protobuf | RS-FAIL⁵ | 43.4 (exit 1) / 0.5 (exit 1) | 7.2 / 0.6 / 0.4 (both exit 1) | — | 2601 / 38 | — | — | B9, (B2) |
-| openroad | RS-FAIL | 75.2 / 11.8 (exit 1) | 10.5 / 0.8 / 0.6 (exit 1) | — | 3644 / 79 | — | — | B9 → B22 → B10, (B2) |
+| openroad | RS-FAIL¹¹ | 89.4 / 211.3 (exit 1) | 9.8 / 0.8 / 68.9 (exit 1) | — | 3910 / 3671 | — | — | B26, B27 |
 | rules_kotlin | RS-FAIL | 36.2 / 0.1 (exit 1) | — | — | 1748 / 1 | — | — | B10, (B2) |
-| riegeli | RS-FAIL⁶ | 39.2 (exit 1) / 1.6 (exit 1) | — | — | 1718 / 42 | — | — | B10 |
+| riegeli | DIFF⁶ | 34.7 (exit 1) / 24.5 (exit 1) | 3.8 / 0.2 / 3.5 (all exit 1) | 82.5 (exit 1) / 79.1 (exit 1) | 1455 / 792 | 1865, 935, 0, 0 | PASSED:2 / PASSED:2 | B28 |
 | examples-frontend | DIFF⁷ | 89.7 (exit 1) / 129.3 (exit 1) | 60.6 / 110.6 / 100.7 (all exit 1) | 60.7 (exit 1) / 208.3 (exit 1) | 1350 / 1838 | 44827, 170986, 2, 0 | PASSED:14 / — | B8, B25, (B2) |
 | rules_jvm_external-simple | BOTH-FAIL⁸ | 75.9 (exit 1) / 5.5 (exit 1) | — | — | 1484 / 108 | 0, 0, 0, 0 | — | B4 |
 | flatbuffers | BOTH-FAIL⁸ | 21.7 (exit 1) / 8.2 (exit 1) | — | — | 864 / 184 | — | — | B12 |
@@ -207,9 +207,11 @@ Notes:
    `//src/kj`.
 5. Genuine needs a system `ruby` for rules_ruby, so `//ruby/...` and
    `//csharp/...` are excluded. bazel-rs fails at module resolution (B9).
-6. Genuine fails only in `//python/...` (protobuf python). bazel-rs fails at
-   module resolution: BCR `rules_swift` 4.1.1's MODULE.bazel calls
-   `override_repo` (B10).
+6. Rerun 2026-11-17 (branch corpus-macros, after B10 and B16): both tools
+   fail the same way in loading and analysis (`@local_config_tf` is not
+   visible; `sh_binary` undefined in `//python`), and the same 256 of 263
+   top-level targets build. `query //...` (264 labels) and the tests match.
+   The output difference is B28 plus C1's 322 params files.
 7. `cosmo.zip` (the `ape` toolchain) timed out from this host on both tools,
    so timings include connection timeouts. Besides that, bazel-rs fails
    `//react-router:build` (B8). Its `test` run then hit B25. The output
@@ -220,6 +222,17 @@ Notes:
 9. Genuine aborts on `alias/project_main:PROJECT.scl` ("Every .bzl file must
    have a corresponding package"). bazel-rs does not run that project-file
    check, analyses on and fails later.
+10. Rerun 2026-11-17 (branch corpus-macros): B3 and B16 are fixed, so the
+    `inherit_attrs` wrappers (`wrapper.bzl:31`) load and expand. The two
+    test failures (`//opt_filegroup:slow_app_integration_test` and its
+    `_with_reset` variant) are B15: the test checks that the runfile's
+    `realpath` contains `-opt/bin/`, but bazel-rs's per-test runfiles are
+    hardlinked copies. The `.bzl` files using `rule(parent=…)` (B17) still
+    fail, as does `cc_shared_library` (B18).
+11. Rerun 2026-11-17 (branch corpus-macros), without the `build` phase (a
+    full genuine OpenROAD build exceeds the 20-minute cap; bazel-rs fails in
+    analysis first). B9, B22, B10 and B16 are passed: `query //...` matches
+    (7,079 labels). Analysis stops at B26 and B27.
 
 **Summary.** 37 projects ran. On 10 of them bazel-rs matches genuine exactly:
 same exit codes, `query //...` labels, `bazel-bin` file lists, sampled
@@ -252,7 +265,7 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B7 | 1 (rules_python-bzlmod) | transition: "Starlark flag and its alias have different values: False and "false"" |
 | B5 | 1 (diff.bzl) | `local_repository` → `rctx.symlink(path, ".")` rejected |
 | B8 | 1 (examples-frontend) | declared output "crosses a package boundary" |
-| B16, B17, B18, B19 | 1 (with_cfg) | symbolic macro `inherit_attrs`; `rule(parent=…)`; `cc_shared_library`; solib naming in transitioned configurations |
+| B17, B18, B19 | 1 (with_cfg) | `rule(parent=…)`; `cc_shared_library`; solib naming in transitioned configurations (B16, symbolic macro `inherit_attrs`, is fixed) |
 | B20 | 1 (capnproto) | `rule(output_to_genfiles=True)` |
 | B21 | 1 (rules_zig) | `attr.int_list` in repository rules |
 | B22 | 1 (openroad) | `git_override` of a repository with submodule gitlinks |
@@ -260,6 +273,9 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B12 | 1 (flatbuffers) | `@local_config_platform` unknown |
 | B24 | 1 (examples-configurations) | no PROJECT.scl project-file check |
 | B25 | 1 (examples-frontend) | "needs-repository: repository @@rules_diff+ is unfetched and this thread does not fetch" on a warm `test` |
+| B26 | 1 (openroad) | a depset element holding a function that is not a global def of a loaded `.bzl` (skylib `DirectoryInfo`, rules_cc `cc/toolchains/args.bzl:109` via toolchains_llvm) |
+| B27 | 1 (openroad) | `depset` is not a BUILD-file global, and list-typed attributes do not accept depsets (`@openssl//:BUILD.bazel:508`, `select({...: depset([...])})`) |
+| B28 | 1 (riegeli); not blocking | `build //...` misses genuine's `.pic.o`/`.pic.d` of external C++ deps (curl, google_cloud_cpp, xz, bzip2) that no link uses |
 
 ### Details and minimal repros
 
@@ -376,7 +392,8 @@ and its `//react-router:build_smoke_test` passes. Genuine does not check
 
 **B16–B19 (with_cfg.bzl):**
 
-- B16: symbolic macro "macro inherit_attrs is unsupported" (`wrapper.bzl:31`).
+- B16 (fixed on branch corpus-macros, docs/SYMBOLIC_MACROS.md): symbolic
+  macro "macro inherit_attrs is unsupported" (`wrapper.bzl:31`).
 - B17: "rule(parent=...) rule extension is not supported" (`extend.bzl:10`).
 - B18: `cc_shared_library` fails: "cc_common.check_experimental_cc_shared_library
   is not implemented".
@@ -386,6 +403,18 @@ and its `//react-router:build_smoke_test` passes. Genuine does not check
   `_solib_k8/libST-b44ef279653a/bin_external_…so` with rpath `…/_solib_k8/libST-b44ef279653a`.
   So the linked binaries differ (8 hash differences, `cc_define_test`,
   `cc_asan_test`).
+
+**B26–B28 (rerun 2026-11-17).** B26 is the next OpenROAD analysis error
+after `inherit_attrs` (toolchains_llvm's `resource_directory` macro now
+expands): "a depset element containing a function that is not a global def
+of a loaded .bzl file is not implemented" (10 targets under
+`@llvm//toolchain/args/linux`). B27: openssl's BUILD.bazel uses
+`depset([...])` as a `select()` branch; genuine accepts `depset` in BUILD
+files and converts a depset to a list attribute value (Type.ListType.convert,
+packages/Type.java:731-738). B28: genuine's riegeli `bazel-bin` has ~600
+`.pic.o`/`.pic.d` files of external libraries (curl, google_cloud_cpp, xz,
+bzip2) that bazel-rs does not build; no `.params` link file names them;
+probably an output group of rules_cc targets (not investigated).
 
 **B20.** `rule(output_to_genfiles=True)` "accepted at load time but not
 analyzed" (capnproto's `capnp_gen`).
