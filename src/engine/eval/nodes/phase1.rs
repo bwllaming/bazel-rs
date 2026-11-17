@@ -707,6 +707,7 @@ pub(crate) trait Phase1: Host {
                 }
                 self.validate_prerequisite(
                     &rule,
+                    config,
                     &dependency,
                     &|| describe_with_aliases(&[], &dependency, "target"),
                     skip_testonly,
@@ -727,7 +728,7 @@ pub(crate) trait Phase1: Host {
                     visible_from,
                 ));
             }
-            self.validate_prerequisite(&rule, &actual, &description, skip_testonly)?;
+            self.validate_prerequisite(&rule, config, &actual, &description, skip_testonly)?;
         }
         // Starlark rules: prerequisite errors need the analyzed prerequisites'
         // files and providers, so they are reported before the implementation
@@ -806,7 +807,7 @@ pub(crate) trait Phase1: Host {
                 )? {
                     return Err(visibility_error(&rule, &description(), false, None));
                 }
-                self.validate_prerequisite(&rule, &actual, &description, skip_testonly)?;
+                self.validate_prerequisite(&rule, config, &actual, &description, skip_testonly)?;
             }
         }
         // ConfigSetting.create (rules/config/ConfigSetting.java:111-166).
@@ -2616,7 +2617,9 @@ pub(crate) trait Phase1: Host {
             if !visible {
                 errors.push(visibility_message(rule, &description(), is_source, None));
             }
-            if let Some(error) = self.prerequisite_error(rule, &actual, &description, false)? {
+            if let Some(error) =
+                self.prerequisite_error(rule, config, &actual, &description, false)?
+            {
                 errors.push(error);
             }
             let node = self.configured_node(&ConfiguredTargetKey::new(dependency.clone(), config));
@@ -2741,7 +2744,9 @@ pub(crate) trait Phase1: Host {
                 if !visible {
                     errors.push(visibility_message(rule, &description(), is_source, None));
                 }
-                if let Some(error) = self.prerequisite_error(rule, &actual, &description, false)? {
+                if let Some(error) =
+                    self.prerequisite_error(rule, config, &actual, &description, false)?
+                {
                     errors.push(error);
                 }
             }
@@ -4539,12 +4544,13 @@ pub(crate) trait Phase1: Host {
     fn validate_prerequisite(
         &mut self,
         rule: &Rule,
+        config: ConfigId,
         dependency: &Label,
         description: &dyn Fn() -> String,
         skip_testonly: bool,
     ) -> Result<(), String> {
         // A RuleContext.ruleError at the consuming rule's location.
-        self.prerequisite_error(rule, dependency, description, skip_testonly)?
+        self.prerequisite_error(rule, config, dependency, description, skip_testonly)?
             .map_or(Ok(()), |error| {
                 Err(located(rule.location.as_deref(), error))
             })
@@ -4556,6 +4562,7 @@ pub(crate) trait Phase1: Host {
     fn prerequisite_error(
         &mut self,
         rule: &Rule,
+        config: ConfigId,
         dependency: &Label,
         description: &dyn Fn() -> String,
         skip_testonly: bool,
@@ -4572,18 +4579,34 @@ pub(crate) trait Phase1: Host {
         let dependency_args = &self.package_args(&generating.label.package_id());
         // Output files of testonly rules are only checked with
         // --incompatible_check_testonly_for_output_files (default false,
-        // analysis/config/CoreOptions.java:690-701).
+        // analysis/config/CoreOptions.java:690-701), in the consuming
+        // rule's configuration (CommonPrerequisiteValidator.java:752).
         let testonly_error = (!skip_testonly
-            && !output
             && generating.is_test_only(dependency_args)
-            && !rule.is_test_only(args))
+            && !rule.is_test_only(args)
+            && (!output
+                || self
+                    .configuration(config)
+                    .native
+                    .value("incompatible_check_testonly_for_output_files")
+                    == Some(crate::configuration::OptionValue::Bool(true))))
         .then(|| {
-            format!(
-                "{}non-test target '{}' depends on testonly {} and doesn't have testonly attribute set",
-                prefix(),
-                shown(),
-                description()
-            )
+            if output {
+                format!(
+                    "{}non-test target '{}' depends on the output file {} of a testonly rule {} and doesn't have testonly attribute set",
+                    prefix(),
+                    shown(),
+                    description(),
+                    crate::rule_declarations::canonical_form(&generating.label)
+                )
+            } else {
+                format!(
+                    "{}non-test target '{}' depends on testonly {} and doesn't have testonly attribute set",
+                    prefix(),
+                    shown(),
+                    description()
+                )
+            }
         });
         // validate() runs the testonly check, then the deprecation check, for
         // each edge (CommonPrerequisiteValidator.java:48-60): an edge's

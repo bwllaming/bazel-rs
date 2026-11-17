@@ -1,0 +1,85 @@
+{
+ "bazel": "9.3.1",
+ "cases": {
+  "testonly_output_alias_checked": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--incompatible_check_testonly_for_output_files"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: <WS>/testonly/BUILD.bazel:21:8: in genrule rule //testonly:use_alias: non-test target '//testonly:use_alias' depends on the output file alias '//testonly:a' referring to target '//testonly:gen.txt' of a testonly rule //testonly:gen and doesn't have testonly attribute set",
+     "pattern": "depends on the output file"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//testonly:use_alias"
+   ]
+  },
+  "testonly_output_checked": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--incompatible_check_testonly_for_output_files"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: <WS>/testonly/BUILD.bazel:9:8: in genrule rule //testonly:use_output: non-test target '//testonly:use_output' depends on the output file target '//testonly:gen.txt' of a testonly rule //testonly:gen and doesn't have testonly attribute set",
+     "pattern": "depends on the output file"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//testonly:use_output"
+   ]
+  },
+  "testonly_output_default": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/testonly/use_alias.txt": "\n",
+    "k8-fastbuild/bin/testonly/use_output.txt": "\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//testonly:use_output",
+    "//testonly:use_alias"
+   ]
+  },
+  "testonly_output_testonly_consumer": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--incompatible_check_testonly_for_output_files"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/testonly/use_test_output.txt": "\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//testonly:use_test_output"
+   ]
+  }
+ },
+ "elf_sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c"
+}

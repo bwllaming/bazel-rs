@@ -1,0 +1,34 @@
+# --incompatible_check_testonly_for_output_files (protobuf's .bazelrc).
+genrule(
+    name = "gen",
+    testonly = True,
+    outs = ["gen.txt"],
+    cmd = "echo > $@",
+)
+
+genrule(
+    name = "use_output",
+    srcs = [":gen.txt"],
+    outs = ["use_output.txt"],
+    cmd = "cat $< > $@",
+)
+
+alias(
+    name = "a",
+    actual = ":gen.txt",
+)
+
+genrule(
+    name = "use_alias",
+    srcs = [":a"],
+    outs = ["use_alias.txt"],
+    cmd = "cat $< > $@",
+)
+
+genrule(
+    name = "use_test_output",
+    testonly = True,
+    srcs = [":gen.txt"],
+    outs = ["use_test_output.txt"],
+    cmd = "cat $< > $@",
+)

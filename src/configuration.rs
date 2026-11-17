@@ -731,6 +731,27 @@ pub const VALUE_OPTIONS: &[ValueOption] = &[
         exec: ExecValue::Propagate,
         exec_source: "builtin_exec_platforms.bzl:267",
     },
+    // `--incompatible_check_testonly_for_output_files`
+    // (CoreOptions.java:690-701): a non-testonly rule depending on an
+    // output file of a testonly rule is an error
+    // (CommonPrerequisiteValidator.validateDirectPrerequisiteForTestOnly,
+    // :730-770; the phase-1 prerequisite validator).
+    ValueOption {
+        option: OptionDef {
+            name: "incompatible_check_testonly_for_output_files",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "false",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/analysis/config/CoreOptions.java:690-701",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:245",
+    },
 ];
 
 /// The table-driven option named `name` (its canonical name only).
@@ -3537,7 +3558,8 @@ mod tests {
                 "collect_code_coverage",
                 "apple_platform_type",
                 "dynamic_mode",
-                "allow_analysis_failures"
+                "allow_analysis_failures",
+                "incompatible_check_testonly_for_output_files"
             ]
         );
         let defaults = NativeOptions::default();
