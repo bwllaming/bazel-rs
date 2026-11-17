@@ -188,7 +188,7 @@ pub(crate) fn message_with_stack(error: &starlark::Error, repositories: &Reposit
         }
     }
     let message = error.kind().to_string();
-    let message = message.lines().next().unwrap_or_default().trim().to_owned();
+    let message = message.trim().to_owned();
     match builtin {
         Some(name) => {
             text.push_str(&format!("Error in {name}: "));

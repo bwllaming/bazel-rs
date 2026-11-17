@@ -2034,6 +2034,7 @@ pub fn analyze_in(
     let owner = rule.label.to_string();
     let target = ConfiguredOutputs {
         allow_analysis_failures: false,
+        evaluating_for_analysis_test: false,
         output_root: crate::label::GENERATED_EXEC_ROOT,
         action_owner: &owner,
         action_env: Arc::new(crate::configuration::NativeOptions::default().action_environment()),
@@ -2217,6 +2218,7 @@ fn analyze_aspect_inner(
         declared: RefCell::new(Vec::new()),
         shareable: RefCell::new(BTreeSet::new()),
         actions: RefCell::new(Vec::new()),
+        constant_metadata: RefCell::default(),
         output_index: Default::default(),
         active,
         top_level_functions,
@@ -2784,6 +2786,9 @@ pub(crate) struct ConfiguredOutputs<'a> {
     /// `--allow_analysis_failures` in this configuration
     /// (crate::analysis_failures).
     pub allow_analysis_failures: bool,
+    /// The configuration is `evaluating for analysis test` (below an
+    /// analysis_test_transition): an analysis test rule fails in it.
+    pub evaluating_for_analysis_test: bool,
 }
 
 /// The suppressed rule errors of a target analyzed with
@@ -3016,6 +3021,7 @@ fn analyze_inner(
         declared: RefCell::new(Vec::new()),
         shareable: RefCell::new(BTreeSet::new()),
         actions: RefCell::new(Vec::new()),
+        constant_metadata: RefCell::default(),
         output_index: Default::default(),
         active,
         top_level_functions: invocation.top_level_functions.clone(),
@@ -3124,6 +3130,19 @@ fn analyze_inner(
             // StarlarkRuleConfiguredTargetUtil (:393-402): an analysis test's
             // AnalysisTestResultInfo becomes its executable, `NAME.sh`.
             let mut returned_default = returned_default;
+            // RuleConfiguredTargetBuilder.build (:215-224).
+            if invocation.declaration.analysis_test && target.evaluating_for_analysis_test {
+                let label = crate::rule_declarations::canonical_form(&rule.label);
+                return Err(anyhow::Error::new(crate::rule_errors::ReportedErrors(
+                    crate::rule_errors::located_events(
+                        rule.location.as_deref(),
+                        vec![format!(
+                            "in {} rule {label}: analysis_test rule '{label}' cannot be transitively depended on by another analysis test rule",
+                            invocation.declaration.rule_class,
+                        )],
+                    ),
+                )));
+            }
             if invocation.declaration.analysis_test {
                 let script = custom
                     .get(crate::rule_declarations::ANALYSIS_TEST_RESULT_INFO_ID)
@@ -3604,8 +3623,9 @@ r = rule(implementation=impl, attrs={"mode": attr.string(), "out": attr.output()
                 "test_environment" => {
                     let result = result.unwrap();
                     assert_eq!(result.files.len(), 1);
-                    // RunEnvironmentInfo and the framework's OutputGroupInfo.
-                    assert_eq!(result.providers.len(), 2);
+                    // RunEnvironmentInfo, the framework's OutputGroupInfo and
+                    // the target's actions (crate::target_actions).
+                    assert_eq!(result.providers.len(), 3);
                     assert!(
                         result
                             .providers
@@ -3627,8 +3647,9 @@ r = rule(implementation=impl, attrs={"mode": attr.string(), "out": attr.output()
                     );
                     assert_eq!(result.declared.len(), 1);
                     assert_eq!(result.files.len(), usize::from(mode != "nested_empty"));
-                    // The returned provider and the framework's OutputGroupInfo.
-                    assert_eq!(result.providers.len(), 2);
+                    // The returned provider, the framework's OutputGroupInfo
+                    // and the target's actions (crate::target_actions).
+                    assert_eq!(result.providers.len(), 3);
                     assert!(
                         result
                             .providers
@@ -4141,6 +4162,7 @@ r = rule(implementation=impl, attrs={
             declared: RefCell::new(Vec::new()),
             shareable: RefCell::new(BTreeSet::new()),
             actions: RefCell::new(Vec::new()),
+            constant_metadata: RefCell::default(),
             output_index: Default::default(),
             active: Arc::new(AtomicBool::new(true)),
             top_level_functions: Default::default(),

@@ -1147,12 +1147,16 @@ declared.clear()
             b"seed-A!\n"
         );
         assert_eq!(result.files[0].owner, "//:target");
-        // The returned provider and the framework's OutputGroupInfo.
-        assert_eq!(result.providers.len(), 2);
+        // The returned provider, the framework's OutputGroupInfo and the
+        // target's actions (crate::target_actions).
+        assert_eq!(result.providers.len(), 3);
         let provider = result
             .providers
             .into_iter()
-            .find(|(identity, _)| identity != "builtin:OutputGroupInfo")
+            .find(|(identity, _)| {
+                identity != "builtin:OutputGroupInfo"
+                    && identity != crate::target_actions::PROVIDER_ID
+            })
             .unwrap()
             .1;
         drop(rule);
@@ -1360,6 +1364,7 @@ r = rule(implementation=impl, subrules=[S])
             declared: RefCell::new(Vec::new()),
             shareable: RefCell::new(BTreeSet::new()),
             actions: RefCell::new(Vec::new()),
+            constant_metadata: RefCell::default(),
             output_index: Default::default(),
             active: Arc::new(AtomicBool::new(true)),
             top_level_functions: Default::default(),
@@ -1522,6 +1527,7 @@ S = subrule(implementation=callback)
             declared: RefCell::new(Vec::new()),
             shareable: RefCell::new(BTreeSet::new()),
             actions: RefCell::new(Vec::new()),
+            constant_metadata: RefCell::default(),
             output_index: Default::default(),
             active: Arc::new(AtomicBool::new(true)),
             top_level_functions: Default::default(),

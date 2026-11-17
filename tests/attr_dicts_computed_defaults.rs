@@ -412,7 +412,7 @@ cc_like(name = "tagged", tags = ["__DONT_DEPEND_ON_DEF_PARSER__"])
 }
 
 #[test]
-fn skylib_unittest_loads_with_analysis_test_transition_and_fails_analysis_explicitly() {
+fn skylib_unittest_with_analysis_test_transition_analyzes_and_passes() {
     let f = Fixture::new();
     let skylib = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/build_settings/skylib");
     assert!(
@@ -459,29 +459,22 @@ opt_test(name = "check", target_under_test = ":subject")
     assert!(String::from_utf8_lossy(&output.stderr).contains(
         "TRANSITION <analysis_test_transition object> transition <function AnalysisTestResultInfo>"
     ));
-    // N28c: skylib's unittest toolchain_type now analyzes (its package
-    // default metadata is analyzed in the no-config configuration instead
-    // of failing as a gap), so the analysis test's toolchain resolution
-    // expands every registered toolchain. The built-in fixture registry
-    // carries the BCR patches of @rules_shell and the other registered
-    // toolchain modules (tests/fixtures/builtin_modules/provenance.json), and
-    // rules_java's `@local_jdk` package globs through the JDK's `bin` link
-    // since N28d, so resolution reaches `@bazel_tools//tools/test`'s
-    // `use_default_test_toolchain` config_setting; N30 models its
-    // `use_target_platform_for_tests` option, so analysis reaches the
-    // analysis-test gap this test guards: rule(analysis_test=True) is
-    // analyzed natively (tests/bench_parity.rs), its attribute
-    // analysis_test_transition is not.
-    let stderr = f.rejected(
-        &f.run_builtin("build", &["//:check"]),
-        "analysis of //:check: declared rule features accepted at load time but not analyzed by the native profile: attribute 'target_under_test' cfg=analysis_test_transition from @@bazel_skylib+//lib:unittest.bzl (configuration transition)",
+    // The analysis test's attribute analysis_test_transition is applied
+    // (docs/ANALYSIS_TESTS.md): //:check analyzes, with skylib's
+    // `_action_retrieving_aspect` reading `target.actions` of the
+    // transitioned filegroup, and its AnalysisTestResultInfo script passes.
+    let output = f.run_builtin("test", &["//:check"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        !stderr.contains("use_target_platform_for_tests"),
-        "{stderr}"
+        String::from_utf8_lossy(&output.stdout).contains("//:check")
+            && String::from_utf8_lossy(&output.stdout).contains("PASSED"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
     );
-    // An explicit gap before the implementation runs, not a Starlark error.
-    assert!(!stderr.contains("Traceback"), "{stderr}");
     // analysis_test_transition is restricted to analysis_test rules.
     f.file(
         "misuse.bzl",

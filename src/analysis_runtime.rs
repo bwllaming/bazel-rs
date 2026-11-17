@@ -148,6 +148,10 @@ pub struct RegisteredAction {
     /// target's transitive repositories, so the commit computes it
     /// (crate::engine).
     pub repo_mapping: Option<crate::runfiles::Runfiles>,
+    /// The indexes of the outputs that are constant-metadata artifacts
+    /// (`py_internal.declare_constant_metadata_file`,
+    /// AnalysisEnvironment.getConstantMetadataArtifact).
+    pub constant_metadata: Vec<usize>,
 }
 
 /// The translation callback of an `actions.transform_version_file` /
@@ -187,6 +191,9 @@ mod owned {
         /// checks never apply to them.
         pub shareable: RefCell<BTreeSet<String>>,
         pub actions: RefCell<Vec<RegisteredAction>>,
+        /// Outputs declared by `py_internal.declare_constant_metadata_file`
+        /// (their paths): constant-metadata artifacts.
+        pub constant_metadata: RefCell<BTreeSet<String>>,
         /// Lookups into `declared` and `actions` ([`OutputIndex`]).
         pub output_index: RefCell<OutputIndex>,
         pub active: Arc<AtomicBool>,
@@ -654,6 +661,19 @@ impl Context {
                 shareable,
             },
         );
+        let constant_metadata = {
+            let declared = self.constant_metadata.borrow();
+            if declared.is_empty() {
+                Vec::new()
+            } else {
+                outputs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, file)| declared.contains(&file.path))
+                    .map(|(index, _)| index)
+                    .collect()
+            }
+        };
         let registered = RegisteredAction {
             action,
             inputs,
@@ -665,6 +685,7 @@ impl Context {
             build_info,
             key,
             repo_mapping: None,
+            constant_metadata,
         };
         if let Some((index, output)) = generated {
             // Actions.assignOwnersAndThrowIfConflictToleratingSharedActions
@@ -769,6 +790,26 @@ pub(crate) fn create_repo_mapping_manifest<'v>(
     context
         .register_repo_mapping_manifest(output, runfiles.clone())
         .map_err(starlark::Error::new_other)
+}
+
+/// PyBuiltins.declareConstantMetadataFile (rules/python/PyBuiltins.java:252-268):
+/// `name` in the rule's package below `root` (the bin directory), a
+/// constant-metadata artifact (AnalysisEnvironment.getConstantMetadataArtifact):
+/// consumers key it without its digest, like the volatile workspace status
+/// file (crate::engine).
+pub(crate) fn declare_constant_metadata_file<'v>(
+    ctx: Value<'v>,
+    name: &str,
+    eval: &Evaluator<'v, '_, '_>,
+) -> starlark::Result<Value<'v>> {
+    let actions = ctx.get_attr_error("actions", eval.heap())?;
+    let context = action_receiver(actions, eval, false).map_err(starlark::Error::new_other)?;
+    let file = context.declare(name).map_err(starlark::Error::new_other)?;
+    context
+        .constant_metadata
+        .borrow_mut()
+        .insert(file.path.clone());
+    Ok(alloc_file(eval.heap(), file))
 }
 
 /// One action registration (crate::analysis_runtime::Context::register_action).
@@ -2584,6 +2625,7 @@ mod tests {
             declared: RefCell::new(Vec::new()),
             shareable: RefCell::new(BTreeSet::new()),
             actions: RefCell::new(Vec::new()),
+            constant_metadata: RefCell::default(),
             output_index: Default::default(),
             active: Arc::new(AtomicBool::new(true)),
             top_level_functions: Default::default(),
@@ -2935,6 +2977,7 @@ r=rule(implementation=_rule,subrules=[S])
             declared: RefCell::new(Vec::new()),
             shareable: RefCell::new(BTreeSet::new()),
             actions: RefCell::new(Vec::new()),
+            constant_metadata: RefCell::default(),
             output_index: Default::default(),
             active: Arc::new(AtomicBool::new(true)),
             top_level_functions: Default::default(),

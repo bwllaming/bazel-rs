@@ -1,0 +1,99 @@
+DEBUG: <WS>/pkg/defs.bzl:104:10: ANALYSIS_TEST @@//pkg:macro_test mode=dbg v=v1 rule=@@//pkg:tpl.in
+DEBUG: <WS>/pkg/defs.bzl:78:10: CHECK @@//pkg:failure_dep_check_test list=True
+cause label=@@//pkg:bad message=
+Traceback (most recent call last):
+	File "<WS>/pkg/defs.bzl", line 6, column 13, in _subject_impl
+		fail("subject failed: " + ctx.label.name)
+Error in fail: subject failed: bad
+failure type=AnalysisFailureInfo causes type=depset
+DEBUG: <WS>/pkg/defs.bzl:78:10: CHECK @@//pkg:failure_check_test list=True
+cause label=@@//pkg:bad message=
+Traceback (most recent call last):
+	File "<WS>/pkg/defs.bzl", line 6, column 13, in _subject_impl
+		fail("subject failed: " + ctx.label.name)
+Error in fail: subject failed: bad
+failure type=AnalysisFailureInfo causes type=depset
+DEBUG: <WS>/pkg/defs.bzl:78:10: CHECK @@//pkg:plain_check_test list=False
+mode=fastbuild
+bin_path=bazel-out/k8-fastbuild/bin
+files=["bazel-out/k8-fastbuild/bin/pkg/ok.txt", "bazel-out/k8-fastbuild/bin/pkg/ok.cat", "bazel-out/k8-fastbuild/bin/pkg/ok.exp"]
+action mnemonic=FileWrite
+  argv=None
+  content="hello fastbuild\n"
+  substitutions=None
+  inputs=[]
+  outputs=["pkg/ok.txt"]
+  env={}
+  type=Action
+action mnemonic=Cat
+  argv=["/bin/bash", "-c", "cat $1 > $4", "", "bazel-out/k8-fastbuild/bin/pkg/ok.txt", "--x", "y z", "bazel-out/k8-fastbuild/bin/pkg/ok.cat"]
+  content=None
+  substitutions=None
+  inputs=["pkg/ok.txt", "pkg/src.txt"]
+  outputs=["pkg/ok.cat"]
+  env={"A": "1", "B": "two"}
+  type=Action
+action mnemonic=TemplateExpand
+  argv=None
+  content="name=ok mode=fastbuild\n"
+  substitutions={"{NAME}": "ok", "{MODE}": "fastbuild"}
+  inputs=["pkg/tpl.in"]
+  outputs=["pkg/ok.exp"]
+  env={}
+  type=Action
+DEBUG: <WS>/pkg/defs.bzl:78:10: CHECK @@//pkg:opt_check_test list=True
+mode=opt
+bin_path=bazel-out/k8-opt-ST-b10a2bc3d406/bin
+files=["bazel-out/k8-opt-ST-b10a2bc3d406/bin/pkg/ok.txt", "bazel-out/k8-opt-ST-b10a2bc3d406/bin/pkg/ok.cat", "bazel-out/k8-opt-ST-b10a2bc3d406/bin/pkg/ok.exp"]
+action mnemonic=FileWrite
+  argv=None
+  content="hello opt\n"
+  substitutions=None
+  inputs=[]
+  outputs=["pkg/ok.txt"]
+  env={}
+  type=Action
+action mnemonic=Cat
+  argv=["/bin/bash", "-c", "cat $1 > $4", "", "bazel-out/k8-opt-ST-b10a2bc3d406/bin/pkg/ok.txt", "--x", "y z", "bazel-out/k8-opt-ST-b10a2bc3d406/bin/pkg/ok.cat"]
+  content=None
+  substitutions=None
+  inputs=["pkg/ok.txt", "pkg/src.txt"]
+  outputs=["pkg/ok.cat"]
+  env={"A": "1", "B": "two"}
+  type=Action
+action mnemonic=TemplateExpand
+  argv=None
+  content="name=ok mode=opt\n"
+  substitutions={"{NAME}": "ok", "{MODE}": "opt"}
+  inputs=["pkg/tpl.in"]
+  outputs=["pkg/ok.exp"]
+  env={}
+  type=Action
+DEBUG: <WS>/pkg/defs.bzl:78:10: CHECK @@//pkg:failure_unexpected_test list=True
+mode=fastbuild
+bin_path=bazel-out/k8-fastbuild-ST-7d8cff736ce3/bin
+files=["bazel-out/k8-fastbuild-ST-7d8cff736ce3/bin/pkg/ok.txt", "bazel-out/k8-fastbuild-ST-7d8cff736ce3/bin/pkg/ok.cat", "bazel-out/k8-fastbuild-ST-7d8cff736ce3/bin/pkg/ok.exp"]
+action mnemonic=FileWrite
+  argv=None
+  content="hello fastbuild\n"
+  substitutions=None
+  inputs=[]
+  outputs=["pkg/ok.txt"]
+  env={}
+  type=Action
+action mnemonic=Cat
+  argv=["/bin/bash", "-c", "cat $1 > $4", "", "bazel-out/k8-fastbuild-ST-7d8cff736ce3/bin/pkg/ok.txt", "--x", "y z", "bazel-out/k8-fastbuild-ST-7d8cff736ce3/bin/pkg/ok.cat"]
+  content=None
+  substitutions=None
+  inputs=["pkg/ok.txt", "pkg/src.txt"]
+  outputs=["pkg/ok.cat"]
+  env={"A": "1", "B": "two"}
+  type=Action
+action mnemonic=TemplateExpand
+  argv=None
+  content="name=ok mode=fastbuild\n"
+  substitutions={"{NAME}": "ok", "{MODE}": "fastbuild"}
+  inputs=["pkg/tpl.in"]
+  outputs=["pkg/ok.exp"]
+  env={}
+  type=Action

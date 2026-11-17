@@ -2499,14 +2499,26 @@ impl<'v> StarlarkValue<'v> for TargetValue {
                 .map(|provider| heap.access_owned_frozen_value(provider))?,
             // RuleConfiguredTarget.rawGetStarlarkProvider (:270-281): the
             // registered actions (crate::target_actions).
-            "actions" => self
+            "actions" => match self
                 .0
                 .providers
                 .get(crate::target_actions::PROVIDER_ID)
                 .and_then(|provider| {
                     crate::target_actions::TargetActions::from_value(provider.value())
-                })
-                .map(|actions| actions.alloc_list(heap))?,
+                }) {
+                Some(actions) => actions.alloc_list(heap),
+                // A native rule target: the native rules but genrule,
+                // genquery and starlark_doc_extract register no actions
+                // (theirs are not retained: no field).
+                None if self.0.is_rule()
+                    && !self.0.rule_class.as_deref().is_some_and(|class| {
+                        crate::target_actions::NATIVE_RULES_WITH_ACTIONS.contains(&class)
+                    }) =>
+                {
+                    heap.alloc(starlark::values::list::AllocList::EMPTY)
+                }
+                None => return None,
+            },
             _ => return None,
         })
     }
@@ -2530,11 +2542,7 @@ impl<'v> StarlarkValue<'v> for TargetValue {
             fields.push("output_groups".to_owned());
         }
         // RuleConfiguredTarget.addExtraStarlarkKeys (:254-263).
-        if self
-            .0
-            .providers
-            .contains_key(crate::target_actions::PROVIDER_ID)
-        {
+        if self.0.is_rule() {
             fields.push("actions".to_owned());
         }
         fields

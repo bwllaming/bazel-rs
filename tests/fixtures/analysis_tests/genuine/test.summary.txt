@@ -1,0 +1,6 @@
+//pkg:failure_check_test PASSED
+//pkg:failure_dep_check_test PASSED
+//pkg:macro_test PASSED
+//pkg:opt_check_test PASSED
+//pkg:plain_check_test PASSED
+//pkg:failure_unexpected_test FAILED

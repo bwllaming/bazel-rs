@@ -1,0 +1,24 @@
+load(":defs.bzl", "failure_check_test", "make_analysis_test", "opt_check_test", "plain_check_test", "subject")
+load(":flag.bzl", "string_flag")
+
+exports_files(["tpl.in"])
+
+string_flag(name = "flag", build_setting_default = "unset")
+
+subject(name = "ok", srcs = ["src.txt"])
+
+subject(name = "bad", fail = True, tags = ["manual"])
+
+subject(name = "uses_bad", deps = [":bad"], tags = ["manual"])
+
+opt_check_test(name = "opt_check_test", target_under_test = ":ok")
+
+plain_check_test(name = "plain_check_test", target_under_test = ":ok")
+
+failure_check_test(name = "failure_check_test", target_under_test = ":bad")
+
+failure_check_test(name = "failure_dep_check_test", target_under_test = ":uses_bad")
+
+failure_check_test(name = "failure_unexpected_test", target_under_test = ":ok", expect_success = False)
+
+make_analysis_test(name = "macro_test", target = ":ok")

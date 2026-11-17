@@ -2958,6 +2958,8 @@ struct ComputeSnapshot {
     run_under: Option<Arc<analysis::RunUnderPrerequisite>>,
     /// ConfiguredOutputs.allow_analysis_failures.
     allow_analysis_failures: bool,
+    /// ConfiguredOutputs.evaluating_for_analysis_test.
+    evaluating_for_analysis_test: bool,
 }
 
 /// The compute of one custom rule: the analysis result (or error) and
@@ -8564,6 +8566,7 @@ impl Engine {
             loaded_functions: Some(&snapshot.loaded_functions),
             run_under: snapshot.run_under.clone(),
             allow_analysis_failures: snapshot.allow_analysis_failures,
+            evaluating_for_analysis_test: snapshot.evaluating_for_analysis_test,
         };
         crate::platforms::take_deferred_read();
         let (analyzed, printed) = analysis::analyze_buffered(
@@ -9141,6 +9144,11 @@ impl Engine {
                 .native
                 .value("allow_analysis_failures")
                 == Some(crate::configuration::OptionValue::Bool(true)),
+            evaluating_for_analysis_test: engine
+                .configurations
+                .get(config)
+                .native
+                .evaluating_for_analysis_test,
         };
         Ok(PreparedTarget {
             key,
@@ -13878,7 +13886,8 @@ fn output_artifact(
         registered
             .build_info
             .as_ref()
-            .is_some_and(|build_info| build_info.volatile),
+            .is_some_and(|build_info| build_info.volatile)
+            || registered.constant_metadata.contains(&index),
     )
     .with_symlink(file.is_symlink)
 }
@@ -15943,6 +15952,7 @@ mod tests {
             build_info: None,
             key,
             repo_mapping: None,
+            constant_metadata: Vec::new(),
         };
         let error = register_action_outputs(
             std::slice::from_ref(&registered),

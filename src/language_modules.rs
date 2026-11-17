@@ -105,6 +105,9 @@ pub(crate) enum Behavior {
     ExecGroup,
     ConfigurationField,
     TestEnvironment,
+    /// `_py_builtins.declare_constant_metadata_file(ctx, name, root)`
+    /// (crate::analysis_runtime::declare_constant_metadata_file).
+    PyDeclareConstantMetadataFile,
     /// testing.analysis_test (crate::custom_rule::analysis_test).
     AnalysisTest,
     /// coverage_common.instrumented_files_info (crate::instrumented_files).
@@ -1201,6 +1204,34 @@ fn call<'v>(
             .map_err(starlark::Error::new_other)?;
             Ok(heap.alloc(expanded))
         }
+        Behavior::PyDeclareConstantMetadataFile => {
+            // Three named-only parameters (PyBuiltins.java:252-260) whose
+            // `unbound` defaults reach the Java method when absent.
+            const FUNCTION: &str = "declare_constant_metadata_file";
+            let bound = bind_styled(
+                Style::Builtin,
+                FUNCTION,
+                &[
+                    param("ctx", false, true, false),
+                    param("name", false, true, false),
+                    param("root", false, true, false),
+                ],
+                args,
+                heap,
+            )?;
+            let (Some(ctx), Some(name), Some(_root)) = (bound[0], bound[1], bound[2]) else {
+                return Err(failure(format!(
+                    "{qualified}() without each of ctx, name and root: genuine Bazel 9.3 crashes on it (an `unbound` default reaches PyBuiltins.declareConstantMetadataFile), which the native profile reports instead"
+                )));
+            };
+            if ctx.get_type() != "ctx" {
+                return Err(type_error(FUNCTION, "ctx", ctx, "ctx"));
+            }
+            let Some(name) = name.unpack_str() else {
+                return Err(type_error(FUNCTION, "name", name, "string"));
+            };
+            crate::analysis_runtime::declare_constant_metadata_file(ctx, name, eval)
+        }
         Behavior::PyCreateRepoMappingManifest => {
             // `_create_repo_mapping_manifest(*args, **kwargs)` forwards to the
             // Java method: three named-only parameters (StarlarkRuleContext,
@@ -1920,6 +1951,7 @@ fn py_internal(heap: &FrozenHeap) -> FrozenValue {
                     Behavior::PyRespectLegacyExternalRunfiles
                 }
                 "create_repo_mapping_manifest" => Behavior::PyCreateRepoMappingManifest,
+                "declare_constant_metadata_file" => Behavior::PyDeclareConstantMetadataFile,
                 "expand_location_and_make_variables" => Behavior::PyExpandLocationAndMakeVariables,
                 _ => unimplemented,
             };
@@ -2371,7 +2403,7 @@ t = platform_common.ToolchainInfo(z = [1], a = "x", m = None)
             ),
             (
                 "testing.analysis_test(name = 'x', implementation = len)",
-                "testing.analysis_test is not implemented in the native profile",
+                "in call to analysis_test(), parameter 'implementation' got value of type 'builtin_function_or_method', want 'function'",
             ),
         ] {
             fails(FILE, call, message);

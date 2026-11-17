@@ -8,6 +8,7 @@ artifacts
 bazel-rs-out
 target
 tests/fixtures/action_tmpdir/workspace
+tests/fixtures/analysis_tests/workspace
 tests/fixtures/aquery/depsets
 tests/fixtures/aquery/genrules
 tests/fixtures/aquery/kitchen

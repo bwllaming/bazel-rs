@@ -23,6 +23,11 @@ use crate::analysis_runtime::RegisteredAction;
 use crate::repository::RepositorySet;
 use crate::starlark_types::{Depset, File, Item, Order};
 
+/// The native rule classes that register actions, which are not retained
+/// as `Target.actions` (every other native rule registers none).
+pub(crate) const NATIVE_RULES_WITH_ACTIONS: &[&str] =
+    &["genrule", "genquery", "starlark_doc_extract"];
+
 /// The reserved provider key of a target's actions.
 pub(crate) const PROVIDER_ID: &str = "builtin:Target.actions";
 

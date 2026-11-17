@@ -3451,8 +3451,10 @@ ok_tuple(name = 't')\n",
         .unwrap();
         let error = crate::analysis::analyze(target(&package, "check_test"), &Default::default())
             .unwrap_err();
-        // rule(analysis_test=True) is analyzed natively; its
-        // analysis_test_transition attribute is not.
-        assert!(error.contains("analysis_test_transition"), "{error}");
+        // rule(analysis_test=True) and its analysis_test_transition
+        // attribute are analyzed natively (docs/ANALYSIS_TESTS.md): only the
+        // unresolved dependency of this engine-free analysis fails.
+        assert!(!error.contains(NOT_ANALYZED), "{error}");
+        assert!(error.contains("was not resolved"), "{error}");
     }
 }

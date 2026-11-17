@@ -132,6 +132,7 @@ impl AspectCommit {
     pub(super) fn outputs(&self) -> analysis::ConfiguredOutputs<'_> {
         analysis::ConfiguredOutputs {
             allow_analysis_failures: false,
+            evaluating_for_analysis_test: false,
             output_root: &self.output_root,
             action_owner: &self.action_owner,
             action_env: self.action_env.clone(),
