@@ -232,6 +232,7 @@ impl UrlRewriter {
     /// to the workspace root.
     pub fn load(workspace: &Path, config: &str) -> Result<Self, String> {
         let path = workspace.join(config);
+        // snapshot-unrecorded: read once before planning; the rewriter only chooses where a checksum-verified download comes from, and a snapshot hit downloads nothing.
         let text = std::fs::read(&path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 format!(
@@ -495,6 +496,7 @@ pub fn distdir_lookup(names: &[String], matches: &dyn Fn(&Path) -> bool) -> Opti
         }
     };
     for directory in &settings.distdir {
+        // snapshot-unrecorded: a distdir only supplies a file whose checksum the download already pins; it changes no repository content.
         match std::fs::metadata(directory) {
             Err(_) => event(format!(
                 "INFO: non-existent distdir {}",
@@ -507,6 +509,7 @@ pub fn distdir_lookup(names: &[String], matches: &dyn Fn(&Path) -> bool) -> Opti
             Ok(_) => {
                 for name in names {
                     let candidate = directory.join(name);
+                    // snapshot-unrecorded: as above, a checksum-verified candidate.
                     if std::fs::metadata(&candidate).is_ok_and(|metadata| metadata.is_file())
                         && matches(&candidate)
                     {
