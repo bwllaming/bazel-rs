@@ -143,6 +143,7 @@ tests/fixtures/td_support
 tests/fixtures/test_args/workspace
 tests/fixtures/test_flags/stubs
 tests/fixtures/test_suite/workspace
+tests/fixtures/tree_relative_path/workspace
 tests/fixtures/tree_symlinks/workspace
 tests/fixtures/unresolved_symlinks/workspace
 tests/fixtures/unused_inputs_list/workspace
