@@ -944,9 +944,11 @@ registry downloads of such a run settle too:
   `note_written_lockfile` confirms each whose URL and hash (or absence) the
   written lockfile records — the next run reads it from the
   content-addressed cache this run filled (or knows it absent) and never
-  transfers it. Only where that holds: not a local registry or `off` (hashes
-  ignored), not a `file:` URL (not recorded), not an absence under
-  `refresh` (asked again);
+  transfers it. Only where that holds: the bytes are in the native or the
+  shared (`--repository_cache`) content-addressed cache after this run's
+  put (`cas_put` reports it; a session without a cache settles nothing),
+  not a local registry or `off` (hashes ignored), not a `file:` URL (not
+  recorded), not an absence under `refresh` (asked again);
 * a `metadata.json` read for the yanked status of selected versions: its
   taints become provisional under `registry metadata <url>`, confirmed when
   the written lockfile, for every selected version it was read for, lists
@@ -956,7 +958,10 @@ registry downloads of such a run settle too:
 `BAZEL_RS_SNAPSHOT=verify` (strict) verified the abseil-cpp hit after such a
 cold run; tests/snapshot.rs (fixtures 9 and 17, the `test` and extension
 fixtures, `a_cold_cache_with_locked_registry_hashes_saves`; each also under
-verify mode).
+verify mode; fixtures 9 and 17 also check that a real analysis after the
+cold run — the snapshot-off side, and a forced miss on the snapshot side —
+leaves the very lockfile bytes the cold run wrote) and
+`registry_session::tests::unlocked_registry_downloads_settle_only_with_a_cache`.
 
 **An executed non-local repository rule is re-probed** (snapshot-real-hits):
 once its publication is complete (tree, manifest, specification pointer),

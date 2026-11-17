@@ -705,12 +705,10 @@ impl RegistrySession {
                 "Failed to fetch registry file {url}: Checksum was {actual} but wanted {wanted}"
             ));
         }
-        if self.mode != LockfileMode::Off {
-            self.cas_put(&actual, &fetched);
-        }
+        let cached = self.mode != LockfileMode::Off && self.cas_put(&actual, &fetched);
         if checksum.is_some() {
             transfer.settle();
-        } else if self.lockfile_may_settle(mode, url) {
+        } else if cached && self.lockfile_may_settle(mode, url) {
             transfer.provisional(|| registry_transfer_key(url, &actual));
         }
         self.record(url, Some(actual));
@@ -794,12 +792,12 @@ impl RegistrySession {
         // (RepositorySet::record_link_anchors) would record it absent or
         // present by timing: a nondeterministic recording (a verify-mode
         // mismatch, a spurious miss on the next hit).
-        if self.mode != LockfileMode::Off && registry.local_path().is_none() {
-            self.cas_put(&actual, &fetched);
-        }
+        let cached = self.mode != LockfileMode::Off
+            && registry.local_path().is_none()
+            && self.cas_put(&actual, &fetched);
         if checksum.is_some() {
             transfer.settle();
-        } else if registry.local_path().is_none() && self.lockfile_may_settle(mode, &url) {
+        } else if cached && self.lockfile_may_settle(mode, &url) {
             transfer.provisional(|| registry_transfer_key(&url, &actual));
         }
         Some(Arc::new(fetched))
@@ -838,7 +836,7 @@ impl RegistrySession {
         // with a known checksum from the repository cache.
         let digest = crate::extension_download::Algorithm::Sha256;
         let bytes = crate::repository_cache::get_bytes(digest, &decode_hex(hash)?)?;
-        self.cas_put_native(hash, &bytes);
+        let _ = self.cas_put_native(hash, &bytes);
         Some(bytes)
     }
 
@@ -856,24 +854,32 @@ impl RegistrySession {
 
     /// Best effort, like DownloadCache.put after a download; also into the
     /// shared `--repository_cache` (crate::repository_cache).
-    fn cas_put(&self, hash: &str, bytes: &[u8]) {
-        if let Some(digest) = decode_hex(hash) {
-            let _ = crate::repository_cache::put_bytes(
-                crate::extension_download::Algorithm::Sha256,
-                &digest,
-                bytes,
-            );
-        }
-        self.cas_put_native(hash, bytes);
+    /// Put a fetched registry file into the content-addressed caches the
+    /// next command's [`Self::cas_get`] reads; whether one of them holds it
+    /// now (only then may the lockfile this command writes settle the
+    /// transfer, [`Self::lockfile_may_settle`]).
+    fn cas_put(&self, hash: &str, bytes: &[u8]) -> bool {
+        // (put_bytes is Ok without a `--repository_cache`: it holds nothing.)
+        let shared = crate::repository_cache::path().is_some()
+            && decode_hex(hash).is_some_and(|digest| {
+                crate::repository_cache::put_bytes(
+                    crate::extension_download::Algorithm::Sha256,
+                    &digest,
+                    bytes,
+                )
+                .is_ok()
+            });
+        self.cas_put_native(hash, bytes) || shared
     }
 
-    fn cas_put_native(&self, hash: &str, bytes: &[u8]) {
+    /// Whether the native cache holds `hash` afterwards.
+    fn cas_put_native(&self, hash: &str, bytes: &[u8]) -> bool {
         let Some(directory) = &self.cas else {
-            return;
+            return false;
         };
         let path = directory.join(hash);
         if self.cas_get_native(hash).is_some() {
-            return;
+            return true;
         }
         let publish = || -> std::io::Result<()> {
             std::fs::create_dir_all(directory)?;
@@ -889,7 +895,7 @@ impl RegistrySession {
             temp.persist(&path).map_err(|error| error.error)?;
             Ok(())
         };
-        let _ = publish();
+        publish().is_ok()
     }
 
     /// Fetch every registry file the lockfile names with a checksum
@@ -1668,6 +1674,43 @@ mod tests {
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A registry file fetched without a lockfile checksum: its transfer's
+    /// network taint is provisional (settled once the written lockfile
+    /// records its hash, `note_written_lockfile`) only when a
+    /// content-addressed cache now holds the bytes for the next command;
+    /// without one it taints the run.
+    #[test]
+    fn unlocked_registry_downloads_settle_only_with_a_cache() {
+        let relative = "modules/a/1/MODULE.bazel";
+        let bytes = b"module(name='a', version='1')".to_vec();
+        let server = serve(BTreeMap::from([(format!("/{relative}"), bytes.clone())]));
+        let registry = Registry::parse(&server.base).unwrap();
+        let url = registry.download_location(relative).unwrap();
+        for cached in [true, false] {
+            let temp = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
+            let session = RegistrySession::open(
+                temp.path(),
+                LockfileMode::Update,
+                &LockfileTarget::Workspace,
+                cached.then(|| temp.path().join("cache")),
+                Some(BTreeSet::new()),
+            )
+            .unwrap();
+            let window = crate::observed_fs::tests_support::record_this_thread();
+            assert!(matches!(
+                session.read(&registry, relative).unwrap(),
+                Fetch::Found(found) if *found == bytes
+            ));
+            crate::observed_fs::confirm_network(&registry_transfer_key(&url, &sha256_hex(&bytes)));
+            let network = window
+                .recorder
+                .taints()
+                .contains_key(&crate::observed_fs::Taint::Network);
+            assert_eq!(network, !cached, "cached={cached}");
+            drop(window);
+        }
+    }
 
     #[test]
     fn proof_registry_reads_only_current_lock_checksums_with_zero_transport() {

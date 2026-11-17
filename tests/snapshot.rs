@@ -163,6 +163,14 @@ impl Twin {
         }
     }
 
+    /// Each side's MODULE.bazel.lock bytes (empty when absent).
+    fn lockfiles(&self) -> Vec<Vec<u8>> {
+        [ON, OFF]
+            .iter()
+            .map(|side| fs::read(self.side(side).join("ws/MODULE.bazel.lock")).unwrap_or_default())
+            .collect()
+    }
+
     fn with_side<T>(&self, side: &str, body: impl FnOnce() -> T) -> T {
         fs::rename(self.side(side), self.run_root()).unwrap();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
@@ -899,7 +907,12 @@ fn lockfile_and_module_edits_miss_and_lockfile_writes_save_as_written() {
     let cold = twin.same(args, &[]);
     cold.assert_success().assert_saved();
     assert!(twin.side(ON).join("ws/MODULE.bazel.lock").exists());
+    // The lockfile the cold run wrote is the one a full analysis writes
+    // again (the snapshot recorded it as written): the snapshot-off side's
+    // next run, a real analysis, leaves the same bytes.
+    let written = twin.lockfiles();
     twin.same(args, &[]).assert_hit();
+    assert_eq!(twin.lockfiles(), written);
     // An edited lockfile (still valid JSON) is read again: a miss, saved
     // with the lockfile as it leaves it.
     twin.each(|root| {
@@ -1433,10 +1446,19 @@ fn network_and_printing_local_repositories_never_save() {
     let cold = twin.same(update, &[]);
     cold.assert_success().assert_saved();
     assert!(server.requests() > 0);
+    let written = twin.lockfiles();
+    assert!(written.iter().all(|bytes| !bytes.is_empty()));
     let before = server.requests();
     twin.same(update, &[]).assert_hit();
     twin.same(update, &[]).assert_hit();
     assert_eq!(server.requests(), before, "a hit fetches nothing");
+    // A forced miss — a real analysis on the hit's side too — writes the
+    // very lockfile the snapshot recorded (the snapshot-off side's runs are
+    // real analyses throughout).
+    twin.same(update, &[("BAZEL_RS_SNAPSHOT", "off")])
+        .assert_success();
+    assert_eq!(twin.lockfiles(), written);
+    twin.same(update, &[]).assert_hit();
     let off = &[
         "build",
         "--lockfile_mode=off",
