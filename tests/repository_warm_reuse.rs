@@ -293,3 +293,78 @@ fn warm_parallel_query_is_byte_identical_and_reuses() {
         "spec pointers hit, not rewritten, under the worker probe"
     );
 }
+
+/// A repository rule that templates a file of its own directory onto itself
+/// twice (rules_m4's `ctx.template("src/m4.h", "src/m4.h", …)`): the first
+/// read's bytes are no longer in the published tree, which used to make
+/// that probe fail on every later command, so the rule re-executed every
+/// time. Genuine Bazel watches nothing under the repository directory; the
+/// warm process reuses the publication.
+#[test]
+fn a_template_rewriting_its_own_stage_file_is_reused_warm() {
+    let f = Fixture::new();
+    f.file(
+        "MODULE.bazel",
+        "module(name='main')\n\
+         r = use_repo_rule('//:rules.bzl', 'rewriter')\n\
+         r(name='rewritten')\n",
+    );
+    f.file(
+        "rules.bzl",
+        "def _rewrite(ctx):\n\
+         \x20   ctx.file('BUILD.bazel', \"exports_files(['value'])\")\n\
+         \x20   ctx.file('value', 'A')\n\
+         \x20   ctx.template('value', 'value', substitutions = {'A': 'B'})\n\
+         \x20   ctx.template('value', 'value', substitutions = {'B': 'C'})\n\
+         \x20   ctx.file('kept', 'K')\n\
+         \x20   ctx.template('copy', 'kept')\n\
+         rewriter = repository_rule(implementation=_rewrite)\n",
+    );
+    f.file(
+        "BUILD.bazel",
+        "genrule(\n\
+         \x20   name = 'uses_repos',\n\
+         \x20   srcs = ['@rewritten//:value'],\n\
+         \x20   outs = ['uses.txt'],\n\
+         \x20   cmd = 'cat $(SRCS) > $@',\n\
+         )\n",
+    );
+    let run = || {
+        let result = f
+            .command("cache-rewrite")
+            .env("BAZEL_RS_TIMING", "1")
+            .args(["build", "--experimental-builtin-modules"])
+            .arg(builtin_registry_flag())
+            .arg("//:uses_repos")
+            .output()
+            .unwrap();
+        assert_green(&result);
+        String::from_utf8_lossy(&result.stderr)
+            .lines()
+            .find(|line| line.starts_with("PERF-REPO executed roots="))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let cold = run();
+    assert!(cold.contains("rewritten"), "{cold}");
+    let warm = run();
+    assert!(
+        warm.starts_with("PERF-REPO executed roots=0 "),
+        "the warm process re-executed: {warm}"
+    );
+    // The probe of the template whose file the rule did not rewrite is kept.
+    let manifests = f.path("cache-rewrite/repositories/direct/manifests");
+    let recorded: Vec<String> = fs::read_dir(&manifests)
+        .unwrap()
+        .filter_map(|entry| {
+            let bytes = fs::read(entry.unwrap().path()).ok()?;
+            let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+            let recorded: Vec<u8> = serde_json::from_value(manifest["recorded"].clone()).ok()?;
+            Some(String::from_utf8(recorded).unwrap())
+        })
+        .filter(|recorded| recorded.contains("stage:"))
+        .collect();
+    assert_eq!(recorded.len(), 1, "{recorded:?}");
+    assert!(recorded[0].contains("\"stage:kept\""), "{}", recorded[0]);
+    assert!(!recorded[0].contains("\"stage:value\""), "{}", recorded[0]);
+}

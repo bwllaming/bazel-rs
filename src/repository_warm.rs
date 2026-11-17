@@ -390,9 +390,21 @@ pub(crate) fn specification_digest_bytes(
 /// the specification itself) and these recorded inputs — `os.environ` and
 /// unrequested environment changes record nothing, like Bazel's
 /// RepoRecordedInput set (ENV: only through declared names or getenv).
+///
+/// A `stage:` template probe (a template read from inside the repository
+/// directory) whose file the execution itself rewrote or removed afterwards
+/// — `ctx.template("src/m4.h", "src/m4.h", …)` applied twice, as rules_m4
+/// and rules_flex do — is left out: it names a file of the publication,
+/// whose final bytes the manifest pins, and could never hold again, so the
+/// repository re-executed on every command. Genuine Bazel watches no path
+/// under the repository's working directory at all
+/// (StarlarkBaseExternalContext.toRepoCacheFriendlyPath, AUTO: null). A
+/// probe that still holds, or whose path in `stage` crosses a symlink (the
+/// read may have followed it out of the stage), is kept.
 pub(crate) fn record(
     inputs: &crate::repository_ctx::ExecutionInputs,
     watch_names: &[String],
+    stage: &Path,
 ) -> Result<Vec<u8>, String> {
     // A label read's probe is its file's RepoCacheFriendlyPath (Bazel
     // watches the label's path, `@@repo//pkg/name`); the identity keeps the
@@ -415,6 +427,7 @@ pub(crate) fn record(
         templates: inputs
             .templates
             .iter()
+            .filter(|template| template.label || !rewritten_in_stage(stage, template))
             .map(|template| {
                 Ok(TemplateProbe {
                     source: probe(&template.source, template.label)?,
@@ -443,6 +456,38 @@ pub(crate) fn record(
     };
     serde_json::to_vec(&recorded)
         .map_err(|error| format!("cannot record repository inputs: {error}"))
+}
+
+/// Whether the `stage:` template `template` read bytes that its file in
+/// `stage` (the finished execution's repository directory) no longer holds,
+/// the path crossing no symlink: the execution rewrote or removed it after
+/// the read ([`record`]).
+fn rewritten_in_stage(stage: &Path, template: &crate::repository_ctx::TemplateInput) -> bool {
+    let Some(relative) = template.source.strip_prefix("stage:") else {
+        return false;
+    };
+    let Some(path) = safe_child(stage, relative) else {
+        return false;
+    };
+    let mut prefix = stage.to_path_buf();
+    for component in Path::new(relative).components() {
+        prefix.push(component);
+        // snapshot-unrecorded: the execution's own stage, published whole
+        // (its manifest pins every file); a symlink keeps the probe.
+        match std::fs::symlink_metadata(&prefix) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return false,
+            Ok(_) => {}
+            // Removed after the read (or a parent replaced): the probe can
+            // never hold.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
+            Err(_) => return false,
+        }
+    }
+    // snapshot-unrecorded: as above.
+    match std::fs::read(&path) {
+        Ok(bytes) => bytes != template.bytes,
+        Err(_) => false,
+    }
 }
 
 /// Reobserve the recorded inputs against the current world. `Ok(false)` means

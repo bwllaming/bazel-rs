@@ -5839,7 +5839,8 @@ impl RepositorySet {
             }
             let inputs =
                 crate::host_os::repository_inputs(this.host()?.as_ref(), &executed.inputs)?;
-            let recorded = crate::repository_warm::record(&executed.inputs, &executed.watch_names)?;
+            let recorded =
+                crate::repository_warm::record(&executed.inputs, &executed.watch_names, stage)?;
             let resolved = executed
                 .resolved
                 .iter()
@@ -6655,7 +6656,8 @@ impl RepositorySet {
             }
             let inputs =
                 crate::host_os::repository_inputs(this.host()?.as_ref(), &executed.inputs)?;
-            let recorded = crate::repository_warm::record(&executed.inputs, &executed.watch_names)?;
+            let recorded =
+                crate::repository_warm::record(&executed.inputs, &executed.watch_names, stage)?;
             let resolved = executed
                 .resolved
                 .iter()

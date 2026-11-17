@@ -268,6 +268,17 @@ publication's identity, since an execution whose recorded probes differ from
 the manifest's republishes it (otherwise the stale probes would re-execute the
 rule on every run).
 
+A template read from inside the repository directory is probed as
+`stage:<relative>` against the published tree. When the execution itself
+rewrote or removed that file after the read (rules_m4 and rules_flex apply
+`ctx.template("src/m4.h", "src/m4.h", …)` twice), the probe could never hold
+again and the rule re-executed on every command; such a probe is not recorded
+(`repository_warm::record`). The published bytes stay pinned by the manifest,
+and Bazel watches no path under the repository directory at all
+(StarlarkBaseExternalContext.toRepoCacheFriendlyPath). A probe that still
+holds, or whose path crosses a symlink in the stage, is kept
+(tests/repository_warm_reuse.rs).
+
 #### Upgrade note (review i20)
 
 The first invocation of an i20 binary on a cache written by an older bazel-rs
