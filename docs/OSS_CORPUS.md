@@ -261,7 +261,8 @@ Notes:
 **Summary.** 37 projects ran. On 10 of them bazel-rs matches genuine exactly:
 same exit codes, `query //...` labels, `bazel-bin` file lists, sampled
 SHA-256s and test results. abseil-cpp is the largest: 2,767 outputs and 252
-passing tests. Two more (rules-template, yalantinglibs) fail the same way on
+passing tests. Two more (rules-template, yalantinglibs; riegeli too since the
+corpus-runfiles rerun) fail the same way on
 both tools. Three are clean except for one bug each: bazel-gazelle (B13,
 fixed since, gazelle not rerun),
 buildtools (B15; since fixed, only B6's repo mapping manifest remains) and
