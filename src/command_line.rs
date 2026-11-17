@@ -170,6 +170,21 @@ pub(crate) struct DeferredVector {
     /// map_each takes a DirectoryExpander (wantsDirectoryExpander: a
     /// StarlarkFunction with two or more parameters).
     pub expander: bool,
+    /// Its directory items as map_each maps them at analysis with a
+    /// NoopExpander (aquery only; [`expand_groups`] without metadata): the
+    /// mapper may not be callable once analysis is over. Never persisted.
+    #[serde(skip)]
+    pub noop: Option<NoopMapping>,
+}
+
+/// The NoopExpander mapping of a deferred vector's directory items, in
+/// item order, or the error the mapping raised (genuine's aquery fails on
+/// an action whose command line cannot be expanded,
+/// ActionGraphTextOutputFormatterCallback -> "build interrupted").
+#[derive(Clone, Debug, Default)]
+pub(crate) struct NoopMapping {
+    pub strings: Vec<Vec<String>>,
+    pub error: Option<String>,
 }
 
 /// The file listings a DirectoryExpander expands at execution time: each
@@ -507,17 +522,47 @@ pub(crate) fn expand_groups(
                         Expander::None
                     };
                     let mut values = Vec::new();
-                    for item in &vector.items {
-                        match item {
-                            Item::Strings(strings) => values.extend(strings.iter().cloned()),
-                            Item::Directory(tree) | Item::Unexpanded(tree) => {
-                                match &vector.map_each {
-                                    // A callable not yet frozen with its
-                                    // analysis module stays a path.
-                                    Some(mapper) if mapper.function().is_ok() => values.extend(
-                                        call_mapper(mapper, Mapped::Tree(tree.clone()), expander)?,
-                                    ),
-                                    _ => values.push(tree.path.clone()),
+                    match &vector.noop {
+                        Some(noop) => {
+                            if let Some(error) = &noop.error {
+                                return Err(error.clone());
+                            }
+                            let mut mapped = noop.strings.iter();
+                            for item in &vector.items {
+                                match item {
+                                    Item::Strings(strings) => {
+                                        values.extend(strings.iter().cloned())
+                                    }
+                                    Item::Directory(tree) | Item::Unexpanded(tree) => {
+                                        match (&vector.map_each, mapped.next()) {
+                                            (Some(_), Some(strings)) => {
+                                                values.extend(strings.iter().cloned())
+                                            }
+                                            _ => values.push(tree.path.clone()),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        None => {
+                            for item in &vector.items {
+                                match item {
+                                    Item::Strings(strings) => {
+                                        values.extend(strings.iter().cloned())
+                                    }
+                                    Item::Directory(tree) | Item::Unexpanded(tree) => {
+                                        match &vector.map_each {
+                                            // A callable not yet frozen with
+                                            // its analysis module stays a path.
+                                            Some(mapper) if mapper.function().is_ok() => values
+                                                .extend(call_mapper(
+                                                    mapper,
+                                                    Mapped::Tree(tree.clone()),
+                                                    expander,
+                                                )?),
+                                            _ => values.push(tree.path.clone()),
+                                        }
+                                    }
                                 }
                             }
                         }

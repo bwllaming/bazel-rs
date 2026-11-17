@@ -1409,13 +1409,16 @@ fn register_spawn(
         )];
         command_lines.extend(key_parts);
         let mut bazel_arguments = spec.executable.clone();
+        let mut expansion_error = None;
         for part in &spec.parts {
             // Directories stay unexpanded at analysis (maybeExpandDirectories
             // without input metadata), like genuine aquery's.
-            bazel_arguments.extend(
-                crate::command_line::expand_groups(&part.groups, part.flag_per_line, None)
-                    .unwrap_or_default(),
-            );
+            match crate::command_line::expand_groups(&part.groups, part.flag_per_line, None) {
+                Ok(arguments) => bazel_arguments.extend(arguments),
+                Err(error) => {
+                    expansion_error.get_or_insert(error);
+                }
+            }
         }
         // SpawnAction's fixed environment: the default shell environment's
         // variables, then the `env` dict's in insertion order.
@@ -1435,6 +1438,7 @@ fn register_spawn(
             environment: Some(fixed),
             command_lines: Some(command_lines),
             arguments: Some(bazel_arguments),
+            expansion_error,
             // StarlarkActionFactory: the inputs, then the tools (a File
             // executable is one).
             input_order: Some(
@@ -1719,17 +1723,19 @@ fn action_methods(builder: &mut MethodsBuilder) {
             .then(|| crate::args::write_recipe(content))
             .flatten()
             .map(|(recipe, file_type)| {
+                let expanded = crate::command_line::expand_groups(
+                    &snapshot.groups,
+                    snapshot.flag_per_line,
+                    None,
+                );
+                let expansion_error = expanded.as_ref().err().cloned();
                 Arc::new(crate::aquery::Meta {
                     param_write: Some(crate::aquery::ParamWrite {
                         file_type,
                         recipe,
-                        arguments: crate::command_line::expand_groups(
-                            &snapshot.groups,
-                            snapshot.flag_per_line,
-                            None,
-                        )
-                        .unwrap_or_default(),
+                        arguments: expanded.unwrap_or_default(),
                     }),
+                    expansion_error,
                     ..Default::default()
                 })
             });

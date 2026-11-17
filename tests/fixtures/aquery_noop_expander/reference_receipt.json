@@ -1,0 +1,11 @@
+{
+ "reference": "bazel 9.3.1 (--batch --ignore_all_rc_files)",
+ "cases": {
+  "aquery mnemonic(Consume, //:bad)": {"exit": 8, "stdout_bytes": 0, "stderr_contains": "ERROR: build interrupted"},
+  "aquery mnemonic(Other, //:bad)": {"exit": 0},
+  "aquery --output=summary //:bad": {"exit": 0},
+  "aquery --output=commands mnemonic(Consume, //:bad)": {"exit": 8},
+  "aquery mnemonic(Consume, //:good)": {"exit": 0, "argument": "child:bazel-out/k8-fastbuild/bin/good_tree"},
+  "build //:bad //:good": {"exit": 0, "bad.out": "file:bazel-out/k8-fastbuild/bin/bad_tree/a.txt bazel-out/k8-fastbuild/bin/bad.out\n", "good.out": "file:bazel-out/k8-fastbuild/bin/good_tree/a.txt bazel-out/k8-fastbuild/bin/good.out\n"}
+ }
+}

@@ -621,6 +621,10 @@ fn vector_group<'v>(
     // The key strings of each depset element (its to_list order): the
     // map_each results, or MapFn.DEFAULT's stringification.
     let mut element_strings: Vec<Vec<String>> = Vec::new();
+    // The directory items' NoopExpander mapping for aquery (with the key
+    // recipe): genuine maps them at output time, so a failure fails only
+    // an aquery that prints the action ([`crate::command_line::NoopMapping`]).
+    let mut noop: Option<crate::command_line::NoopMapping> = None;
     for item in values {
         if map_each.is_none()
             && let Some(ops) = ops.as_mut()
@@ -649,12 +653,27 @@ fn vector_group<'v>(
                     && let Some(ops) = ops.as_mut()
                 {
                     // At analysis Bazel maps the directory itself, with a
-                    // NoopExpander (StarlarkCustomCommandLine.java:577-595).
-                    let strings = map_one_with(item, map_each, expander, true, eval)?;
-                    if is_depset {
-                        element_strings.push(strings);
-                    } else {
-                        ops.extend(strings.into_iter().map(crate::aquery_key::ArgsOp::Text));
+                    // NoopExpander (StarlarkCustomCommandLine.java:577-595);
+                    // aquery's command line and key come from it. A failure
+                    // (`tree_relative_path` of the directory itself, rules_js
+                    // `js_image_layer`) is not an analysis error: genuine
+                    // builds the target and fails only an aquery printing
+                    // the action.
+                    let noop = noop.get_or_insert_with(Default::default);
+                    if noop.error.is_none() {
+                        match map_one_with(item, map_each, expander, true, eval) {
+                            Ok(strings) => {
+                                noop.strings.push(strings.clone());
+                                if is_depset {
+                                    element_strings.push(strings);
+                                } else {
+                                    ops.extend(
+                                        strings.into_iter().map(crate::aquery_key::ArgsOp::Text),
+                                    );
+                                }
+                            }
+                            Err(error) => noop.error = Some(error.to_string()),
+                        }
                     }
                 }
                 deferred = true;
@@ -774,6 +793,7 @@ fn vector_group<'v>(
             items,
             map_each,
             expander,
+            noop,
         }))));
     }
     let values = items

@@ -1491,7 +1491,7 @@ fn run() -> Result<(), String> {
                 }
             }
         }
-        aquery_output(
+        let printed = aquery_output(
             &analysis,
             &expression,
             &filters,
@@ -1499,6 +1499,10 @@ fn run() -> Result<(), String> {
             &relative_directory,
         )?;
         snapshot.finish();
+        if !printed {
+            // crate::aquery::interrupted.
+            fail_with(8, "build interrupted");
+        }
         return Ok(());
     }
     if let Some(expression) = cquery_expression {
@@ -3373,7 +3377,7 @@ fn aquery_output(
     filters: &bazel_rs::aquery::Filters,
     options: &bazel_rs::aquery::Options,
     relative: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let stripped = bazel_rs::aquery::strip_filters(expression).map_err(|error| {
         format!(
             "Error doing post analysis query: Evaluation of query \"{expression}\" failed: {error}"
@@ -3386,6 +3390,9 @@ fn aquery_output(
         &mut std::collections::BTreeMap::new(),
     )?;
     let dump = analysis.dump(&selected, options.query.include_aspects);
+    if bazel_rs::aquery::interrupted(&dump, filters, options) {
+        return Ok(false);
+    }
     let output_file = &options.query.common.output_file;
     if output_file.is_empty() {
         let mut stdout = std::io::stdout().lock();
@@ -3403,7 +3410,7 @@ fn aquery_output(
             .map_err(|error| format!("Error while emitting output: {error}"))?;
         file.persist(path).map_err(|e| e.to_string())?;
     }
-    Ok(())
+    Ok(true)
 }
 
 fn cquery_output(

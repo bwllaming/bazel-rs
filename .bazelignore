@@ -13,6 +13,7 @@ tests/fixtures/aquery/depsets
 tests/fixtures/aquery/genrules
 tests/fixtures/aquery/kitchen
 tests/fixtures/aquery/test_runner
+tests/fixtures/aquery_noop_expander/workspace
 tests/fixtures/args_map_each/workspace
 tests/fixtures/artifact_identity/workspace
 tests/fixtures/aspect_base_attributes/workspace

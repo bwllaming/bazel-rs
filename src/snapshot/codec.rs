@@ -1760,6 +1760,7 @@ mod tests {
             items: vec![Item::Strings(vec!["lit".into()]), Item::Directory(tree())],
             map_each: map_each.map(crate::command_line::Mapper::frozen),
             expander: false,
+            noop: None,
         }))
     }
 
@@ -2331,6 +2332,7 @@ mod tests {
                         items: vec![Item::Unexpanded(tree())],
                         map_each: None,
                         expander: true,
+                        noop: None,
                     }))],
                     flag_per_line: false,
                     file_type: ParamFileType::Unquoted,

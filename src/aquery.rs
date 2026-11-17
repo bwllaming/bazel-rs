@@ -57,6 +57,13 @@ pub struct Meta {
     /// (JavaCompileAction's in-memory jdeps directive is not a legal
     /// Starlark key); `None`: the spawn's filtered requirements.
     pub execution_info: Option<Vec<(String, String)>>,
+    /// The command line (or parameter file) could not be expanded without
+    /// input metadata: a map_each failed on an unexpanded directory
+    /// (crate::command_line::NoopMapping). Genuine's aquery fails when it
+    /// prints such an action (the formatter's CommandLineExpansionException
+    /// becomes an IOException, then an interruption:
+    /// OutputFormatterCallback.processAllTargets -> "build interrupted").
+    pub expansion_error: Option<String>,
 }
 
 /// A ParameterFileWriteAction's file type, fingerprint and arguments.
@@ -379,6 +386,9 @@ pub struct ActionRecord {
     /// The inputs in their NestedSet order when known
     /// ([`Meta::input_order`]; crate::print_action).
     pub input_order: Option<Vec<String>>,
+    /// Its command line could not be expanded ([`Meta::expansion_error`]):
+    /// printing it interrupts the aquery ([`interrupted`]).
+    pub expansion_error: Option<String>,
 }
 
 /// The selected actions with their configurations.
@@ -465,6 +475,20 @@ fn java_string(text: &str) -> String {
 
 fn shell_escape(text: &str) -> String {
     crate::run_command::shell_escape(text)
+}
+
+/// Whether printing `dump` interrupts the aquery like genuine's: a printed
+/// action whose command line (or parameter file) cannot be expanded without
+/// input metadata makes the formatter's CommandLineExpansionException an
+/// IOException, which OutputFormatterCallback.processAllTargets turns into
+/// an InterruptedException: `ERROR: build interrupted`, exit code 8, no
+/// output. The summary formatter expands no command line.
+pub fn interrupted(dump: &Dump, filters: &Filters, options: &Options) -> bool {
+    options.output != "summary"
+        && dump
+            .actions
+            .iter()
+            .any(|action| action.expansion_error.is_some() && filters.matches(action))
 }
 
 /// Write the dump in the requested format.

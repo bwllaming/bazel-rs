@@ -491,6 +491,7 @@ impl Engine {
             inputs: inputs.clone(),
             input_order: meta.input_order.clone(),
             outputs: outputs.clone(),
+            expansion_error: meta.expansion_error.clone(),
             ..Default::default()
         };
         let key_platform = match &platform {

@@ -95,7 +95,18 @@ over SHA-256, the execution platform's PlatformInfo, exec properties) for:
   StringificationType comes first; map_each runs per element (at analysis
   a directory is mapped as it is, with a NoopExpander). rules_go
   (GoCompilePkg, GoLink, nogo), rules_python's PythonZipper and rules_cc's
-  link actions use these.
+  link actions use these. The command line aquery prints shows that
+  NoopExpander mapping of a tree artifact too (it used to print the
+  directory's path). When the mapping fails (rules_js's `js_image_layer`
+  reads `tree_relative_path` of what the expander lists, here the directory
+  itself, js_image_layer.bzl:495) analysis and the build are unaffected,
+  and an aquery that prints the action fails like genuine's: `ERROR: build
+  interrupted`, exit code 8, no output (the formatter's
+  CommandLineExpansionException becomes an IOException, then an
+  interruption, OutputFormatterCallback.processAllTargets). Queries that do
+  not print the action and `--output=summary` succeed. Before, the mapping
+  failure was an analysis error of the target for every aquery. Genuine
+  capture: `tests/fixtures/aquery_noop_expander`.
 * `ctx.actions.write` of a string: up to 256 characters a
   RegularFileWriteAction; longer (in Bazel's internal Latin-1 characters) a
   CompressedFileWriteAction keyed by the bytes of Java's GZIPOutputStream,
