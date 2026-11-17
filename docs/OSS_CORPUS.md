@@ -302,7 +302,7 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B7 | 1 (rules_python-bzlmod) | transition: "Starlark flag and its alias have different values: False and "false"" |
 | B5 | 1 (diff.bzl) | `local_repository` → `rctx.symlink(path, ".")` rejected |
 | B8 | 1 (examples-frontend) | declared output "crosses a package boundary" |
-| B17, B18, B19 | 1 (with_cfg) | `rule(parent=…)`; `cc_shared_library`; solib naming in transitioned configurations (B16, symbolic macro `inherit_attrs`, is fixed) |
+| B17, B18, B19 | 1 (with_cfg; B18 also openroad) | `rule(parent=…)`; `cc_shared_library`; solib naming in transitioned configurations (B16, symbolic macro `inherit_attrs`, is fixed) |
 | B26 | fixed | depset elements holding functions that are not top-level defs (skylib `DirectoryInfo` in rules_cc `cc_args`; openroad) |
 | B29 | 1 (rules_cc as the main module) | "file '//cc/private/rules_impl:cc_test.bzl' cannot use private API": the private-API allowlist does not treat the main repository as rules_cc |
 | B20 | 1 (capnproto) | `rule(output_to_genfiles=True)` |
