@@ -382,6 +382,97 @@ fn git_override_tag_with_submodule_gitlink_strip_prefix_and_patches() {
     assert_eq!(f.output_file("g.txt"), expected["output"].as_str().unwrap());
 }
 
+/// The branch's commit as `build //:g` sees it: the output lists the
+/// remote's extra file only from the second commit on.
+fn built_with_extra(f: &Fixture) -> bool {
+    let output = f.run(&["build", "//:g"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    f.output_file("g.txt").contains("extra")
+}
+
+#[test]
+fn git_override_branch_pin_is_per_workspace_like_a_marker_file() {
+    let f = Fixture::new("git");
+    let remote = f.temp.path().join("git-remote");
+    make_git_remote(&remote);
+    f.template(
+        &[("@REMOTE@", format!("file://{}", remote.display()))],
+        None,
+    );
+    let module = fs::read_to_string(f.ws.join("MODULE.bazel"))
+        .unwrap()
+        .replace("tag = \"v1\"", "branch = \"main\"");
+    fs::write(f.ws.join("MODULE.bazel"), &module).unwrap();
+    assert!(!built_with_extra(&f));
+    // The branch moves.
+    fs::write(remote.join("sub/extra.txt"), "extra\n").unwrap();
+    git(&remote, &["add", "sub/extra.txt"]);
+    git(&remote, &["commit", "--quiet", "-m", "extra"]);
+    // The same workspace keeps its pin (Bazel's marker file)...
+    assert!(!built_with_extra(&f));
+    // ...a fresh workspace sharing the cache resolves again...
+    let other = Fixture {
+        temp: tempfile::Builder::new()
+            .prefix("module-overrides-")
+            .tempdir_in(crate::test_temp::root())
+            .unwrap(),
+        ws: PathBuf::new(),
+    };
+    let other = Fixture {
+        ws: other.temp.path().join("ws"),
+        ..other
+    };
+    for directory in ["home", "tmp"] {
+        fs::create_dir(other.temp.path().join(directory)).unwrap();
+    }
+    copy_tree(&f.ws, &other.ws);
+    let _ = fs::remove_file(other.ws.join("MODULE.bazel.lock"));
+    let shared = |fixture: &Fixture, args: &[&str]| {
+        let mut all = vec![format!(
+            "--cache-dir={}",
+            f.temp.path().join("cache").display()
+        )];
+        all.extend(args.iter().map(|arg| (*arg).to_owned()));
+        let output = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
+            .arg("--ignore_all_rc_files")
+            .args(&all)
+            .current_dir(&fixture.ws)
+            .env_clear()
+            .envs(verifier_environment())
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", fixture.temp.path().join("home"))
+            .env("TMPDIR", fixture.temp.path().join("tmp"))
+            .env("BAZEL_RS_PROGRESS", "0")
+            .explicit_modules()
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+        output
+    };
+    shared(&other, &["build", "//:g"]);
+    let bin = String::from_utf8(shared(&other, &["info", "bazel-bin"]).stdout).unwrap();
+    assert!(
+        fs::read_to_string(Path::new(bin.trim()).join("g.txt"))
+            .unwrap()
+            .contains("extra")
+    );
+    // ...and so do `clean --expunge` and `fetch --force` in this one.
+    let output = f.run(&["clean", "--expunge"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(built_with_extra(&f));
+    git(&remote, &["rm", "--quiet", "sub/extra.txt"]);
+    git(&remote, &["commit", "--quiet", "-m", "no extra"]);
+    assert!(built_with_extra(&f));
+    let output = f.run(&["fetch", "--force", "--repo=@gitmod", EXPLICIT_MODULES]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("and dropping [branch]"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!built_with_extra(&f));
+}
+
 #[test]
 fn fixture_is_shared_with_the_paired_capture() {
     for path in [

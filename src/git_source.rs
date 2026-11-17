@@ -380,14 +380,21 @@ pub enum GitRef<'a> {
 }
 
 /// The commit a tag, branch or the default HEAD of `remote` names, pinned
-/// in the cache once resolved: like Bazel's fetched repository (reused
-/// through its marker file while the attributes are unchanged), later
-/// commands do not contact the remote again.
+/// once resolved like Bazel's fetched repository behind its marker file:
+/// the pin lives in the workspace's own state directory (`pins`, dropped by
+/// `clean --expunge`), is keyed by the override's complete identity
+/// (`identity`: every attribute and the patch inputs, so any change
+/// re-resolves) and is ignored under `fetch --force`. Git's work happens
+/// in the shared `cache`; the commit-keyed trees stay shared. In `proof`
+/// mode only an existing pin is accepted.
 pub fn resolve_ref(
     remote: &str,
     reference: GitRef<'_>,
+    identity: &serde_json::Value,
     cache: &Path,
+    pins: &Path,
     allow_remote: bool,
+    proof: bool,
 ) -> Result<String, String> {
     GitSpec {
         remote: remote.to_owned(),
@@ -410,24 +417,33 @@ pub fn resolve_ref(
     let key = format!(
         "{:x}",
         Sha256::digest(
-            serde_json::to_vec(&(POLICY, remote, kind, name)).map_err(|e| e.to_string())?
+            serde_json::to_vec(&(POLICY, remote, kind, name, identity))
+                .map_err(|e| e.to_string())?
         )
     );
+    let pinned = pins.join(&key);
+    let read_pin = || -> Result<Option<String>, String> {
+        check_optional_regular(&pinned)?;
+        Ok(crate::observed_fs::read(&pinned)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .map(|text| text.trim().to_ascii_lowercase())
+            .filter(|text| full_sha(text)))
+    };
+    if proof {
+        return read_pin()?
+            .ok_or_else(|| "a Git tag/branch override has no resolved pin to prove".to_owned());
+    }
+    if !crate::repository_store::force_fetch()
+        && let Some(commit) = read_pin()?
+    {
+        return Ok(commit);
+    }
     ensure_directory(cache)?;
     let cache = fs::canonicalize(cache)
         .map_err(|e| e.to_string())?
         .join("git");
-    let refs = cache.join("refs");
     ensure_directory(&cache)?;
-    ensure_directory(&refs)?;
-    let pinned = refs.join(&key);
-    check_optional_regular(&pinned)?;
-    if let Ok(bytes) = fs::read(&pinned)
-        && let Ok(text) = String::from_utf8(bytes)
-        && full_sha(text.trim())
-    {
-        return Ok(text.trim().to_ascii_lowercase());
-    }
     let private = tempfile::Builder::new()
         .prefix(".fetch-")
         .tempdir_in(&cache)
@@ -459,6 +475,7 @@ pub fn resolve_ref(
         GitRef::Branch(branch) => format!("Git branch {branch:?} not found in {remote}"),
         GitRef::Head => format!("Git remote {remote} has no HEAD"),
     })?;
+    ensure_directory(pins)?;
     atomic_write(&pinned, commit.as_bytes())?;
     Ok(commit)
 }

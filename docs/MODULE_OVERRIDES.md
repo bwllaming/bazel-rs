@@ -78,10 +78,16 @@ fetched, as in Bazel.
 On top of docs/GIT_OVERRIDES.md:
 
 - `tag`, `branch` or neither (the remote's default HEAD, git_worker.bzl)
-  resolve to a commit with `git ls-remote` once and are pinned in the
-  repository store, so later commands do not contact the remote (Bazel reuses
-  the fetched repository through its marker file). The fetch prints genuine's
-  reproducible-form DEBUG lines (`commit = "..." and dropping [tag]`).
+  resolve to a commit with `git ls-remote`, pinned like Bazel's fetched
+  repository behind its marker file: in the workspace's own state directory
+  (`<cache>/worktrees/<name>-<hash>/pins/git`, or the `--output_base`), keyed
+  by the override's complete identity (remote, ref, `strip_prefix`,
+  submodule flags, `build_file_content`, patch inputs). So the same workspace
+  keeps building the pinned commit, while a fresh workspace, `clean
+  --expunge`, `fetch --force` (which ignores pins) or any attribute change
+  resolves the ref again. The commit-keyed trees stay in the shared store.
+  The fetch prints genuine's reproducible-form DEBUG lines (`commit = "..."
+  and dropping [tag]`).
   More than one of `commit`/`tag`/`branch` fails with git.bzl's text.
 - submodule gitlinks are empty directories without `init_submodules`
   (genuine skips them; OpenROAD's kepler-formal route). `init_submodules` /

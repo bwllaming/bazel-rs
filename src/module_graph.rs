@@ -1099,11 +1099,27 @@ impl Discovery<'_> {
                     } else {
                         git_source::GitRef::Head
                     };
+                    // Per-workspace state (crate::worktree), beside the
+                    // shared `<cache>/repositories` store.
+                    let pins = crate::worktree::state_directory(
+                        self.source_cache.parent().unwrap_or(self.source_cache),
+                    )
+                    .join("pins")
+                    .join("git");
+                    let identity = serde_json::json!({
+                        "strip_prefix": strip_prefix,
+                        "init_submodules": [init_submodules, recursive_init_submodules],
+                        "build_file_content": build_file_content,
+                        "patches": local_patches.cache_identity(),
+                    });
                     git_source::resolve_ref(
                         remote,
                         reference,
+                        &identity,
                         self.source_cache,
+                        &pins,
                         self.options.allow_remote,
+                        self.options.registry_session.publication_proof(),
                     )
                     .map_err(|error| {
                         format!(

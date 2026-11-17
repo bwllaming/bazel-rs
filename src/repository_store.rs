@@ -3058,6 +3058,11 @@ pub fn set_force_fetch() {
     FORCE_FETCH.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Whether this command is a `fetch --force` ([`set_force_fetch`]).
+pub fn force_fetch() -> bool {
+    FORCE_FETCH.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 static VERIFY_OVERRIDE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 /// Force full verification from the CLI (`--verify-repo-tampering`).
