@@ -205,6 +205,71 @@ analysis snapshot's PLAN section) encodes each group once — a table its
 holders index, the `valid` flag recomputed when decoded — and never the
 trees, the memos, the identities or the action keys (integration-21).
 
+## Test runfiles (B15)
+
+A test action runs in its own execution root
+`<cache>/tests/work/<key>-<pid>/execroot` (docs/TEST_COMMAND.md). Its
+runfiles at `<exe>.runfiles/<path>` are **symlinks**, as in genuine Bazel 9.3.1,
+whose runfiles trees (SymlinkTreeHelper) and symlinked sandboxes
+(SymlinkedSandboxedSpawn, SandboxHelpers.processInputFiles) link every
+runfile to the artifact's path (crate::action::stage_test_inputs):
+
+* a published output (a file, each file of a tree artifact, an
+  `actions.symlink` output) is staged at its exec path
+  (`bazel-out/<cfg>/bin/...`) like any input — an N36 read-only store
+  hardlink, one inode per distinct artifact (docs/HARDLINK_STAGING.md); an
+  alias of a source is a symlink to the source there, of a repository file
+  one into its tree — and the runfile is an absolute symlink to
+  `<execroot>/<exec path>`. `readlink` names the exec path and `realpath`
+  ends in it (with_cfg.bzl's tests check that a binary's resolved path
+  contains `-opt/bin/`);
+* a source file outside the cache (the workspace, a local repository) is an
+  absolute symlink to the live file, as genuine's runfiles resolve
+  (buildifier's test runner does `readlink` of the binary, `realpath
+  WORKSPACE` and `find -type l` over its runfiles);
+* a file of a published repository tree stays a symlink into its tree;
+  empty files, source directories and unresolved symlink artifacts are
+  staged as before.
+
+`bazel run` and `bazel build` already used the output tree's runfiles tree
+(symlinks to published outputs and live sources, above).
+
+**Cache semantics.** The key frames each runfile's path, content digest and
+executable bit as before, plus the exec path a published output's runfile
+links to (`inputs-linked`; every cached test result reruns once after the
+upgrade): a data dependency built in another configuration is another key.
+Absolute paths (the cache, the workspace, the execution root) are never
+keyed, so worktrees sharing a cache still share results
+(docs/WORKTREES.md). A test sees its sources live, as in genuine Bazel; to
+keep the cache sound the runner reads every such source again after the test
+(through the digest memo, a stat when unchanged) and does not store the
+result when one no longer holds the keyed content (test
+`a_source_changed_while_its_test_ran_is_not_cached`). The earlier snapshot
+guarantee (the test ran on exactly the keyed bytes) is given up for test
+sources only; actions keep their hardlinked copies (docs/HARDLINK_STAGING.md).
+
+**Genuine capture.** `tests/fixtures/runfiles_symlinks` (capture.py,
+reference_receipt.json, genuine 9.3.1; test
+`test_and_run_runfiles_are_symlinks_like_bazel`): `lstat` kind, `readlink`
+and `realpath` of a test's executable and runfiles (source, nested source,
+generated file, tree file, alias of a source) in a sandboxed test, a
+`no-sandbox` test and `bazel run`, execution roots and the workspace
+normalized. `run` is exact; the tests are exact but for two declared
+differences: in a sandboxed test a source's runfile links straight to the
+workspace file (genuine: to `<sandbox>/execroot/_main/<path>`, itself a
+link to it; the `realpath` is the same), and the `no-sandbox` test sees a
+tree artifact file by file (genuine runs it in the output tree, where the
+tree is one directory link). `tests/distinct_inodes.rs` now also checks
+that a test's runfiles are symlinks exactly where genuine's sandboxed ones
+are.
+
+**Performance.** 8 tests, each with 4,000 source and 2,000 generated
+runfiles (a synthetic workspace, release builds, load 24–35):
+summed staging time per `--nocache_test_results` run 5.2–6.4 s → 1.5–2.0 s
+(sources are no longer copied into the store and hardlinked); wall time
+1.4–2.1 s before and 1.6–2.3 s after, within the host's noise (the extra
+work is a symlink per published runfile and the post-run source check).
+
 ## `run` (runtime/commands/RunCommand.java)
 
 `bazel-rs run [build and run options] TARGET [-- ARGS...]`: `run` inherits the

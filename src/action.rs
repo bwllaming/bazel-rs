@@ -6486,6 +6486,114 @@ pub fn stage_content_inputs(
     Ok(())
 }
 
+/// The exec path of a published output, `<cache>/actions/<key>/outputs/<exec
+/// path>` (a file, a tree or an `actions.symlink` output), else `None` (a
+/// source file, a repository file).
+pub fn published_exec_path(cache_root: &Path, path: &Path) -> Result<Option<PathBuf>, String> {
+    let (root, _) = cache_store(cache_root)?;
+    let below = |root: &Path| -> Option<PathBuf> {
+        let mut components = path.strip_prefix(root.join("actions")).ok()?.components();
+        let (Some(Component::Normal(_)), Some(Component::Normal(outputs))) =
+            (components.next(), components.next())
+        else {
+            return None;
+        };
+        let exec = components.as_path();
+        (outputs == "outputs"
+            && !exec.as_os_str().is_empty()
+            && exec
+                .components()
+                .all(|component| matches!(component, Component::Normal(_))))
+        .then(|| exec.to_path_buf())
+    };
+    Ok(below(&root).or_else(|| below(cache_root)))
+}
+
+/// A workspace (or other non-cache) source file a test's runfile links to
+/// ([`stage_test_inputs`]): the test sees the live file, so its result is
+/// cachable only when the file still holds the keyed content afterwards
+/// ([`LiveInput::unchanged`]).
+pub struct LiveInput {
+    path: PathBuf,
+    digest: Sha256Digest,
+    executable: u32,
+}
+
+impl LiveInput {
+    /// Whether the file still holds the content and executable bits the
+    /// test's key took (read through the digest memo).
+    pub fn unchanged(&self, cache_root: &Path) -> bool {
+        let Ok((root, _)) = cache_store(cache_root) else {
+            return false;
+        };
+        read_input(&self.path, Some(&root), false)
+            .is_ok_and(|input| input.digest == self.digest && input.executable == self.executable)
+    }
+}
+
+/// Stage a test's inputs below `execroot` like Bazel's runfiles trees
+/// (SymlinkTreeHelper) and symlinked sandboxes (SymlinkedSandboxedSpawn)
+/// present them: `inputs` at their relative destinations — a source file
+/// outside the cache (the workspace, a local repository) as an absolute
+/// symlink to the live file, everything else as [`stage_content_inputs`]
+/// stages it (store hardlinks, one inode per distinct artifact; links into
+/// repository trees) — then each of `links` (destination, exec path) as an
+/// absolute symlink to `<execroot>/<exec path>`, where a published output
+/// is staged at its exec path. So `readlink` of a runfile names the
+/// artifact's execution path (`.../bazel-out/<cfg>/bin/...`) and `realpath`
+/// resolves to it, or to the workspace file for a source, as in Bazel.
+/// Returns the live source files the test can see.
+pub fn stage_test_inputs(
+    cache_root: &Path,
+    inputs: &[(ContentInput, PathBuf)],
+    links: &[(PathBuf, PathBuf)],
+    execroot: &Path,
+) -> Result<Vec<LiveInput>, String> {
+    let (root, cas) = cache_store(cache_root)?;
+    let mut staged = BTreeMap::new();
+    let mut live = BTreeMap::new();
+    for (input, destination) in inputs {
+        validate_relative(destination)?;
+        match &input.0 {
+            Staged::File(file)
+                if file.path.is_absolute()
+                    && !file.path.starts_with(&root)
+                    && !file.path.starts_with(cache_root)
+                    && remote_only_input(&file.path).is_none() =>
+            {
+                live.insert(destination.clone(), file);
+            }
+            staged_input => {
+                staged.insert(destination.clone(), staged_input.clone());
+            }
+        }
+    }
+    stage_inputs(&cas, &root, &staged, execroot)?;
+    let mut sources = Vec::with_capacity(live.len());
+    let symlink = |target: &Path, destination: &Path| -> Result<(), String> {
+        let path = execroot.join(destination);
+        if let Some(parent) = path.parent() {
+            ensure_directory(parent)?;
+        }
+        std::os::unix::fs::symlink(target, &path)
+            .map_err(|e| io_error("cannot create symbolic link", &path, e))
+    };
+    for (destination, file) in &live {
+        symlink(&file.path, destination)?;
+        sources.push(LiveInput {
+            path: file.path.clone(),
+            digest: file.digest,
+            executable: file.executable,
+        });
+    }
+    for (destination, exec) in links {
+        validate_relative(destination)?;
+        validate_relative(exec)?;
+        symlink(&execroot.join(exec), destination)?;
+    }
+    Ok(sources)
+}
+
 pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, String> {
     execute_with_remote(cache_root, action, crate::remote_cache::active())
 }

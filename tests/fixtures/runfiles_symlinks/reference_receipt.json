@@ -1,0 +1,33 @@
+{
+ "reference": "bazel 9.3.1",
+ "rows": {
+  "test": [
+   "test_self kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/probe_local_test.sh realpath=EXECROOT/bazel-out/k8-fastbuild/bin/probe_local_test.sh",
+   "test_src.txt kind=symlink readlink=WORKSPACE/src.txt realpath=WORKSPACE/src.txt",
+   "test_sub/nested.txt kind=symlink readlink=WORKSPACE/sub/nested.txt realpath=WORKSPACE/sub/nested.txt",
+   "test_gen.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/gen.txt realpath=EXECROOT/bazel-out/k8-fastbuild/bin/gen.txt",
+   "test_dir/f.txt kind=file readlink= realpath=EXECROOT/bazel-out/k8-fastbuild/bin/dir/f.txt",
+   "test_link.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/link.txt realpath=WORKSPACE/src.txt",
+   "test_runfiles_root kind=file readlink= realpath=EXECROOT/bazel-out/k8-fastbuild/bin/probe_local_test.sh.runfiles/_main",
+   "test_pwd EXECROOT/bazel-out/k8-fastbuild/bin/probe_local_test.sh.runfiles/_main",
+   "test_self kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/probe_test.sh realpath=EXECROOT/bazel-out/k8-fastbuild/bin/probe_test.sh",
+   "test_src.txt kind=symlink readlink=EXECROOT/src.txt realpath=WORKSPACE/src.txt",
+   "test_sub/nested.txt kind=symlink readlink=EXECROOT/sub/nested.txt realpath=WORKSPACE/sub/nested.txt",
+   "test_gen.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/gen.txt realpath=EXECROOT/bazel-out/k8-fastbuild/bin/gen.txt",
+   "test_dir/f.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/dir/f.txt realpath=EXECROOT/bazel-out/k8-fastbuild/bin/dir/f.txt",
+   "test_link.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/link.txt realpath=WORKSPACE/src.txt",
+   "test_runfiles_root kind=file readlink= realpath=EXECROOT/bazel-out/k8-fastbuild/bin/probe_test.sh.runfiles/_main",
+   "test_pwd EXECROOT/bazel-out/k8-fastbuild/bin/probe_test.sh.runfiles/_main"
+  ],
+  "run": [
+   "run_self kind=file readlink= realpath=EXECROOT/bazel-out/k8-fastbuild/bin/probe.sh",
+   "run_src.txt kind=symlink readlink=WORKSPACE/src.txt realpath=WORKSPACE/src.txt",
+   "run_sub/nested.txt kind=symlink readlink=WORKSPACE/sub/nested.txt realpath=WORKSPACE/sub/nested.txt",
+   "run_gen.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/gen.txt realpath=EXECROOT/bazel-out/k8-fastbuild/bin/gen.txt",
+   "run_dir/f.txt kind=file readlink= realpath=EXECROOT/bazel-out/k8-fastbuild/bin/dir/f.txt",
+   "run_link.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/link.txt realpath=WORKSPACE/src.txt",
+   "run_runfiles_root kind=file readlink= realpath=EXECROOT/bazel-out/k8-fastbuild/bin/probe.sh.runfiles/_main",
+   "run_pwd EXECROOT/bazel-out/k8-fastbuild/bin/probe.sh.runfiles/_main"
+  ]
+ }
+}

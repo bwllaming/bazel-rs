@@ -13,7 +13,8 @@
 //!
 //! Pinned by a genuine capture (tests/fixtures/distinct_inodes: capture.py,
 //! reference_receipt.json): every probe line names the first listed path with
-//! the same device:inode. Whether a path is a symlink is not compared:
+//! the same device:inode. Whether a path is a symlink is compared only for
+//! a test's runfiles under `sandboxed` (symlinks since B15): elsewhere
 //! native stages regular files where Bazel's sandboxes and runfiles trees
 //! show symlinks (a declared difference since N36). Genuine's `sandboxed`
 //! ran as processwrapper-sandbox on this host. The output tree (`bazel-bin`)
@@ -115,6 +116,26 @@ fn distinct_artifacts_with_one_content_are_distinct_inodes() {
         let bin = Path::new(String::from_utf8(info.stdout).unwrap().trim()).to_path_buf();
         for name in ["input_probe.txt", "tool_probe.txt"] {
             text.push_str(&fs::read_to_string(bin.join(name)).unwrap());
+        }
+        // A test's runfiles are symlinks, as in genuine's sandboxed row
+        // (crate::action::stage_test_inputs; under genuine's local
+        // strategy the tree artifact's runfile is a directory link, so its
+        // file is a regular file there).
+        if strategy == "sandboxed" {
+            let kinds = |lines: Vec<&str>| -> Vec<String> {
+                lines
+                    .into_iter()
+                    .filter(|line| line.starts_with("test_runfile_"))
+                    .map(|line| line.rsplit(' ').next().unwrap().to_owned())
+                    .collect()
+            };
+            let genuine = receipt["rows"][index]["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|line| line.as_str().unwrap())
+                .collect();
+            assert_eq!(kinds(text.lines().collect()), kinds(genuine), "{text}");
         }
         let mut lines: Vec<String> = text
             .lines()

@@ -4,9 +4,11 @@
 //!
 //! Every test action (one per shard and run) gets a fresh execution root
 //! holding the genuine `@bazel_tools//tools/test:test-setup.sh` and
-//! `generate-xml.sh` at their exec paths and the test's runfiles staged by
-//! content at `<executable>.runfiles/<path>` (N36 store hardlinks, like a
-//! sandboxed SpawnInputExpander and N23f tool runfiles; no `MANIFEST`).
+//! `generate-xml.sh` at their exec paths and the test's runfiles at
+//! `<executable>.runfiles/<path>` as symlinks, like a sandboxed
+//! SpawnInputExpander (B15, crate::action::stage_test_inputs): a published
+//! output's runfile links to the artifact staged at its exec path (N36
+//! store hardlinks), a source's to the live workspace file; no `MANIFEST`.
 //! The action key frames those contents (never the runfiles tree node's
 //! link-only key), the test environment, arguments and properties
 //! (TestRunnerAction.computeKey, analysis/test/TestRunnerAction.java:526-561).
@@ -24,7 +26,7 @@
 
 use crate::action::{
     ContentInput, ContentSource, read_content_input, read_content_source, read_symlink_input,
-    stage_content_inputs,
+    stage_test_inputs,
 };
 use crate::test_command::{
     EnvInputs, RunResult, TestCase, TestOptions, TestOutput, TestRuleInfo, TestStatus, TestSummary,
@@ -1003,21 +1005,38 @@ impl Runner<'_> {
         // tree's runfile; an empty tree is its directory
         // (SpawnInputExpander.addSingleRunfilesTreeToInputs).
         let mut empty_trees = Vec::new();
+        // The exec path a runfile (`inputs[i]`) links to, for published
+        // outputs: Bazel's runfiles are symlinks to the artifact's path in
+        // the execution root (SymlinkTreeHelper; SymlinkedSandboxedSpawn
+        // links each runfile to its input path), so `readlink` and
+        // `realpath` name `.../bazel-out/<cfg>/bin/...`
+        // ([`stage_test_inputs`]). `None`: staged at its destination.
+        let mut exec_paths: Vec<Option<PathBuf>> = vec![None; inputs.len()];
         for (path, source) in &spec.entries {
             let destination = PathBuf::from(&paths.runfiles).join(path);
             match source {
                 Some(source) if spec.symlinks.contains(path) => {
-                    inputs.push((read_symlink_input(source)?, destination))
+                    inputs.push((read_symlink_input(source)?, destination));
+                    exec_paths.push(None);
                 }
-                Some(source) => match read_content_source(self.cache, source)? {
-                    ContentSource::File(input) => inputs.push((input, destination)),
-                    ContentSource::Tree(files) if files.is_empty() => empty_trees.push(destination),
-                    ContentSource::Tree(files) => inputs.extend(
-                        files
-                            .into_iter()
-                            .map(|(name, input)| (input, destination.join(name))),
-                    ),
-                },
+                Some(source) => {
+                    let exec = crate::action::published_exec_path(self.cache, source)?;
+                    match read_content_source(self.cache, source)? {
+                        ContentSource::File(input) => {
+                            inputs.push((input, destination));
+                            exec_paths.push(exec);
+                        }
+                        ContentSource::Tree(files) if files.is_empty() => {
+                            empty_trees.push(destination)
+                        }
+                        ContentSource::Tree(files) => {
+                            for (name, input) in files {
+                                exec_paths.push(exec.as_ref().map(|exec| exec.join(&name)));
+                                inputs.push((input, destination.join(name)));
+                            }
+                        }
+                    }
+                }
                 None => empty_files.push(destination),
             }
         }
@@ -1054,6 +1073,7 @@ impl Runner<'_> {
                 ));
             }
         }
+        exec_paths.resize(inputs.len(), None);
         let execution_info = spec.execution_info();
         let mut hash = Sha256::new();
         frame(&mut hash, STATUS_FORMAT.as_bytes());
@@ -1084,11 +1104,18 @@ impl Runner<'_> {
             frame(&mut hash, &number.to_le_bytes());
         }
         frame(&mut hash, &[u8::from(options.zip_undeclared_outputs)]);
-        frame(&mut hash, b"inputs");
-        for (input, destination) in &inputs {
+        // Runfiles are symlinks (to their exec paths, or to live sources):
+        // a test can see where they link, so the exec path is keyed (a
+        // data dependency in another configuration is another key), never
+        // an absolute path.
+        frame(&mut hash, b"inputs-linked");
+        for ((input, destination), exec) in inputs.iter().zip(&exec_paths) {
             frame(&mut hash, destination.as_os_str().as_encoded_bytes());
             frame(&mut hash, input.digest().as_bytes());
             frame(&mut hash, &[u8::from(input.executable())]);
+            if let Some(exec) = exec {
+                frame(&mut hash, exec.as_os_str().as_encoded_bytes());
+            }
         }
         for destination in &empty_files {
             frame(&mut hash, destination.as_os_str().as_encoded_bytes());
@@ -1213,7 +1240,19 @@ impl Runner<'_> {
         remove_tree(&work)?;
         let execroot = work.join("execroot");
         fs::create_dir_all(&execroot).map_err(|e| io("cannot create", &execroot, e))?;
-        stage_content_inputs(self.cache, &inputs, &execroot)?;
+        let mut staging: Vec<(ContentInput, PathBuf)> = Vec::with_capacity(inputs.len());
+        let mut links: Vec<(PathBuf, PathBuf)> = Vec::new();
+        for ((input, destination), exec) in inputs.iter().zip(&exec_paths) {
+            match exec {
+                Some(exec) => {
+                    staging.push((input.clone(), exec.clone()));
+                    links.push((destination.clone(), exec.clone()));
+                }
+                None => staging.push((input.clone(), destination.clone())),
+            }
+        }
+        let live = stage_test_inputs(self.cache, &staging, &links, &execroot)?;
+        drop(staging);
         for destination in &empty_files {
             let path = execroot.join(destination);
             if let Some(parent) = path.parent() {
@@ -1373,7 +1412,10 @@ impl Runner<'_> {
                     format: STATUS_FORMAT.to_owned(),
                     key: key.clone(),
                     status: status.name().to_owned(),
-                    cachable: attempt.cachable,
+                    // A source the test saw live changed meanwhile: the
+                    // result is not this key's.
+                    cachable: attempt.cachable
+                        && live.iter().all(|input| input.unchanged(self.cache)),
                     test_times: test_times.clone(),
                     passed_log: passed.then(|| log.display().to_string()),
                     failed_logs: failed_logs.clone(),

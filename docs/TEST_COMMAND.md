@@ -171,10 +171,12 @@ execution root `<cache>/tests/work/<key>-<pid>/execroot`:
 
 * inputs: the genuine `@bazel_tools` `test-setup.sh` and `generate-xml.sh`
   (bytes of the embedded bundle) at `external/bazel_tools/tools/test/...`, and
-  the test's runfiles mapping (N23f, `_repo_mapping` included) staged **by
-  content** at `<executable>.runfiles/<path>` (N36 read-only store hardlinks; a file of
-  an external repository is a symlink into its repository tree like
-  genuine's runfiles link, docs/HARDLINK_STAGING.md;
+  the test's runfiles mapping (N23f, `_repo_mapping` included) keyed **by
+  content** at `<executable>.runfiles/<path>`, each runfile a symlink like
+  genuine's (B15, docs/RUNFILES_TREES.md "Test runfiles"): a published
+  output's to the artifact staged at its exec path (`bazel-out/...`, N36
+  read-only store hardlinks), a source's to the live workspace file, a file of
+  an external repository's into its repository tree, docs/HARDLINK_STAGING.md;
   empty files as empty files, a tree artifact as its files at
   `<path>/<file>` and an empty tree as its directory like
   SpawnInputExpander.addSingleRunfilesTreeToInputs, docs/TREE_SYMLINKS.md,

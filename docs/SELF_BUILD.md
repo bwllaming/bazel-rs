@@ -112,10 +112,11 @@ checks.
 
 `//:unit_tests` skips two tests. Both need this crate's `Cargo.toml` or
 `Cargo.lock` to be a settled file, with a ctime older than the racy margin.
-bazel-rs stages a test's runfiles as fresh hard links of its store blobs, so
-the ctime is new. Genuine Bazel stages symlinks into the source tree, and
-there the two tests pass. They are skipped for both binaries, so the action
-keys stay the same.
+bazel-rs used to stage a test's runfiles as fresh hard links of its store
+blobs, so the ctime was new. Genuine Bazel stages symlinks into the source
+tree, and so does bazel-rs since B15 (docs/RUNFILES_TREES.md "Test
+runfiles"). They stay skipped for both binaries, so the action keys stay the
+same.
 
 ## Measurements (2026-11-03, 64 cores, shared host with load 9–26, `nice -n 10`)
 

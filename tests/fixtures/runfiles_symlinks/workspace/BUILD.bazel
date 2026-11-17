@@ -1,0 +1,22 @@
+load(":defs.bzl", "alias", "probe_binary", "probe_test", "tree")
+
+genrule(
+    name = "gen",
+    outs = ["gen.txt"],
+    cmd = "echo gen > $@",
+)
+
+tree(name = "dir")
+
+alias(
+    name = "link",
+    src = "src.txt",
+)
+
+FILES = ["src.txt", "sub/nested.txt", ":gen", ":dir", ":link"]
+
+probe_test(name = "probe_test", data = FILES)
+
+probe_test(name = "probe_local_test", data = FILES, tags = ["no-sandbox"])
+
+probe_binary(name = "probe", data = FILES)
