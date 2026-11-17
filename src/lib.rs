@@ -68,6 +68,7 @@ mod exec_groups;
 pub mod exec_log;
 mod execution_info;
 pub mod execution_options;
+pub(crate) mod existing_rules;
 pub mod exit_code;
 pub mod extension_calls;
 pub mod extension_ctx;

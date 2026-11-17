@@ -1,0 +1,15 @@
+load(":defs.bzl", "lrule", "show")
+package(default_visibility = ["//visibility:public"], default_testonly = True, default_deprecation = "pkgdep")
+filegroup(name = "fg", deprecation = "explicit", visibility = ["//other:__pkg__", "//pkg:__subpackages__"])
+filegroup(name = "fg2", tags = ["b", "a", "b"], features = ["z", "-y"])
+lrule(
+    name = "lr",
+    opt = select({"//pkg:cs": "//other:x", "//conditions:default": None}),
+    labs = ["//other:x"] + select({"//pkg:cs": [":fg"], "//conditions:default": []}) + ["@dep//:f"],
+    skl = {"a": ":fg", "b": "//other:x"},
+    lld = select({"//pkg:cs": {"a": "b"}, "//conditions:default": {}}, no_match_error = "nomatch"),
+)
+show("fg")
+show("fg2")
+show("lr")
+print("TOP %r %d" % (existing_rule("fg"), len(existing_rules())))

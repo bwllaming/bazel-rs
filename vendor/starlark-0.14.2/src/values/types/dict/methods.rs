@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-// Modified for native Bazel 9.3 frozen-mutation messages; see vendor provenance.
+// Modified for native Bazel 9.3 frozen-mutation messages and `dict.update` with a
+// host `Map` view; see vendor provenance.
 
 //! Methods for the `dict` type.
 
@@ -332,6 +333,14 @@ pub(crate) fn dict_methods(registry: &mut MethodsBuilder) {
                 Some(dict) => {
                     for (k, v) in dict.iter_hashed() {
                         this.aref.insert_hashed(k, v);
+                    }
+                }
+                // Modified: a host `Map` view contributes its entries
+                // (see the dict() constructor).
+                _ if pairs.get_type() == "Map" => {
+                    for k in pairs.iterate(heap)? {
+                        let v = pairs.at(k, heap)?;
+                        this.aref.insert_hashed(k.get_hashed()?, v);
                     }
                 }
                 _ => {

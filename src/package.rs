@@ -307,6 +307,8 @@ mod collector {
         /// materialized root per package, not per call).
         pub link_policy: std::cell::OnceCell<crate::source_links::LinkPolicy>,
         pub subpackages: RefCell<crate::glob::SubpackagesCache>,
+        /// The rule table `native.existing_rule(s)` reads (crate::existing_rules).
+        pub existing: crate::existing_rules::Tracker,
     }
 
     /// REPO.bazel evaluation state (packages/RepoThreadContext.java).
@@ -1425,8 +1427,108 @@ fn rule_globals(builder: &mut GlobalsBuilder) {
     }
 }
 
+/// The package being evaluated for `existing_rule(s)`
+/// (TargetDefinitionContext.fromOrFailDisallowNonFinalizerMacros,
+/// TargetDefinitionContext.java:203-212), or `None` during a module
+/// extension (the ExistingRulesShouldBeNoOp marker: `None` and `{}`).
+/// Symbolic (non-finalizer) macros, `.bzl` initialization and transient
+/// callbacks fail.
+fn introspection_context<'a>(
+    eval: &'a Evaluator<'_, '_, '_>,
+    function: &str,
+) -> anyhow::Result<Option<&'a Declarations>> {
+    if let Some(context) = eval
+        .extra
+        .and_then(|extra| extra.downcast_ref::<Declarations>())
+        && !context.transient.get()
+        && context.active_macro.borrow().is_none()
+    {
+        return Ok(Some(context));
+    }
+    crate::extension_ctx::require_extension_introspection(eval, function)?;
+    Ok(None)
+}
+
+impl Declarations {
+    /// Record the rules declared since the last call in the
+    /// `existing_rules` table (declaration order; package groups are not
+    /// rules) and return it.
+    fn sync_existing(&self) -> Arc<crate::existing_rules::Table> {
+        let tracker = &self.existing;
+        let rules = self.rules.borrow();
+        if tracker.synced_rules.get() < rules.len() {
+            let custom = self.custom.borrow();
+            let args = Arc::new(self.package_args.borrow().clone());
+            let mut next_custom = tracker.synced_custom.get();
+            for index in tracker.synced_rules.get()..rules.len() {
+                let rule = &rules[index];
+                while next_custom < custom.len() && custom[next_custom].index < index {
+                    next_custom += 1;
+                }
+                let pending = custom
+                    .get(next_custom)
+                    .filter(|pending| pending.index == index);
+                if matches!(rule.kind, RuleKind::PackageGroup(_)) {
+                    continue;
+                }
+                let kind = match pending {
+                    Some(pending) => pending.declaration.rule_class.clone(),
+                    None => rule.rule_class_name().to_owned(),
+                };
+                tracker.table.push(crate::existing_rules::Entry {
+                    name: rule.label.name.clone(),
+                    kind,
+                    rule: rule.clone(),
+                    custom: pending.map(|pending| {
+                        (
+                            pending.attrs.clone(),
+                            pending.schema.clone(),
+                            pending.declaration.clone(),
+                        )
+                    }),
+                    args: args.clone(),
+                });
+            }
+            tracker.synced_rules.set(rules.len());
+            tracker.synced_custom.set(next_custom);
+        }
+        tracker.table.clone()
+    }
+}
+
 #[starlark_module]
 fn package_globals(builder: &mut GlobalsBuilder) {
+    /// StarlarkNativeModule.existingRule (StarlarkNativeModule.java:437-455).
+    fn existing_rule<'v>(
+        #[starlark(require = pos)] name: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let Some(name) = name.unpack_str() else {
+            bail!(
+                "in call to existing_rule(), parameter 'name' got value of type '{}', want 'string'",
+                name.get_type()
+            );
+        };
+        match introspection_context(eval, "existing_rule")? {
+            None => Ok(Value::new_none()),
+            Some(context) => {
+                let table = context.sync_existing();
+                crate::existing_rules::rule_lookup(eval.heap(), &table, name)
+            }
+        }
+    }
+
+    /// StarlarkNativeModule.existingRules (StarlarkNativeModule.java:509-522).
+    fn existing_rules<'v>(eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<Value<'v>> {
+        match introspection_context(eval, "existing_rules")? {
+            None => Ok(starlark::values::FrozenValue::new_empty_dict().to_value()),
+            Some(context) => {
+                let table = context.sync_existing();
+                Ok(crate::existing_rules::rules_view(eval.heap(), table))
+            }
+        }
+    }
+
     /// PackageCallable.packageCallable (packages/PackageCallable.java:50-77).
     fn package<'v>(
         #[starlark(kwargs)] kwargs: SmallMap<String, Value<'v>>,
@@ -2030,27 +2132,6 @@ enum BzlPhase {
     Module,
 }
 
-/// Only the extension-context branch is implemented. BUILD introspection is a
-/// separate surface, so these functions are not installed in BUILD native.
-#[starlark_module]
-fn module_native_globals(builder: &mut GlobalsBuilder) {
-    fn existing_rule(
-        #[starlark(require = pos)] name: &str,
-        eval: &mut Evaluator<'_, '_, '_>,
-    ) -> anyhow::Result<NoneType> {
-        let _ = name;
-        crate::extension_ctx::require_extension_introspection(eval, "existing_rule")?;
-        Ok(NoneType)
-    }
-
-    fn existing_rules(
-        eval: &mut Evaluator<'_, '_, '_>,
-    ) -> anyhow::Result<starlark::values::FrozenValue> {
-        crate::extension_ctx::require_extension_introspection(eval, "existing_rules")?;
-        Ok(starlark::values::FrozenValue::new_empty_dict())
-    }
-}
-
 /// BUILD-loaded extension globals. These deliberately omit native.bazel_version.
 /// The globals of BUILD files (BuildGlobals plus the `native` members).
 pub(crate) fn build_file_globals() -> Globals {
@@ -2119,7 +2200,6 @@ fn bzl_globals_for(phase: BzlPhase) -> Globals {
         .with(package_globals);
     if matches!(phase, BzlPhase::Module) {
         native.set("bazel_version", crate::COMPATIBILITY_VERSION);
-        module_native_globals(&mut native);
     }
     let native = native.build();
     let mut bzl = GlobalsBuilder::extended_by(&[
@@ -2411,6 +2491,7 @@ fn evaluate_at(
         globs: RefCell::default(),
         link_policy: std::cell::OnceCell::new(),
         subpackages: RefCell::default(),
+        existing: Default::default(),
     };
     // Canonical label texts parse once per package evaluation.
     let parse_memo = crate::label::package_parse_memo();
@@ -4131,6 +4212,7 @@ def legacy():
                 globs: RefCell::default(),
                 link_policy: std::cell::OnceCell::new(),
                 subpackages: RefCell::default(),
+                existing: Default::default(),
             };
             Module::with_temp_heap(|module| {
                 module.set(

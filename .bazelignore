@@ -64,6 +64,7 @@ tests/fixtures/enable_runfiles_option/workspace
 tests/fixtures/exec_groups/workspace
 tests/fixtures/execution_info/workspace
 tests/fixtures/execution_options/workspace
+tests/fixtures/existing_rules_build/workspace
 tests/fixtures/expand_location/workspace
 tests/fixtures/ext_repo_mapping/oci_workspace
 tests/fixtures/ext_repo_mapping/workspace

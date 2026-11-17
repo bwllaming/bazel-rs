@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-// Modified for native Bazel 9.3 `dict()` binding texts; see vendor provenance.
+// Modified for native Bazel 9.3 `dict()` binding texts and host `Map` views; see
+// vendor provenance.
 
 use starlark_derive::starlark_module;
 use starlark_map::small_map::SmallMap;
@@ -122,6 +123,18 @@ pub(crate) fn register_dict(globals: &mut GlobalsBuilder) {
                         let mut result = (*pos).clone();
                         result.reserve(kwargs.len());
                         result
+                    }
+                    // Modified: a host `Map` view (Bazel's dict-like
+                    // StarlarkIndexable+Map values, e.g. native.existing_rule)
+                    // contributes its key/value entries (Dict.update,
+                    // net/starlark/java/eval/Dict.java), not pairs.
+                    None if pos.get_type() == "Map" => {
+                        let mut result = SmallMap::new();
+                        for k in pos.iterate(heap)? {
+                            let v = pos.at(k, heap)?;
+                            result.insert_hashed(k.get_hashed()?, v);
+                        }
+                        Dict::new(result)
                     }
                     None => {
                         let it = pos.iterate(heap)?;

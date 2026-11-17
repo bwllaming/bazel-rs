@@ -48,7 +48,7 @@ mod parallel;
 mod pattern_pool;
 mod prepare;
 pub mod query;
-mod query_attrs;
+pub(crate) mod query_attrs;
 pub mod root_checkpoint;
 mod split;
 mod starlark_doc_extract;

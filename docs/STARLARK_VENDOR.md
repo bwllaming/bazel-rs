@@ -590,3 +590,15 @@ parameter names as written (the parameter list names `*args`/`**kwargs`
 generically) and the globals of its defining module in slot order
 (StarlarkFunction.getDocumentation/getLocation/getModule). Nothing else
 changes; both files' current hashes are updated in the same provenance.
+
+## `dict()` and `dict.update()` with host `Map` views
+
+Bazel's `native.existing_rule(s)` views are Java `Map`s, which
+`Dict.update` copies entry by entry, so `dict(native.existing_rule("x"))`
+and `d.update(view)` work (genuine 9.3.1 capture,
+tests/fixtures/existing_rules_build). The vendored `dict()` constructor
+(`src/values/types/dict/globals.rs`) and `dict.update`
+(`src/values/types/dict/methods.rs`) now treat a value whose type is `Map`
+(crate::existing_rules) as such a mapping: its iteration yields the keys and
+indexing the values. Other iterables still must yield pairs. Both files'
+current hashes are updated in the provenance; no vendored test changes.

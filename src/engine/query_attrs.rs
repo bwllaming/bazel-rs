@@ -359,9 +359,17 @@ fn builtin_default(name: &str, rule: &Rule, package: &Package) -> Option<AttrVal
 
 /// The value of an unset built-in attribute (Type.getDefaultValue, with the
 /// effective `tags`, `testonly` and `deprecation`).
-fn type_default(name: &str, ty: NativeType, rule: &Rule, package: &Package) -> Option<AttrValue> {
+fn type_default(
+    name: &str,
+    ty: NativeType,
+    target: &crate::native_rules::NativeTarget,
+    rule: &Rule,
+    package: &Package,
+) -> Option<AttrValue> {
     Some(match name {
-        "tags" => AttrValue::Strings(rule_tags(rule)),
+        // The rule's effective tags (`rule_tags`): the native or Starlark
+        // rule's target, also while the rule is still being declared.
+        "tags" => AttrValue::Strings(target.tags.clone()),
         "testonly" => AttrValue::Bool(rule.is_test_only(&package.args)),
         "deprecation" => AttrValue::String(rule.deprecation_warning(&package.args)?),
         _ => match ty {
@@ -427,7 +435,7 @@ fn builtin_attribute(
             .get(name)
             .cloned()
             .or_else(|| builtin_default(name, rule, package))
-            .or_else(|| type_default(name, attribute.ty, rule, package))
+            .or_else(|| type_default(name, attribute.ty, target, rule, package))
     };
     QueryAttribute {
         name: name.to_owned(),
@@ -507,8 +515,38 @@ fn config_dependencies(attributes: &[QueryAttribute]) -> QueryAttribute {
 /// The attributes of a rule (not a package group) in rule-class order.
 pub(crate) fn rule_attributes(rule: &Rule, package: &Package) -> Vec<QueryAttribute> {
     if let Some(custom) = &rule.custom {
-        return starlark_attributes(rule, package, custom);
+        return starlark_attributes(
+            rule,
+            package,
+            &custom.attrs,
+            &custom.schema,
+            &custom.declaration,
+        );
     }
+    native_attributes(rule, package)
+}
+
+/// [`rule_attributes`] of a rule still being declared (`native.existing_rule`
+/// during package evaluation): a Starlark rule's invocation parts are not
+/// yet in `rule.custom`, so they are passed separately.
+pub(crate) fn declared_rule_attributes(
+    rule: &Rule,
+    package: &Package,
+    custom: Option<(
+        &std::collections::BTreeMap<String, AttrValue>,
+        &crate::custom_rule::SharedSchema,
+        &crate::custom_rule::InvocationDeclaration,
+    )>,
+) -> Vec<QueryAttribute> {
+    match custom {
+        Some((attrs, schema, declaration)) => {
+            starlark_attributes(rule, package, attrs, schema, declaration)
+        }
+        None => rule_attributes(rule, package),
+    }
+}
+
+fn native_attributes(rule: &Rule, package: &Package) -> Vec<QueryAttribute> {
     let Some(native) = rule.native.as_deref() else {
         return Vec::new();
     };
@@ -663,9 +701,10 @@ pub(crate) fn is_executable(rule: &Rule) -> bool {
 fn starlark_attributes(
     rule: &Rule,
     package: &Package,
-    custom: &crate::custom_rule::CustomInvocation,
+    attrs: &std::collections::BTreeMap<String, AttrValue>,
+    schema: &crate::custom_rule::SharedSchema,
+    declaration: &crate::custom_rule::InvocationDeclaration,
 ) -> Vec<QueryAttribute> {
-    let declaration = &custom.declaration;
     let builtin = &declaration.builtin;
     let builtins = crate::native_rules::starlark_builtins(builtin.kind);
     let mut attributes = Vec::new();
@@ -691,7 +730,7 @@ fn starlark_attributes(
     }
     let configurable = &declaration.configurable;
     for name in &declaration.attr_order {
-        let Some(spec) = custom.schema.get(name) else {
+        let Some(spec) = schema.get(name) else {
             continue;
         };
         let shape = Shape::of_starlark(&spec.kind);
@@ -712,8 +751,7 @@ fn starlark_attributes(
                     .and_then(|field| late_bound_default(&field.fragment, &field.name)),
             ))
         } else {
-            custom
-                .attrs
+            attrs
                 .get(name)
                 .cloned()
                 .or_else(|| Some(spec.default.clone()))

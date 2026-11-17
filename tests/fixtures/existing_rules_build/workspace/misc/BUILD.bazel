@@ -1,0 +1,3 @@
+load("//misc:d.bzl", "m")
+genrule(name = "g", outs = ["g.out"], cmd = "x")
+m()

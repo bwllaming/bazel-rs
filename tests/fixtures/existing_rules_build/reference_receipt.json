@@ -1,0 +1,604 @@
+{
+ "schema": "existing-rules-build-reference-receipt/v1",
+ "fixture": "existing_rules_build",
+ "purpose": "native.existing_rule(name) / native.existing_rules() during BUILD evaluation (StarlarkNativeModule.java:320-521, starlarkifyValue :714-830): dict-like Map views, exported attributes in rule-class order with values, select() values, snapshot semantics, symbolic-macro / .bzl-initialization rejection, view mutation errors.",
+ "reference": {
+  "binary": "bazel-9.3.1-linux-x86_64",
+  "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch>",
+  "command_flags": "query //<case>:all --noshow_progress",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8; fresh fixture copy per case"
+ },
+ "normalization": "<WS> = the workspace copy. debug = the DEBUG lines without the `DEBUG: <file>:L:C: ` prefix; errors = the distinct `Error...:` lines without the `Error[ in f]: ` prefix.",
+ "script": {
+  "path": "/tmp/opencode/w/cs-er/capture.py (not committed)",
+  "sha256": "50e42de910c5e844024caf7b8a10d847387ecc9e48c4416429377229ad421d22"
+ },
+ "fixture_files_sha256": {
+  "MODULE.bazel": "0c0df0e7e4743a3e1ade900808520ecff81a7f7ccfe47f0797c5b378893da9ce",
+  "assign/BUILD.bazel": "025c97299c1e2a2599dc4f702c8e97d3d1f6eba3edb88134b64839cb83513db0",
+  "assign/d.bzl": "43acfb4b1ada99c4552a681a3602512f985b6b534de9e4cc0915620a5ace36af",
+  "bad_name/BUILD.bazel": "a7318938ea484c681ba6dbaacba62be1c9978afdab2a222dbba55a2dfd37af05",
+  "bad_name/d.bzl": "d87d8ed23d634e202cc8f72ff9eb7f344a832cc726107b99608aa4b32965208e",
+  "bzl_toplevel/BUILD.bazel": "8e6e6e5bef008bfa342605cbb934572030434e9a2b40adf45a792e0915b7f23b",
+  "bzl_toplevel/d.bzl": "a07e7dcdc32098b5f6c45669ac5b8f7aab06f91f69c52d5e82429a7a71a575cd",
+  "dep/BUILD.bazel": "daa96d3742e1d20bda4b305a776f4c7d072e026538b378a86521d594590fa102",
+  "dep/MODULE.bazel": "810bdd50df839830558ca680c14637e16000b1340bffc2870de0aa7ffa42f87a",
+  "dict_copy/BUILD.bazel": "b655dfddfb34412045d7637b88ba7e7af17eda3c31d67eca893a48496fe06051",
+  "dict_copy/d.bzl": "9cca8dc6776589b0e52802953e2391166bb0daf1caecd3ac7db372322c7361e3",
+  "frozen_keys/BUILD.bazel": "a7318938ea484c681ba6dbaacba62be1c9978afdab2a222dbba55a2dfd37af05",
+  "frozen_keys/d.bzl": "4789f61db96b1bf48dbb9f87a4cbe9a8adbda62c1528cafe8b967e7ee334c177",
+  "hashable/BUILD.bazel": "a7318938ea484c681ba6dbaacba62be1c9978afdab2a222dbba55a2dfd37af05",
+  "hashable/d.bzl": "adc306c017bd0a7a0797c7f2dafae6d959e6a6d80d8b23d8545775cd0b82123d",
+  "methods/BUILD.bazel": "a7318938ea484c681ba6dbaacba62be1c9978afdab2a222dbba55a2dfd37af05",
+  "methods/d.bzl": "27c9ac094b2761df9dd9cc7306523f33adbc9471d27eba090671aff28b79afef",
+  "misc/BUILD.bazel": "25fab193d854e140b59c1a5fea5a51be306e4bf03af95de732bdbbcdc066ef84",
+  "misc/d.bzl": "92bf0a22a1d6f4af569f3bc08db36e1f927a374091d7e6f46ab23d236d9154bd",
+  "missing_key/BUILD.bazel": "a7318938ea484c681ba6dbaacba62be1c9978afdab2a222dbba55a2dfd37af05",
+  "missing_key/d.bzl": "639bb54fbc4670320a39592cdeaac686a2ac8a6dc176dc94e5da3c54b9514069",
+  "other/BUILD.bazel": "cff2f45a9dc386d9920dbee362ecd698c705af07cbf8de3849ede928a8a7930e",
+  "pkg/BUILD.bazel": "0352a180962d279dc36fab3aecc10c38dd24f38a70aaeeb5747e76c4648bcfd1",
+  "pkg/a.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "pkg/b.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "pkg/defs.bzl": "a64151ac41818dac09af34cd9dc127b9db2817c3bdd83c44324d3d96fedd61e8",
+  "pv/BUILD.bazel": "63d1bcb95aa6e663528222599f87bd9232520227c1964d561135bed8637518af",
+  "pv/defs.bzl": "0cb0b204303d7c8a04e53d796a38bc55c6f5be959b3ac376eac8b5b01457f17a",
+  "sym_legacy/BUILD.bazel": "87cb9fa3201c5cf14f5c891ccc11ea92452dcbe27547e6a079b39516f079df55",
+  "sym_legacy/d.bzl": "a45d451d259c3de78d8eb64a93ecd9e2cca166dcb46622df992b14a926d16c45",
+  "sym_macro/BUILD.bazel": "bec0293163fdde2764f5da7afcaf2ccdeae061875c6eaa8c8f6beaae97a7c3dc"
+ },
+ "cases": {
+  "pkg": {
+   "argv": [
+    "query",
+    "//pkg:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "stdout": [
+     "//pkg:al",
+     "//pkg:bare",
+     "//pkg:cs",
+     "//pkg:fg",
+     "//pkg:gen",
+     "//pkg:leg",
+     "//pkg:mine",
+     "//pkg:sm_fg",
+     "//pkg:t",
+     "//pkg:ts"
+    ],
+    "debug": [
+     "RULES type=Map repr=<native.ExistingRulesView object> len=1 keys=[\"cs\"]",
+     "RULE leg type=Map str=<native.ExistingRuleView for target 'leg'> repr=<native.ExistingRuleView for target 'leg'> len=32 bool=True",
+     "ATTR leg.name string \"leg\"",
+     "ATTR leg.kind string \"genrule\"",
+     "ATTR leg.visibility tuple ()",
+     "ATTR leg.transitive_configs tuple ()",
+     "ATTR leg.tags tuple ()",
+     "ATTR leg.generator_name string \"leg\"",
+     "ATTR leg.generator_function string \"legacy\"",
+     "ATTR leg.generator_location string \"pkg/BUILD.bazel:31:7\"",
+     "ATTR leg.features tuple ()",
+     "ATTR leg.compatible_with tuple ()",
+     "ATTR leg.restricted_to tuple ()",
+     "ATTR leg.aspect_hints tuple ()",
+     "ATTR leg.distribs tuple ()",
+     "ATTR leg.target_compatible_with tuple ()",
+     "ATTR leg.exec_properties dict {}",
+     "ATTR leg.exec_compatible_with tuple ()",
+     "ATTR leg.exec_group_compatible_with dict {}",
+     "ATTR leg.toolchains tuple ()",
+     "ATTR leg.srcs tuple (\":a.txt\",)",
+     "ATTR leg.tools tuple ()",
+     "ATTR leg.outs tuple (\":leg.out\",)",
+     "ATTR leg.cmd string \"touch $@\"",
+     "ATTR leg.cmd_bash string \"\"",
+     "ATTR leg.cmd_bat string \"\"",
+     "ATTR leg.cmd_ps string \"\"",
+     "ATTR leg.output_to_bindir bool False",
+     "ATTR leg.local bool False",
+     "ATTR leg.message string \"\"",
+     "ATTR leg.output_licenses tuple ()",
+     "ATTR leg.executable bool False",
+     "ATTR leg.heuristic_label_expansion bool False",
+     "ATTR leg.stamp int 0",
+     "GET leg missing=None default=5 in=True notin=False",
+     "ITEMS leg 32 32",
+     "ITER leg True",
+     "RULE cs type=Map str=<native.ExistingRuleView for target 'cs'> repr=<native.ExistingRuleView for target 'cs'> len=15 bool=True",
+     "ATTR cs.name string \"cs\"",
+     "ATTR cs.kind string \"config_setting\"",
+     "ATTR cs.visibility tuple ()",
+     "ATTR cs.transitive_configs tuple ()",
+     "ATTR cs.tags tuple (\"manual\",)",
+     "ATTR cs.generator_name string \"\"",
+     "ATTR cs.generator_function string \"\"",
+     "ATTR cs.generator_location string \"\"",
+     "ATTR cs.features tuple ()",
+     "ATTR cs.aspect_hints tuple ()",
+     "ATTR cs.distribs tuple ()",
+     "ATTR cs.values dict {\"compilation_mode\": \"opt\"}",
+     "ATTR cs.define_values dict {}",
+     "ATTR cs.flag_values dict {}",
+     "ATTR cs.constraint_values tuple ()",
+     "GET cs missing=None default=5 in=True notin=False",
+     "ITEMS cs 15 15",
+     "ITER cs True",
+     "RULE gen type=Map str=<native.ExistingRuleView for target 'gen'> repr=<native.ExistingRuleView for target 'gen'> len=32 bool=True",
+     "ATTR gen.name string \"gen\"",
+     "ATTR gen.kind string \"genrule\"",
+     "ATTR gen.visibility tuple (\"//visibility:public\",)",
+     "ATTR gen.transitive_configs tuple ()",
+     "ATTR gen.tags tuple (\"manual\", \"t1\")",
+     "ATTR gen.generator_name string \"\"",
+     "ATTR gen.generator_function string \"\"",
+     "ATTR gen.generator_location string \"\"",
+     "ATTR gen.features tuple ()",
+     "ATTR gen.compatible_with tuple ()",
+     "ATTR gen.restricted_to tuple ()",
+     "ATTR gen.aspect_hints tuple ()",
+     "ATTR gen.distribs tuple ()",
+     "ATTR gen.target_compatible_with tuple ()",
+     "ATTR gen.exec_properties dict {}",
+     "ATTR gen.exec_compatible_with tuple ()",
+     "ATTR gen.exec_group_compatible_with dict {}",
+     "ATTR gen.toolchains tuple ()",
+     "ATTR gen.srcs select select({Label(\"//conditions:default\"): (\":a.txt\", \"//other:x\", \"@@dep+//:f\")}) + select({Label(\"//pkg:cs\"): (\":b.txt\",), Label(\"//conditions:default\"): ()})",
+     "ATTR gen.tools tuple ()",
+     "ATTR gen.outs tuple (\":gen.out\",)",
+     "ATTR gen.cmd string \"cat $(SRCS) > $@\"",
+     "ATTR gen.cmd_bash string \"\"",
+     "ATTR gen.cmd_bat string \"\"",
+     "ATTR gen.cmd_ps string \"\"",
+     "ATTR gen.output_to_bindir bool False",
+     "ATTR gen.local bool False",
+     "ATTR gen.message string \"\"",
+     "ATTR gen.output_licenses tuple ()",
+     "ATTR gen.executable bool False",
+     "ATTR gen.heuristic_label_expansion bool False",
+     "ATTR gen.stamp int 0",
+     "GET gen missing=None default=5 in=True notin=False",
+     "ITEMS gen 32 32",
+     "ITER gen True",
+     "RULE fg type=Map str=<native.ExistingRuleView for target 'fg'> repr=<native.ExistingRuleView for target 'fg'> len=19 bool=True",
+     "ATTR fg.name string \"fg\"",
+     "ATTR fg.kind string \"filegroup\"",
+     "ATTR fg.visibility tuple ()",
+     "ATTR fg.transitive_configs tuple ()",
+     "ATTR fg.tags tuple ()",
+     "ATTR fg.generator_name string \"\"",
+     "ATTR fg.generator_function string \"\"",
+     "ATTR fg.generator_location string \"\"",
+     "ATTR fg.testonly bool True",
+     "ATTR fg.features tuple ()",
+     "ATTR fg.compatible_with tuple ()",
+     "ATTR fg.restricted_to tuple ()",
+     "ATTR fg.aspect_hints tuple ()",
+     "ATTR fg.distribs tuple ()",
+     "ATTR fg.target_compatible_with tuple ()",
+     "ATTR fg.srcs tuple (\":gen\",)",
+     "ATTR fg.output_group string \"\"",
+     "ATTR fg.data tuple ()",
+     "ATTR fg.output_licenses tuple ()",
+     "GET fg missing=None default=5 in=True notin=False",
+     "ITEMS fg 19 19",
+     "ITER fg True",
+     "RULE mine type=Map str=<native.ExistingRuleView for target 'mine'> repr=<native.ExistingRuleView for target 'mine'> len=30 bool=True",
+     "ATTR mine.name string \"mine\"",
+     "ATTR mine.kind string \"myrule\"",
+     "ATTR mine.expect_failure string \"\"",
+     "ATTR mine.visibility tuple ()",
+     "ATTR mine.transitive_configs tuple ()",
+     "ATTR mine.tags tuple ()",
+     "ATTR mine.generator_name string \"\"",
+     "ATTR mine.generator_function string \"\"",
+     "ATTR mine.generator_location string \"\"",
+     "ATTR mine.features tuple ()",
+     "ATTR mine.compatible_with tuple ()",
+     "ATTR mine.restricted_to tuple ()",
+     "ATTR mine.aspect_hints tuple ()",
+     "ATTR mine.toolchains tuple ()",
+     "ATTR mine.exec_properties dict {}",
+     "ATTR mine.exec_compatible_with tuple ()",
+     "ATTR mine.exec_group_compatible_with dict {}",
+     "ATTR mine.target_compatible_with tuple ()",
+     "ATTR mine.s string \"hello\"",
+     "ATTR mine.i int 7",
+     "ATTR mine.b bool False",
+     "ATTR mine.ll tuple (\":fg\", \"//other:x\")",
+     "ATTR mine.sl tuple (\"x\", \"y\")",
+     "ATTR mine.sd dict {\"k\": \"v\"}",
+     "ATTR mine.sld dict {\"k\": (\"v1\", \"v2\")}",
+     "ATTR mine.lksd dict {\":fg\": \"val\"}",
+     "ATTR mine.o string \":mine.o\"",
+     "ATTR mine.ol tuple (\":m1.o\", \":m2.o\")",
+     "ATTR mine.il tuple (1, 2)",
+     "ATTR mine.sel select select({Label(\"//pkg:cs\"): \"opt\", Label(\"//conditions:default\"): \"other\"})",
+     "GET mine missing=None default=5 in=True notin=False",
+     "ITEMS mine 30 30",
+     "ITER mine True",
+     "RULE bare type=Map str=<native.ExistingRuleView for target 'bare'> repr=<native.ExistingRuleView for target 'bare'> len=29 bool=True",
+     "ATTR bare.name string \"bare\"",
+     "ATTR bare.kind string \"myrule\"",
+     "ATTR bare.expect_failure string \"\"",
+     "ATTR bare.visibility tuple ()",
+     "ATTR bare.transitive_configs tuple ()",
+     "ATTR bare.tags tuple ()",
+     "ATTR bare.generator_name string \"\"",
+     "ATTR bare.generator_function string \"\"",
+     "ATTR bare.generator_location string \"\"",
+     "ATTR bare.features tuple ()",
+     "ATTR bare.compatible_with tuple ()",
+     "ATTR bare.restricted_to tuple ()",
+     "ATTR bare.aspect_hints tuple ()",
+     "ATTR bare.toolchains tuple ()",
+     "ATTR bare.exec_properties dict {}",
+     "ATTR bare.exec_compatible_with tuple ()",
+     "ATTR bare.exec_group_compatible_with dict {}",
+     "ATTR bare.target_compatible_with tuple ()",
+     "ATTR bare.s string \"dflt\"",
+     "ATTR bare.i int 7",
+     "ATTR bare.b bool False",
+     "ATTR bare.ll tuple ()",
+     "ATTR bare.sl tuple ()",
+     "ATTR bare.sd dict {}",
+     "ATTR bare.sld dict {}",
+     "ATTR bare.lksd dict {}",
+     "ATTR bare.ol tuple ()",
+     "ATTR bare.il tuple ()",
+     "ATTR bare.sel string \"\"",
+     "GET bare missing=None default=5 in=True notin=False",
+     "ITEMS bare 29 29",
+     "ITER bare True",
+     "RULE t type=Map str=<native.ExistingRuleView for target 't'> repr=<native.ExistingRuleView for target 't'> len=25 bool=True",
+     "ATTR t.name string \"t\"",
+     "ATTR t.kind string \"my_test\"",
+     "ATTR t.expect_failure string \"\"",
+     "ATTR t.visibility tuple ()",
+     "ATTR t.transitive_configs tuple ()",
+     "ATTR t.tags tuple ()",
+     "ATTR t.generator_name string \"\"",
+     "ATTR t.generator_function string \"\"",
+     "ATTR t.generator_location string \"\"",
+     "ATTR t.testonly bool True",
+     "ATTR t.features tuple ()",
+     "ATTR t.compatible_with tuple ()",
+     "ATTR t.restricted_to tuple ()",
+     "ATTR t.aspect_hints tuple ()",
+     "ATTR t.toolchains tuple ()",
+     "ATTR t.exec_properties dict {}",
+     "ATTR t.exec_compatible_with tuple ()",
+     "ATTR t.exec_group_compatible_with dict {}",
+     "ATTR t.target_compatible_with tuple ()",
+     "ATTR t.size string \"medium\"",
+     "ATTR t.flaky bool False",
+     "ATTR t.shard_count int -1",
+     "ATTR t.local bool False",
+     "ATTR t.args tuple ()",
+     "ATTR t.x string \"\"",
+     "GET t missing=None default=5 in=True notin=False",
+     "ITEMS t 25 25",
+     "ITER t True",
+     "RULE al type=Map str=<native.ExistingRuleView for target 'al'> repr=<native.ExistingRuleView for target 'al'> len=14 bool=True",
+     "ATTR al.name string \"al\"",
+     "ATTR al.kind string \"alias\"",
+     "ATTR al.visibility tuple ()",
+     "ATTR al.transitive_configs tuple ()",
+     "ATTR al.tags tuple ()",
+     "ATTR al.generator_name string \"\"",
+     "ATTR al.generator_function string \"\"",
+     "ATTR al.generator_location string \"\"",
+     "ATTR al.features tuple ()",
+     "ATTR al.compatible_with tuple ()",
+     "ATTR al.restricted_to tuple ()",
+     "ATTR al.aspect_hints tuple ()",
+     "ATTR al.target_compatible_with tuple ()",
+     "ATTR al.actual string \":fg\"",
+     "GET al missing=None default=5 in=True notin=False",
+     "ITEMS al 14 14",
+     "ITER al True",
+     "RULE ts type=Map str=<native.ExistingRuleView for target 'ts'> repr=<native.ExistingRuleView for target 'ts'> len=16 bool=True",
+     "ATTR ts.name string \"ts\"",
+     "ATTR ts.kind string \"test_suite\"",
+     "ATTR ts.visibility tuple ()",
+     "ATTR ts.transitive_configs tuple ()",
+     "ATTR ts.tags tuple ()",
+     "ATTR ts.generator_name string \"\"",
+     "ATTR ts.generator_function string \"\"",
+     "ATTR ts.generator_location string \"\"",
+     "ATTR ts.testonly bool True",
+     "ATTR ts.features tuple ()",
+     "ATTR ts.compatible_with tuple ()",
+     "ATTR ts.restricted_to tuple ()",
+     "ATTR ts.aspect_hints tuple ()",
+     "ATTR ts.distribs tuple ()",
+     "ATTR ts.target_compatible_with tuple ()",
+     "ATTR ts.tests tuple (\":t\",)",
+     "GET ts missing=None default=5 in=True notin=False",
+     "ITEMS ts 16 16",
+     "ITER ts True",
+     "RULE sm_fg type=Map str=<native.ExistingRuleView for target 'sm_fg'> repr=<native.ExistingRuleView for target 'sm_fg'> len=18 bool=True",
+     "ATTR sm_fg.name string \"sm_fg\"",
+     "ATTR sm_fg.kind string \"filegroup\"",
+     "ATTR sm_fg.visibility tuple ()",
+     "ATTR sm_fg.transitive_configs tuple ()",
+     "ATTR sm_fg.tags tuple ()",
+     "ATTR sm_fg.generator_name string \"sm\"",
+     "ATTR sm_fg.generator_function string \"sym\"",
+     "ATTR sm_fg.generator_location string \"pkg/BUILD.bazel:32:4\"",
+     "ATTR sm_fg.features tuple ()",
+     "ATTR sm_fg.compatible_with tuple ()",
+     "ATTR sm_fg.restricted_to tuple ()",
+     "ATTR sm_fg.aspect_hints tuple ()",
+     "ATTR sm_fg.distribs tuple ()",
+     "ATTR sm_fg.target_compatible_with tuple ()",
+     "ATTR sm_fg.srcs tuple ()",
+     "ATTR sm_fg.output_group string \"\"",
+     "ATTR sm_fg.data tuple ()",
+     "ATTR sm_fg.output_licenses tuple ()",
+     "GET sm_fg missing=None default=5 in=True notin=False",
+     "ITEMS sm_fg 18 18",
+     "ITER sm_fg True",
+     "NONE a.txt",
+     "NONE gen.out",
+     "NONE nonexistent",
+     "RULES type=Map repr=<native.ExistingRulesView object> len=10 keys=[\"cs\", \"gen\", \"fg\", \"mine\", \"bare\", \"t\", \"al\", \"ts\", \"leg\", \"sm_fg\"]",
+     "SNAP before=1 after=10 gen_in_before=False None",
+     "SNAP2 <native.ExistingRuleView for target 'gen'> 1"
+    ],
+    "errors": []
+   }
+  },
+  "pv": {
+   "argv": [
+    "query",
+    "//pv:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "stdout": [
+     "//pv:fg",
+     "//pv:fg2",
+     "//pv:lr"
+    ],
+    "debug": [
+     "ATTR fg.name string \"fg\"",
+     "ATTR fg.kind string \"filegroup\"",
+     "ATTR fg.visibility tuple (\"//other:__pkg__\", \"//pkg:__subpackages__\")",
+     "ATTR fg.transitive_configs tuple ()",
+     "ATTR fg.deprecation string \"explicit\"",
+     "ATTR fg.tags tuple ()",
+     "ATTR fg.generator_name string \"\"",
+     "ATTR fg.generator_function string \"\"",
+     "ATTR fg.generator_location string \"\"",
+     "ATTR fg.features tuple ()",
+     "ATTR fg.compatible_with tuple ()",
+     "ATTR fg.restricted_to tuple ()",
+     "ATTR fg.aspect_hints tuple ()",
+     "ATTR fg.distribs tuple ()",
+     "ATTR fg.target_compatible_with tuple ()",
+     "ATTR fg.srcs tuple ()",
+     "ATTR fg.output_group string \"\"",
+     "ATTR fg.data tuple ()",
+     "ATTR fg.output_licenses tuple ()",
+     "ATTR fg2.name string \"fg2\"",
+     "ATTR fg2.kind string \"filegroup\"",
+     "ATTR fg2.visibility tuple ()",
+     "ATTR fg2.transitive_configs tuple ()",
+     "ATTR fg2.tags tuple (\"a\", \"b\", \"b\")",
+     "ATTR fg2.generator_name string \"\"",
+     "ATTR fg2.generator_function string \"\"",
+     "ATTR fg2.generator_location string \"\"",
+     "ATTR fg2.features tuple (\"-y\", \"z\")",
+     "ATTR fg2.compatible_with tuple ()",
+     "ATTR fg2.restricted_to tuple ()",
+     "ATTR fg2.aspect_hints tuple ()",
+     "ATTR fg2.distribs tuple ()",
+     "ATTR fg2.target_compatible_with tuple ()",
+     "ATTR fg2.srcs tuple ()",
+     "ATTR fg2.output_group string \"\"",
+     "ATTR fg2.data tuple ()",
+     "ATTR fg2.output_licenses tuple ()",
+     "ATTR lr.name string \"lr\"",
+     "ATTR lr.kind string \"lrule\"",
+     "ATTR lr.expect_failure string \"\"",
+     "ATTR lr.visibility tuple ()",
+     "ATTR lr.transitive_configs tuple ()",
+     "ATTR lr.tags tuple ()",
+     "ATTR lr.generator_name string \"\"",
+     "ATTR lr.generator_function string \"\"",
+     "ATTR lr.generator_location string \"\"",
+     "ATTR lr.features tuple ()",
+     "ATTR lr.compatible_with tuple ()",
+     "ATTR lr.restricted_to tuple ()",
+     "ATTR lr.aspect_hints tuple ()",
+     "ATTR lr.toolchains tuple ()",
+     "ATTR lr.exec_properties dict {}",
+     "ATTR lr.exec_compatible_with tuple ()",
+     "ATTR lr.exec_group_compatible_with dict {}",
+     "ATTR lr.target_compatible_with tuple ()",
+     "ATTR lr.lab string \"@@dep+//:f\"",
+     "ATTR lr.opt select select({Label(\"//pkg:cs\"): \"//other:x\", Label(\"//conditions:default\"): None})",
+     "ATTR lr.labs select select({Label(\"//conditions:default\"): (\"//other:x\",)}) + select({Label(\"//pkg:cs\"): (\":fg\",), Label(\"//conditions:default\"): ()}) + select({Label(\"//conditions:default\"): (\"@@dep+//:f\",)})",
+     "ATTR lr.skl dict {\"a\": \":fg\", \"b\": \"//other:x\"}",
+     "ATTR lr.lld select select({Label(\"//pkg:cs\"): {\"a\": \"b\"}, Label(\"//conditions:default\"): {}})",
+     "TOP <native.ExistingRuleView for target 'fg'> 3"
+    ],
+    "errors": []
+   }
+  },
+  "methods": {
+   "argv": [
+    "query",
+    "//methods:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "stdout": [
+     "//methods:g"
+    ],
+    "debug": [
+     "EMPTY bool=True len=0 type=Map",
+     "KEYS type=list True tuple",
+     "LIST [\"g\"] [\"g\"]",
+     "VALS [<native.ExistingRuleView for target 'g'>]",
+     "ITEMS [(\"g\", <native.ExistingRuleView for target 'g'>)]",
+     "GETS None None False",
+     "JSON [\":g.out\"]",
+     "STRUCT \"x\"",
+     "HASH 120",
+     "DIR [\"get\", \"items\", \"keys\", \"values\"] [\"get\", \"items\", \"keys\", \"values\"]"
+    ],
+    "errors": []
+   }
+  },
+  "dict_copy": {
+   "argv": [
+    "query",
+    "//dict_copy:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "stdout": [
+     "//dict_copy:g"
+    ],
+    "debug": [
+     "DICT {\"name\": \"g\", \"kind\": \"genrule\", \"visibility\": (), \"transitive_configs\": (), \"tags\": (), \"generator_name\": \"\", \"generator_function\": \"\", \"generator_location\": \"\", \"features\": (), \"compatible_with\": (), \"restricted_to\": (), \"aspect_hints\": (), \"distribs\": (), \"target_compatible_with\": (), \"exec_properties\": {}, \"exec_compatible_with\": (), \"exec_group_compatible_with\": {}, \"toolchains\": (), \"srcs\": (), \"tools\": (), \"outs\": (\":g.out\",), \"cmd\": \"x\", \"cmd_bash\": \"\", \"cmd_bat\": \"\", \"cmd_ps\": \"\", \"output_to_bindir\": False, \"local\": False, \"message\": \"\", \"output_licenses\": (), \"executable\": False, \"heuristic_label_expansion\": False, \"stamp\": 0}"
+    ],
+    "errors": []
+   }
+  },
+  "misc": {
+   "argv": [
+    "query",
+    "//misc:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [
+     "DICT2 {\"g\": <native.ExistingRuleView for target 'g'>}",
+     "SORT [\"g\"]",
+     "EQ True False",
+     "JSON []",
+     "TUPLE \"a\""
+    ],
+    "errors": [
+     "'Map' value has no field or method 'clear'"
+    ]
+   }
+  },
+  "hashable": {
+   "argv": [
+    "query",
+    "//hashable:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "stdout": [
+     "//hashable:g"
+    ],
+    "debug": [],
+    "errors": []
+   }
+  },
+  "sym_macro": {
+   "argv": [
+    "query",
+    "//sym_macro:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "existing_rules() can only be used while evaluating a BUILD file, a legacy macro, or a rule finalizer"
+    ]
+   }
+  },
+  "sym_legacy": {
+   "argv": [
+    "query",
+    "//sym_legacy:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "existing_rule() can only be used while evaluating a BUILD file, a legacy macro, or a rule finalizer"
+    ]
+   }
+  },
+  "bzl_toplevel": {
+   "argv": [
+    "query",
+    "//bzl_toplevel:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "existing_rules() can only be used while evaluating a BUILD file, a legacy macro, or a rule finalizer"
+    ]
+   }
+  },
+  "assign": {
+   "argv": [
+    "query",
+    "//assign:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "can only assign an element in a dictionary or a list, not in a 'Map'"
+    ]
+   }
+  },
+  "missing_key": {
+   "argv": [
+    "query",
+    "//missing_key:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "key \"nope\" not found in view"
+    ]
+   }
+  },
+  "frozen_keys": {
+   "argv": [
+    "query",
+    "//frozen_keys:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "trying to mutate a frozen list value"
+    ]
+   }
+  },
+  "bad_name": {
+   "argv": [
+    "query",
+    "//bad_name:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "in call to existing_rule(), parameter 'name' got value of type 'int', want 'string'"
+    ]
+   }
+  }
+ }
+}

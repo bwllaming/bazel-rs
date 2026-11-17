@@ -1,0 +1,47 @@
+load(":defs.bzl", "dump", "legacy", "myrule", "my_test", "snapshot", "sym")
+
+config_setting(name = "cs", values = {"compilation_mode": "opt"})
+before = snapshot()
+genrule(
+    name = "gen",
+    srcs = ["a.txt", "//other:x", "@dep//:f"] + select({":cs": ["b.txt"], "//conditions:default": []}),
+    outs = ["gen.out"],
+    cmd = "cat $(SRCS) > $@",
+    tags = ["t1", "manual"],
+    visibility = ["//visibility:public"],
+)
+filegroup(name = "fg", srcs = [":gen"], testonly = True)
+myrule(
+    name = "mine",
+    s = "hello",
+    ll = [":fg", "//other:x"],
+    sl = ["x", "y"],
+    sd = {"k": "v"},
+    sld = {"k": ["v1", "v2"]},
+    lksd = {":fg": "val"},
+    o = "mine.o",
+    ol = ["m1.o", "m2.o"],
+    il = [1, 2],
+    sel = select({":cs": "opt", "//conditions:default": "other"}),
+)
+myrule(name = "bare")
+my_test(name = "t")
+alias(name = "al", actual = ":fg")
+test_suite(name = "ts", tests = [":t"])
+legacy("leg", srcs = ["a.txt"])
+sym(name = "sm")
+dump("cs")
+dump("gen")
+dump("fg")
+dump("mine")
+dump("bare")
+dump("t")
+dump("al")
+dump("ts")
+dump("sm_fg")
+dump("a.txt")
+dump("gen.out")
+dump("nonexistent")
+after = snapshot()
+print("SNAP before=%d after=%d gen_in_before=%s %r" % (len(before), len(after), "gen" in before, before.get("gen")))
+print("SNAP2 %r %r" % (after["gen"], after.get("zz", 1)))
