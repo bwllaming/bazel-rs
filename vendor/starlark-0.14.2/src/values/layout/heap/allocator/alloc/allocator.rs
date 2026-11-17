@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified by bazel-rs: `alloc_slow` sizes the next chunk from the bytes the
+// chain holds, not its depth; see vendor provenance.
+
 use std::cell::Cell;
 use std::cell::UnsafeCell;
 use std::fmt;
@@ -109,7 +112,7 @@ impl ChunkAllocator {
         thread_local_release(after);
 
         let required_len = len + ChunkChain::HEADER_SIZE;
-        let next_chunk = thread_local_alloc_at_least(required_len, rem_chain.depth());
+        let next_chunk = thread_local_alloc_at_least(required_len, rem_chain.allocated_bytes());
 
         let next_chain = ChunkChain::new(next_chunk, rem_chain);
 

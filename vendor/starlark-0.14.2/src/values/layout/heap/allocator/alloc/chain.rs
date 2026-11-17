@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified by bazel-rs: `depth` is test-only (the allocator sizes chunks by
+// bytes); see vendor provenance.
+
 use std::cell::Cell;
 use std::mem;
 use std::mem::MaybeUninit;
@@ -190,6 +193,7 @@ impl ChunkChain {
         ChunkChainIterator { next: Some(self) }
     }
 
+    #[cfg(test)]
     pub(crate) fn depth(&self) -> usize {
         self.iter().count().saturating_sub(1)
     }

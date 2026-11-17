@@ -602,3 +602,28 @@ tests/fixtures/existing_rules_build). The vendored `dict()` constructor
 (crate::existing_rules) as such a mapping: its iteration yields the keys and
 indexing the values. Other iterables still must yield pairs. Both files'
 current hashes are updated in the provenance; no vendored test changes.
+
+## Chunk sizes of long chains
+
+The arena's chunk allocator (`src/values/layout/heap/allocator/alloc/`) grows
+a bump like `bumpalo`: 512 bytes first, then each chunk about doubles the
+bump, capped at 2 GiB. Upstream computed the next chunk's size as
+`512u32.checked_shl(chunk_count).unwrap()`. But a bump's new chunk is first
+taken from the thread-local cache of chunk fragments released by other
+heaps, and such a fragment may be just large enough for one value. A heap
+that keeps getting fragments has many chunks yet little memory: from 22
+chunks on each fresh chunk was 2 GiB, and at 32 chunks the shift panicked
+(OSS corpus capnproto: the frozen heap of a `cc_*` rule's analysis, reached
+through `cc_features` returning frozen string lists).
+
+`per_thread.rs` now sizes the next chunk from the bytes the chain already
+holds: `(allocated + 512).next_power_of_two()`, capped at 2 GiB (a value that
+needs more still gets its own size). For a chain of whole chunks this is the
+same 512, 1K, 2K, ... sequence. `allocator.rs` passes
+`ChunkChain::allocated_bytes` instead of `ChunkChain::depth` (both walk the
+chain), and `chain.rs` keeps `depth` for its tests only. Two new tests in
+`per_thread.rs` check the sequence and the cap, and a bump of 40 cached
+fragments followed by a fresh chunk of a few KiB. The provenance records
+the three files' hashes. The same update records the current hash of
+`src/stdlib/funcs/other.rs`, which `File.tree_relative_path` changed earlier
+without updating it.
