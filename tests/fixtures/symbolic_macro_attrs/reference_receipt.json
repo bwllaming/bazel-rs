@@ -9,10 +9,10 @@
   "command_flags": "<argv> --noshow_progress",
   "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8; fresh fixture copy per case"
  },
- "normalization": "<WS> = the workspace copy. stdout = the lines not starting with '#' (query --output=build location/call-stack comments). debug = the DEBUG lines without the `DEBUG: <file>:L:C: ` prefix. errors = the distinct `Error...:` lines without the `Error[ in f]: ` prefix and the package-error `ERROR: ` lines (with their tab-indented macro traceback lines).",
+ "normalization": "<WS> = the workspace copy. stdout = the lines not starting with '#' (query --output=build location/call-stack comments). debug = the DEBUG lines without the `DEBUG: <file>:L:C: ` prefix. errors = the distinct `Error...:` lines without the `Error[ in f]: ` prefix and the package-error `ERROR: ` lines (with their tab-indented macro traceback lines); for the `build` argv cases only the analysis error message after its `<location>: in <kind> rule <label>: ` prefix.",
  "script": {
   "path": "/tmp/opencode/w/corpus-macros-scratch/capture.py (not committed)",
-  "sha256": "dbbf40a6e8f9445edf6b3280e09dd8b0748bc9130f96b51b65eb0c450fe90c59"
+  "sha256": "77b5358894de83cf538e9c0c976ad48c4fb58222c466e4f857ddfb246e72c4b0"
  },
  "fixture_files_sha256": {
   "MODULE.bazel": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -24,6 +24,8 @@
   "e_unexported/defs.bzl": "480d97825c7c75fa894afc818c715208a2a7f0cbf857cd2668fa2cd4e437ede4",
   "e_computed/BUILD.bazel": "dcbd618e98a8aa538513d1a3dca52e9ff45a51bee8037def47f6f4078fddc7ec",
   "e_computed/defs.bzl": "b925a1afaf00256250599f74357b6a820603237fabdde714e51bc3fc4ee73b15",
+  "naming/BUILD.bazel": "07f7f72a2f56efd1a704b5396ccc25ff6f77c29824269dc945df4e954461b4bd",
+  "naming/defs.bzl": "c326779867e88d97ce7bbeea0b2d143eb100d1f3cd98c96de4d2e48ac10cfa35",
   "ok_nested_dv/BUILD.bazel": "4387a36aed717af2b4a4bd4eb430a894542aa669febc618c8d715714f049d6fb",
   "ok_nested_dv/defs.bzl": "88bcf7061a4764d31c92324e35bd1fb1e9022e2bed835ea67235d96f67cf0d7f",
   "e_unknown/BUILD.bazel": "91ba3e827c5da674765dda418c16bb49d9115b8d30ea1544b1eeb0683b3be294",
@@ -993,6 +995,23 @@
       "b.txt": "explicit\n@@//build:x.txt=x\n"
      }
     }
+   }
+  },
+  "naming": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "//naming:libfoo"
+   ],
+   "genuine": {
+    "exit": 1,
+    "stdout": [],
+    "debug": [
+     "PRL //naming:x //q:y naming"
+    ],
+    "errors": [
+     "Target //naming:libfoo declared in symbolic macro 'foo' violates macro naming rules and cannot be built. Name must be the same as the macro's name, or the macro's name followed by '_' (recommended), '-', or '.', and a non-empty string."
+    ]
    }
   }
  }

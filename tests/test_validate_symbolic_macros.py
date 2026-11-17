@@ -177,7 +177,7 @@ class DiagnosticTests(unittest.TestCase):
         for diagnostic, text in {
                 'visibility': 'bazel-rs: //app:demo is not visible to //app:consumer',
                 'missing-target': 'bazel-rs: source target //app:physical is not declared by exports_files or a rule in its package',
-                'namespace': 'bazel-rs: target //app:outside is outside symbolic macro namespace demo: expected the macro name or its prefix',
+                'namespace': "bazel-rs: Target //app:outside declared in symbolic macro 'demo' violates macro naming rules and cannot be built.",
                 'positional': 'error: Wrong number of positional arguments, expected 0, got 1',
                 'unexported': 'error: symbolic macro must be exported before invocation',
                 'glob-phase': 'error: glob() is not allowed inside a symbolic macro',

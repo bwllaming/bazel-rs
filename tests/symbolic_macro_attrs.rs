@@ -6,6 +6,8 @@
 //! with the capture: success, the query output (without its `#` comment
 //! lines), the DEBUG lines (the implementation's kwargs) and Bazel's error
 //! messages; the `build` case also builds and compares the outputs.
+//! `naming` is an analysis failure (a macro-declared target violating the
+//! macro naming rules).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
@@ -192,6 +194,7 @@ cases!(
     inherit,
     select,
     build,
+    naming,
 );
 
 #[test]

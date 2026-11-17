@@ -13332,8 +13332,9 @@ fn check_macro_namespace(rule: &Rule, target: &Label) -> Result<(), String> {
                 .strip_prefix(&owner.name)
                 .is_some_and(|suffix| suffix.len() > 1 && suffix.starts_with(['_', '-', '.']));
         if !valid {
+            // Package.checkMacroNamespaceCompliance (packages/Package.java:319-331).
             return Err(format!(
-                "target {target} is outside symbolic macro namespace {}: expected the macro name or its prefix followed by '_', '-', or '.' and a nonempty suffix",
+                "Target {target} declared in symbolic macro '{}' violates macro naming rules and cannot be built. Name must be the same as the macro's name, or the macro's name followed by '_' (recommended), '-', or '.', and a non-empty string.",
                 owner.name
             ));
         }
@@ -16780,7 +16781,7 @@ mod tests {
             engine
                 .resolve_group(&test_label("//app:root"), &mut Vec::new())
                 .unwrap_err()
-                .contains("symbolic macro namespace")
+                .contains("violates macro naming rules")
         );
         assert!(engine.group_nodes.is_empty());
         let mut engine = test_engine(
@@ -16805,7 +16806,7 @@ mod tests {
             engine
                 .resolve_group(&test_label("//app:outside"), &mut Vec::new())
                 .unwrap_err()
-                .contains("symbolic macro namespace")
+                .contains("violates macro naming rules")
         );
     }
 
@@ -16979,7 +16980,7 @@ m = macro(implementation=emit)
                 let result = analyze_roots(&mut engine, &[&format!("//app:{name}")]);
                 assert_eq!(result.is_ok(), valid, "{kind:?}: {name}");
                 if let Err(error) = result {
-                    assert!(error.contains("symbolic macro namespace"), "{error}");
+                    assert!(error.contains("violates macro naming rules"), "{error}");
                 }
             }
         }
@@ -17017,7 +17018,7 @@ m = macro(implementation=emit)
                 .build(&roots, &f.0.join("rejected-cache"))
                 .unwrap_err();
             assert!(error.contains("//app:outside.out"), "{error}");
-            assert!(error.contains("symbolic macro namespace"), "{error}");
+            assert!(error.contains("violates macro naming rules"), "{error}");
             assert!(!f.0.join("rejected-cache").exists());
         }
     }
@@ -17042,7 +17043,7 @@ m = macro(implementation=emit)
         );
         let error = analyze_roots(&mut engine, &["//app:demo.out"]).unwrap_err();
         assert!(error.contains("//app:outside"), "{error}");
-        assert!(error.contains("symbolic macro namespace"), "{error}");
+        assert!(error.contains("violates macro naming rules"), "{error}");
     }
 
     #[test]
