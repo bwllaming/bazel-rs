@@ -993,7 +993,7 @@ _li = depset([struct(user_link_flags = _flags, opts = _opts, libraries = cc_inte
             ),
             (
                 "cc_internal.freeze([lambda: 1])",
-                "cc_internal.freeze of a list containing a function that is not a global def of a loaded .bzl file, outside a rule, aspect, .bzl or BUILD evaluation is not implemented in the native profile",
+                "cc_internal.freeze of a list containing a function that is not frozen yet, outside a rule, aspect, .bzl or BUILD evaluation is not implemented in the native profile",
             ),
             (
                 // N60: the compile action factory needs the analysis context

@@ -407,7 +407,9 @@ pub(crate) struct FunctionItem(#[allocative(skip)] FunctionRef);
 
 #[derive(Clone, Debug)]
 enum FunctionRef {
-    /// A frozen global `def`, with the frozen heap that owns it.
+    /// A frozen function with a frozen heap that keeps it alive
+    /// (starlark::values::Heap::owned_frozen_value: the frozen heaps the
+    /// evaluating heap referenced).
     Owned(OwnedFrozenValue),
     /// A function the evaluating heap retains until its module freezes
     /// (starlark::values::RetainedValue): the module of an analysis, a
@@ -453,7 +455,7 @@ enum FunctionIdentity {
 }
 
 impl FunctionItem {
-    /// A frozen global `def` with its owner.
+    /// A frozen function with an owner that keeps it alive.
     pub(crate) fn owned(function: OwnedFrozenValue) -> Self {
         FunctionItem(FunctionRef::Owned(function))
     }
@@ -529,19 +531,16 @@ impl Ord for FunctionItem {
 }
 
 /// The depset item of a Starlark function `value` (a `def` or lambda) in
-/// `eval`: a global def of a loaded `.bzl` file with its owner, else the
-/// function retained by the evaluating heap when that heap retains
-/// ([`FunctionItem::retained`]).
+/// `eval`: a frozen function — a global def of a loaded `.bzl` file, a
+/// dependency's provider's closure, a loaded module's lambda — owned by the
+/// frozen heaps the evaluating heap references; a function of this
+/// evaluation, not frozen yet, retained by the evaluating heap when that
+/// heap retains ([`FunctionItem::retained`]).
 pub(crate) fn function_item<'v>(
     eval: &Evaluator<'v, '_, '_>,
     value: Value<'v>,
 ) -> Option<FunctionItem> {
-    if let Some(function) = crate::analysis_runtime::owned_top_level_function(eval, value) {
-        return Some(FunctionItem::owned(function));
-    }
     match value.unpack_frozen() {
-        // A frozen closure (a dependency's provider's, a loaded module's):
-        // owned by the frozen heaps this heap references.
         Some(frozen) => Some(FunctionItem::owned(eval.heap().owned_frozen_value(frozen))),
         None => FunctionItem::retained(eval.heap(), value),
     }
@@ -805,7 +804,7 @@ pub(crate) fn snapshot<'v>(
             Some(function) => Item::Function(function),
             None => {
                 return gap(
-                    "a function that is not a global def of a loaded .bzl file, outside a rule, aspect, .bzl or BUILD evaluation",
+                    "a function that is not frozen yet, outside a rule, aspect, .bzl or BUILD evaluation",
                 );
             }
         }

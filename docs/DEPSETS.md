@@ -48,8 +48,8 @@ An accepted element is **snapshotted** into owned data (`depset_items.rs`):
 struct fields and provider instances (provider key, display name, fields in
 name order, creation location) with their values — scalars, Files, Labels,
 None, tuples, nested depsets (shared node), configured targets, runfiles
-(shared nested sets) and global `def`s of loaded `.bzl` files (the build's
-function registry, `crate::analysis_runtime::LoadedFunctions`). The first
+(shared nested sets) and Starlark functions (see "Functions inside
+elements"). The first
 `to_list()` (or other expansion to values) allocates the struct or instance
 once, frozen on its own heap with its list/dict fields, and every later one
 returns that value (MEM3, `StructItem::frozen`), as Bazel returns the one
@@ -69,8 +69,8 @@ identity. So two equal-looking structs holding separately created depsets
 are both kept.
 
 Explicit gaps (Bazel accepts them): a frozen set inside an element, a
-closure or lambda outside a rule, aspect, `.bzl` or BUILD evaluation (see
-"Functions inside elements" below), and any other value whose immutability is not modelled
+function that is not frozen yet outside a rule, aspect, `.bzl` or BUILD
+evaluation (see "Functions inside elements" below), and any other value whose immutability is not modelled
 (provider constructors, built-in provider instances such as DefaultInfo,
 built-in functions inside a frozen list, ...): `a depset element containing
 ... is not implemented in the native profile`. Known approximations: native
@@ -122,10 +122,9 @@ A depset is owned Rust data outside every Starlark heap, so its element
 snapshot must keep each function alive and reachable from any heap
 (`depset_items::FunctionItem`):
 
-- a **global def** of a loaded `.bzl` file keeps the frozen module that
-  owns it (the build's function registry, as before);
-- any other **frozen** function — a dependency's provider's closure, a
-  loaded module's lambda — is owned by a frozen heap that references every
+- a **frozen** function — a global def of a loaded `.bzl` file, a
+  dependency's provider's closure, a loaded module's lambda — is owned by a
+  frozen heap that references every
   frozen heap the evaluating heap references
   (starlark::values::Heap::owned_frozen_value, docs/STARLARK_VENDOR.md): every
   frozen value a heap reaches lives on one of those heaps, the invariant a
