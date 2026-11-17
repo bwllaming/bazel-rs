@@ -184,6 +184,8 @@ def verdict(entry):
         if phase == "server" or phase not in g or phase not in r:
             continue
         ge, re_ = g[phase].get("exit"), r[phase].get("exit")
+        if phase == "test" and ge == re_ == 4 and not entry.get("compare", {}).get("tests", {}).get("genuine"):
+            continue  # no test targets on either side
         if ge != 0 and ge == re_:
             worst = max_verdict(worst, "BOTH-FAIL")
         elif ge == 0 and re_ != 0:
