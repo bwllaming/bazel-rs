@@ -4083,7 +4083,10 @@ fn dependency_descriptor<'v>(
         // the call stack, also for an attribute a macro creates while a
         // BUILD file evaluates (rules_testing's analysis tests).
         definition_package(eval)
-            .or_else(|| crate::loading::definition_label(eval))
+            .or_else(|| {
+                crate::loading::repositories(eval)
+                    .and_then(|_| crate::loading::definition_label(eval))
+            })
             .map(|_| &resolve as &LabelResolver<'_>),
     )?;
     let declaration = &mut descriptor.0.declaration;
