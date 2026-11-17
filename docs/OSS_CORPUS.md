@@ -183,10 +183,10 @@ sample.
 | capnproto | RS-FAIL⁴ | 17.1 / 11.3 (exit 1) | 3.3 / 0.1 / 1.5 (exit 1) | 22.6 (exit 1) / 7.5 (exit 1) | 1127 / 384 | 317, 1085, 0, 0 | both: FAILED TO BUILD:5 SKIPPED:14 | B11, B20, (B2) |
 | tink-cc-examples | RS-FAIL | 17.3 / 17.1 (exit 1) | — | — | 1127 / 490 | — | — | B11, B14 |
 | examples-java-maven | RS-FAIL | 36.3 / 26.4 (exit 1) | 3.5 / 0.2 / 2.2 (exit 1) | 9.6 / 1.1 (exit 1) | 1130 / 436 | 1, 134, 0, 0 | PASSED:2 / — | B4, B14 |
-| rules_cc | RS-FAIL | 20.8 (exit 1) / 0.4 (exit 1) | — | — | 2033 / 31 | — | — | B9 |
+| rules_cc | RS-FAIL¹² | 31.4 (exit 1) / 19.1 (exit 1) | 5.3 / — / 1.8 (both exit 1) | — | 2395 / 550 | — | — | B29, B13 |
 | examples-rust-deps-cargo | RS-FAIL | 44.0 / 0.3 (exit 1) | 2.9 / 0.2 / 0.3 (exit 1) | 28.8 / 0.3 (exit 1) | 1034 / 29 | 0, 103, 0, 0 | — | B9, (B2) |
 | protobuf | RS-FAIL⁵ | 43.4 (exit 1) / 0.5 (exit 1) | 7.2 / 0.6 / 0.4 (both exit 1) | — | 2601 / 38 | — | — | B9, (B2) |
-| openroad | RS-FAIL¹¹ | 89.4 / 211.3 (exit 1) | 9.8 / 0.8 / 68.9 (exit 1) | — | 3910 / 3671 | — | — | B26, B27 |
+| openroad | RS-FAIL¹¹ | 89.4 / 211.3 (exit 1) | 9.8 / 0.8 / 68.9 (exit 1) | — | 3910 / 3671 | — | — | B27 |
 | rules_kotlin | RS-FAIL | 36.2 / 0.1 (exit 1) | — | — | 1748 / 1 | — | — | B10, (B2) |
 | riegeli | DIFF⁶ | 34.7 (exit 1) / 24.5 (exit 1) | 3.8 / 0.2 / 3.5 (all exit 1) | 82.5 (exit 1) / 79.1 (exit 1) | 1455 / 792 | 1865, 935, 0, 0 | PASSED:2 / PASSED:2 | B28 |
 | examples-frontend | DIFF⁷ | 89.7 (exit 1) / 129.3 (exit 1) | 60.6 / 110.6 / 100.7 (all exit 1) | 60.7 (exit 1) / 208.3 (exit 1) | 1350 / 1838 | 44827, 170986, 2, 0 | PASSED:14 / — | B8, B25, (B2) |
@@ -233,6 +233,15 @@ Notes:
     full genuine OpenROAD build exceeds the 20-minute cap; bazel-rs fails in
     analysis first). B9, B22, B10 and B16 are passed: `query //...` matches
     (7,079 labels). Analysis stops at B26 and B27.
+12. Rerun 2026-11-17 on branch corpus-depset, phases
+    `nobuild_cold,nobuild_warm,query`. B26 is fixed: rules_cc's `cc_args`
+    (`cc/toolchains/args.bzl:109`) puts skylib `DirectoryInfo` values, whose
+    fields are lambdas, in a depset; bazel-rs now accepts functions inside
+    depset elements (docs/DEPSETS.md "Functions inside elements"), so
+    OpenROAD's `@llvm//toolchain/args/linux:*_headers_include_search_paths`
+    analyse. rules_cc as the main module additionally hits B29 (4 targets)
+    and B13 `testing.analysis_test` (17 targets); genuine fails there too
+    (its `//tests/integration` targets need a `bazel` on PATH).
 
 **Summary.** 37 projects ran. On 10 of them bazel-rs matches genuine exactly:
 same exit codes, `query //...` labels, `bazel-bin` file lists, sampled
@@ -266,6 +275,8 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B5 | 1 (diff.bzl) | `local_repository` → `rctx.symlink(path, ".")` rejected |
 | B8 | 1 (examples-frontend) | declared output "crosses a package boundary" |
 | B17, B18, B19 | 1 (with_cfg) | `rule(parent=…)`; `cc_shared_library`; solib naming in transitioned configurations (B16, symbolic macro `inherit_attrs`, is fixed) |
+| B26 | fixed | depset elements holding functions that are not top-level defs (skylib `DirectoryInfo` in rules_cc `cc_args`; openroad) |
+| B29 | 1 (rules_cc as the main module) | "file '//cc/private/rules_impl:cc_test.bzl' cannot use private API": the private-API allowlist does not treat the main repository as rules_cc |
 | B20 | 1 (capnproto) | `rule(output_to_genfiles=True)` |
 | B21 | 1 (rules_zig) | `attr.int_list` in repository rules |
 | B22 | 1 (openroad) | `git_override` of a repository with submodule gitlinks |
@@ -273,7 +284,6 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B12 | 1 (flatbuffers) | `@local_config_platform` unknown |
 | B24 | 1 (examples-configurations) | no PROJECT.scl project-file check |
 | B25 | 1 (examples-frontend) | "needs-repository: repository @@rules_diff+ is unfetched and this thread does not fetch" on a warm `test` |
-| B26 | 1 (openroad) | a depset element holding a function that is not a global def of a loaded `.bzl` (skylib `DirectoryInfo`, rules_cc `cc/toolchains/args.bzl:109` via toolchains_llvm) |
 | B27 | 1 (openroad) | `depset` is not a BUILD-file global, and list-typed attributes do not accept depsets (`@openssl//:BUILD.bazel:508`, `select({...: depset([...])})`) |
 | B28 | 1 (riegeli); not blocking | `build //...` misses genuine's `.pic.o`/`.pic.d` of external C++ deps (curl, google_cloud_cpp, xz, bzip2) that no link uses |
 
@@ -407,7 +417,7 @@ and its `//react-router:build_smoke_test` passes. Genuine does not check
 **B26–B28 (rerun 2026-11-17).** B26 is the next OpenROAD analysis error
 after `inherit_attrs` (toolchains_llvm's `resource_directory` macro now
 expands): "a depset element containing a function that is not a global def
-of a loaded .bzl file is not implemented" (10 targets under
+of a loaded .bzl file is not implemented" (fixed on branch corpus-depset; 10 targets under
 `@llvm//toolchain/args/linux`). B27: openssl's BUILD.bazel uses
 `depset([...])` as a `select()` branch; genuine accepts `depset` in BUILD
 files and converts a depset to a list attribute value (Type.ListType.convert,
