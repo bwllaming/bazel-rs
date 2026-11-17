@@ -1,0 +1,42 @@
+=== //nested:outer_test
+ERROR: <WS>/nested/BUILD:3:11: in check_test rule //nested:inner_test: analysis_test rule '//nested:inner_test' cannot be transitively depended on by another analysis test rule
+ERROR: <WS>/nested/BUILD:3:11: Analysis of target '//nested:inner_test' (config: 365e0d1) failed
+ERROR: Analysis of target '//nested:outer_test' failed; build aborted: Analysis failed
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== //badname:all
+ERROR: Traceback (most recent call last):
+	File "<WS>/badname/BUILD", line 2, column 5, in <toplevel>
+		make(name = "bad-name")
+	File "<WS>/defs.bzl", line 14, column 26, in make
+		testing.analysis_test(name = name, implementation = _impl, **kwargs)
+Error in analysis_test: 'name' is limited to Starlark identifiers, got bad-name
+ERROR: package contains errors: badname: Traceback (most recent call last):
+	File "<WS>/badname/BUILD", line 2, column 5, in <toplevel>
+		make(name = "bad-name")
+	File "<WS>/defs.bzl", line 14, column 26, in make
+		testing.analysis_test(name = name, implementation = _impl, **kwargs)
+Error in analysis_test: 'name' is limited to Starlark identifiers, got bad-name
+WARNING: Target pattern parsing failed.
+ERROR: Skipping '//badname:all': Error evaluating '//badname:all': error loading package 'badname': Package 'badname' contains errors
+ERROR: Error evaluating '//badname:all': error loading package 'badname': Package 'badname' contains errors
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== //attrname:all
+ERROR: Traceback (most recent call last):
+	File "<WS>/attrname/BUILD", line 2, column 5, in <toplevel>
+		make(name = "x", attr_values = {"name": "y"})
+	File "<WS>/defs.bzl", line 14, column 26, in make
+		testing.analysis_test(name = name, implementation = _impl, **kwargs)
+Error in analysis_test: 'name' cannot be set or overridden in 'attr_values'
+ERROR: package contains errors: attrname: Traceback (most recent call last):
+	File "<WS>/attrname/BUILD", line 2, column 5, in <toplevel>
+		make(name = "x", attr_values = {"name": "y"})
+	File "<WS>/defs.bzl", line 14, column 26, in make
+		testing.analysis_test(name = name, implementation = _impl, **kwargs)
+Error in analysis_test: 'name' cannot be set or overridden in 'attr_values'
+WARNING: Target pattern parsing failed.
+ERROR: Skipping '//attrname:all': Error evaluating '//attrname:all': error loading package 'attrname': Package 'attrname' contains errors
+ERROR: Error evaluating '//attrname:all': error loading package 'attrname': Package 'attrname' contains errors
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully

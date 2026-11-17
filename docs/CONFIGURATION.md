@@ -349,9 +349,9 @@ Code: `src/config_registry.rs`, `src/engine.rs`, `src/analysis.rs`,
   (NoConfigTransition) analyzes the target in the no-config configuration
   (`fastbuild-noconfig`, its dependencies following it; delegated like an
   incoming Starlark rule transition, genuine capture
-  tests/fixtures/rule_cfg_none). An attribute-level `config.none()` and
-  `analysis_test_transition` keep failing explicitly; so does select() in a
-  no-config target.
+  tests/fixtures/rule_cfg_none). An attribute-level `config.none()` keeps failing explicitly; so does
+  select() in a no-config target. Attribute `analysis_test_transition`s
+  are applied (docs/ANALYSIS_TESTS.md).
 * **Action identities.** Action ids feed the action cache key
   (`src/action.rs`). They stay `LABEL#N` (`LABEL` for genrules) in the
   top-level configuration and become `LABEL[CONFIG8]#N` (the first eight hex
@@ -1032,7 +1032,7 @@ confirmed by the paired capture (`D10/gap_order`, `T10`):
 6. Remaining rule-level gaps (analysis tests, unresolved late-bound
    defaults — resolvable ones take their configured value first, docs/SUBRULES.md,
    implicit outputs, package-default gaps), then **gaps of resolved values**:
-   dependency edges with `config.none()`/`analysis_test_transition` `cfg`, aspects, file/rule restrictions,
+   dependency edges with a `config.none()` `cfg`, aspects, file/rule restrictions,
    label-keyed dictionaries and unmodelled built-in/native attribute values
    fail explicitly, only when the resolved value exercises them.
 7. Dependencies are visited from **resolved values only**; the configured rule
@@ -1484,8 +1484,7 @@ inputs/outputs. Query records declarations without applying MODULE aliases.
   `--incompatible_exclude_starlark_flags_from_exec_config`. Option names are loaded with the native target-pattern subset
   (`//pkg:all`, `//pkg/...` must then match exactly one rule: `user-defined
   flags must reference exactly one target`).
-* attribute-level `config.none()` and
-  `analysis_test_transition`, `transition.and_then`, Starlark
+* attribute-level `config.none()`, `transition.and_then`, Starlark
   transitions on native options outside the modelled ones (writing
   `objccopt`, `compiler`, `grte_top`, `--features`, `action_env` or any
   other unmodelled option, also `host_cpu`;

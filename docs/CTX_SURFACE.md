@@ -36,7 +36,7 @@ of every native configuration (for example `--features`, `--action_env`, `--test
 | `tokenize`, `check_placeholders`, `package_relative_label` | `ShellUtils.tokenize` (`util/ShellUtils.java:90-143`), `ImplicitOutputsFunction.createPlaceholderSubstitutionFormatString`, `Label.parseWithPackageContext` with the rule repository's mapping (native label syntax messages, except Bazel's `target names may not contain ':'`). |
 | `split_attr` | `struct()`; an attribute with a Starlark transition fails explicitly. |
 | `super()` | `Can't use 'super' call, the rule has no parent.` (`rule(parent=...)` is rejected at load time). |
-| `created_actions()` | None (`_skylark_testable` rules are not analyzed). |
+| `created_actions()` | None; for a `_skylark_testable` rule, an explicit failure (docs/ANALYSIS_TESTS.md). |
 | `rule`, `aspect_ids` | `'X' is only available in aspect implementations`. |
 | `build_setting_value` | of a non-setting: `attempting to access 'build_setting_value' of non-build setting L`. |
 | `resolve_tools` | Bazel's `--incompatible_disallow_ctx_resolve_tools` error. |

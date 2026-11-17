@@ -200,11 +200,10 @@ actions (`StarlarkActionFactory.validateActionCreation`), must return an
 that provider becomes the test's executable `NAME.sh`, written byte-identically
 to `AnalysisTestActionBuilder.writeAnalysisTestAction` (every message character
 but a newline backslash-escaped, one `echo` per line, `exit 0`/`exit 1`).
-Attribute `analysis_test_transition`s (skylib `analysistest.make` with
-`config_settings` or `expect_failure`, which sets
-`//command_line_option:allow_analysis_failures` and reads
-`AnalysisFailureInfo`) remain an explicit analysis gap, as do
-`ctx.created_actions()` of `_skylark_testable` rules and `target.actions`.
+Attribute `analysis_test_transition`s, `testing.analysis_test`,
+`target.actions` and `--allow_analysis_failures` with `AnalysisFailureInfo`
+are implemented. [ANALYSIS_TESTS.md](ANALYSIS_TESTS.md) covers them.
+`ctx.created_actions()` of `_skylark_testable` rules remains an explicit gap.
 
 ## Known remaining differences (genuine capture)
 

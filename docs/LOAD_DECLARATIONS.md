@@ -232,8 +232,8 @@ A target fails analysis with the message above if it uses any of these:
   tests/fixtures/output_to_genfiles);
 * attribute level, when the attribute's resolved value (explicit, default or
   chosen `select()` branch, docs/CONFIGURATION.md) is non-empty:
-  `cfg` other than target, exec and a Starlark `transition()` (N18c:
-  `config.none()`, `analysis_test_transition`),
+  `cfg` other than target, exec, a Starlark `transition()` (N18c) and an
+  `analysis_test_transition` (docs/ANALYSIS_TESTS.md): `config.none()`,
   non-empty `aspects`, non-empty `flags` other than `SKIP_CONSTRAINTS_OVERRIDE`
   (a documented no-op, docs/SH_BINARY.md), `skip_validations=True`;
 * always: a late-bound (`configuration_field`) default whose field is not
@@ -243,7 +243,8 @@ A target fails analysis with the message above if it uses any of these:
   `attr_aspects`/`toolchains_aspects` functions and `propagation_predicate` are
   never called; `AnalysisTestResultInfo(...)` fails when called
   (`OutputGroupInfo(...)` is implemented, docs/CC_TOOLCHAIN.md); `analysis_test_transition()` objects are retained, restricted
-  to `analysis_test=True` rules, and never applied.
+  to `analysis_test=True` rules, and applied like attribute transitions
+  (docs/ANALYSIS_TESTS.md).
 
 `toolchains` and `exec_compatible_with` drive toolchain resolution
 (docs/TOOLCHAINS.md).

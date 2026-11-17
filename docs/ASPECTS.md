@@ -355,8 +355,8 @@ never the base rule's attribute configuration:
   and the configuration is memoized with the application. Like a rule's, a
   Starlark-transitioned label attribute is a LIST in `ctx.attr`
   (StarlarkAttributesCollection.convertAttributeValue: `isSplit()`);
-- `config.none()` and `analysis_test_transition` fail explicitly, as on a
-  rule attribute.
+- `config.none()` and `analysis_test_transition` fail explicitly on an
+  aspect attribute.
 
 Phase 1 (`Engine::analyze_aspect_applications`, also for the top-level
 `--aspects` over each requested target) computes these configurations
