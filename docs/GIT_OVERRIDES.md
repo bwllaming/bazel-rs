@@ -12,11 +12,12 @@ HTTPS or a hostless absolute `file://` URL. Remote HTTPS requires explicit
 URL userinfo, query strings, fragments, SSH/scp syntax and other transports are
 rejected. Scheme validation is not a public-IP/egress sandbox.
 
-Tags, branches, abbreviated hashes, default-HEAD selection, submodules, patch
-commands and external/generated patch inputs remain unsupported. They must fail
-explicitly, not select a different revision or silently skip transformations.
-The existing MODULE parser requires one selector; this remains narrower than
-Bazel 9.3's support for omitted selectors.
+Tags, branches and the default HEAD resolve to a commit once and are pinned;
+submodule gitlinks become empty directories without `init_submodules`; patch
+commands run after the patches (docs/MODULE_OVERRIDES.md). Abbreviated hashes,
+`init_submodules` with submodules and external/generated patch inputs remain
+unsupported and fail explicitly, never selecting a different revision or
+silently skipping transformations.
 
 ## Discovery and materialization
 
@@ -58,7 +59,7 @@ must be trusted against concurrent hostile mutation; this is not a filesystem
 sandbox.
 
 Exported paths follow the store path profile (UTF-8; 4096 bytes total, 255 bytes per component, no NUL, empty, `.` or `..` components (no depth cap)). Note: deeply nested trees (worst case ~2048 levels) can hit EMFILE/thread-stack limits in the recursive walkers; all failures are explicit. N32 removed the former 100000-entry, 1 GiB, 16 MiB MODULE and 1 MiB
-listing caps; files are copied and hashed in streaming fashion. Directory/external/dangling/cyclic symlinks, gitlinks, special files,
+listing caps; files are copied and hashed in streaming fashion. Directory/external/dangling/cyclic symlinks, special files,
 hardlinks and unsafe/non-UTF-8 paths are rejected, including tracked unsupported
 entries outside the selected prefix. Internal relative file links have the
 separate validation and cache-identity contract in `docs/GIT_SYMLINKS.md`.

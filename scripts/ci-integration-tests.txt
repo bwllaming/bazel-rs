@@ -38,6 +38,7 @@ local_repositories
 make_variables_merge
 module_cli
 module_extension_io
+module_overrides
 module_path
 module_print
 native

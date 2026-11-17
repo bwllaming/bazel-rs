@@ -1,0 +1,1 @@
+genrule(name = "g", srcs = ["@gitmod//:all"], outs = ["g.txt"], cmd = "cat $(SRCS) > $@")

@@ -421,9 +421,14 @@ fn apply_repo_overrides(
         if usage.repo_overrides.is_empty()
             || !active_usage(usage, ignore_root_dev)
             || usage.identity.is_repo_rule()
-            || usage.identity.isolation.is_some()
         {
             continue;
+        }
+        if usage.identity.isolation.is_some() {
+            return Err(format!(
+                "override_repo/inject_repo on the isolated usage of module extension '{}' is not implemented natively",
+                usage.identity.extension_name
+            ));
         }
         let label = usage_label(usage, "", &graph.root_mapping, ignore_root_dev)?;
         let group_id = serde_json::to_string(&(label.to_string(), &usage.identity.extension_name))

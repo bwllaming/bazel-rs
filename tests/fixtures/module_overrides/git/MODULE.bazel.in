@@ -1,0 +1,11 @@
+module(name = "fx")
+bazel_dep(name = "gitmod", version = "1.0")
+git_override(
+    module_name = "gitmod",
+    remote = "@REMOTE@",
+    tag = "v1",
+    strip_prefix = "sub",
+    patches = ["//patches:g.patch"],
+    patch_strip = 1,
+    patch_cmds = ["test -d submod && echo submodule-dir > submod.txt"],
+)

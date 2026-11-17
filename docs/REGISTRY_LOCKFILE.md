@@ -291,8 +291,10 @@ invisible repository prints Bazel's
 - Tag values that Bazel's AttributeValuesAdapter cannot serialize fail
   explicitly. Bazel throws for these: floats, ints outside 32 bits, and
   non-string dict keys.
-- Isolated usages, `override_repo` and `inject_repo` stay unsupported in
-  MODULE evaluation, so `isolationKey` and `repoOverrides` are never needed.
+- Isolated usages stay unsupported in MODULE evaluation, so `isolationKey`
+  is never needed. The root module's `override_repo` / `inject_repo` calls
+  enter the usages digest as `repoOverrides` (canonical names, in the
+  iteration order of Java's `HashMap`; docs/MODULE_OVERRIDES.md).
 - Innate `use_repo_rule` extensions are never recorded, as in Bazel.
 - `--native-lockfile=readonly` is a native-only stateless probe mode; Bazel has
   no analogue. It reads the workspace lockfile and the hidden lockfile (so

@@ -1077,6 +1077,18 @@ impl Discovery<'_> {
                         "error fetching git_override of module {name:?} (@@{name}+): At most one of commit, tag, or branch may be provided"
                     ));
                 }
+                // Patch inputs before resolving a ref or fetching anything.
+                let local_patches = patch_inputs::snapshot(&self.root_path, self.root, patches)?;
+                local_patches.validate_override_materialization()?;
+                let resolved_from = if !commit.is_empty() {
+                    None
+                } else if !tag.is_empty() {
+                    Some("tag")
+                } else if !branch.is_empty() {
+                    Some("branch")
+                } else {
+                    Some("")
+                };
                 let commit = if !commit.is_empty() {
                     commit.clone()
                 } else {
@@ -1105,10 +1117,10 @@ impl Discovery<'_> {
                     strip_prefix: strip_prefix.clone(),
                     init_submodules: *init_submodules || *recursive_init_submodules,
                     build_file_content: build_file_content.clone(),
+                    resolved_from,
+                    canonical: format!("{name}+"),
                 };
                 spec.validate(self.options.allow_remote)?;
-                let local_patches = patch_inputs::snapshot(&self.root_path, self.root, patches)?;
-                local_patches.validate_override_materialization()?;
                 let (tree, module) = git_source::resolve_current(
                     &spec,
                     &local_patches,

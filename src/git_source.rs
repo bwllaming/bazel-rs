@@ -43,6 +43,13 @@ pub struct GitSpec {
     /// git_repository `build_file_content`, written as BUILD.bazel before
     /// the patches (utils.bzl workspace_and_buildfile).
     pub build_file_content: String,
+    /// The git_override attribute the commit was resolved from (`tag`,
+    /// `branch`, or empty for the default HEAD) when no commit was given:
+    /// the fetch prints the reproducible form (git.bzl _update_git_attrs).
+    /// Not part of the tree's identity.
+    pub resolved_from: Option<&'static str>,
+    /// The canonical repository name (`name+`), for messages.
+    pub canonical: String,
 }
 
 impl GitSpec {
@@ -328,6 +335,26 @@ pub fn materialize<T>(
         crate::repository_ctx::remove_tree(&destination)
             .map_err(|cleanup| format!("{error}; cannot clean unpublished Git tree: {cleanup}"))?;
         return Err(error);
+    }
+    if let Some(attribute) = spec.resolved_from {
+        // RepositoryResolvedEvent of a git_repository without a commit,
+        // printed once per fetch.
+        let canonical = spec.canonical.as_str();
+        let dropped = if attribute.is_empty() {
+            String::new()
+        } else {
+            format!(" and dropping [{attribute}]")
+        };
+        crate::ui::note(&format!(
+            "DEBUG: Repo '{canonical}' indicated that a canonical reproducible form can be obtained by modifying arguments commit = \"{commit}\"{dropped}"
+        ));
+        crate::ui::note(&format!(
+            "DEBUG: Repo {canonical} defined by rule git_repository in @@bazel_tools//tools/build_defs/repo:git.bzl"
+        ));
+        // Printed by this fetch only: no analysis snapshot replays it.
+        crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryRuleExecuted, || {
+            format!("{} printed its reproducible form", canonical)
+        });
     }
     if crate::observed_fs::reprobes_executions() && warm() {
         fetched.settle();

@@ -1,0 +1,5 @@
+module(name = "dep_user", version = "1.0")
+e = use_extension("//:e.bzl", "e")
+# Ignored outside the root module (ModuleFileGlobals.overrideRepo).
+override_repo(e, gen = "nonexistent")
+inject_repo(e, anything = "nonexistent")

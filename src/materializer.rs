@@ -882,6 +882,10 @@ pub fn materialize_override<T>(
             "DEBUG: Repo {} defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl",
             spec.canonical
         ));
+        // Printed by this fetch only: no analysis snapshot replays it.
+        crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryRuleExecuted, || {
+            format!("{} printed its reproducible form", spec.canonical)
+        });
     }
     if crate::observed_fs::reprobes_executions() && warm() {
         materialized.settle();

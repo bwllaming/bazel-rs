@@ -1,0 +1,1 @@
+genrule(name = "g", srcs = ["@gen_a//:x", "@alias_c//:x", "@gen_b//:x"], outs = ["g.txt"], cmd = "echo $(SRCS) > $@")

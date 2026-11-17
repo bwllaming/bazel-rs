@@ -1,0 +1,123 @@
+{
+ "archive": {
+  "debug": [],
+  "exit": 0,
+  "lockfile_extensions": "  \"moduleExtensions\": {},\n",
+  "output": "cmd\npatched\n"
+ },
+ "archive_no_integrity": {
+  "debug": [
+   "DEBUG: Repo 'arch+' indicated that a canonical reproducible form can be obtained by modifying arguments integrity = \"sha256-ev+nO5A638TP4PWkQ0OLz8LCX8mw1Q7YTIBPdHKHC/s=\"",
+   "DEBUG: Repo arch+ defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl"
+  ],
+  "exit": 0,
+  "lockfile_extensions": "  \"moduleExtensions\": {},\n",
+  "output": "cmd\npatched\n"
+ },
+ "bazel": "bazel 9.3.1",
+ "git": {
+  "debug": [
+   "DEBUG: Repo 'gitmod+' indicated that a canonical reproducible form can be obtained by modifying arguments commit = \"$COMMIT\" and dropping [tag]",
+   "DEBUG: Repo gitmod+ defined by rule git_repository in @@bazel_tools//tools/build_defs/repo:git.bzl"
+  ],
+  "exit": 0,
+  "output": "patched git\nsubmodule-dir\n"
+ },
+ "repo_override": {
+  "build_exit": 0,
+  "gen_b_mapping": {
+   "": "",
+   "alias_c": "+ext+gen_c",
+   "bazel_tools": "bazel_tools",
+   "dep": "dep+",
+   "dep2": "+plain+dep2",
+   "dep_user": "dep_user+",
+   "fx": "",
+   "gen_a": "dep+",
+   "gen_b": "+ext+gen_b",
+   "gen_c": "+ext+gen_c",
+   "gen_d": "+ext+gen_d",
+   "injected": "dep+",
+   "mine": "+plain+mine"
+  },
+  "lockfile_extensions": "  \"moduleExtensions\": {\n    \"//:ext.bzl%ext\": {\n      \"general\": {\n        \"bzlTransitiveDigest\": \"JC1kiFlbJx/EFbqdbzCcVDDwFS0X5mz5Z9+wWE8A3ic=\",\n        \"usagesDigest\": \"ZeIxi82cc6UMVXrPzsFvp+TWxm3je93FMpcZuo+5rM4=\",\n        \"recordedInputs\": [],\n        \"generatedRepoSpecs\": {\n          \"gen_a\": {\n            \"repoRuleId\": \"@@//:ext.bzl%plain\",\n            \"attributes\": {\n              \"tag\": \"ext\"\n            }\n          },\n          \"gen_b\": {\n            \"repoRuleId\": \"@@//:ext.bzl%probe\",\n            \"attributes\": {\n              \"ref\": \"@@dep+//:x\"\n            }\n          },\n          \"gen_c\": {\n            \"repoRuleId\": \"@@//:ext.bzl%plain\",\n            \"attributes\": {\n              \"tag\": \"ext\",\n              \"ref\": \"@@dep+//:x\"\n            }\n          },\n          \"mine\": {\n            \"repoRuleId\": \"@@//:ext.bzl%plain\",\n            \"attributes\": {\n              \"tag\": \"ext\"\n            }\n          },\n          \"gen_d\": {\n            \"repoRuleId\": \"@@//:ext.bzl%plain\",\n            \"attributes\": {\n              \"tag\": \"unused\"\n            }\n          }\n        }\n      }\n    }\n  },\n",
+  "prints": [
+   "OVR|fetch|gen_c|ext",
+   "OVR|label|@dep//:x|@@dep+//:x",
+   "OVR|label|@dep2//:x|@@+plain+dep2//:x",
+   "OVR|label|@gen_a//:x|@@dep+//:x",
+   "OVR|label|@gen_c//:x|@@+ext+gen_c//:x",
+   "OVR|label|@injected//:x|@@dep+//:x",
+   "OVR|label|@mine//:x|@@+plain+mine//:x",
+   "OVR|ref|gen_b|@@dep+//:x"
+  ],
+  "root_mapping": {
+   "": "",
+   "alias_c": "+ext+gen_c",
+   "bazel_tools": "bazel_tools",
+   "dep": "dep+",
+   "dep2": "+plain+dep2",
+   "dep_user": "dep_user+",
+   "fx": "",
+   "gen_a": "dep+",
+   "gen_b": "+ext+gen_b",
+   "mine": "+plain+mine"
+  },
+  "variants": {
+   "bad_proxy": {
+    "errors": [
+     "ERROR: $WS/MODULE.bazel:15:14: Traceback (most recent call last):",
+     "Error in override_repo: in call to override_repo(), parameter 'extension_proxy' got value of type 'string', want 'module_extension_proxy'",
+     "ERROR: Error computing the main repository mapping: error executing MODULE.bazel file for <root>"
+    ],
+    "exit": 48
+   },
+   "duplicate": {
+    "errors": [
+     "ERROR: $WS/MODULE.bazel:16:14: Traceback (most recent call last):",
+     "Error in override_repo: The repo exported as 'gen_c' by module extension 'ext' is already overridden with 'dep' at $WS/MODULE.bazel:15:14",
+     "ERROR: Error computing the main repository mapping: error executing MODULE.bazel file for <root>"
+    ],
+    "exit": 48
+   },
+   "import_injected": {
+    "errors": [
+     "ERROR: $WS/MODULE.bazel:7:9: Traceback (most recent call last):",
+     "Error in use_repo: Cannot import repo 'gen_b' that has been injected into module extension 'ext' at $WS/MODULE.bazel:15:12. Please refer to @dep directly.",
+     "ERROR: Error computing the main repository mapping: error executing MODULE.bazel file for the root module"
+    ],
+    "exit": 48
+   },
+   "inject_generated": {
+    "errors": [
+     "ERROR: Analysis of target '//:g' failed; build aborted: module extension @@//:ext.bzl%ext generates repository \"gen_d\", yet it is injected via inject_repo() at $WS/MODULE.bazel:15:12. Use override_repo() instead to override an existing repository.",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "exit": 1
+   },
+   "invisible": {
+    "errors": [
+     "ERROR: $WS/MODULE.bazel:15:14: Traceback (most recent call last):",
+     "Error in override_repo: The repo exported as 'gen_c' by module extension 'ext' is overridden with 'depp', but no repo is visible under this name (did you mean 'dep2'?)",
+     "ERROR: Error computing the main repository mapping: error executing MODULE.bazel file for the root module"
+    ],
+    "exit": 48
+   },
+   "override_not_generated": {
+    "errors": [
+     "ERROR: Analysis of target '//:g' failed; build aborted: module extension @@//:ext.bzl%ext does not generate repository \"nothere\", yet it is overridden via override_repo() at $WS/MODULE.bazel:15:14. Use inject_repo() instead to inject a new repository.",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "exit": 1
+   },
+   "override_of_override": {
+    "errors": [
+     "ERROR: $WS/MODULE.bazel:15:14: Traceback (most recent call last):",
+     "Error in override_repo: The repo 'gen_a' used as an override for 'gen_b' in module extension 'ext' is itself overridden with 'dep' at $WS/MODULE.bazel:8:14, which is not supported.",
+     "ERROR: Error computing the main repository mapping: error executing MODULE.bazel file for the root module"
+    ],
+    "exit": 48
+   }
+  }
+ }
+}

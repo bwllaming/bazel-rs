@@ -372,31 +372,34 @@ fn git_name_mismatch_does_not_publish_a_module_tree() {
 
 #[test]
 fn git_unsupported_options_and_patch_operations_fail_before_cache_creation() {
+    // Patch inputs are validated before a tag/branch is resolved or
+    // anything is fetched (docs/MODULE_OVERRIDES.md).
     for (selector, extra, expected) in [
-        (
-            "tag='v1'",
-            ",patches=[':missing.patch']",
-            "supports only full commit pins",
-        ),
+        ("tag='v1'", ",patches=[':missing.patch']", "patch package"),
         (
             "branch='main'",
             ",patches=[':missing.patch']",
-            "supports only full commit pins",
+            "patch package",
         ),
         (
             "commit='1111111111111111111111111111111111111111'",
             ",init_submodules=True,patches=[':missing.patch']",
-            "init_submodules",
-        ),
-        (
-            "commit='1111111111111111111111111111111111111111'",
-            ",patch_cmds=['touch command-ran']",
-            "patch_cmds",
+            "patch package",
         ),
         (
             "commit='1111111111111111111111111111111111111111'",
             ",patches=['@@external+//:missing.patch']",
             "canonical external patch",
+        ),
+        (
+            "tag='v1',branch='main'",
+            "",
+            "At most one of commit, tag, or branch may be provided",
+        ),
+        (
+            "commit='1111111111111111111111111111111111111111'",
+            ",sparse_checkout_patterns=['a']",
+            "git_repository attribute \"sparse_checkout_patterns\" is not implemented natively",
         ),
     ] {
         let f = Fixture::new(&format!(
@@ -407,8 +410,14 @@ fn git_unsupported_options_and_patch_operations_fail_before_cache_creation() {
         let error = String::from_utf8_lossy(&failed.stderr);
         assert!(error.contains(expected), "{error}");
         assert!(!f.0.join("bazel-rs-out").exists());
-        assert!(!f.0.join("command-ran").exists());
     }
+    // A patch command runs only on a fetched tree.
+    let f = Fixture::new(
+        "bazel_dep(name='a')\ngit_override(module_name='a',remote='file:///nonexistent-native-git-fixture',commit='1111111111111111111111111111111111111111',patch_cmds=['touch command-ran'])\n",
+    );
+    let failed = f.run(&[]);
+    assert!(!failed.status.success());
+    assert!(!f.0.join("command-ran").exists());
 }
 
 #[test]

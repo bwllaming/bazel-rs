@@ -1,0 +1,13 @@
+module(name = "fx")
+bazel_dep(name = "arch", version = "1.0")
+archive_override(
+    module_name = "arch",
+    urls = ["@ARCHIVE_URL@"],
+    integrity = "sha256-ev+nO5A638TP4PWkQ0OLz8LCX8mw1Q7YTIBPdHKHC/s=",
+    strip_prefix = "arch-src",
+    patches = ["//patches:p.patch"],
+    patch_strip = 1,
+    patch_cmds = ["echo cmd > cmd.txt"],
+)
+bazel_dep(name = "dep", version = "1.0")
+local_path_override(module_name = "dep", path = "dep")
