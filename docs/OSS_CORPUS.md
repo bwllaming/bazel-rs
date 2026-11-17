@@ -170,27 +170,27 @@ sample.
 | yalantinglibs | DIFF² | 12.2 / 7.5 | 3.1 / 0.2 / 0.1 | 61.5 (exit 1) / 52.1 (exit 1) | 638 / 213 | 126, 6, 0, 0 | same | (B2) |
 | buildtools | DIFF¹⁴ | 25.9 / 29.5 | 4.3 / 0.3 / 0.2 | 50.4 / 54.0 | 1974 / 1464 | 566, 0, 0, 1 | FAILED:2 PASSED:23 / same | B6 |
 | bazel-gazelle | RS-FAIL | 32.6 / 39.9 (exit 1) | 4.4 / 0.3 / 3.0 (exit 1) | 60.6 / 112.6 (exit 1) | 1647 / 1031 | 2545, 6, 0, 0 | FAILED:2 PASSED:194 / FAILED:2 PASSED:192 | B13 |
-| diff.bzl | RS-FAIL | 24.0 / 15.0 (exit 1) | 3.5 / 0.2 / 1.5 (exit 1) | 12.3 / 11.3 (exit 1) | 1105 / 339 | 292, 16, 0, 1 | FAILED:1 PASSED:5 / same | B5, B6, (B2) |
-| rules_python-bzlmod | RS-FAIL | 70.7 / 54.2 (exit 1) | 5.0 / 0.6 / 5.5 (exit 1) | 46.3 / 8.2 (exit 1) | 2547 / 2566 | 306, 13, 0, 0 | PASSED:31 / PASSED:30 | B7, (B2) |
+| diff.bzl | DIFF¹⁵ | 22.3 / 14.5 | 3.5 / — / 0.2 | 11.8 / 10.9 | 1190 / 354 | 308, 0, 0, 1 | PASSED:6 / PASSED:6 | B6 |
+| rules_python-bzlmod | DIFF¹⁵ | 44.9 / 59.6 | 7.3 / — / 0.2 | 43.8 / 41.4 | 2022 / 2577 | 319, 0, 0, 1 | PASSED:31 / PASSED:31 | B34 |
 | with_cfg-examples | RS-FAIL¹⁰ | 35.3 / 43.9 (exit 1) | 4.2 / 0.3 / 3.3 (exit 1) | 8.7 / 8.6 (exit 1) | 1405 / 1739 | 188, 56, 0, 8 | PASSED:20 / PASSED:15 | B17, B18, B19 |
 | examples-rules | RS-FAIL | 12.3 / 8.3 (exit 1) | 2.9 / 0.1 / 1.2 (exit 1) | 3.6 / 1.7 (exit 1) | 673 / 250 | 99, 4, 0, 0 | PASSED:1 / PASSED:1 | B23 |
 | googletest | RS-FAIL | 25.4 / 14.7 (exit 1) | 3.2 / 0.2 / 1.5 (exit 1) | 32.0 / 1.1 (exit 1) | 1198 / 453 | 8, 521, 0, 0 | PASSED:44 / — | B1 |
 | re2 | RS-FAIL³ | 13.7 (exit 1) / 9.5 (exit 1) | 2.9 / 0.2 / 1.4 (both exit 1) | 15.3 (exit 1) / 6.6 (exit 1) | 1071 / 313 | 324, 761, 0, 0 | PASSED:21 / PASSED:1 | B1 |
 | highway | RS-FAIL | 11.9 / 7.6 (exit 1) | — | — | 736 / 234 | — | — | B1 |
-| bazel-skylib | RS-FAIL¹³ | 23.5 / 19.0 (exit 1) | 3.2 / 0.2 / 1.6 (exit 1) | 53.1 / 54.8 (exit 1) | 1335 / 579 | 677, 12, 0, 9 | FAILED:4 PASSED:158 / FAILED:5 PASSED:153 | B13a, B13b, B6 |
+| bazel-skylib | DIFF¹⁵ | 28.3 / 20.5 | 3.3 / — / 0.1 | 48.5 / 58.1 | 1328 / 553 | 689, 0, 0, 9 | FAILED:4 PASSED:158 / FAILED:4 PASSED:158 | B6 |
 | junit5-starter | RS-FAIL | 25.3 / 4.2 (exit 1) | 4.0 / 0.2 / 0.3 (exit 1) | 7.7 / 0.3 (exit 1) | 1293 / 115 | 0, 128, 0, 0 | PASSED:1 / — | B3 |
-| rules_zig | RS-FAIL¹³ | 36.8 / 39.0 (exit 1) | 13.5 / 0.4 / 11.8 (exit 1) | 41.2 / 11.6 (exit 1) | 2516 / 2079 | 0, 1292, 0, 0 | PASSED:211 SKIPPED:4 / SKIPPED:4 | B13c |
+| rules_zig | RS-FAIL¹⁵ | 30.7 / 36.8 (exit 1) | 13.2 / — / 12.0 (exit 1) | 36.9 / 11.9 (exit 1) | 1909 / 2042 | 0, 1292, 0, 0 | PASSED:211 SKIPPED:4 / SKIPPED:4 | B13c |
 | capnproto | RS-FAIL⁴ | 17.1 / 11.3 (exit 1) | 3.3 / 0.1 / 1.5 (exit 1) | 22.6 (exit 1) / 7.5 (exit 1) | 1127 / 384 | 317, 1085, 0, 0 | both: FAILED TO BUILD:5 SKIPPED:14 | B11, B20, (B2) |
 | tink-cc-examples | RS-FAIL | 17.3 / 17.1 (exit 1) | — | — | 1127 / 490 | — | — | B11, B14 |
-| examples-java-maven | RS-FAIL | 36.3 / 26.4 (exit 1) | 3.5 / 0.2 / 2.2 (exit 1) | 9.6 / 1.1 (exit 1) | 1130 / 436 | 1, 134, 0, 0 | PASSED:2 / — | B4, B14 |
-| rules_cc | RS-FAIL¹³ | 24.9 (exit 1) / 22.1 (exit 1) | 5.1 / 0.4 / 2.5 (all exit 1) | 57.9 (exit 1) / 64.0 (exit 1) | 2724 / 685 | 452, 1532, 0, 2 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:2 FAILED TO BUILD:1 PASSED:50 | B29 (= B13d), B13e |
+| examples-java-maven | RS-FAIL¹⁵ | 35.5 / 26.9 (exit 1) | 3.5 / — / 1.1 (exit 1) | 8.0 / 1.1 (exit 1) | 1177 / 430 | 1, 134, 0, 0 | PASSED:2 / 0 | B31, B14 |
+| rules_cc | RS-FAIL¹⁵ | 20.0 (exit 1) / 20.4 (exit 1) | 5.3 (exit 1) / — / 4.7 (exit 1) | 52.6 (exit 1) / 63.6 (exit 1) | 2635 / 1392 | 1348, 636, 0, 1 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:3 FAILED TO BUILD:2 PASSED:258 SKIPPED:2 | B32, B17, B18 |
 | examples-rust-deps-cargo | RS-FAIL | 44.0 / 0.3 (exit 1) | 2.9 / 0.2 / 0.3 (exit 1) | 28.8 / 0.3 (exit 1) | 1034 / 29 | 0, 103, 0, 0 | — | B9, (B2) |
-| protobuf | RS-FAIL¹³ | 43.3 (exit 1) / 5.2 (exit 1) | 8.7 / 0.6 / 3.8 (all exit 1) | 296.5 (exit 1) / 4.4 (exit 1) | 2965 / 57 | 0, 41087, 0, 0 | — | B2 (`--incompatible_check_testonly_for_output_files`) |
+| protobuf | BOTH-FAIL¹⁵ | 49.3 (exit 1) / 79.0 (exit 1) | 7.0 (exit 1) / — / 18.1 (exit 1) | — | 2699 / 3315 | — | — | B33 |
 | openroad | RS-FAIL¹¹ | 75.2 / 211.0 (exit 1) | 8.5 / 0.8 / 64.7 (exit 1) | — | 3764 / 3980 | — | — | B18, B30 |
-| rules_kotlin | RS-FAIL¹³ | 38.0 / 17.0 (exit 1) | — | — | 1663 / 336 | — | — | B4 |
+| rules_kotlin | RS-FAIL¹⁵ | 36.9 / 35.7 (exit 1) | 4.7 / — / 7.4 (exit 1) | — | 2027 / 2165 | — | — | B35 |
 | riegeli | BOTH-FAIL⁶ | 30.2 (exit 1) / 31.0 (exit 1) | 4.1 / 0.2 / 3.7 (all exit 1) | 78.2 (exit 1) / 92.5 (exit 1) | 1427 / 794 | 2800, 0, 0, 0 | PASSED:2 / PASSED:2 | |
 | examples-frontend | DIFF⁷ | 89.7 (exit 1) / 129.3 (exit 1) | 60.6 / 110.6 / 100.7 (all exit 1) | 60.7 (exit 1) / 208.3 (exit 1) | 1350 / 1838 | 44827, 170986, 2, 0 | PASSED:14 / — | B8, B25, (B2) |
-| rules_jvm_external-simple | BOTH-FAIL⁸ | 75.9 (exit 1) / 5.5 (exit 1) | — | — | 1484 / 108 | 0, 0, 0, 0 | — | B4 |
+| rules_jvm_external-simple | BOTH-FAIL¹⁵ | 62.6 (exit 1) / 6.2 (exit 1) | 4.0 (exit 1) / — / 0.3 (exit 1) | 4.1 (exit 1) / 0.3 (exit 1) | 1505 / 110 | 0, 0, 0, 0 | — | B31 |
 | flatbuffers | BOTH-FAIL⁸ | 21.7 (exit 1) / 8.2 (exit 1) | — | — | 864 / 184 | — | — | B12 |
 | examples-java-tutorial | DIFF | 18.7 (exit 1) / 15.1 (exit 1) | 3.2 / 0.2 / 1.6 (both exit 1) | 5.9 (exit 1) / 4.2 (exit 1) | 881 / 266 | 11, 2, 0, 0 | — | C2 |
 | examples-configurations | DIFF⁹ | 9.1 (exit 1) / 7.2 (exit 1) | 1.8 / 0.1 / 0.8 (both exit 1) | 2.0 (exit 1) / 0.8 (exit 1) | 460 / 225 | 0, 0, 16, 0 | — | B24 |
@@ -263,6 +263,22 @@ Notes:
     both tools). The one remaining output difference is B6
     (`lang/tables.gen.go_checkshtest.repo_mapping`).
 
+15. Rerun 2026-11-17 on branch corpus-parity2 (phases `nobuild_cold,
+    nobuild_warm,query,build,test`; protobuf and rules_kotlin
+    `nobuild_cold,nobuild_warm,query`; rules_jvm_external-simple without
+    `test`), with the B2 workaround edits of protobuf, diff.bzl,
+    rules_kotlin, rules_python-bzlmod and rules_zig dropped. Fixed: B2's
+    `--incompatible_check_testonly_for_output_files` and the other rc options
+    of docs/RC_OPTIONS.md "Options of the OSS corpus", B4, B5, B7, B13a,
+    B13b, B13e, B29 (= B13d). bazel-skylib and diff.bzl: every test status
+    matches; only B6 remains. rules_python-bzlmod: tests match, B34 left.
+    protobuf: `query //...` matches (3,411 labels); genuine's cold
+    `build --nobuild` fails on rules_ruby (no `ruby` on PATH), bazel-rs on
+    B33 first. rules_cc: 258 passing tests (50 before; genuine 453), next
+    B32, B17, B18. rules_zig: B13c only. examples-java-maven and
+    rules_jvm_external-simple: B31 (rules_jvm_external-simple also fails
+    on genuine: no Android SDK). rules_kotlin: B35.
+
 **Summary.** 37 projects ran. On 10 of them bazel-rs matches genuine exactly:
 same exit codes, `query //...` labels, `bazel-bin` file lists, sampled
 SHA-256s and test results. abseil-cpp is the largest: 2,767 outputs and 252
@@ -291,20 +307,20 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B6 | 4 (rules-template, diff.bzl, bazel-skylib, buildtools); not blocking | `_repo_mapping` manifest misses a repository |
 | B11 | 2 (tink-cc, capnproto); every boringssl user | `strip_prefix` with a trailing `/` rejected |
 | B14 | 3 (tink-cc, examples-java-maven, examples-frontend) | internal errors "has no recorded duplicate-label check" / "internal analysis order error" |
-| B4 | 2 (examples-java-maven, rules_jvm_external-simple); every rules_android user | `android_common` global undefined |
+| B4 | fixed (corpus-parity2) | `android_common` global undefined: now the `.bzl` toplevel; its two methods fail explicitly |
 | B13 | fixed (bazel-skylib, rules_zig, rules_cc; bazel-gazelle not rerun) | analysis tests: `analysis_test_transition`, `testing.analysis_test`, `Target.actions`, `AnalysisFailureInfo` (docs/ANALYSIS_TESTS.md) |
-| B13a | 1 (bazel-skylib) | transition on `//command_line_option:minimum_os_version` and `ctx.fragments.cpp.minimum_os_version()` |
-| B13b | 1 (bazel-skylib) | `srcs = ["."]` (the package directory as a source label): "unsafe source label //tests/directory:." |
-| B13c | 1 (rules_zig) | one toolchain implementation for two execution platforms in one configuration (ConfiguredTargetKey.executionPlatformLabel), a fatal error |
-| B13d | 1 (rules_cc) | rules_cc's own `cc_test.bzl`/`cc_binary.bzl` "cannot use private API" |
-| B13e | 1 (rules_cc) | `cc_import` of `mylib.dll`/`mylib.lib` on Linux: "does not match expected filetype" |
+| B13a | fixed (corpus-parity2) | transition on `//command_line_option:minimum_os_version` and `ctx.fragments.cpp.minimum_os_version()` |
+| B13b | fixed (corpus-parity2) | `srcs = ["."]` (the package directory as a source label): "unsafe source label //tests/directory:." |
+| B13c | 1 (rules_zig) | one toolchain implementation for two execution platforms in one configuration (ConfiguredTargetKey.executionPlatformLabel), a fatal error (open: needs the execution platform in the configured-target key, see below) |
+| B13d | fixed (= B29) | rules_cc's own `cc_test.bzl`/`cc_binary.bzl` "cannot use private API" |
+| B13e | fixed (corpus-parity2) | `cc_import` of `mylib.dll`/`mylib.lib` on Linux: "does not match expected filetype" |
 | B15 | fixed (corpus-runfiles) | test runfiles were hardlinks, not symlinks |
-| B7 | 1 (rules_python-bzlmod) | transition: "Starlark flag and its alias have different values: False and "false"" |
-| B5 | 1 (diff.bzl) | `local_repository` → `rctx.symlink(path, ".")` rejected |
+| B7 | fixed (corpus-parity2) | transition: "Starlark flag and its alias have different values: False and "false"" |
+| B5 | fixed (corpus-parity2) | `local_repository` → `rctx.symlink(path, ".")` rejected (now a copy plus a `watch_tree` input, docs/LOCAL_REPOSITORIES.md) |
 | B8 | 1 (examples-frontend) | declared output "crosses a package boundary" |
 | B17, B18, B19 | 1 (with_cfg; B18 also openroad) | `rule(parent=…)`; `cc_shared_library`; solib naming in transitioned configurations (B16, symbolic macro `inherit_attrs`, is fixed) |
 | B26 | fixed | depset elements holding functions that are not top-level defs (skylib `DirectoryInfo` in rules_cc `cc_args`; openroad) |
-| B29 | 1 (rules_cc as the main module) | "file '//cc/private/rules_impl:cc_test.bzl' cannot use private API": the private-API allowlist does not treat the main repository as rules_cc |
+| B29 | fixed (corpus-parity2) | "file '//cc/private/rules_impl:cc_test.bzl' cannot use private API": the private-API allowlist now treats the main repository as rules_cc when the root module is rules_cc |
 | B20 | 1 (capnproto) | `rule(output_to_genfiles=True)` |
 | B21 | 1 (rules_zig) | `attr.int_list` in repository rules |
 | B22 | 1 (openroad) | `git_override` of a repository with submodule gitlinks |
@@ -313,6 +329,11 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B24 | 1 (examples-configurations) | no PROJECT.scl project-file check |
 | B25 | 1 (examples-frontend) | "needs-repository: repository @@rules_diff+ is unfetched and this thread does not fetch" on a warm `test` |
 | B30 | 1 (openroad) | `provider in target` fails "Target membership requires an exported provider constructor" in with_cfg's `transitioning_alias.bzl:55` (toolchains_llvm's `*_with_cfg` glibc/libunwind/libcxxabi targets; one of with_cfg's forwarded builtin providers is not an exported constructor natively) |
+| B31 | 2 (examples-java-maven, rules_jvm_external-simple); every rules_android user | `config_common.config_feature_flag_transition` (rules_android `android_binary/rule.bzl:93`, at load time) is not implemented |
+| B32 | 1 (rules_cc's own tests) | Starlark transitions on unmodelled native options (`fdo_optimize`, `cs_fdo_profile`, `instrumentation_filter`, `experimental_cpp_modules`, `build_test_dwp`, `fission`, `custom_malloc`, `incompatible_remove_legacy_whole_archive`), `cc_internal.freeze` of mutable structs / unfrozen functions, `objc.target_should_alwayslink` with an `alwayslink` attribute, `Target.actions` read in an aspect |
+| B33 | 1 (protobuf) | analysis: `java_common.check_java_toolchain_is_declared_on_rule`, aspect providers (`does not provide …UpbMinitableCcInfo` / `JavaInfo` on proto_library targets), `Target.actions` in aspect tests, `cc_common.check_experimental_cc_shared_library` (B18) |
+| B34 | 1 (rules_python-bzlmod); not blocking | `external/other_module+/other_module/pkg/bin_zipapp.zip` differs from genuine's (zipapp contents) |
+| B35 | 1 (rules_kotlin) | rules_testing `TestingAspectInfo provider missing` (8 analysis tests), `download_and_extract(rename_files=…)` unsupported (ksp repository), `Target.actions` in an aspect |
 | B27 | fixed (corpus-runfiles) | `depset` was not a BUILD-file global, and list-typed attributes did not accept depsets (`@openssl//:BUILD.bazel:508`, `select({...: depset([...])})`) |
 | B28 | fixed (corpus-runfiles) | `build //...` missed genuine's `.pic.o`/`.pic.d` of external C++ deps: the rule-returned `_hidden_top_level_INTERNAL_` group (rules_cc cc_library's transitive objects) was not built |
 
@@ -512,6 +533,20 @@ not a modelled native option.
 
 **B13c.** `zig/tests:version_validation_test` needs the zig toolchain for
 two execution platforms in one configuration, which ends the whole command.
+
+**B13c (open).** Genuine keys a toolchain implementation's configured
+target by its parent's execution platform (DependencyResolver
+`executionPlatformLabel`, ConfiguredTargetKey); rules_zig's
+`version_validation_test` resolves one SDK for two execution platforms in
+one configuration and expects two validation stamps. The native
+`ConfiguredTargetKey` is (label, configuration, apply-rule-transition);
+adding the execution platform touches every evaluator (walk, eval,
+parallel, prepare, linearize pass 1's `toolchain_implementations` claim and
+its whole-command stop), cquery and the snapshot codec. Not attempted on
+corpus-parity2.
+
+**B31–B35** are the next blockers the corpus-parity2 rerun found (details in
+the table above and footnote 15).
 
 ### Cosmetic differences
 
