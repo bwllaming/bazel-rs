@@ -395,44 +395,6 @@ fn rule_properties(builder: &mut MethodsBuilder) {
     fn executable<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
         field(this, "executable", heap)
     }
-    /// StarlarkRuleContext.runfiles (analysis/starlark/StarlarkRuleContext.java:1059-1125).
-    #[allow(clippy::too_many_arguments)]
-    fn runfiles<'v>(
-        this: Value<'v>,
-        files: Option<Value<'v>>,
-        transitive_files: Option<Value<'v>>,
-        collect_data: Option<Value<'v>>,
-        collect_default: Option<Value<'v>>,
-        symlinks: Option<Value<'v>>,
-        root_symlinks: Option<Value<'v>>,
-        #[starlark(require = named, default = false)] skip_conflict_checking: bool,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<Value<'v>> {
-        let heap = eval.heap();
-        let collect_data_value = field(this, "$collect_data", heap)?;
-        let collect_default_value = field(this, "$collect_default", heap)?;
-        let collected = |value: Value<'v>| {
-            crate::runfiles::Runfiles::from_value(value)
-                .ok_or_else(|| anyhow!("internal error: collected runfiles"))
-        };
-        let runfiles = crate::runfiles::ctx_runfiles(
-            crate::runfiles::RunfilesArguments {
-                files,
-                transitive_files,
-                collect_data,
-                collect_default,
-                symlinks,
-                root_symlinks,
-                skip_conflict_checking,
-            },
-            (
-                collected(collect_data_value)?,
-                collected(collect_default_value)?,
-            ),
-            eval,
-        )?;
-        Ok(eval.heap().alloc(runfiles))
-    }
     /// StarlarkRuleContext.toolchains (analysis/starlark/StarlarkRuleContext.java:877-898).
     #[starlark(attribute)]
     fn toolchains<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
@@ -503,13 +465,71 @@ fn rule_ctx<'v>(this: Value<'v>) -> anyhow::Result<&'v RuleCtx<'v>> {
 
 fn all_setting_properties(builder: &mut MethodsBuilder) {
     rule_properties(builder);
+    runfiles_method(builder);
     crate::analysis_ctx_surface::surface_properties(builder);
     crate::analysis_ctx_surface::rule_aspect_gates(builder);
     setting_properties(builder);
 }
 
+/// `ctx.runfiles` of rule and aspect contexts.
+#[starlark_module]
+fn runfiles_method(builder: &mut MethodsBuilder) {
+    /// StarlarkRuleContext.runfiles (analysis/starlark/StarlarkRuleContext.java:1059-1125).
+    #[allow(clippy::too_many_arguments)]
+    fn runfiles<'v>(
+        this: Value<'v>,
+        files: Option<Value<'v>>,
+        transitive_files: Option<Value<'v>>,
+        collect_data: Option<Value<'v>>,
+        collect_default: Option<Value<'v>>,
+        symlinks: Option<Value<'v>>,
+        root_symlinks: Option<Value<'v>>,
+        #[starlark(require = named, default = false)] skip_conflict_checking: bool,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        // An aspect's RuleContext collects data/default runfiles over the
+        // base rule's and the aspect's attributes together
+        // (Runfiles.Builder.addRunfiles over ruleContext prerequisites),
+        // which the native aspect context does not model.
+        if this.downcast_ref::<AspectCtx>().is_some()
+            && [collect_data, collect_default]
+                .iter()
+                .any(|value| value.is_some_and(|value| value.to_bool()))
+        {
+            bail!(
+                "ctx.runfiles(collect_data/collect_default = True) in an aspect is not implemented in the native profile"
+            );
+        }
+        let collect_data_value = field(this, "$collect_data", heap)?;
+        let collect_default_value = field(this, "$collect_default", heap)?;
+        let collected = |value: Value<'v>| {
+            crate::runfiles::Runfiles::from_value(value)
+                .ok_or_else(|| anyhow!("internal error: collected runfiles"))
+        };
+        let runfiles = crate::runfiles::ctx_runfiles(
+            crate::runfiles::RunfilesArguments {
+                files,
+                transitive_files,
+                collect_data,
+                collect_default,
+                symlinks,
+                root_symlinks,
+                skip_conflict_checking,
+            },
+            (
+                collected(collect_data_value)?,
+                collected(collect_default_value)?,
+            ),
+            eval,
+        )?;
+        Ok(eval.heap().alloc(runfiles))
+    }
+}
+
 fn all_rule_properties(builder: &mut MethodsBuilder) {
     rule_properties(builder);
+    runfiles_method(builder);
     crate::analysis_ctx_surface::surface_properties(builder);
     crate::analysis_ctx_surface::rule_aspect_gates(builder);
     crate::analysis_ctx_surface::non_setting_properties(builder);
@@ -521,6 +541,7 @@ fn all_rule_properties(builder: &mut MethodsBuilder) {
 /// and the aspect-only `ctx.rule`/`ctx.aspect_ids`.
 fn all_aspect_properties(builder: &mut MethodsBuilder) {
     aspect_properties(builder);
+    runfiles_method(builder);
     crate::analysis_ctx_surface::surface_properties(builder);
     crate::analysis_ctx_surface::non_setting_properties(builder);
     aspect_only_properties(builder);

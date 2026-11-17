@@ -1,0 +1,11 @@
+load(":defs.bzl", "r")
+
+filegroup(
+    name = "f",
+    srcs = ["data.txt"],
+)
+
+r(
+    name = "t",
+    deps = [":f"],
+)

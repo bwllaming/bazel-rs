@@ -2748,8 +2748,16 @@ fn make_aspect_ctx<'v>(
         ("actions", actions),
         ("$rule", rule_attributes),
         ("$aspect_ids", aspect_ids),
-        ("$collect_data", heap.alloc(Vec::<Value>::new())),
-        ("$collect_default", heap.alloc(Vec::<Value>::new())),
+        // ctx.runfiles in an aspect: collect_data/collect_default fail
+        // explicitly (crate::analysis_ctx), so nothing is collected.
+        (
+            "$collect_data",
+            heap.alloc(crate::runfiles::Runfiles::empty()),
+        ),
+        (
+            "$collect_default",
+            heap.alloc(crate::runfiles::Runfiles::empty()),
+        ),
     ]));
     let ctx = crate::analysis_ctx::alloc_aspect(
         heap,

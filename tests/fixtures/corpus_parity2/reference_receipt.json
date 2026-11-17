@@ -59,6 +59,27 @@
    ],
    "workspace": "workspace"
   },
+  "aspect_ctx_runfiles": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/aspectrf/defs.bzl:5:10: aspect runfiles: [\"aspectrf/data.txt\"] [(\"link\", \"aspectrf/data.txt\")]",
+     "pattern": "aspect runfiles: "
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//aspectrf:t"
+   ],
+   "workspace": "workspace"
+  },
   "build_thread_attr_label_default": {
    "command": "build",
    "exit": 0,

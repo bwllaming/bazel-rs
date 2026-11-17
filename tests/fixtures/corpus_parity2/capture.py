@@ -103,6 +103,8 @@ CASES = {
     'action_argv_param_files': (
         [], 'build', BUILD, ['//argv:all'], [],
         ['argv_shell_0.sh', 'argv_shell_1.sh', 'argv_multiline_0.sh', 'argv_multiline_1.sh']),
+    'aspect_ctx_runfiles': (
+        [], 'build', BUILD, ['//aspectrf:t'], [r'aspect runfiles: '], []),
     'rules_cc_main_private_initializer': (
         [], 'build', BUILD, ['//use:t'], [], ['t.txt'], 'rules_cc_main'),
     'other_main_private_initializer': (
