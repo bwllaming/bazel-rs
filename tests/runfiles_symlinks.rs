@@ -111,6 +111,7 @@ fn test_and_run_runfiles_are_symlinks_like_bazel() {
         "defs.bzl",
         "src.txt",
         "sub/nested.txt",
+        "srcdir/inner/s.txt",
     ] {
         let target = ws.join(name);
         fs::create_dir_all(target.parent().unwrap()).unwrap();
@@ -128,6 +129,8 @@ fn test_and_run_runfiles_are_symlinks_like_bazel() {
     assert!(test.status.success(), "{test_text}");
     let run = root.run(&cache, &["run", &registry, "//:probe"]);
     assert!(run.status.success(), "{run:?}");
+    let extra = root.run(&cache, &["run", &registry, "//:extra"]);
+    assert!(extra.status.success(), "{extra:?}");
     let workspace = fs::canonicalize(&ws).unwrap();
     let cache = fs::canonicalize(&cache).unwrap();
     let normalized =
@@ -146,7 +149,17 @@ fn test_and_run_runfiles_are_symlinks_like_bazel() {
         expected("run")
     );
     // The tests, with the declared differences.
-    let mut genuine = expected("test");
+    let declared_differences = |row: &str, declared: &[(&str, &str)]| {
+        let mut genuine = expected(row);
+        for (reference, native) in declared {
+            let at = genuine
+                .iter()
+                .position(|line| line == reference)
+                .unwrap_or_else(|| panic!("receipt lacks {reference}"));
+            genuine[at] = (*native).to_owned();
+        }
+        genuine
+    };
     let declared = [
         (
             "test_dir/f.txt kind=file readlink= realpath=EXECROOT/bazel-out/k8-fastbuild/bin/dir/f.txt",
@@ -161,18 +174,15 @@ fn test_and_run_runfiles_are_symlinks_like_bazel() {
             "test_sub/nested.txt kind=symlink readlink=WORKSPACE/sub/nested.txt realpath=WORKSPACE/sub/nested.txt",
         ),
     ];
-    for (reference, native) in declared {
-        let at = genuine
-            .iter()
-            .position(|line| line == reference)
-            .unwrap_or_else(|| panic!("receipt lacks {reference}"));
-        genuine[at] = native.to_owned();
-    }
-    // One block per test (from its `test_self` line), in either order.
+    let genuine = declared_differences("test", &declared);
+    // One block per test (from its `<prefix>self` line), in either order.
     let blocks = |lines: Vec<String>| -> Vec<Vec<String>> {
         let mut blocks: Vec<Vec<String>> = Vec::new();
         for line in lines {
-            if line.starts_with("test_self ") || blocks.is_empty() {
+            if line.starts_with("test_self ")
+                || line.starts_with("extra_test_self ")
+                || blocks.is_empty()
+            {
                 blocks.push(Vec::new());
             }
             blocks.last_mut().unwrap().push(line);
@@ -183,6 +193,53 @@ fn test_and_run_runfiles_are_symlinks_like_bazel() {
     assert_eq!(
         blocks(probe_lines(&normalized(&test_text), "test_")),
         blocks(genuine)
+    );
+    // Unresolved symlinks (rules_js package links), runfiles symlinks and
+    // root symlinks, an empty tree and a source directory. A test finds an
+    // unresolved symlink next to its sibling's resolved path (node resolving
+    // a rules_js package beside its store directory). Declared: in the
+    // sandboxed test the root symlink and the source directory link
+    // straight to the workspace, like a source file's runfile.
+    let genuine = declared_differences(
+        "extra_test",
+        &[
+            (
+                "extra_test_rootsym.txt kind=symlink readlink=EXECROOT/src.txt realpath=WORKSPACE/src.txt",
+                "extra_test_rootsym.txt kind=symlink readlink=WORKSPACE/src.txt realpath=WORKSPACE/src.txt",
+            ),
+            (
+                "extra_test_srcdir kind=symlink readlink=EXECROOT/srcdir realpath=WORKSPACE/srcdir",
+                "extra_test_srcdir kind=symlink readlink=WORKSPACE/srcdir realpath=WORKSPACE/srcdir",
+            ),
+        ],
+    );
+    assert_eq!(
+        blocks(probe_lines(&normalized(&test_text), "extra_test_")),
+        blocks(genuine)
+    );
+    // `bazel run`: declared (also before B15) — the output tree's runfiles
+    // tree links each generated file into its producing action's cache
+    // entry, so the sibling an unresolved symlink action produced is not
+    // next to the resolved path (genuine: one execution root).
+    let genuine = declared_differences(
+        "extra_run",
+        &[
+            (
+                "extra_run_sibling_dir f.txt link ",
+                "extra_run_sibling_dir f.txt ",
+            ),
+            (
+                "extra_run_sibling_link kind=symlink readlink=f.txt content=hi",
+                "extra_run_sibling_link kind=missing readlink= content=cat: EXECROOT/bazel-out/k8-fastbuild/bin/a/link: No such file or directory",
+            ),
+        ],
+    );
+    assert_eq!(
+        probe_lines(
+            &normalized(&String::from_utf8_lossy(&extra.stdout)),
+            "extra_run_"
+        ),
+        genuine
     );
 }
 

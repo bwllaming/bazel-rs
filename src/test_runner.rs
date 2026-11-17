@@ -56,6 +56,20 @@ const TERMINATION_GRACE: Duration = Duration::from_secs(15);
 const TIMEOUT_EXIT_CODE: i32 = 142;
 const STATUS_FORMAT: &str = "native-test-v1";
 
+/// Where a test's input is staged (crate::test_runner::Runner::run_unit).
+#[derive(Clone)]
+enum RunfileLayout {
+    /// At its destination only.
+    Destination,
+    /// At the exec path; the runfile is an absolute symlink to it.
+    LinkToExec(PathBuf),
+    /// At its destination and at the exec path (an unresolved symlink
+    /// artifact: the runfile keeps its link text).
+    AlsoAtExec(PathBuf),
+    /// A source directory: the runfile is an absolute symlink to it.
+    LiveDirectory(PathBuf),
+}
+
 /// One test target to run.
 pub struct TestSpec {
     /// The test rule's effective runfiles mode after incoming transitions.
@@ -1004,34 +1018,60 @@ impl Runner<'_> {
         // A tree artifact's files are staged at their paths below the
         // tree's runfile; an empty tree is its directory
         // (SpawnInputExpander.addSingleRunfilesTreeToInputs).
-        let mut empty_trees = Vec::new();
-        // The exec path a runfile (`inputs[i]`) links to, for published
-        // outputs: Bazel's runfiles are symlinks to the artifact's path in
-        // the execution root (SymlinkTreeHelper; SymlinkedSandboxedSpawn
-        // links each runfile to its input path), so `readlink` and
-        // `realpath` name `.../bazel-out/<cfg>/bin/...`
-        // ([`stage_test_inputs`]). `None`: staged at its destination.
-        let mut exec_paths: Vec<Option<PathBuf>> = vec![None; inputs.len()];
+        // (Destination, the exec path its runfile links to for a published
+        // empty tree.)
+        let mut empty_trees: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
+        // How each input (`inputs[i]`) is laid out ([`RunfileLayout`]):
+        // Bazel's runfiles are symlinks to the artifact's path in the
+        // execution root (SymlinkTreeHelper; SymlinkedSandboxedSpawn links
+        // each runfile to its input path), and that execution root holds
+        // every artifact at its exec path, so `readlink` and `realpath`
+        // name `.../bazel-out/<cfg>/bin/...` and a program finds a file's
+        // siblings next to its resolved path (node resolving rules_js
+        // packages: an unresolved-symlink package link beside a store
+        // directory).
+        let mut layouts: Vec<RunfileLayout> = vec![RunfileLayout::Destination; inputs.len()];
         for (path, source) in &spec.entries {
             let destination = PathBuf::from(&paths.runfiles).join(path);
             match source {
                 Some(source) if spec.symlinks.contains(path) => {
+                    // The runfile keeps the link text (SymlinkTreeHelper,
+                    // genuine capture `extra_test_a/link`); the artifact is
+                    // also at its exec path, where a sibling lookup finds it.
                     inputs.push((read_symlink_input(source)?, destination));
-                    exec_paths.push(None);
+                    layouts.push(
+                        match crate::action::published_exec_path(self.cache, source)? {
+                            Some(exec) => RunfileLayout::AlsoAtExec(exec),
+                            None => RunfileLayout::Destination,
+                        },
+                    );
                 }
                 Some(source) => {
                     let exec = crate::action::published_exec_path(self.cache, source)?;
                     match read_content_source(self.cache, source)? {
                         ContentSource::File(input) => {
+                            let layout = match exec {
+                                Some(exec) => RunfileLayout::LinkToExec(exec),
+                                // A source directory: a link to the live
+                                // directory, like a source file's
+                                // (genuine: `extra_test_srcdir`).
+                                None if input.is_source_directory() => {
+                                    RunfileLayout::LiveDirectory(source.clone())
+                                }
+                                None => RunfileLayout::Destination,
+                            };
                             inputs.push((input, destination));
-                            exec_paths.push(exec);
+                            layouts.push(layout);
                         }
                         ContentSource::Tree(files) if files.is_empty() => {
-                            empty_trees.push(destination)
+                            empty_trees.push((destination, exec))
                         }
                         ContentSource::Tree(files) => {
                             for (name, input) in files {
-                                exec_paths.push(exec.as_ref().map(|exec| exec.join(&name)));
+                                layouts.push(match &exec {
+                                    Some(exec) => RunfileLayout::LinkToExec(exec.join(&name)),
+                                    None => RunfileLayout::Destination,
+                                });
                                 inputs.push((input, destination.join(name)));
                             }
                         }
@@ -1073,7 +1113,7 @@ impl Runner<'_> {
                 ));
             }
         }
-        exec_paths.resize(inputs.len(), None);
+        layouts.resize(inputs.len(), RunfileLayout::Destination);
         let execution_info = spec.execution_info();
         let mut hash = Sha256::new();
         frame(&mut hash, STATUS_FORMAT.as_bytes());
@@ -1108,22 +1148,33 @@ impl Runner<'_> {
         // a test can see where they link, so the exec path is keyed (a
         // data dependency in another configuration is another key), never
         // an absolute path.
-        frame(&mut hash, b"inputs-linked");
-        for ((input, destination), exec) in inputs.iter().zip(&exec_paths) {
+        frame(&mut hash, b"inputs-linked-v2");
+        for ((input, destination), layout) in inputs.iter().zip(&layouts) {
             frame(&mut hash, destination.as_os_str().as_encoded_bytes());
             frame(&mut hash, input.digest().as_bytes());
             frame(&mut hash, &[u8::from(input.executable())]);
-            if let Some(exec) = exec {
-                frame(&mut hash, exec.as_os_str().as_encoded_bytes());
+            match layout {
+                RunfileLayout::Destination => {}
+                RunfileLayout::LinkToExec(exec) => {
+                    frame(&mut hash, exec.as_os_str().as_encoded_bytes())
+                }
+                RunfileLayout::AlsoAtExec(exec) => {
+                    frame(&mut hash, b"also");
+                    frame(&mut hash, exec.as_os_str().as_encoded_bytes());
+                }
+                RunfileLayout::LiveDirectory(_) => frame(&mut hash, b"live-directory"),
             }
         }
         for destination in &empty_files {
             frame(&mut hash, destination.as_os_str().as_encoded_bytes());
             frame(&mut hash, b"empty");
         }
-        for destination in &empty_trees {
+        for (destination, exec) in &empty_trees {
             frame(&mut hash, destination.as_os_str().as_encoded_bytes());
             frame(&mut hash, b"empty-tree");
+            if let Some(exec) = exec {
+                frame(&mut hash, exec.as_os_str().as_encoded_bytes());
+            }
         }
         frame(&mut hash, b"coverage");
         for (path, content, launcher) in &generated {
@@ -1242,27 +1293,54 @@ impl Runner<'_> {
         fs::create_dir_all(&execroot).map_err(|e| io("cannot create", &execroot, e))?;
         let mut staging: Vec<(ContentInput, PathBuf)> = Vec::with_capacity(inputs.len());
         let mut links: Vec<(PathBuf, PathBuf)> = Vec::new();
-        for ((input, destination), exec) in inputs.iter().zip(&exec_paths) {
-            match exec {
-                Some(exec) => {
+        let mut directories: Vec<(PathBuf, PathBuf, ContentInput)> = Vec::new();
+        for ((input, destination), layout) in inputs.iter().zip(&layouts) {
+            match layout {
+                RunfileLayout::LinkToExec(exec) => {
                     staging.push((input.clone(), exec.clone()));
                     links.push((destination.clone(), exec.clone()));
                 }
-                None => staging.push((input.clone(), destination.clone())),
+                RunfileLayout::AlsoAtExec(exec) => {
+                    staging.push((input.clone(), destination.clone()));
+                    staging.push((input.clone(), exec.clone()));
+                }
+                RunfileLayout::LiveDirectory(source) => {
+                    directories.push((destination.clone(), source.clone(), input.clone()))
+                }
+                RunfileLayout::Destination => staging.push((input.clone(), destination.clone())),
             }
         }
-        let live = stage_test_inputs(self.cache, &staging, &links, &execroot)?;
+        // A published empty tree: its directory at its exec path, the
+        // runfile a link to it (genuine: `extra_test_empty_tree`).
+        for (destination, exec) in &empty_trees {
+            match exec {
+                Some(exec) => {
+                    let path = execroot.join(exec);
+                    fs::create_dir_all(&path).map_err(|e| io("cannot create", &path, e))?;
+                    links.push((destination.clone(), exec.clone()));
+                }
+                None => {
+                    let path = execroot.join(destination);
+                    fs::create_dir_all(&path).map_err(|e| io("cannot create", &path, e))?;
+                }
+            }
+        }
+        let mut live = stage_test_inputs(self.cache, &staging, &links, &execroot)?;
         drop(staging);
+        for (destination, source, input) in &directories {
+            live.push(crate::action::link_live_directory(
+                self.cache,
+                source,
+                input,
+                &execroot.join(destination),
+            )?);
+        }
         for destination in &empty_files {
             let path = execroot.join(destination);
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|e| io("cannot create", parent, e))?;
             }
             fs::write(&path, b"").map_err(|e| io("cannot write", &path, e))?;
-        }
-        for destination in &empty_trees {
-            let path = execroot.join(destination);
-            fs::create_dir_all(&path).map_err(|e| io("cannot create", &path, e))?;
         }
         for (path, content, launcher) in &generated {
             let path = execroot.join(path);
@@ -1316,7 +1394,7 @@ impl Runner<'_> {
                     crate::reapi::Digest::of(b""),
                 );
             }
-            for destination in &empty_trees {
+            for (destination, _) in &empty_trees {
                 remote
                     .spec
                     .directories

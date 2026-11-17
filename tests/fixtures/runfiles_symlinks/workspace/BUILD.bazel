@@ -1,4 +1,4 @@
-load(":defs.bzl", "alias", "probe_binary", "probe_test", "tree")
+load(":defs.bzl", "alias", "extra_binary", "extra_test", "probe_binary", "probe_test", "store", "tree")
 
 genrule(
     name = "gen",
@@ -20,3 +20,27 @@ probe_test(name = "probe_test", data = FILES)
 probe_test(name = "probe_local_test", data = FILES, tags = ["no-sandbox"])
 
 probe_binary(name = "probe", data = FILES)
+
+store(name = "store")
+
+extra_test(
+    name = "extra_test",
+    data = [":store", "srcdir"],
+    gen = ":gen",
+    src = "src.txt",
+)
+
+extra_test(
+    name = "extra_local_test",
+    data = [":store", "srcdir"],
+    gen = ":gen",
+    src = "src.txt",
+    tags = ["no-sandbox"],
+)
+
+extra_binary(
+    name = "extra",
+    data = [":store", "srcdir"],
+    gen = ":gen",
+    src = "src.txt",
+)

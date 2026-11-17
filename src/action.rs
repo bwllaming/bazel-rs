@@ -6517,18 +6517,74 @@ pub struct LiveInput {
     path: PathBuf,
     digest: Sha256Digest,
     executable: u32,
+    /// A source directory: `digest` is its framed listing's
+    /// ([`ContentInput::digest`]).
+    directory: bool,
 }
 
 impl LiveInput {
     /// Whether the file still holds the content and executable bits the
-    /// test's key took (read through the digest memo).
+    /// test's key took (read through the digest memo); a directory is read
+    /// again in full (not from the per-process source directory memo).
     pub fn unchanged(&self, cache_root: &Path) -> bool {
         let Ok((root, _)) = cache_store(cache_root) else {
             return false;
         };
+        if self.directory {
+            return read_source_directory(&self.path, Some(&root)).is_ok_and(|directory| {
+                let mut hash = Sha256::new();
+                frame_staged(&mut hash, &Staged::SourceDirectory(Arc::new(directory)));
+                Sha256Digest(hash.finalize().into()) == self.digest
+            });
+        }
         read_input(&self.path, Some(&root), false)
             .is_ok_and(|input| input.digest == self.digest && input.executable == self.executable)
     }
+}
+
+impl ContentInput {
+    /// Whether this is a source directory read by content
+    /// ([`read_content_input`]).
+    pub fn is_source_directory(&self) -> bool {
+        matches!(self.0, Staged::SourceDirectory(_))
+    }
+}
+
+/// A test's source-directory runfile at `link`: an absolute symlink to the
+/// live directory `source`, as Bazel's runfiles trees and symlinked
+/// sandboxes link it, which the test's key took as `input`
+/// ([`read_content_input`]). Returns it as a live input, checked like a
+/// live source file after the test ([`LiveInput::unchanged`]).
+pub fn link_live_directory(
+    cache_root: &Path,
+    source: &Path,
+    input: &ContentInput,
+    link: &Path,
+) -> Result<LiveInput, String> {
+    let (root, _) = cache_store(cache_root)?;
+    if !input.is_source_directory()
+        || !source.is_absolute()
+        || source.starts_with(&root)
+        || source.starts_with(cache_root)
+    {
+        return Err(format!(
+            "internal error: '{}' is not a source directory outside the cache",
+            source.display()
+        ));
+    }
+    if let Some(parent) = link.parent() {
+        ensure_directory(parent)?;
+    }
+    std::os::unix::fs::symlink(source, link)
+        .map_err(|e| io_error("cannot create symbolic link", link, e))?;
+    let mut hash = Sha256::new();
+    frame_staged(&mut hash, &input.0);
+    Ok(LiveInput {
+        path: source.to_path_buf(),
+        digest: Sha256Digest(hash.finalize().into()),
+        executable: 0,
+        directory: true,
+    })
 }
 
 /// Stage a test's inputs below `execroot` like Bazel's runfiles trees
@@ -6604,6 +6660,7 @@ pub fn stage_test_inputs(
             path: file.path.clone(),
             digest: file.digest,
             executable: file.executable,
+            directory: false,
         });
     }
     for (destination, exec) in links {
@@ -10417,6 +10474,22 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
             error,
             "The file type of 'in/dir/dangling' is not supported."
         );
+        forget_source_directories();
+    }
+
+    #[test]
+    fn live_source_directories_are_links_checked_after_the_test() {
+        let _lock = source_directory_test_lock();
+        let fixture = Fixture::new();
+        let dir = source_tree(&fixture.0);
+        let input = read_content_input(&fixture.cache(), &dir).unwrap();
+        let link = fixture.0.join("execroot/r/dir");
+        let live = link_live_directory(&fixture.cache(), &dir, &input, &link).unwrap();
+        assert_eq!(fs::read_link(&link).unwrap(), dir);
+        assert!(live.unchanged(&fixture.cache()));
+        // An edit the per-process source directory memo has not seen.
+        fs::write(dir.join("a.txt"), "changed\n").unwrap();
+        assert!(!live.unchanged(&fixture.cache()));
         forget_source_directories();
     }
 

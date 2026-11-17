@@ -2,14 +2,6 @@
  "reference": "bazel 9.3.1",
  "rows": {
   "test": [
-   "test_self kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/probe_local_test.sh realpath=EXECROOT/bazel-out/k8-fastbuild/bin/probe_local_test.sh",
-   "test_src.txt kind=symlink readlink=WORKSPACE/src.txt realpath=WORKSPACE/src.txt",
-   "test_sub/nested.txt kind=symlink readlink=WORKSPACE/sub/nested.txt realpath=WORKSPACE/sub/nested.txt",
-   "test_gen.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/gen.txt realpath=EXECROOT/bazel-out/k8-fastbuild/bin/gen.txt",
-   "test_dir/f.txt kind=file readlink= realpath=EXECROOT/bazel-out/k8-fastbuild/bin/dir/f.txt",
-   "test_link.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/link.txt realpath=WORKSPACE/src.txt",
-   "test_runfiles_root kind=file readlink= realpath=EXECROOT/bazel-out/k8-fastbuild/bin/probe_local_test.sh.runfiles/_main",
-   "test_pwd EXECROOT/bazel-out/k8-fastbuild/bin/probe_local_test.sh.runfiles/_main",
    "test_self kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/probe_test.sh realpath=EXECROOT/bazel-out/k8-fastbuild/bin/probe_test.sh",
    "test_src.txt kind=symlink readlink=EXECROOT/src.txt realpath=WORKSPACE/src.txt",
    "test_sub/nested.txt kind=symlink readlink=EXECROOT/sub/nested.txt realpath=WORKSPACE/sub/nested.txt",
@@ -17,7 +9,15 @@
    "test_dir/f.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/dir/f.txt realpath=EXECROOT/bazel-out/k8-fastbuild/bin/dir/f.txt",
    "test_link.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/link.txt realpath=WORKSPACE/src.txt",
    "test_runfiles_root kind=file readlink= realpath=EXECROOT/bazel-out/k8-fastbuild/bin/probe_test.sh.runfiles/_main",
-   "test_pwd EXECROOT/bazel-out/k8-fastbuild/bin/probe_test.sh.runfiles/_main"
+   "test_pwd EXECROOT/bazel-out/k8-fastbuild/bin/probe_test.sh.runfiles/_main",
+   "test_self kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/probe_local_test.sh realpath=EXECROOT/bazel-out/k8-fastbuild/bin/probe_local_test.sh",
+   "test_src.txt kind=symlink readlink=WORKSPACE/src.txt realpath=WORKSPACE/src.txt",
+   "test_sub/nested.txt kind=symlink readlink=WORKSPACE/sub/nested.txt realpath=WORKSPACE/sub/nested.txt",
+   "test_gen.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/gen.txt realpath=EXECROOT/bazel-out/k8-fastbuild/bin/gen.txt",
+   "test_dir/f.txt kind=file readlink= realpath=EXECROOT/bazel-out/k8-fastbuild/bin/dir/f.txt",
+   "test_link.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/link.txt realpath=WORKSPACE/src.txt",
+   "test_runfiles_root kind=file readlink= realpath=EXECROOT/bazel-out/k8-fastbuild/bin/probe_local_test.sh.runfiles/_main",
+   "test_pwd EXECROOT/bazel-out/k8-fastbuild/bin/probe_local_test.sh.runfiles/_main"
   ],
   "run": [
    "run_self kind=file readlink= realpath=EXECROOT/bazel-out/k8-fastbuild/bin/probe.sh",
@@ -28,6 +28,43 @@
    "run_link.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/link.txt realpath=WORKSPACE/src.txt",
    "run_runfiles_root kind=file readlink= realpath=EXECROOT/bazel-out/k8-fastbuild/bin/probe.sh.runfiles/_main",
    "run_pwd EXECROOT/bazel-out/k8-fastbuild/bin/probe.sh.runfiles/_main"
+  ],
+  "extra_test": [
+   "extra_test_self kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/extra_local_test.sh realpath=EXECROOT/bazel-out/k8-fastbuild/bin/extra_local_test.sh",
+   "extra_test_a/f.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/a/f.txt realpath=EXECROOT/bazel-out/k8-fastbuild/bin/a/f.txt",
+   "extra_test_a/link kind=symlink readlink=f.txt realpath=EXECROOT/bazel-out/k8-fastbuild/bin/a/f.txt",
+   "extra_test_sibling_dir f.txt link ",
+   "extra_test_sibling_link kind=symlink readlink=f.txt content=hi",
+   "extra_test_empty_tree kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/empty_tree realpath=EXECROOT/bazel-out/k8-fastbuild/bin/empty_tree",
+   "extra_test_empty_tree_listing []",
+   "extra_test_rootsym.txt kind=symlink readlink=WORKSPACE/src.txt realpath=WORKSPACE/src.txt",
+   "extra_test_sym/gen.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/gen.txt realpath=EXECROOT/bazel-out/k8-fastbuild/bin/gen.txt",
+   "extra_test_srcdir kind=symlink readlink=WORKSPACE/srcdir realpath=WORKSPACE/srcdir",
+   "extra_test_srcdir/inner/s.txt kind=file readlink= realpath=WORKSPACE/srcdir/inner/s.txt",
+   "extra_test_self kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/extra_test.sh realpath=EXECROOT/bazel-out/k8-fastbuild/bin/extra_test.sh",
+   "extra_test_a/f.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/a/f.txt realpath=EXECROOT/bazel-out/k8-fastbuild/bin/a/f.txt",
+   "extra_test_a/link kind=symlink readlink=f.txt realpath=EXECROOT/bazel-out/k8-fastbuild/bin/a/f.txt",
+   "extra_test_sibling_dir f.txt link ",
+   "extra_test_sibling_link kind=symlink readlink=f.txt content=hi",
+   "extra_test_empty_tree kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/empty_tree realpath=EXECROOT/bazel-out/k8-fastbuild/bin/empty_tree",
+   "extra_test_empty_tree_listing []",
+   "extra_test_rootsym.txt kind=symlink readlink=EXECROOT/src.txt realpath=WORKSPACE/src.txt",
+   "extra_test_sym/gen.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/gen.txt realpath=EXECROOT/bazel-out/k8-fastbuild/bin/gen.txt",
+   "extra_test_srcdir kind=symlink readlink=EXECROOT/srcdir realpath=WORKSPACE/srcdir",
+   "extra_test_srcdir/inner/s.txt kind=file readlink= realpath=WORKSPACE/srcdir/inner/s.txt"
+  ],
+  "extra_run": [
+   "extra_run_self kind=file readlink= realpath=EXECROOT/bazel-out/k8-fastbuild/bin/extra.sh",
+   "extra_run_a/f.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/a/f.txt realpath=EXECROOT/bazel-out/k8-fastbuild/bin/a/f.txt",
+   "extra_run_a/link kind=symlink readlink=f.txt realpath=EXECROOT/bazel-out/k8-fastbuild/bin/a/f.txt",
+   "extra_run_sibling_dir f.txt link ",
+   "extra_run_sibling_link kind=symlink readlink=f.txt content=hi",
+   "extra_run_empty_tree kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/empty_tree realpath=EXECROOT/bazel-out/k8-fastbuild/bin/empty_tree",
+   "extra_run_empty_tree_listing []",
+   "extra_run_rootsym.txt kind=symlink readlink=WORKSPACE/src.txt realpath=WORKSPACE/src.txt",
+   "extra_run_sym/gen.txt kind=symlink readlink=EXECROOT/bazel-out/k8-fastbuild/bin/gen.txt realpath=EXECROOT/bazel-out/k8-fastbuild/bin/gen.txt",
+   "extra_run_srcdir kind=symlink readlink=WORKSPACE/srcdir realpath=WORKSPACE/srcdir",
+   "extra_run_srcdir/inner/s.txt kind=file readlink= realpath=WORKSPACE/srcdir/inner/s.txt"
   ]
  }
 }

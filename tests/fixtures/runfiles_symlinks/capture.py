@@ -18,7 +18,7 @@ Absolute paths are normalized: an execution root (genuine: the output base's
 import argparse, json, os, re, shutil, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-KEYS = ("test_", "run_")
+KEYS = ("test_", "run_", "extra_test_", "extra_run_")
 
 
 def normalize(text, workspace, base):
@@ -68,13 +68,21 @@ def main():
                          capture_output=True, text=True)
     if run.returncode != 0:
         sys.exit(f"run: exit {run.returncode}\n{run.stdout}{run.stderr}")
+    extra = subprocess.run(prefix + ["run"] + extra + ["//:extra"], cwd=ws, env=env,
+                           capture_output=True, text=True)
+    if extra.returncode != 0:
+        sys.exit(f"run extra: exit {extra.returncode}\n{extra.stdout}{extra.stderr}")
     if args.bazel:
         base = subprocess.run(prefix + ["info", "output_base"], cwd=ws, env=env,
                               capture_output=True, text=True, check=True).stdout.strip()
     else:
         base = os.path.realpath(out)
-    for name, text in (("test", test.stdout + test.stderr), ("run", run.stdout)):
-        rows[name] = probe_lines(normalize(text, ws, base))
+    for name, text, prefix in (("test", test.stdout + test.stderr, "test_"),
+                               ("run", run.stdout, "run_"),
+                               ("extra_test", test.stdout + test.stderr, "extra_test_"),
+                               ("extra_run", extra.stdout, "extra_run_")):
+        rows[name] = [line for line in probe_lines(normalize(text, ws, base))
+                      if line.startswith(prefix)]
     version = subprocess.run([args.bazel, "--version"], capture_output=True,
                              text=True).stdout.strip() if args.bazel else "native"
     json.dump({"reference": version, "rows": rows}, sys.stdout, indent=1)

@@ -228,8 +228,28 @@ runfile to the artifact's path (crate::action::stage_test_inputs):
   (buildifier's test runner does `readlink` of the binary, `realpath
   WORKSPACE` and `find -type l` over its runfiles);
 * a file of a published repository tree stays a symlink into its tree;
-  empty files, source directories and unresolved symlink artifacts are
-  staged as before.
+* an unresolved symlink artifact (`ctx.actions.declare_symlink`, rules_js's
+  package links) keeps its link text at its runfile and is staged at its
+  exec path as well, so a program finds it beside its sibling's resolved
+  path, as in Bazel's execution root: node resolves a rules_js package
+  (`.aspect_rules_js/<pkg>/node_modules/<pkg>`) by its realpath and looks
+  for its dependencies' links (`.../node_modules/@esbuild/linux-x64`) next
+  to it. Missing in the first B15 change, this broke every rules_js/bun test
+  on ~/code;
+* a published empty tree is a directory at its exec path and its runfile a
+  link to it; a source directory's runfile is an absolute link to the live
+  directory (checked after the test like a source file, by a fresh read of
+  its listing); empty files are empty files.
+
+Genuine capture rows `extra_test`/`extra_run` (`tests/fixtures/runfiles_symlinks`)
+pin these, plus runfiles `symlinks` and `root_symlinks` (links to their
+artifacts like any runfile). Declared: the root symlink and the source
+directory of a sandboxed test link straight to the workspace (genuine: via
+`<sandbox>/execroot/_main`). `bazel run` (also before B15): the output tree's
+runfiles tree links each generated file into its producing action's cache
+entry, so an unresolved symlink made by another action is not beside its
+sibling's resolved path (genuine: one execution root holds both); rules_js
+binaries run with `bazel run` can miss such a package link.
 
 `bazel run` and `bazel build` already used the output tree's runfiles tree
 (symlinks to published outputs and live sources, above).
