@@ -1503,6 +1503,30 @@ impl Default for NativeOptions {
 }
 
 impl NativeOptions {
+    /// BuildOptionDetails.getOptionValue of a repeatable `List<String>`
+    /// option with the default String converter ([`FLAG_LIST_OPTIONS`]
+    /// without the PerLabelOptions `per_file_copt` pair): the stored list
+    /// (`features` normalized, CoreOptions.getNormalized).
+    pub fn string_list(&self, name: &str) -> Option<&[String]> {
+        Some(match name {
+            "copt" => &self.copts,
+            "cxxopt" => &self.cxxopts,
+            "conlyopt" => &self.conlyopts,
+            "linkopt" => &self.linkopts,
+            "host_copt" => &self.host_copts,
+            "host_cxxopt" => &self.host_cxxopts,
+            "host_conlyopt" => &self.host_conlyopts,
+            "host_linkopt" => &self.host_linkopts,
+            "features" => &self.features,
+            "host_features" => &self.host_features,
+            "javacopt" => &self.javacopts,
+            "host_javacopt" => &self.host_javacopts,
+            "jvmopt" => &self.jvmopts,
+            "host_jvmopt" => &self.host_jvmopts,
+            _ => return None,
+        })
+    }
+
     /// The configured `--jvmopt` list ([`Self::jvmopts`], the exec
     /// configuration's implicit `-XX:ErrorFile=/dev/stderr`).
     pub fn effective_jvmopts(&self) -> Vec<String> {

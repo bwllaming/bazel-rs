@@ -175,6 +175,19 @@ LowerCaseString, AutoCpu, DottedVersion) and a paired capture; options
 with other converters, `allowMultiple` or effects the native profile does
 not model keep the explicit `not implemented in the native profile` error.
 
+**Repeatable String options in `config_setting(values)`.** `features`,
+`host_features`, `copt`, `cxxopt`, `conlyopt`, `linkopt`, their `host_`
+forms, `javacopt`, `host_javacopt`, `jvmopt` and `host_jvmopt`
+(allowMultiple, the default String converter) are selectable: the expected
+value is one element, kept whole (`"a,b"` is one feature), and matches when
+the configuration's list contains it (ConfigSetting.optionMatches'
+multi-value list case, ConfigSetting.java:572-579). `features` is the
+normalized list (CoreOptions.getNormalized: a disable wins, so
+`--features=x --features=-x` matches `-x` and not `x`). The PerLabelOptions
+`per_file_copt` pair keeps the explicit error. Genuine capture:
+tests/fixtures/config_setting_features (googletest's
+`:emscripten_without_threads`, OSS corpus B1).
+
 **JavaOptions version strings (N28b).** rules_java's toolchain packages
 select on `java_runtime_version`/`java_language_version` with
 `config_setting(values = ...)`; the four options are modelled for the command

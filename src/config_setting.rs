@@ -425,6 +425,25 @@ fn check_option_value(
     if configuration::fragment_option(canonical).is_none() {
         return Err(format!("{PARSE_ERROR_MESSAGE}unknown option: '{name}'"));
     }
+    // A repeatable String option (allowMultiple, no converter): the
+    // expected value is one element and matches when the configuration's
+    // list contains it (optionMatches' multi-value list case, :572-579).
+    if let Some(actual) = configuration.native.string_list(canonical) {
+        let java_list = |items: &[String]| format!("[{}]", items.join(", "));
+        return Ok(if actual.iter().any(|value| value == expected) {
+            MatchResult::Match
+        } else {
+            MatchResult::NoMatch(vec![Diff {
+                what: option_label(canonical),
+                want: java_list(&[expected.to_owned()]),
+                got: if actual.is_empty() {
+                    "<empty>".to_owned()
+                } else {
+                    java_list(actual)
+                },
+            }])
+        });
+    }
     let Some(option) = configuration::option(canonical) else {
         // A real Bazel option whose value the native profile does not model
         // (including test options, which trimming may hide, :452-461):
@@ -871,8 +890,8 @@ mod tests {
         );
         // A real option the native profile does not model is never guessed.
         assert!(
-            error(&[("copt", "-O2")]).starts_with(
-                "in values attribute of config_setting rule //c:x: select() on build option 'copt' is not implemented in the native profile (modelled options: compilation_mode, "
+            error(&[("per_file_copt", "//a@-O2")]).starts_with(
+                "in values attribute of config_setting rule //c:x: select() on build option 'per_file_copt' is not implemented in the native profile (modelled options: compilation_mode, "
             )
         );
         // Label conversion errors of `crosstool_top` (Label.parseCanonical

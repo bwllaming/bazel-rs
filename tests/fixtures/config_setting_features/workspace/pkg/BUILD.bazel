@@ -1,0 +1,18 @@
+load(":defs.bzl", "probe")
+
+config_setting(name = "no_threads", values = {"features": "-threads"})
+config_setting(name = "threads", values = {"features": "threads"})
+config_setting(name = "comma", values = {"features": "a,b"})
+config_setting(name = "a", values = {"features": "a"})
+config_setting(name = "copt", values = {"copt": "-O2"})
+config_setting(name = "host_features", values = {"host_features": "h"})
+config_setting(name = "both", values = {"features": "-threads", "compilation_mode": "opt"})
+
+probe(name = "no_threads_v", v = select({":no_threads": "match", "//conditions:default": "default"}))
+probe(name = "threads_v", v = select({":threads": "match", "//conditions:default": "default"}))
+probe(name = "comma_v", v = select({":comma": "match", "//conditions:default": "default"}))
+probe(name = "a_v", v = select({":a": "match", "//conditions:default": "default"}))
+probe(name = "copt_v", v = select({":copt": "match", "//conditions:default": "default"}))
+probe(name = "host_features_v", v = select({":host_features": "match", "//conditions:default": "default"}))
+probe(name = "both_v", v = select({":both": "match", "//conditions:default": "default"}))
+probe(name = "strict", v = select({":no_threads": "match"}))

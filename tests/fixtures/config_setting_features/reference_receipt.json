@@ -1,0 +1,111 @@
+{
+ "schema": "config-setting-features-reference-receipt/v1",
+ "fixture": "config_setting_features",
+ "purpose": "config_setting(values = {...}) on repeatable String options (allowMultiple, no converter): --features (normalized, CoreOptions.getNormalized: disables win, sorted), --host_features, --copt. ConfigSetting.optionMatches' multi-value list case (rules/config/ConfigSetting.java:572-579): the expected value is one element and matches when the configuration's list contains it. Motivation: googletest's BUILD.bazel:61 :emscripten_without_threads (OSS corpus B1).",
+ "reference": {
+  "binary": "bazel-9.3.1-linux-x86_64",
+  "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch>",
+  "command_flags": "<command> --noshow_progress <argv[1:]>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8; fresh fixture copy per case"
+ },
+ "normalization": "<WS> = the workspace copy. debug_sorted = the analysis DEBUG lines without the `DEBUG: <file>:L:C: ` prefix, sorted (analysis order is not deterministic); errors = the `ERROR: <WS>...` lines.",
+ "script": {
+  "path": "/tmp/opencode/w/cs-feat/capture.py (not committed)",
+  "sha256": "45602e11b0a1b39ee632d0ecf50756b0376cd52a7a037908a74102d90bd1176d"
+ },
+ "fixture_files_sha256": {
+  "MODULE.bazel": "9be7d1d3047dc38dab97c828e7f5d090b42eb9076677b28c814621f6106fbe5d",
+  "pkg/BUILD.bazel": "3e545e02efadfcefbf84cf4dc747893e1bca8421d3c896e82819acfeb9fa4a51",
+  "pkg/defs.bzl": "e143bde78c059611b132699ce18b0ea48328ec74a894d6ad8fd253dfa5d78a40"
+ },
+ "cases": {
+  "defaults": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "--",
+    "//pkg:all",
+    "-//pkg:strict"
+   ],
+   "genuine": {
+    "exit": 0,
+    "debug_sorted": [
+     "VALUE a_v default",
+     "VALUE both_v default",
+     "VALUE comma_v default",
+     "VALUE copt_v default",
+     "VALUE host_features_v default",
+     "VALUE no_threads_v default",
+     "VALUE threads_v default"
+    ],
+    "errors": []
+   }
+  },
+  "flags": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "--features=-threads",
+    "--features=a,b",
+    "--copt=-O2",
+    "--host_features=h",
+    "//pkg:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "debug_sorted": [
+     "VALUE a_v default",
+     "VALUE both_v default",
+     "VALUE comma_v match",
+     "VALUE copt_v match",
+     "VALUE host_features_v match",
+     "VALUE no_threads_v match",
+     "VALUE strict match",
+     "VALUE threads_v default"
+    ],
+    "errors": []
+   }
+  },
+  "normalized": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "--features=threads",
+    "--features=-threads",
+    "--features=a",
+    "-c",
+    "opt",
+    "//pkg:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "debug_sorted": [
+     "VALUE a_v match",
+     "VALUE both_v match",
+     "VALUE comma_v default",
+     "VALUE copt_v default",
+     "VALUE host_features_v default",
+     "VALUE no_threads_v match",
+     "VALUE strict match",
+     "VALUE threads_v default"
+    ],
+    "errors": []
+   }
+  },
+  "no_match": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "//pkg:strict"
+   ],
+   "genuine": {
+    "exit": 1,
+    "debug_sorted": [],
+    "errors": [
+     "ERROR: <WS>/pkg/BUILD.bazel:18:6: configurable attribute \"v\" in //pkg:strict doesn't match this configuration. Would a default condition help?"
+    ]
+   }
+  }
+ }
+}
