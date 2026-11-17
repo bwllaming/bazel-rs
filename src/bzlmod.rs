@@ -175,16 +175,27 @@ pub enum ModuleOverride {
         tag: String,
         branch: String,
         init_submodules: bool,
+        recursive_init_submodules: bool,
         strip_prefix: String,
+        build_file_content: String,
         patches: PatchOptions,
+        /// Forwarded git_repository attributes the native fetch does not
+        /// implement (set to a non-default value), in name order.
+        unsupported: Vec<String>,
     },
     Archive {
+        /// `url` then `urls` (http.bzl _get_source_urls).
         urls: Vec<String>,
         integrity: String,
         sha256: String,
         strip_prefix: String,
+        /// http_archive `type`.
         archive_type: String,
+        build_file_content: String,
         patches: PatchOptions,
+        /// Forwarded http_archive attributes the native fetch does not
+        /// implement (set to a non-default value), in name order.
+        unsupported: Vec<String>,
     },
 }
 
@@ -220,6 +231,33 @@ pub struct ExtensionUsage {
     pub declarations: Vec<ExtensionDeclaration>,
     pub tags: Vec<ExtensionTag>,
     pub imports: Vec<RepositoryImport>,
+    /// `override_repo` / `inject_repo` calls (ModuleThreadContext
+    /// .ModuleExtensionUsageBuilder.addRepoOverride), in call order. Only
+    /// recorded for the root module without `--ignore_dev_dependency`
+    /// (ModuleFileGlobals.overrideRepo returns early otherwise).
+    pub repo_overrides: Vec<RepoOverride>,
+}
+impl RepoOverride {
+    /// The MODULE function that recorded it.
+    pub fn function(&self) -> &'static str {
+        if self.must_exist {
+            "override_repo"
+        } else {
+            "inject_repo"
+        }
+    }
+}
+/// ModuleExtensionUsage.RepoOverride, keyed by the extension-internal name.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RepoOverride {
+    /// The repository name the extension generates (or would generate).
+    pub overridden: String,
+    /// The apparent name of the overriding repository in the root module.
+    pub overriding: String,
+    /// `override_repo` (true) or `inject_repo` (false).
+    pub must_exist: bool,
+    /// The call's location (`file:line:col`).
+    pub location: String,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExtensionTag {
@@ -593,6 +631,13 @@ pub(crate) fn evaluate_source_with_builtins(
     if let BuiltinInjection::AppendBazelTools | BuiltinInjection::ReserveBazelTools = injection {
         reserve_builtin(&state, "bazel_tools")?;
     }
+    validate_repo_overrides(
+        &state,
+        matches!(
+            injection,
+            BuiltinInjection::AppendBazelTools | BuiltinInjection::ReserveBazelTools
+        ),
+    )?;
     if let BuiltinInjection::AppendBazelTools = injection {
         state.file.implicit_dependencies.push(Dependency {
             name: "bazel_tools".to_owned(),
@@ -765,6 +810,49 @@ impl<'v> Kwargs<'v> {
         }
         Ok(())
     }
+    /// The patch attributes of http_archive / git_repository
+    /// (utils.bzl `patch`): `patch_args` of only `-pN` options select the
+    /// native patcher with the last one's strip (`-p<patch_strip>` first);
+    /// any other patch tool or argument is recorded as unsupported.
+    fn forwarded_patches(&mut self) -> anyhow::Result<PatchOptions> {
+        let mut options = self.patches()?;
+        let args = self.strings("patch_args")?;
+        if let Some(last) = args.last() {
+            match args
+                .iter()
+                .all(|arg| arg.starts_with("-p"))
+                .then(|| last[2..].parse::<i32>().ok())
+                .flatten()
+            {
+                Some(strip) if strip >= 0 => options.patch_strip = strip,
+                _ => {
+                    self.0
+                        .insert("patch_args".to_owned(), Value::new_bool(true));
+                }
+            }
+        }
+        if let Some(tool) = self.0.get("patch_tool")
+            && tool.unpack_str() == Some("")
+        {
+            self.0.remove("patch_tool");
+        }
+        Ok(options)
+    }
+    /// The remaining keywords with a value other than their default (None,
+    /// empty, zero or False), in name order.
+    fn take_non_default(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.0)
+            .into_iter()
+            .filter(|(_, value)| {
+                !(value.is_none()
+                    || value.unpack_str() == Some("")
+                    || value.unpack_bool() == Some(false)
+                    || value.unpack_i32() == Some(0)
+                    || value.length().is_ok_and(|length| length == 0))
+            })
+            .map(|(name, _)| name)
+            .collect()
+    }
     fn patches(&mut self) -> anyhow::Result<PatchOptions> {
         Ok(PatchOptions {
             patches: self.strings("patches")?,
@@ -797,10 +885,10 @@ fn invoke<'v>(
             "include() is unsupported until the resolver supplies include filesystem semantics"
         ),
         "Label" => bail!("Label() is unsupported in MODULE evaluation; use label strings"),
-        "inject_repo" | "override_repo" => {
-            bail!("{name}() is unsupported in MODULE evaluation")
-        }
         _ => {}
+    }
+    if matches!(name, "inject_repo" | "override_repo") {
+        return repo_override(name, args, eval, collector);
     }
     let mut kwargs = Kwargs::new(args)?;
     let mut state = collector.state.borrow_mut();
@@ -1109,31 +1197,47 @@ fn invoke<'v>(
                     let commit = kwargs.string("commit", Some(""))?;
                     let tag = kwargs.string("tag", Some(""))?;
                     let branch = kwargs.string("branch", Some(""))?;
-                    if [&commit, &tag, &branch]
-                        .iter()
-                        .filter(|v| !v.is_empty())
-                        .count()
-                        != 1
-                    {
-                        bail!("git_override requires exactly one of commit, tag, branch");
+                    let init_submodules = kwargs.boolean("init_submodules")?;
+                    let recursive_init_submodules = kwargs.boolean("recursive_init_submodules")?;
+                    let strip_prefix = kwargs.string("strip_prefix", Some(""))?;
+                    let build_file_content = kwargs.string("build_file_content", Some(""))?;
+                    let patches = kwargs.forwarded_patches()?;
+                    // Forwarded to git_repository (ModuleFileGlobals.gitOverride):
+                    // attributes without a native effect.
+                    for ignored in ["verbose", "canonical_id", "patch_cmds_win"] {
+                        kwargs.0.remove(ignored);
                     }
                     ModuleOverride::Git {
                         remote,
                         commit,
                         tag,
                         branch,
-                        init_submodules: kwargs.boolean("init_submodules")?,
-                        strip_prefix: kwargs.string("strip_prefix", Some(""))?,
-                        patches: kwargs.patches()?,
+                        init_submodules,
+                        recursive_init_submodules,
+                        strip_prefix,
+                        build_file_content,
+                        patches,
+                        unsupported: kwargs.take_non_default(),
                     }
                 }
                 "archive_override" => {
-                    let urls = kwargs.required("urls")?;
-                    let urls = if let Some(s) = urls.unpack_str() {
-                        vec![s.to_owned()]
-                    } else {
-                        strings(urls, "urls")?
-                    };
+                    // ModuleFileGlobals.archiveOverride forwards every keyword
+                    // to http_archive; http.bzl _get_source_urls puts `url`
+                    // before `urls`.
+                    let mut urls = Vec::new();
+                    if let Some(url) = kwargs.0.remove("url") {
+                        let url = string(url, "url")?;
+                        if !url.is_empty() {
+                            urls.push(url);
+                        }
+                    }
+                    if let Some(value) = kwargs.0.remove("urls") {
+                        if let Some(s) = value.unpack_str() {
+                            urls.push(s.to_owned());
+                        } else {
+                            urls.extend(strings(value, "urls")?);
+                        }
+                    }
                     if urls.is_empty() {
                         bail!("archive_override urls must not be empty");
                     }
@@ -1146,13 +1250,23 @@ fn invoke<'v>(
                     {
                         bail!("sha256 must contain 64 hexadecimal digits");
                     }
+                    let integrity = kwargs.string("integrity", Some(""))?;
+                    let strip_prefix = kwargs.string("strip_prefix", Some(""))?;
+                    let archive_type = kwargs.string("type", Some(""))?;
+                    let build_file_content = kwargs.string("build_file_content", Some(""))?;
+                    let patches = kwargs.forwarded_patches()?;
+                    for ignored in ["canonical_id", "netrc", "auth_patterns", "patch_cmds_win"] {
+                        kwargs.0.remove(ignored);
+                    }
                     ModuleOverride::Archive {
                         urls,
                         sha256,
-                        integrity: kwargs.string("integrity", Some(""))?,
-                        strip_prefix: kwargs.string("strip_prefix", Some(""))?,
-                        archive_type: kwargs.string("archive_type", Some(""))?,
-                        patches: kwargs.patches()?,
+                        integrity,
+                        strip_prefix,
+                        archive_type,
+                        build_file_content,
+                        patches,
+                        unsupported: kwargs.take_non_default(),
                     }
                 }
                 _ => bail!("unsupported MODULE directive {name}"),
@@ -1340,6 +1454,145 @@ fn reserve_repo(
         bail!("repository name {name:?} is already used");
     }
     state.repo_names.insert(name.to_owned(), (how, location));
+    Ok(())
+}
+
+/// ModuleFileGlobals.overrideRepo / injectRepo (Bazel 9.3 :716-800).
+fn repo_override<'v>(
+    name: &str,
+    args: &Arguments<'v, '_>,
+    eval: &Evaluator<'v, '_, '_>,
+    collector: &Collector,
+) -> anyhow::Result<Value<'v>> {
+    let mut pos = args.positions(eval.heap()).map_err(|e| anyhow!("{e}"))?;
+    let proxy = pos.next().ok_or_else(|| {
+        anyhow!("{name}() missing 1 required positional argument: extension_proxy")
+    })?;
+    let proxy = proxy.downcast_ref::<ExtensionProxy>().ok_or_else(|| {
+        anyhow!(
+            "in call to {name}(), parameter 'extension_proxy' got value of type '{}', want 'module_extension_proxy'",
+            proxy.get_type()
+        )
+    })?;
+    let mut overrides = Vec::new();
+    for value in pos {
+        let text = string(value, "args")?;
+        overrides.push((text.clone(), text));
+    }
+    for (key, value) in args.names_map().map_err(|e| anyhow!("{e}"))?.iter() {
+        overrides.push((key.as_str().to_owned(), string(*value, "kwargs")?));
+    }
+    let mut state = collector.state.borrow_mut();
+    state.non_module_called = true;
+    // Ignored early: they may name dev repositories, or this is not the root.
+    if collector
+        .evaluation_context
+        .effective_ignore_dev_dependencies()
+    {
+        return Ok(Value::new_none());
+    }
+    let location = caller_location(eval);
+    let must_exist = name == "override_repo";
+    for (overridden, overriding) in overrides {
+        validate_repo_name(&overridden)?;
+        validate_repo_name(&overriding)?;
+        let usage = &mut state.file.extension_usages[proxy.usage];
+        if let Some(collision) = usage
+            .repo_overrides
+            .iter()
+            .find(|existing| existing.overridden == overridden)
+        {
+            bail!(
+                "The repo exported as '{overridden}' by module extension '{}' is already overridden with '{}' at {}",
+                usage.identity.extension_name,
+                collision.overriding,
+                collision.location
+            );
+        }
+        usage.repo_overrides.push(RepoOverride {
+            overridden,
+            overriding,
+            must_exist,
+            location: location.clone(),
+        });
+    }
+    Ok(Value::new_none())
+}
+
+/// ModuleThreadContext.ModuleExtensionUsageBuilder.buildUsage and
+/// buildModule (Bazel 9.3 :290-327, :411-427).
+fn validate_repo_overrides(state: &State, builtin_visible: bool) -> Result<(), String> {
+    // Repo name -> the override using it as the overriding repo, and the
+    // overridden imports (by local name).
+    let mut overriding: BTreeMap<&str, (&RepoOverride, &str)> = BTreeMap::new();
+    let mut overridden: BTreeMap<&str, &RepoOverride> = BTreeMap::new();
+    for usage in &state.file.extension_usages {
+        let extension = usage.identity.extension_name.as_str();
+        for repo_override in &usage.repo_overrides {
+            let visible = state.repo_names.contains_key(&repo_override.overriding)
+                || (builtin_visible && repo_override.overriding == "bazel_tools");
+            if !visible {
+                // SpellChecker.didYouMean over the HashMap keySet: the
+                // first closest name in its iteration order wins.
+                let names: Vec<&str> = state
+                    .repo_names
+                    .keys()
+                    .map(String::as_str)
+                    .chain(builtin_visible.then_some("bazel_tools"))
+                    .collect();
+                let candidates: Vec<&str> = crate::lockfile_extensions::java_hash_map_order(&names)
+                    .into_iter()
+                    .map(|index| names[index])
+                    .collect();
+                return Err(format!(
+                    "{}: Error in {}: The repo exported as '{}' by module extension '{extension}' is overridden with '{}', but no repo is visible under this name{}",
+                    repo_override.location,
+                    repo_override.function(),
+                    repo_override.overridden,
+                    repo_override.overriding,
+                    crate::native_rules::did_you_mean(&repo_override.overriding, &candidates)
+                ));
+            }
+            if let Some(import) = usage
+                .imports
+                .iter()
+                .find(|import| import.exported_name == repo_override.overridden)
+            {
+                if !repo_override.must_exist {
+                    // Reported at the use_repo call importing it.
+                    let at = state
+                        .repo_names
+                        .get(&import.local_name)
+                        .map_or("", |(_, location)| location.as_str());
+                    return Err(format!(
+                        "{at}: Error in use_repo: Cannot import repo '{}' that has been injected into module extension '{extension}' at {}. Please refer to @{} directly.",
+                        repo_override.overridden, repo_override.location, repo_override.overriding
+                    ));
+                }
+                overridden.insert(&import.local_name, repo_override);
+            }
+            overriding.insert(&repo_override.overriding, (repo_override, extension));
+        }
+    }
+    if let Some((repo_override, extension, on_override)) =
+        overriding
+            .iter()
+            .find_map(|(name, (repo_override, extension))| {
+                overridden
+                    .get(name)
+                    .map(|on_override| (*repo_override, *extension, *on_override))
+            })
+    {
+        return Err(format!(
+            "{}: Error in {}: The repo '{}' used as an override for '{}' in module extension '{extension}' is itself overridden with '{}' at {}, which is not supported.",
+            repo_override.location,
+            repo_override.function(),
+            repo_override.overriding,
+            repo_override.overridden,
+            on_override.overriding,
+            on_override.location
+        ));
+    }
     Ok(())
 }
 
@@ -2197,7 +2450,7 @@ local_path_override(module_name="local", path="/does/not/exist")
 single_version_override(module_name="single", version="1.0", registry="file:///no-registry", patches=["//:fix.patch"], patch_cmds=["exit 99"], patch_strip=1)
 multiple_version_override(module_name="multi", versions=["1", "2"])
 git_override(module_name="git", remote="https://invalid.invalid/repo", branch="main", init_submodules=True)
-archive_override(module_name="archive", urls="https://invalid.invalid/a.tar.gz", strip_prefix="src", archive_type="tar.gz")
+archive_override(module_name="archive", urls="https://invalid.invalid/a.tar.gz", strip_prefix="src", type="tar.gz")
 "#);
         assert_eq!(f.overrides.len(), 5);
         let ModuleOverride::SingleVersion {
@@ -2288,10 +2541,6 @@ archive_override(module_name="archive", urls="https://invalid.invalid/a.tar.gz",
             (
                 "multiple_version_override(module_name='a',versions=['1'])",
                 "at least 2",
-            ),
-            (
-                "git_override(module_name='a',remote='r',tag='t',commit='c')",
-                "exactly one",
             ),
             (
                 "archive_override(module_name='a',urls=[1])",

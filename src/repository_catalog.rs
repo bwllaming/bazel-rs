@@ -52,6 +52,32 @@ pub struct OrdinaryGroup {
     /// (SingleExtensionEvalFunction.java:465-487); None if the root module
     /// does not use this extension.
     pub root_usage: Option<crate::extension_metadata::RootExtensionUsage>,
+    /// The root module's `override_repo` / `inject_repo` overrides of this
+    /// extension (BazelDepGraphValue.getRepoOverrides row), in call order.
+    pub repo_overrides: Vec<GroupRepoOverride>,
+}
+
+/// One root-module repository override of an extension, its overriding
+/// repository resolved in the root module's mapping without overrides
+/// (BazelDepGraphFunction.getRepoOverrides, Bazel 9.3 :219-247).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupRepoOverride {
+    /// The extension-internal repository name.
+    pub overridden: String,
+    /// The canonical name of the overriding repository.
+    pub canonical: String,
+    pub must_exist: bool,
+    /// The `override_repo` / `inject_repo` call location.
+    pub location: String,
+}
+
+impl OrdinaryGroup {
+    /// The overriding canonical repository of the extension-internal `name`.
+    pub fn repo_override(&self, name: &str) -> Option<&GroupRepoOverride> {
+        self.repo_overrides
+            .iter()
+            .find(|repo_override| repo_override.overridden == name)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -316,6 +342,8 @@ pub fn build(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<DirectCatal
         }
     }
 
+    apply_repo_overrides(graph, &mut catalog, ignore_root_dev)?;
+
     for group in catalog.ordinary_groups.values_mut() {
         for participant in &mut group.participants {
             participant.tags.sort_by_key(|tag| tag.ordinal);
@@ -374,6 +402,81 @@ pub fn build(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<DirectCatal
     Ok(catalog)
 }
 
+/// The root module's `override_repo` / `inject_repo` calls
+/// (BazelDepGraphFunction.getRepoOverrides): each overriding apparent name
+/// resolves in the root mapping without overrides; every module importing an
+/// overridden repository sees the overriding one instead
+/// (BazelDepGraphValue.getRepositoryMapping, Bazel 9.3 :130-159).
+fn apply_repo_overrides(
+    graph: &ResolvedGraph,
+    catalog: &mut DirectCatalog,
+    ignore_root_dev: bool,
+) -> Result<(), String> {
+    let root_mapping = match catalog.owner_mappings.get("") {
+        Some(mapping) => mapping.clone(),
+        None => return Ok(()),
+    };
+    let mut any = false;
+    for usage in &graph.root.extension_usages {
+        if usage.repo_overrides.is_empty()
+            || !active_usage(usage, ignore_root_dev)
+            || usage.identity.is_repo_rule()
+            || usage.identity.isolation.is_some()
+        {
+            continue;
+        }
+        let label = usage_label(usage, "", &graph.root_mapping, ignore_root_dev)?;
+        let group_id = serde_json::to_string(&(label.to_string(), &usage.identity.extension_name))
+            .map_err(|e| e.to_string())?;
+        let Some(group) = catalog.ordinary_groups.get_mut(&group_id) else {
+            continue;
+        };
+        for repo_override in &usage.repo_overrides {
+            let canonical = root_mapping.get(&repo_override.overriding).ok_or_else(|| {
+                format!(
+                    "The repo exported as '{}' by module extension '{}' is overridden with '{}', but no repo is visible under this name",
+                    repo_override.overridden, usage.identity.extension_name, repo_override.overriding
+                )
+            })?;
+            if group.repo_override(&repo_override.overridden).is_some() {
+                continue;
+            }
+            group.repo_overrides.push(GroupRepoOverride {
+                overridden: repo_override.overridden.clone(),
+                canonical: canonical.clone(),
+                must_exist: repo_override.must_exist,
+                location: repo_override.location.clone(),
+            });
+            any = true;
+        }
+    }
+    if !any {
+        return Ok(());
+    }
+    for group in catalog.ordinary_groups.values() {
+        if group.repo_overrides.is_empty() {
+            continue;
+        }
+        for participant in &group.participants {
+            let mapping = catalog
+                .owner_mappings
+                .get_mut(&participant.owner)
+                .ok_or_else(|| {
+                    format!(
+                        "internal error: no mapping of MODULE owner {:?}",
+                        participant.owner
+                    )
+                })?;
+            for import in &participant.imports {
+                if let Some(repo_override) = group.repo_override(&import.exported_name) {
+                    mapping.insert(import.local_name.clone(), repo_override.canonical.clone());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn charge_mapping(
     budget: &mut crate::repository_budget::HostBudget,
     mapping: &BTreeMap<String, String>,
@@ -427,6 +530,7 @@ fn record_ordinary(
                 participants: Vec::new(),
                 root_has_non_dev_dependency: false,
                 root_usage: None,
+                repo_overrides: Vec::new(),
             },
         );
     }

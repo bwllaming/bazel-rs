@@ -261,9 +261,58 @@ pub(crate) fn usages_value(group: &OrdinaryGroup) -> Result<Json, String> {
         ),
         ("abridgedModules".into(), Json::Array(modules)),
         ("repoMappings".into(), Json::Object(Vec::new())),
-        // Native MODULE evaluation rejects override_repo/inject_repo.
-        ("repoOverrides".into(), Json::Object(Vec::new())),
+        // BazelDepGraphValue.getRepoOverrides().row(id): the root usage's
+        // overrides, in the iteration order of the HashMap
+        // ModuleThreadContext collects them in.
+        (
+            "repoOverrides".into(),
+            Json::Object(
+                java_hash_map_order(
+                    &group
+                        .repo_overrides
+                        .iter()
+                        .map(|repo_override| repo_override.overridden.as_str())
+                        .collect::<Vec<_>>(),
+                )
+                .into_iter()
+                .map(|index| {
+                    let repo_override = &group.repo_overrides[index];
+                    (
+                        repo_override.overridden.clone(),
+                        Json::String(repo_override.canonical.clone()),
+                    )
+                })
+                .collect(),
+            ),
+        ),
     ]))
+}
+
+/// java.lang.String.hashCode.
+fn java_string_hash(text: &str) -> i32 {
+    text.encode_utf16().fold(0i32, |hash, unit| {
+        hash.wrapping_mul(31).wrapping_add(i32::from(unit))
+    })
+}
+
+/// The iteration order of a default `java.util.HashMap<String, _>` filled
+/// with distinct `keys` in this order: by bucket of the final table
+/// (`(h ^ h >>> 16) & (capacity - 1)`; capacity 16, doubled whenever the
+/// size exceeds 3/4 of it), insertion order within a bucket (resizing keeps
+/// it). Bins never treeify below 64 buckets, and larger maps are not
+/// expected here.
+pub(crate) fn java_hash_map_order(keys: &[&str]) -> Vec<usize> {
+    let mut capacity = 16usize;
+    while keys.len() > capacity * 3 / 4 {
+        capacity *= 2;
+    }
+    let bucket = |key: &str| {
+        let hash = java_string_hash(key) as u32;
+        ((hash ^ (hash >> 16)) as usize) & (capacity - 1)
+    };
+    let mut order: Vec<usize> = (0..keys.len()).collect();
+    order.sort_by_key(|&index| (bucket(keys[index]), index));
+    order
 }
 
 // ---- Recorded inputs -------------------------------------------------------

@@ -31,11 +31,18 @@ const MAX_NAME_BYTES: usize = 255;
 /// `timeout` default). There are no tree size, entry-count or listing caps.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(600);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GitSpec {
     pub remote: String,
     pub commit: String,
     pub strip_prefix: String,
+    /// git_repository `init_submodules`: false skips submodule gitlinks
+    /// (Git checks them out as empty directories); true is not
+    /// implemented natively for a tree that has any.
+    pub init_submodules: bool,
+    /// git_repository `build_file_content`, written as BUILD.bazel before
+    /// the patches (utils.bzl workspace_and_buildfile).
+    pub build_file_content: String,
 }
 
 impl GitSpec {
@@ -129,11 +136,20 @@ pub struct GitTree {
 
 fn current_key(spec: &GitSpec, patches: &LocalPatchPlan) -> Result<(String, String), String> {
     let commit = spec.commit.to_ascii_lowercase();
-    let identity = serde_json::to_vec(&(
-        POLICY,
-        (&spec.remote, &commit, &spec.strip_prefix),
-        patches.cache_identity(),
-    ))
+    let identity = if spec.init_submodules || !spec.build_file_content.is_empty() {
+        serde_json::to_vec(&(
+            POLICY,
+            (&spec.remote, &commit, &spec.strip_prefix),
+            patches.cache_identity(),
+            (spec.init_submodules, &spec.build_file_content),
+        ))
+    } else {
+        serde_json::to_vec(&(
+            POLICY,
+            (&spec.remote, &commit, &spec.strip_prefix),
+            patches.cache_identity(),
+        ))
+    }
     .map_err(|e| e.to_string())?;
     Ok((commit, format!("{:x}", Sha256::digest(identity))))
 }
@@ -153,7 +169,7 @@ pub(crate) fn resolve_current<T>(
         return materialize(spec, patches, cache, allow_remote, validate);
     }
     spec.validate(allow_remote)?;
-    patches.validate_materialization()?;
+    patches.validate_override_materialization()?;
     let (commit, key) = current_key(spec, patches)?;
     let cache = crate::observed_fs::canonicalize(cache)
         .map_err(|e| e.to_string())?
@@ -196,7 +212,7 @@ pub fn materialize<T>(
     validate: impl Fn(&Path, &[u8]) -> Result<T, String>,
 ) -> Result<(GitTree, T), String> {
     spec.validate(allow_remote)?;
-    patches.validate_materialization()?;
+    patches.validate_override_materialization()?;
     let (commit, key) = current_key(spec, patches)?;
     ensure_directory(cache)?;
     let cache = fs::canonicalize(cache)
@@ -278,7 +294,13 @@ pub fn materialize<T>(
         || format!("git tree {} {commit}", spec.remote),
     );
     fetch_export(spec, &commit, &cache, stage.path())?;
-    patches.apply_tree(stage.path())?;
+    if !spec.build_file_content.is_empty() {
+        let path = stage.path().join("BUILD.bazel");
+        fs::write(&path, spec.build_file_content.as_bytes())
+            .map_err(|e| format!("cannot write BUILD.bazel: {e}"))?;
+        set_mode(&path, 0o644)?;
+    }
+    patches.apply_override_tree(stage.path())?;
     let files = snapshot(stage.path(), true)?;
     let module_file = read_whole(&stage.path().join("MODULE.bazel"))?;
     let value = validate(stage.path(), &module_file)?;
@@ -319,6 +341,99 @@ pub fn materialize<T>(
         },
         value,
     ))
+}
+
+/// The revision a git_override names without a commit (git_worker.bzl:
+/// `tags/TAG`, `origin/BRANCH`, or the remote's default `HEAD`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GitRef<'a> {
+    Tag(&'a str),
+    Branch(&'a str),
+    Head,
+}
+
+/// The commit a tag, branch or the default HEAD of `remote` names, pinned
+/// in the cache once resolved: like Bazel's fetched repository (reused
+/// through its marker file while the attributes are unchanged), later
+/// commands do not contact the remote again.
+pub fn resolve_ref(
+    remote: &str,
+    reference: GitRef<'_>,
+    cache: &Path,
+    allow_remote: bool,
+) -> Result<String, String> {
+    GitSpec {
+        remote: remote.to_owned(),
+        commit: "0".repeat(40),
+        ..Default::default()
+    }
+    .validate(allow_remote)?;
+    let (kind, name, patterns): (&str, &str, Vec<String>) = match reference {
+        GitRef::Tag(tag) => (
+            "tag",
+            tag,
+            vec![format!("refs/tags/{tag}"), format!("refs/tags/{tag}^{{}}")],
+        ),
+        GitRef::Branch(branch) => ("branch", branch, vec![format!("refs/heads/{branch}")]),
+        GitRef::Head => ("head", "", vec!["HEAD".to_owned()]),
+    };
+    if name.starts_with('-') || name.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err(format!("invalid Git {kind} {name:?}"));
+    }
+    let key = format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&(POLICY, remote, kind, name)).map_err(|e| e.to_string())?
+        )
+    );
+    ensure_directory(cache)?;
+    let cache = fs::canonicalize(cache)
+        .map_err(|e| e.to_string())?
+        .join("git");
+    let refs = cache.join("refs");
+    ensure_directory(&cache)?;
+    ensure_directory(&refs)?;
+    let pinned = refs.join(&key);
+    check_optional_regular(&pinned)?;
+    if let Ok(bytes) = fs::read(&pinned)
+        && let Ok(text) = String::from_utf8(bytes)
+        && full_sha(text.trim())
+    {
+        return Ok(text.trim().to_ascii_lowercase());
+    }
+    let private = tempfile::Builder::new()
+        .prefix(".fetch-")
+        .tempdir_in(&cache)
+        .map_err(|e| format!("cannot stage private Git work: {e}"))?;
+    let isolation = private.path().join("isolation");
+    fs::create_dir(&isolation).map_err(|e| e.to_string())?;
+    let work = private.path().join("work");
+    fs::create_dir(&work).map_err(|e| e.to_string())?;
+    let runner = GitRunner::new(&isolation, remote.starts_with("file://"))?;
+    let mut args = vec!["ls-remote", "--end-of-options", remote];
+    args.extend(patterns.iter().map(String::as_str));
+    let listing = runner.run(&work, &args, COMMAND_TIMEOUT)?;
+    let text = String::from_utf8(listing.stdout).map_err(|_| "non-UTF-8 git ls-remote output")?;
+    let mut found = None;
+    for line in text.lines() {
+        let Some((commit, reference)) = line.split_once('\t') else {
+            continue;
+        };
+        if !full_sha(commit) {
+            continue;
+        }
+        // A peeled annotated tag names its commit.
+        if reference.ends_with("^{}") || found.is_none() {
+            found = Some(commit.to_ascii_lowercase());
+        }
+    }
+    let commit = found.ok_or_else(|| match reference {
+        GitRef::Tag(tag) => format!("Git tag {tag:?} not found in {remote}"),
+        GitRef::Branch(branch) => format!("Git branch {branch:?} not found in {remote}"),
+        GitRef::Head => format!("Git remote {remote} has no HEAD"),
+    })?;
+    atomic_write(&pinned, commit.as_bytes())?;
+    Ok(commit)
 }
 
 #[cfg(test)]
@@ -370,7 +485,15 @@ fn fetch_export(spec: &GitSpec, commit: &str, cache: &Path, stage: &Path) -> Res
         ])?;
         verify_commit(&resolved.stdout, commit)?;
         let listing = run(&["ls-tree", "-rz", "--full-tree", commit])?;
-        let entries = parse_listing(&listing.stdout)?;
+        let (gitlinks, entries): (Vec<_>, Vec<_>) = parse_listing(&listing.stdout)?
+            .into_iter()
+            .partition(|entry| entry.kind == TrackedKind::Gitlink);
+        if spec.init_submodules && !gitlinks.is_empty() {
+            return Err(format!(
+                "git_override init_submodules = True is not implemented natively for a tree with submodules ({})",
+                gitlinks[0].path
+            ));
+        }
         let expected_links = committed_links(&entries, |args| Ok(run(args)?.stdout))?;
         // Validate committed link bytes and the full namespace before checkout:
         // Git may truncate malformed link blobs when creating native symlinks.
@@ -394,6 +517,21 @@ fn fetch_export(spec: &GitSpec, commit: &str, cache: &Path, stage: &Path) -> Res
             &entries,
             &expected_links,
         )?;
+        // Without init_submodules, Git leaves each submodule an empty
+        // directory (git_worker.bzl runs no `submodule update`).
+        for gitlink in &gitlinks {
+            let relative = if spec.strip_prefix.is_empty() {
+                Some(gitlink.path.as_str())
+            } else {
+                gitlink
+                    .path
+                    .strip_prefix(spec.strip_prefix.as_str())
+                    .and_then(|rest| rest.strip_prefix('/'))
+            };
+            if let Some(relative) = relative {
+                ensure_directory(&stage.join(relative))?;
+            }
+        }
         return Ok(());
     }
     unreachable!("two fetch attempts always return")
@@ -418,8 +556,12 @@ struct Tracked {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TrackedKind {
-    Regular { executable: bool },
+    Regular {
+        executable: bool,
+    },
     Symlink,
+    /// A submodule commit (mode 160000).
+    Gitlink,
 }
 
 fn parse_listing(bytes: &[u8]) -> Result<Vec<Tracked>, String> {
@@ -437,12 +579,14 @@ fn parse_listing(bytes: &[u8]) -> Result<Vec<Tracked>, String> {
             .split_once('\t')
             .ok_or("malformed Git ls-tree record")?;
         let fields: Vec<_> = header.split(' ').collect();
-        if fields.len() != 3 || fields[1] != "blob" || !full_sha(fields[2]) {
+        let gitlink = fields.len() == 3 && fields[0] == "160000" && fields[1] == "commit";
+        if fields.len() != 3 || !(fields[1] == "blob" || gitlink) || !full_sha(fields[2]) {
             return Err(
-                "unsupported Git tree entry: expected file or symlink blob (no gitlinks)".into(),
+                "unsupported Git tree entry: expected file or symlink blob or submodule".into(),
             );
         }
         let kind = match fields[0] {
+            "160000" if gitlink => TrackedKind::Gitlink,
             "100644" => TrackedKind::Regular { executable: false },
             "100755" => TrackedKind::Regular { executable: true },
             "120000" => TrackedKind::Symlink,
@@ -472,6 +616,9 @@ fn committed_links(
     for entry in entries {
         if matches!(entry.kind, TrackedKind::Regular { .. }) {
             regular_files.insert(entry.path.clone());
+            continue;
+        }
+        if entry.kind == TrackedKind::Gitlink {
             continue;
         }
         // OIDs were validated as full hex SHA-1s by parse_listing. Two commands
@@ -549,6 +696,7 @@ fn export(
         )?;
         let source = checkout.join(&entry.path);
         match entry.kind {
+            TrackedKind::Gitlink => continue,
             TrackedKind::Regular { .. } => {
                 regular_metadata(&source)?;
                 regular_files.insert(entry.path.clone());
@@ -594,6 +742,7 @@ fn export(
             TrackedKind::Symlink => {
                 selected_links.insert(relative.to_owned(), links[&entry.path].clone());
             }
+            TrackedKind::Gitlink => continue,
         }
         selected.push((entry, relative));
     }
@@ -1008,6 +1157,7 @@ mod tests {
                     remote: reqwest::Url::from_file_path(&origin).unwrap().to_string(),
                     commit: String::new(),
                     strip_prefix: prefix.into(),
+                    ..Default::default()
                 },
                 temp,
                 origin,
@@ -1144,6 +1294,7 @@ mod tests {
             remote: "https://example.invalid/repo.git".into(),
             commit: "aB".repeat(20),
             strip_prefix: String::new(),
+            ..Default::default()
         };
         assert!(good.validate(true).is_ok());
         let mut cases = Vec::new();
@@ -1481,29 +1632,47 @@ mod tests {
     }
 
     #[test]
-    fn local_command_and_external_patch_reject_before_cache_creation() {
+    fn external_patch_rejects_before_cache_creation() {
         let fixture = Fixture::new("");
-        for options in [
-            PatchOptions {
-                patch_cmds: vec!["touch NEVER".into()],
-                ..Default::default()
-            },
-            PatchOptions {
-                patches: vec!["@@external+//:missing.patch".into()],
-                ..Default::default()
-            },
-        ] {
-            let plan = crate::patch_inputs::snapshot(
-                fixture.temp.path(),
-                &ModuleFile::default(),
-                &options,
-            )
-            .unwrap();
-            assert!(
-                materialize(&fixture.spec, &plan, &fixture.cache, true, |_, _| Ok(())).is_err()
-            );
-            assert!(!fixture.cache.exists());
-        }
+        let options = PatchOptions {
+            patches: vec!["@@external+//:missing.patch".into()],
+            ..Default::default()
+        };
+        let plan =
+            crate::patch_inputs::snapshot(fixture.temp.path(), &ModuleFile::default(), &options)
+                .unwrap();
+        assert!(materialize(&fixture.spec, &plan, &fixture.cache, true, |_, _| Ok(())).is_err());
+        assert!(!fixture.cache.exists());
+    }
+
+    #[test]
+    fn patch_commands_run_in_the_tree_after_patches() {
+        let fixture = Fixture::new("");
+        let options = PatchOptions {
+            patch_cmds: vec!["cat data > copied".into(), "echo second >> copied".into()],
+            ..Default::default()
+        };
+        let plan =
+            crate::patch_inputs::snapshot(fixture.temp.path(), &ModuleFile::default(), &options)
+                .unwrap();
+        let (tree, ()) =
+            materialize(&fixture.spec, &plan, &fixture.cache, true, |_, _| Ok(())).unwrap();
+        let data = fs::read(tree.root.join("data")).unwrap();
+        let copied = fs::read(tree.root.join("copied")).unwrap();
+        assert_eq!(copied, [data, b"second\n".to_vec()].concat());
+        let failing = PatchOptions {
+            patch_cmds: vec!["echo out; echo err >&2; exit 3".into()],
+            ..Default::default()
+        };
+        let plan =
+            crate::patch_inputs::snapshot(fixture.temp.path(), &ModuleFile::default(), &failing)
+                .unwrap();
+        let error =
+            materialize(&fixture.spec, &plan, &fixture.cache, true, |_, _| Ok(())).unwrap_err();
+        assert_eq!(
+            error,
+            "Error applying patch command echo out; echo err >&2; exit 3:\nout\nerr\n"
+        );
     }
 
     #[test]
@@ -2291,7 +2460,30 @@ mod tests {
     }
 
     #[test]
-    fn rejects_gitlink_even_outside_strip_prefix_before_publication() {
+    fn gitlinks_are_empty_directories_without_init_submodules() {
+        let mut fixture = Fixture::new("pkg");
+        fixture.git(&[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{},pkg/submodule", fixture.spec.commit),
+        ]);
+        fixture.commit_index();
+        let (tree, ()) = materialize(
+            &fixture.spec,
+            &LocalPatchPlan::default(),
+            &fixture.cache,
+            true,
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        let submodule = tree.root.join("submodule");
+        assert!(submodule.is_dir());
+        assert_eq!(fs::read_dir(&submodule).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn init_submodules_with_gitlinks_fails_before_publication() {
         let mut fixture = Fixture::new("pkg");
         fixture.git(&[
             "update-index",
@@ -2300,6 +2492,7 @@ mod tests {
             &format!("160000,{},submodule", fixture.spec.commit),
         ]);
         fixture.commit_index();
+        fixture.spec.init_submodules = true;
         let error = materialize(
             &fixture.spec,
             &LocalPatchPlan::default(),
@@ -2308,7 +2501,7 @@ mod tests {
             |_, _| Ok(()),
         )
         .unwrap_err();
-        assert!(error.contains("gitlinks"), "{error}");
+        assert!(error.contains("init_submodules"), "{error}");
         fixture.assert_no_publication();
     }
 
@@ -2317,7 +2510,8 @@ mod tests {
         let sha = "a".repeat(40);
         for (mode, kind, path) in [
             ("100600", "blob", "special"),
-            ("160000", "commit", "sub"),
+            ("160000", "blob", "sub"),
+            ("100644", "commit", "sub"),
             ("040000", "tree", "dir"),
             ("100644", "blob", "../outside"),
             ("100644", "blob", "a/.GiT/config"),

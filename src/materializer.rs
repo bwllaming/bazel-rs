@@ -622,6 +622,318 @@ fn materialize_registry(
     Ok(root)
 }
 
+/// An `archive_override` (ModuleFileGlobals.archiveOverride: an
+/// http_archive repo spec for a nonregistry module), the attributes the
+/// native fetch implements.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchiveOverride {
+    /// The canonical repository name (`name+`), for messages.
+    pub canonical: String,
+    /// `url` then `urls`.
+    pub urls: Vec<String>,
+    /// `integrity`, or `sha256` as an SRI; empty when neither is given.
+    pub integrity: String,
+    pub strip_prefix: String,
+    /// http_archive `type`; empty to infer it from the first URL.
+    pub archive_type: String,
+    pub build_file_content: String,
+}
+
+impl ArchiveOverride {
+    fn identity(&self, patches: &LocalPatchPlan) -> Result<String, String> {
+        let identity = serde_json::to_vec(&(
+            "native-archive-override-v1",
+            &self.urls,
+            &self.integrity,
+            &self.strip_prefix,
+            &self.archive_type,
+            &self.build_file_content,
+            patches.cache_identity(),
+        ))
+        .map_err(|e| e.to_string())?;
+        Ok(hex(&Sha256::digest(identity)))
+    }
+
+    fn validate(&self) -> Result<Option<Integrity>, String> {
+        if self.urls.is_empty() {
+            return Err("At least one of url and urls must be provided".into());
+        }
+        for url in &self.urls {
+            registry::validate_download_url(url)?;
+        }
+        let mut source = Map::new();
+        if !self.archive_type.is_empty() {
+            source.insert(
+                "archive_type".into(),
+                Value::String(self.archive_type.clone()),
+            );
+        }
+        archive_type(&source, &self.urls[0])?;
+        if self.integrity.is_empty() {
+            Ok(None)
+        } else {
+            Integrity::parse(&self.integrity).map(Some)
+        }
+    }
+}
+
+/// `sha256` (64 hex digits) as an SRI string.
+pub fn sha256_integrity(sha256: &str) -> Result<String, String> {
+    let digest = (0..sha256.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(sha256.get(i..i + 2).unwrap_or("zz"), 16))
+        .collect::<Result<Vec<u8>, _>>()
+        .map_err(|_| "sha256 must contain 64 hexadecimal digits".to_owned())?;
+    if digest.len() != 32 {
+        return Err("sha256 must contain 64 hexadecimal digits".into());
+    }
+    Ok(format!(
+        "sha256-{}",
+        base64::engine::general_purpose::STANDARD.encode(digest)
+    ))
+}
+
+/// The tree of an `archive_override` module, materialized during module
+/// discovery like a Git override (the module file is read from it): the
+/// archive (verified against its integrity when one is given), extracted
+/// with `strip_prefix`, `build_file_content` written, then the local
+/// patches and patch commands (http.bzl _http_archive_impl order). The
+/// published tree is keyed by the attributes and patch inputs; a warm
+/// tree is reused after its manifest check, like Bazel's marker-file reuse
+/// of a fetched repository. `validate` sees the final MODULE.bazel bytes
+/// before publication and on every reuse. In `proof` mode nothing is
+/// written: only a verified publication is accepted.
+pub fn materialize_override<T>(
+    spec: &ArchiveOverride,
+    patches: &LocalPatchPlan,
+    cache: &Path,
+    downloads_enabled: bool,
+    proof: bool,
+    validate: impl Fn(&Path, &[u8]) -> Result<T, String>,
+) -> Result<(PathBuf, Vec<u8>, T), String> {
+    let integrity = spec.validate()?;
+    patches.validate_override_materialization()?;
+    let key = spec.identity(patches)?;
+    let read_module = |root: &Path| -> Result<Vec<u8>, String> {
+        match fs::read(root.join("MODULE.bazel")) {
+            Ok(bytes) => Ok(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(format!(
+                "cannot read MODULE.bazel of @@{}: {error}",
+                spec.canonical
+            )),
+        }
+    };
+    if proof {
+        let cache = crate::observed_fs::canonicalize(cache).map_err(|e| e.to_string())?;
+        let destination = cache.join("overrides").join(&key);
+        let manifest_path = cache.join("overrides").join(format!("{key}.json"));
+        reject_symlink(&destination)?;
+        reject_symlink(&manifest_path)?;
+        let bytes = crate::observed_fs::read(&manifest_path).map_err(|e| e.to_string())?;
+        let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        if manifest.format != FORMAT || !tree_matches(&destination, &manifest.files) {
+            return Err(
+                "current archive override publication failed read-only integrity proof".into(),
+            );
+        }
+        crate::observed_fs::proof_repository_tree(
+            "archive",
+            &spec.canonical,
+            &destination,
+            &manifest_path,
+        );
+        let module_file = read_module(&destination)?;
+        let value = validate(&destination, &module_file)?;
+        return Ok((destination, module_file, value));
+    }
+    ensure_directory(cache)?;
+    let cache = fs::canonicalize(cache).map_err(|e| e.to_string())?;
+    let trees = cache.join("overrides");
+    let locks = cache.join("locks");
+    ensure_directory(&trees)?;
+    ensure_directory(&locks)?;
+    let lock_path = locks.join(format!("override-{key}"));
+    reject_symlink(&lock_path)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|e| format!("cannot open repository cache lock: {e}"))?;
+    lock.lock_exclusive()
+        .map_err(|e| format!("cannot lock repository cache: {e}"))?;
+    let destination = trees.join(&key);
+    let manifest_path = trees.join(format!("{key}.json"));
+    reject_symlink(&destination)?;
+    reject_symlink(&manifest_path)?;
+    let warm = || {
+        let reused = destination.is_dir()
+            && fs::read(&manifest_path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).ok())
+                .is_some_and(|manifest| {
+                    manifest.format == FORMAT && tree_matches(&destination, &manifest.files)
+                });
+        if reused {
+            crate::observed_fs::repository_tree(
+                "archive",
+                &spec.canonical,
+                &destination,
+                Some(&manifest_path),
+            );
+        }
+        reused
+    };
+    if warm() {
+        let module_file = read_module(&destination)?;
+        let value = validate(&destination, &module_file)?;
+        return Ok((destination, module_file, value));
+    }
+    let materialized = crate::observed_fs::HeldTaint::new(
+        crate::observed_fs::Taint::RepositoryMaterialized,
+        || format!("archive override @@{}", spec.canonical),
+    );
+    let canonical_id = crate::repository_cache::default_canonical_id(&spec.urls);
+    let (blob, computed) = match &integrity {
+        Some(integrity) => (
+            cached_download(
+                &cache,
+                &spec.urls,
+                integrity,
+                downloads_enabled,
+                &canonical_id,
+            )?,
+            None,
+        ),
+        None => {
+            let (blob, digest) = unverified_download(&cache, &spec.urls, downloads_enabled)?;
+            (blob, Some(digest))
+        }
+    };
+    let staging = tempfile::Builder::new()
+        .prefix(".stage-")
+        .tempdir_in(&trees)
+        .map(crate::repository_store::Scratch::new)
+        .map_err(|e| format!("cannot stage repository: {e}"))?;
+    let url = &spec.urls[0];
+    let mut source = Map::new();
+    if !spec.archive_type.is_empty() {
+        source.insert(
+            "archive_type".into(),
+            Value::String(spec.archive_type.clone()),
+        );
+    }
+    let kind = archive_type(&source, url)?;
+    let archive_name = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| {
+            parsed
+                .path_segments()
+                .and_then(|mut segments| segments.next_back().map(str::to_owned))
+        })
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| url.to_owned());
+    let prefix = spec.strip_prefix.trim_end_matches('/');
+    crate::archive::extract_file(&blob, &kind, prefix, staging.path(), &archive_name).map_err(
+        |failure| match failure {
+            crate::archive::Failure::PrefixNotFound(_) => {
+                format!("Prefix \"{prefix}\" was given, but not found in the archive.")
+            }
+            crate::archive::Failure::Io(message) | crate::archive::Failure::Other(message) => {
+                message
+            }
+        },
+    )?;
+    if !spec.build_file_content.is_empty() {
+        write_source_file(
+            staging.path(),
+            Path::new("BUILD.bazel"),
+            spec.build_file_content.as_bytes(),
+            false,
+        )?;
+    }
+    patches.apply_override_tree(staging.path())?;
+    let module_file = read_module(staging.path())?;
+    let value = validate(staging.path(), &module_file)?;
+    crate::repository_store::seal_tree(staging.path())?;
+    let manifest = Manifest {
+        format: FORMAT.into(),
+        files: snapshot(staging.path())?,
+    };
+    let encoded = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
+    if destination.exists() {
+        crate::repository_ctx::remove_tree(&destination)
+            .map_err(|e| format!("cannot remove corrupt repository cache: {e}"))?;
+    }
+    fs::rename(staging.path(), &destination)
+        .map_err(|e| format!("cannot publish repository: {e}"))?;
+    atomic_write(&manifest_path, &encoded)?;
+    if let Some(digest) = computed {
+        // _update_http_archive_integrity_attrs: the reproducible form
+        // (RepositoryResolvedEvent, printed once per fetch).
+        crate::ui::note(&format!(
+            "DEBUG: Repo '{}' indicated that a canonical reproducible form can be obtained by modifying arguments integrity = \"sha256-{}\"",
+            spec.canonical,
+            base64::engine::general_purpose::STANDARD.encode(digest)
+        ));
+        crate::ui::note(&format!(
+            "DEBUG: Repo {} defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl",
+            spec.canonical
+        ));
+    }
+    if crate::observed_fs::reprobes_executions() && warm() {
+        materialized.settle();
+    }
+    Ok((destination, module_file, value))
+}
+
+/// A download without a declared checksum (http_archive without `sha256`
+/// or `integrity`): the first URL that succeeds, published into the
+/// content-addressed download cache under its computed SHA-256.
+fn unverified_download(
+    cache: &Path,
+    urls: &[String],
+    downloads_enabled: bool,
+) -> Result<(PathBuf, Vec<u8>), String> {
+    if !downloads_enabled {
+        return Err("repository downloads are disabled by --repository_disable_download; the archive has no checksum to find in a cache".into());
+    }
+    let directory = download_cache_dir(cache, "sha256");
+    ensure_directory(&directory)?;
+    let mut failures = Vec::new();
+    for url in urls {
+        let mut temp = tempfile::NamedTempFile::new_in(&directory)
+            .map_err(|e| format!("cannot create download file: {e}"))?;
+        let mut hash = Hash::new(Algorithm::Sha256);
+        match registry::download_to(
+            url,
+            &mut HashingWriter {
+                inner: temp.as_file_mut(),
+                hash: &mut hash,
+            },
+        ) {
+            Ok(_) => {
+                let digest = hash.finish();
+                let path = directory.join(hex(&digest));
+                reject_symlink(&path)?;
+                temp.as_file()
+                    .sync_all()
+                    .map_err(|e| format!("cannot sync downloaded blob: {e}"))?;
+                temp.persist(&path)
+                    .map_err(|e| format!("cannot publish cache file: {e}"))?;
+                return Ok((path, digest));
+            }
+            Err(error) => failures.push(error),
+        }
+    }
+    Err(format!(
+        "all source downloads failed: {}",
+        failures.join("; ")
+    ))
+}
+
 /// Existing-root proof using exactly the normal source/patch/overlay key and
 /// validation prelude. The proof arm returns before any mkdir, lock creation,
 /// warmed-result consumption, download, extraction, patch command or repair.

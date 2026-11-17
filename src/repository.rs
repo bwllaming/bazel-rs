@@ -2972,6 +2972,20 @@ impl RepositorySet {
                     ("commit", V::String(spec.commit.clone())),
                 ],
             ),
+            (ModuleSource::Archive { spec, .. }, _) => {
+                let mut attributes = vec![("urls", V::Strings(spec.urls.clone()))];
+                for (name, value) in [
+                    ("integrity", &spec.integrity),
+                    ("strip_prefix", &spec.strip_prefix),
+                    ("type", &spec.archive_type),
+                    ("build_file_content", &spec.build_file_content),
+                ] {
+                    if !value.is_empty() {
+                        attributes.push((name, V::String(value.clone())));
+                    }
+                }
+                found(HTTP, "http_archive", attributes)
+            }
         }
     }
 
@@ -5255,6 +5269,39 @@ impl RepositorySet {
                     Ok(verified.root)
                 })
             }
+            ModuleSource::Archive {
+                spec,
+                local_patches,
+                root,
+                module_file,
+            } => {
+                if self.state.publication_proof {
+                    return Ok(root);
+                }
+                let roots = self.state.registry_roots.get_or_init(|| {
+                    graph
+                        .modules
+                        .keys()
+                        .map(|name| (name.clone(), OnceLock::new()))
+                        .collect()
+                });
+                guarded_root_slot(&roots[repository], repository, || {
+                    let (verified, _, ()) = crate::materializer::materialize_override(
+                        spec,
+                        local_patches,
+                        self.source_cache_path()?,
+                        self.repository_downloads_enabled(),
+                        false,
+                        |_, bytes| {
+                            if bytes != module_file.as_slice() {
+                                return Err(format!("archive override MODULE differs from resolved graph for repository @@{repository}"));
+                            }
+                            Ok(())
+                        },
+                    )?;
+                    Ok(verified)
+                })
+            }
             ModuleSource::Registry {
                 registry,
                 name,
@@ -6103,6 +6150,15 @@ impl RepositorySet {
             generated_mapping.insert(recorded.name.clone(), canonical);
             generated_order.push(recorded.name.clone());
         }
+        // The root module's override_repo / inject_repo entries win
+        // (ModuleExtensionEvalStarlarkThreadContext.createRepos and
+        // ModuleExtensionRepoMappingEntriesFunction, Bazel 9.3: putAll last).
+        for repo_override in &group.repo_overrides {
+            generated_mapping.insert(
+                repo_override.overridden.clone(),
+                repo_override.canonical.clone(),
+            );
+        }
         let mut repositories = BTreeMap::new();
         let resolution_budget =
             std::cell::RefCell::new(crate::repository_budget::HostBudget::unbounded());
@@ -6118,7 +6174,7 @@ impl RepositorySet {
                 preparation_budget.string(name)?;
                 preparation_budget.recorded(value, 0)?;
             }
-            let canonical_name = generated_mapping[&recorded.name].clone();
+            let canonical_name = format!("{}+{}", group.prefix, recorded.name);
             let attributes = repository_rule::bind_recorded_attributes_where(
                 &recorded.definition,
                 &recorded.attributes,
@@ -6261,6 +6317,12 @@ impl RepositorySet {
             for import in &participant.imports {
                 preparation_budget.string(&import.local_name)?;
                 preparation_budget.string(&import.exported_name)?;
+                if group.repo_override(&import.exported_name).is_some() {
+                    // Imported as the overriding repository (the import
+                    // check skips overridden names, SingleExtensionFunction
+                    // .java:55-60).
+                    continue;
+                }
                 if !repositories.contains_key(&import.exported_name) {
                     import_error.get_or_insert_with(|| format!(
                             "module extension {}%{} did not declare imported repository {:?} (alias @{} in MODULE owner {:?})",
@@ -6275,6 +6337,28 @@ impl RepositorySet {
                     "dev_dependency": import.dev_dependency,
                 }));
             }
+        }
+        // SingleExtensionFunction.java:76-105: overrides apply as declared.
+        for repo_override in &group.repo_overrides {
+            let exists = repositories.contains_key(&repo_override.overridden);
+            let display_id = || format!("{}%{}", group.label.canonical_starlark(), group.symbol);
+            if exists && !repo_override.must_exist {
+                import_error.get_or_insert_with(|| format!(
+                    "module extension {} generates repository \"{}\", yet it is injected via inject_repo() at {}. Use override_repo() instead to override an existing repository.",
+                    display_id(), repo_override.overridden, repo_override.location,
+                ));
+            } else if !exists && repo_override.must_exist {
+                import_error.get_or_insert_with(|| format!(
+                    "module extension {} does not generate repository \"{}\", yet it is overridden via override_repo() at {}. Use inject_repo() instead to inject a new repository.",
+                    display_id(), repo_override.overridden, repo_override.location,
+                ));
+            }
+            // The generated repositories' mapping (and so their identity)
+            // includes the override.
+            imports.push(serde_json::json!({
+                "overridden": repo_override.overridden,
+                "canonical": repo_override.canonical,
+            }));
         }
         // With a lockfile, an extension result may be evaluated or taken
         // from MODULE.bazel.lock; generated repositories then depend only

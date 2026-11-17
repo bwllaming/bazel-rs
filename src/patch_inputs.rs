@@ -150,6 +150,54 @@ impl LocalPatchPlan {
         Ok(())
     }
 
+    /// Validation of a nonregistry override's materialization
+    /// (archive_override / git_override): patch commands run, external
+    /// patch labels are still unsupported.
+    pub fn validate_override_materialization(&self) -> Result<(), String> {
+        for input in &self.inputs {
+            if let Input::External(label) = input {
+                return Err(format!(
+                    "canonical external patch {label} is unsupported for materialization; no external patch repository is fetched"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// utils.bzl `patch` of http_archive / git_repository: the patch files
+    /// in order (native patcher), then each patch command through
+    /// `bash -c` in the repository root, failing with
+    /// `Error applying patch command CMD:\nSTDOUTSTDERR`.
+    pub fn apply_override_tree(&self, root: &Path) -> Result<(), String> {
+        self.validate_override_materialization()?;
+        for input in &self.inputs {
+            if let Input::Main { label, patch, .. } = input {
+                patch
+                    .apply_tree(root)
+                    .map_err(|e| format!("cannot apply patch {label}: {e}"))?;
+            }
+        }
+        let bash = std::env::var_os("BAZEL_SH").unwrap_or_else(|| "bash".into());
+        for command in &self.commands {
+            let output = crate::spawn_lock::output(
+                std::process::Command::new(&bash)
+                    .arg("-c")
+                    .arg(command)
+                    .current_dir(root)
+                    .stdin(std::process::Stdio::null()),
+            )
+            .map_err(|e| format!("Error applying patch command {command}:\n{e}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "Error applying patch command {command}:\n{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn has_transformations(&self) -> bool {
         !self.inputs.is_empty() || !self.commands.is_empty()
     }

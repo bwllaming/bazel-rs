@@ -304,6 +304,14 @@ pub enum ModuleSource {
         local_patches: LocalPatchPlan,
         tree: GitTree,
     },
+    /// An `archive_override`: the tree discovery materialized (its MODULE
+    /// file was evaluated from it).
+    Archive {
+        spec: crate::materializer::ArchiveOverride,
+        local_patches: LocalPatchPlan,
+        root: PathBuf,
+        module_file: Vec<u8>,
+    },
     Registry {
         registry: Registry,
         name: String,
@@ -1047,22 +1055,60 @@ impl Discovery<'_> {
                 tag,
                 branch,
                 init_submodules,
+                recursive_init_submodules,
                 strip_prefix,
+                build_file_content,
                 patches,
+                unsupported,
             }) => {
-                if !tag.is_empty() || !branch.is_empty() || *init_submodules {
+                if let Some(attribute) = unsupported.first() {
                     return Err(format!(
-                        "git_override for module {name:?} supports only full commit pins; tags, branches and init_submodules are not implemented"
+                        "git_override for module {name:?}: git_repository attribute {attribute:?} is not implemented natively"
                     ));
                 }
+                // git.bzl _clone_or_update_repo.
+                if [commit, tag, branch]
+                    .iter()
+                    .filter(|v| !v.is_empty())
+                    .count()
+                    > 1
+                {
+                    return Err(format!(
+                        "error fetching git_override of module {name:?} (@@{name}+): At most one of commit, tag, or branch may be provided"
+                    ));
+                }
+                let commit = if !commit.is_empty() {
+                    commit.clone()
+                } else {
+                    let reference = if !tag.is_empty() {
+                        git_source::GitRef::Tag(tag)
+                    } else if !branch.is_empty() {
+                        git_source::GitRef::Branch(branch)
+                    } else {
+                        git_source::GitRef::Head
+                    };
+                    git_source::resolve_ref(
+                        remote,
+                        reference,
+                        self.source_cache,
+                        self.options.allow_remote,
+                    )
+                    .map_err(|error| {
+                        format!(
+                            "error fetching git_override of module {name:?} (@@{name}+): {error}"
+                        )
+                    })?
+                };
                 let spec = GitSpec {
                     remote: remote.clone(),
-                    commit: commit.clone(),
+                    commit,
                     strip_prefix: strip_prefix.clone(),
+                    init_submodules: *init_submodules || *recursive_init_submodules,
+                    build_file_content: build_file_content.clone(),
                 };
                 spec.validate(self.options.allow_remote)?;
                 let local_patches = patch_inputs::snapshot(&self.root_path, self.root, patches)?;
-                local_patches.validate_materialization()?;
+                local_patches.validate_override_materialization()?;
                 let (tree, module) = git_source::resolve_current(
                     &spec,
                     &local_patches,
@@ -1098,9 +1144,72 @@ impl Discovery<'_> {
                     },
                 ));
             }
-            Some(ModuleOverride::Archive { .. }) => {
-                return Err(format!(
-                    "archive_override for module {name:?} is unsupported: no archive fetching/extraction"
+            Some(ModuleOverride::Archive {
+                urls,
+                integrity,
+                sha256,
+                strip_prefix,
+                archive_type,
+                build_file_content,
+                patches,
+                unsupported,
+            }) => {
+                if let Some(attribute) = unsupported.first() {
+                    return Err(format!(
+                        "archive_override for module {name:?}: http_archive attribute {attribute:?} is not implemented natively"
+                    ));
+                }
+                let spec = crate::materializer::ArchiveOverride {
+                    canonical: format!("{name}+"),
+                    urls: urls.clone(),
+                    integrity: if integrity.is_empty() && !sha256.is_empty() {
+                        crate::materializer::sha256_integrity(sha256)?
+                    } else {
+                        integrity.clone()
+                    },
+                    strip_prefix: strip_prefix.clone(),
+                    archive_type: archive_type.clone(),
+                    build_file_content: build_file_content.clone(),
+                };
+                let local_patches = patch_inputs::snapshot(&self.root_path, self.root, patches)?;
+                let (root, module_file, module) = crate::materializer::materialize_override(
+                    &spec,
+                    &local_patches,
+                    self.source_cache,
+                    true,
+                    self.options.registry_session.publication_proof(),
+                    |root, bytes| {
+                        let path = root.join("MODULE.bazel").display().to_string();
+                        let source = String::from_utf8(bytes.to_vec())
+                            .map_err(|error| format!("MODULE file {path} is not UTF-8: {error}"))?;
+                        let module = bzlmod::evaluate_source_with_builtins(
+                            &non_registry_module_file(name),
+                            source,
+                            EvaluationContext {
+                                role: ModuleRole::Dependency,
+                                ignore_dev_dependencies: self.options.ignore_dev_dependencies,
+                                isolated_extension_usages: self.options.isolated_extension_usages,
+                                print_is_noop: false,
+                            },
+                            injection,
+                        )?;
+                        validate_declared_module(&module, name, None, &path)?;
+                        Ok(module)
+                    },
+                )
+                .map_err(|error| {
+                    format!(
+                        "error fetching archive_override of module {name:?} (@@{name}+): {error}"
+                    )
+                })?;
+                return Ok((
+                    module,
+                    ModuleSource::Archive {
+                        spec,
+                        local_patches,
+                        root,
+                        module_file,
+                    },
                 ));
             }
             _ => {}
