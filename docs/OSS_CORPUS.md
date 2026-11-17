@@ -255,7 +255,7 @@ same exit codes, `query //...` labels, `bazel-bin` file lists, sampled
 SHA-256s and test results. abseil-cpp is the largest: 2,767 outputs and 252
 passing tests. Two more (rules-template, yalantinglibs) fail the same way on
 both tools. Three are clean except for one bug each: bazel-gazelle (B13,
-since fixed),
+fixed since, gazelle not rerun),
 buildtools (B15) and rules_python-bzlmod (B7). The rest are blocked by the
 bugs below. Most block loading, analysis or module resolution, not
 execution: where both tools built, the outputs were identical except in
@@ -277,7 +277,7 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B11 | 2 (tink-cc, capnproto); every boringssl user | `strip_prefix` with a trailing `/` rejected |
 | B14 | 3 (tink-cc, examples-java-maven, examples-frontend) | internal errors "has no recorded duplicate-label check" / "internal analysis order error" |
 | B4 | 2 (examples-java-maven, rules_jvm_external-simple); every rules_android user | `android_common` global undefined |
-| B13 | fixed (bazel-gazelle, bazel-skylib, rules_zig, rules_cc) | analysis tests: `analysis_test_transition`, `testing.analysis_test`, `Target.actions`, `AnalysisFailureInfo` (docs/ANALYSIS_TESTS.md) |
+| B13 | fixed (bazel-skylib, rules_zig, rules_cc; bazel-gazelle not rerun) | analysis tests: `analysis_test_transition`, `testing.analysis_test`, `Target.actions`, `AnalysisFailureInfo` (docs/ANALYSIS_TESTS.md) |
 | B13a | 1 (bazel-skylib) | transition on `//command_line_option:minimum_os_version` and `ctx.fragments.cpp.minimum_os_version()` |
 | B13b | 1 (bazel-skylib) | `srcs = ["."]` (the package directory as a source label): "unsafe source label //tests/directory:." |
 | B13c | 1 (rules_zig) | one toolchain implementation for two execution platforms in one configuration (ConfiguredTargetKey.executionPlatformLabel), a fatal error |
