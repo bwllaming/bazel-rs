@@ -151,6 +151,19 @@ def _top_impl(ctx):
 
 top_rule = rule(_top_impl, attrs = {"dep": attr.label(providers = [HInfo])})
 
+def _transient_impl(ctx):
+    # Closures capturing `ctx` in depsets the implementation discards; the
+    # module freeze keeps nothing of them.
+    d = depset([struct(f = lambda: ctx.label.name)])
+    names = [x.f() for x in d.to_list()]
+    t = depset([(lambda: ctx.label.package, 1)], transitive = [depset([(lambda: "x", 2)])])
+    names += [x[0]() for x in t.to_list()]
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, "transient=%r\n" % names)
+    return [DefaultInfo(files = depset([out]))]
+
+transient = rule(_transient_impl)
+
 def _bad_impl(ctx):
     kind = ctx.attr.kind
     if kind == "bound_method":
@@ -159,6 +172,10 @@ def _bad_impl(ctx):
         depset([len])
     elif kind == "dict_get":
         depset([struct(f = {}.get)])
+    elif kind == "kept_ctx":
+        # Kept: a returned provider holds the depset of a closure capturing
+        # `ctx` (genuine succeeds; natively `ctx` cannot be frozen).
+        return [HInfo(twins = [], same = [], d = depset([struct(f = lambda: ctx.label)]), s = None, fn = None)]
     return []
 
 bad = rule(_bad_impl, attrs = {"kind": attr.string()})

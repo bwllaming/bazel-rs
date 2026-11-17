@@ -208,7 +208,7 @@ fn element_checks_and_gaps() {
 fn closures_lambdas_and_nested_defs_follow_bazel() {
     let ws = Workspace::fixture();
     let mut report = String::new();
-    for target in ["r_default", "r_post", "r_pre", "r_topo", "t"] {
+    for target in ["r_default", "r_post", "r_pre", "r_topo", "t", "tr"] {
         let label = format!("//dc:{target}");
         let output = ws.run(&[&label]);
         assert!(
@@ -237,6 +237,97 @@ fn closures_lambdas_and_nested_defs_follow_bazel() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let path = stdout.lines().next().unwrap().split_once('\t').unwrap().1;
     assert_eq!(fs::read_to_string(path).unwrap(), "1\n");
+    // A returned provider keeping a depset of a closure that captured `ctx`:
+    // genuine succeeds; natively `ctx` cannot be frozen, explicitly. (The
+    // same closures in discarded depsets, //dc:tr above, are not frozen.)
+    let output = ws.run(&["//dc:bad_kept_ctx"]);
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains("captured the rule context `ctx`, which the native profile cannot freeze"),
+        "{text}"
+    );
+    assert!(!text.contains("panicked"), "{text}");
+}
+
+/// The closures fixture under the parallel evaluator's discarded attempts
+/// (BAZEL_RS_EVAL_RESTARTS: attempts abandoned and evaluated again, whose
+/// modules never freeze, so their retained values are dropped with their
+/// heaps) at 8 and 32 threads, with and without `-k` (`-k` also analyses
+/// the failing //dc:bad_kept_ctx beside them): the same reports.
+#[test]
+fn closures_under_evaluator_restarts_and_threads() {
+    let ws = Workspace::fixture();
+    let expected =
+        fs::read_to_string(manifest().join("tests/fixtures/depset_structs/closures_expected.txt"))
+            .unwrap();
+    let targets = ["r_default", "r_post", "r_pre", "r_topo", "t", "tr"];
+    for (threads, seed, keep_going) in [(8, "5", true), (32, "7", true), (8, "11", false)] {
+        let cache = format!("restart-cache-{threads}-{seed}");
+        let mut args = vec![
+            "--ignore_all_rc_files".to_owned(),
+            format!("--cache-dir={cache}"),
+            "build".to_owned(),
+            "--experimental-builtin-modules".to_owned(),
+            format!(
+                "--registry=file://{}/tests/fixtures/builtin_modules/registry",
+                manifest().display()
+            ),
+            format!("--loading_phase_threads={threads}"),
+        ];
+        if keep_going {
+            args.push("-k".to_owned());
+            args.push("//dc:bad_kept_ctx".to_owned());
+        }
+        args.extend(targets.iter().map(|target| format!("//dc:{target}")));
+        let output = Command::new("timeout")
+            .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
+            .args(&args)
+            .env("BAZEL_RS_ANALYSIS", "eval")
+            .env("BAZEL_RS_EVAL_RESTARTS", seed)
+            .env("BAZEL_RS_SNAPSHOT", "off")
+            .current_dir(ws.0.path())
+            .explicit_modules()
+            .output()
+            .unwrap();
+        let what = format!("{threads} threads, restarts {seed}, -k {keep_going}");
+        let text = String::from_utf8_lossy(&output.stderr);
+        assert!(!text.contains("panicked"), "{what}: {text}");
+        assert_eq!(
+            output.status.code(),
+            Some(if keep_going { 1 } else { 0 }),
+            "{what}: {text}"
+        );
+        let mut report = String::new();
+        for target in targets {
+            let path = find_output(&ws.0.path().join(&cache), &format!("{target}.txt"))
+                .unwrap_or_else(|| panic!("{what}: no output of //dc:{target}"));
+            report.push_str(&format!("== {target}\n"));
+            report.push_str(&fs::read_to_string(path).unwrap());
+        }
+        assert_eq!(report, expected, "{what}");
+    }
+}
+
+/// The first file named `name` in a `bin/dc` directory below `dir`.
+fn find_output(dir: &Path, name: &str) -> Option<PathBuf> {
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries {
+        let path = entry.ok()?.path();
+        let metadata = fs::symlink_metadata(&path).ok()?;
+        if metadata.is_dir() {
+            if let Some(found) = find_output(&path, name) {
+                return Some(found);
+            }
+        } else if path.file_name().is_some_and(|file| file == name)
+            && path
+                .parent()
+                .is_some_and(|parent| parent.ends_with("bin/dc"))
+        {
+            return Some(path);
+        }
+    }
+    None
 }
 
 /// N49b: frozen lists/dicts inside struct elements and the single-transitive

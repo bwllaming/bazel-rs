@@ -89,3 +89,5 @@ gc_after_freeze=gc-lambda True
 == t
 top=2 ["mine-r_default", "mine-r_default"]
 top_eq=True True
+== tr
+transient=["tr", "x", "dc"]

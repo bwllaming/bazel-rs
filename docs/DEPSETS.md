@@ -145,6 +145,20 @@ snapshot must keep each function alive and reachable from any heap
   explicit gap. Before the freeze only the evaluating heap can reach the
   depset — nothing carries a depset out of an evaluation but its frozen
   module's values — so the retained value is always found.
+- The freeze keeps only the retained values the module keeps: those its
+  values reach, and those of every depset value it keeps (each depset node
+  records the retained values its elements and children hold,
+  `DepsetNode::pending`, and a depset value anchors them,
+  starlark::values::Heap::anchor). A depset the implementation discarded is
+  not frozen with its closures: they may capture `ctx`, which cannot be
+  frozen natively (`//dc:tr`). A kept one whose closure captured `ctx` is an
+  explicit error: `unsupported provider payload: … (a function kept by a
+  returned value — a provider field, or an element of a depset it holds —
+  captured the rule context `ctx`, which the native profile cannot freeze)`
+  (genuine keeps it; `//dc:bad_kept_ctx`). Discarded evaluator attempts
+  (`BAZEL_RS_EVAL_RESTARTS`) never freeze their modules; their depsets die
+  with them (tests/depset_structs.rs
+  `closures_under_evaluator_restarts_and_threads`).
 
 An item's identity is the frozen function's address — known for global and
 other frozen functions, and for a retained one once its module froze — or,

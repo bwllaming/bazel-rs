@@ -212,6 +212,13 @@ mod owned {
         /// derived, never serialized (one byte in the node's padding).
         #[allocative(skip)]
         pub(super) flat_walks: std::sync::atomic::AtomicU8,
+        /// The retained values of the evaluating heap, not frozen yet,
+        /// that the node's elements (and its children's) hold
+        /// (crate::depset_items::pending_handles): a depset value of the
+        /// node pins them for the module freeze
+        /// (starlark::values::Heap::anchor). Derived, never serialized.
+        #[allocative(skip)]
+        pub(crate) pending: Option<Arc<Vec<starlark::values::RetainedValue>>>,
     }
 
     #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagable)]
@@ -398,7 +405,51 @@ pub(crate) fn file_root(value: Value<'_>) -> Option<(&str, bool)> {
 starlark_simple_value!(File);
 starlark_simple_value!(FileRoot);
 starlark_simple_value!(LabelValue);
-starlark_simple_value!(Depset);
+// starlark_simple_value!(Depset), but a depset value holding retained
+// values of the evaluating heap anchors them for the module freeze
+// (crate::depset_items::pending_handles).
+impl<'v> starlark::values::AllocValue<'v> for Depset {
+    fn alloc_value(self, heap: Heap<'v>) -> Value<'v> {
+        let pending = self.node.pending.clone();
+        let value = heap.alloc_simple(self);
+        if let Some(pending) = pending {
+            heap.anchor(value, &pending);
+        }
+        value
+    }
+}
+
+impl starlark::values::AllocFrozenValue for Depset {
+    fn alloc_frozen_value(
+        self,
+        heap: &starlark::values::FrozenHeap,
+    ) -> starlark::values::FrozenValue {
+        heap.alloc_simple(self)
+    }
+}
+
+impl Depset {
+    /// Downcast a value to a depset.
+    pub fn from_value<'v>(x: Value<'v>) -> Option<&'v Self> {
+        starlark::values::ValueLike::downcast_ref::<Depset>(x)
+    }
+}
+
+impl starlark::values::type_repr::StarlarkTypeRepr for &Depset {
+    type Canonical = Depset;
+
+    fn starlark_type_repr() -> starlark::typing::Ty {
+        <Depset as StarlarkValue>::get_type_starlark_repr()
+    }
+}
+
+impl<'v> starlark::values::UnpackValue<'v> for &'v Depset {
+    type Error = std::convert::Infallible;
+
+    fn unpack_value_impl(x: Value<'v>) -> Result<Option<&'v Depset>, Self::Error> {
+        Ok(Depset::from_value(x))
+    }
+}
 starlark_simple_value!(DefaultInfoConstructor);
 starlark_simple_value!(DefaultInfoValue);
 starlark_simple_value!(TargetValue);
@@ -1435,10 +1486,12 @@ impl Depset {
         {
             bail!("depset exceeds DAG depth limit {limit}");
         }
+        let pending = crate::depset_items::pending_handles(&direct, &children);
         Ok(Self {
             node: Arc::new(DepsetNode {
                 empty: direct.is_empty() && children.is_empty(),
                 singleton: Singleton::compose(&direct, &children),
+                pending,
                 direct,
                 children,
                 order,
@@ -1816,6 +1869,7 @@ impl starlark::pagable::StarlarkDeserialize for DepsetNode {
             depth: usize::starlark_deserialize(ctx)?,
             empty: bool::starlark_deserialize(ctx)?,
             flat_walks: std::sync::atomic::AtomicU8::new(0),
+            pending: None,
         })
     }
 }

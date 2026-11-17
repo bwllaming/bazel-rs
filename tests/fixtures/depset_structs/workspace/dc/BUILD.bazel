@@ -1,4 +1,4 @@
-load(":defs.bzl", "bad", "leaf", "report", "top_rule")
+load(":defs.bzl", "bad", "leaf", "report", "top_rule", "transient")
 
 leaf(name = "a")
 
@@ -14,8 +14,11 @@ report(name = "r_topo", deps = [":a", ":b"], order = "topological")
 
 top_rule(name = "t", dep = ":r_default")
 
+transient(name = "tr")
+
 [bad(name = "bad_" + kind, kind = kind) for kind in [
     "bound_method",
     "builtin_element",
     "dict_get",
+    "kept_ctx",
 ]]

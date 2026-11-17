@@ -429,8 +429,7 @@ enum FunctionRef {
 /// an evaluation of that heap, and nothing carries a depset out of an
 /// evaluation but the frozen module's values — and after the freeze the
 /// handle owns the frozen value.
-const RETAINED_REACH: &str =
-    "a retained depset element value is reached before its module froze, on another heap";
+const RETAINED_REACH: &str = "a retained depset element value is reached before its module froze, on another heap, or after a freeze that dropped it (no value the module keeps reached it)";
 
 #[derive(Debug)]
 struct RetainedFunction {
@@ -494,7 +493,16 @@ impl FunctionItem {
 
     /// Whether the function is retained and not frozen yet.
     fn pending(&self) -> bool {
-        matches!(&self.0, FunctionRef::Retained(function) if function.handle.owned().is_none())
+        matches!(&self.0, FunctionRef::Retained(function) if function.handle.is_pending())
+    }
+
+    fn pending_handle(&self) -> Option<&starlark::values::RetainedValue> {
+        match &self.0 {
+            FunctionRef::Retained(function) if function.handle.is_pending() => {
+                Some(&function.handle)
+            }
+            _ => None,
+        }
     }
 
     /// The function's repr.
@@ -544,6 +552,57 @@ pub(crate) fn function_item<'v>(
         Some(frozen) => Some(FunctionItem::owned(eval.heap().owned_frozen_value(frozen))),
         None => FunctionItem::retained(eval.heap(), value),
     }
+}
+
+/// The retained values not frozen yet that a new depset node of `direct`
+/// elements and `children` holds: those of its elements (functions and
+/// struct elements retained by the evaluating heap, nested depsets' own) and
+/// its children's. A depset value of the node anchors them, so the module
+/// freeze freezes exactly the retained values a value it keeps can reach
+/// through depsets (starlark::values::Heap::anchor); the others — a
+/// discarded depset's closures, which may capture values that cannot be
+/// frozen such as `ctx` — are dropped with the heap.
+pub(crate) fn pending_handles(
+    direct: &[Item],
+    children: &[Arc<crate::starlark_types::DepsetNode>],
+) -> Option<Arc<Vec<starlark::values::RetainedValue>>> {
+    fn collect(item: &Item, out: &mut Vec<starlark::values::RetainedValue>) {
+        match item {
+            Item::Function(function) => out.extend(function.pending_handle().cloned()),
+            Item::Struct(structure) => {
+                if let Some(handle) = structure.retained.as_ref().filter(|h| h.is_pending()) {
+                    out.push(handle.clone());
+                    for (_, field) in &structure.fields {
+                        collect(field, out);
+                    }
+                }
+            }
+            Item::Tuple(items) => items.iter().for_each(|item| collect(item, out)),
+            Item::Depset(depset) => extend(depset.0.node.pending.as_deref(), out),
+            _ => {}
+        }
+    }
+    fn extend(
+        pending: Option<&Vec<starlark::values::RetainedValue>>,
+        out: &mut Vec<starlark::values::RetainedValue>,
+    ) {
+        if let Some(pending) = pending {
+            out.extend(pending.iter().filter(|h| h.is_pending()).cloned());
+        }
+    }
+    let mut out = Vec::new();
+    for item in direct {
+        collect(item, &mut out);
+    }
+    for child in children {
+        extend(child.pending.as_deref(), &mut out);
+    }
+    if out.is_empty() {
+        return None;
+    }
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|handle| seen.insert(handle.handle_address()));
+    Some(Arc::new(out))
 }
 
 impl Item {

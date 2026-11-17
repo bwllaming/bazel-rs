@@ -9,15 +9,22 @@
   "env": "env PATH=/usr/bin:/bin HOME=<private> TMPDIR=<private>"
  },
  "fixture_sha256": {
-  "tests/fixtures/depset_structs/workspace/dc/BUILD.bazel": "9204b1887a076ad5f04fcb0ad5b0ecaec083efdd3fe49e0cc8bbb16f36ba8f0e",
-  "tests/fixtures/depset_structs/workspace/dc/defs.bzl": "5777486680d60fb6dd49fdff59aa06c04f271e9a0c941bf964505c9a63ce6ea8"
+  "tests/fixtures/depset_structs/workspace/dc/BUILD.bazel": "544d6291961e00ecd2f22a7730091b14d1c42bf96e3a2005e791f0d6a2d2cdbc",
+  "tests/fixtures/depset_structs/workspace/dc/defs.bzl": "5720f7f579370aeae65baaa384aca399ff0ad71320cc3c34ffe689aa95be89d3"
  },
  "scenarios": {
   "reports": {
-   "targets": ["//dc:r_default", "//dc:r_post", "//dc:r_pre", "//dc:r_topo", "//dc:t"],
+   "targets": [
+    "//dc:r_default",
+    "//dc:r_post",
+    "//dc:r_pre",
+    "//dc:r_topo",
+    "//dc:t",
+    "//dc:tr"
+   ],
    "reference_exit": 0,
    "reference_outputs": "closures_expected.txt (each target's bazel-bin/dc/<name>.txt after a `== <name>` line)",
-   "closures_expected_sha256": "0c8ab68c75de88545307c4b9c87a03b455c98b97a3b405ac135897c8045dca1d",
+   "closures_expected_sha256": "b407daf62ac76532c46395cd8a03c318c3966bbcced89ce4c59305f36248c0af",
    "native": "equal bytes (tests/depset_structs.rs closures_lambdas_and_nested_defs_follow_bazel)"
   },
   "errors": {
@@ -29,13 +36,24 @@
   "N49 G/lambda_field": {
    "target": "//ds:bad_lambda_field",
    "reference_exit": 0,
-   "reference_outputs": [["bazel-out/k8-fastbuild/bin/ds/bad_lambda_field.txt", "1\n"]],
+   "reference_outputs": [
+    [
+     "bazel-out/k8-fastbuild/bin/ds/bad_lambda_field.txt",
+     "1\n"
+    ]
+   ],
    "native": "equal (the N49 declared gap of reference_receipt.json is closed)"
+  },
+  "kept_ctx": {
+   "target": "//dc:bad_kept_ctx",
+   "reference_exit": 0,
+   "native": "exit 1: unsupported provider payload ... captured the rule context `ctx`, which the native profile cannot freeze (declared gap: ctx cannot be frozen natively)"
   }
  },
  "findings": [
   "Every Starlark function is immutable (StarlarkFunction.isImmutable); equality is the per-instantiation token: twins with equal fields and distinct lambdas are 2 elements, one provider instance twice is 1.",
   "A dependency's depset built before its freeze deduplicates against the same closures and struct read from its frozen provider (dep_combined=2, top=2).",
-  "Built-in functions and bound methods (\"x\".upper, {}.get, len) are rejected as mutable."
+  "Built-in functions and bound methods (\"x\".upper, {}.get, len) are rejected as mutable.",
+  "Closures capturing ctx in discarded depsets (//dc:tr) and in a returned provider's depset (//dc:bad_kept_ctx) are both accepted."
  ]
 }

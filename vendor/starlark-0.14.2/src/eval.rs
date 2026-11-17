@@ -16,6 +16,8 @@
  */
 
 // Modified for native Bazel 9.3 string literal values; see vendor provenance.
+// Modified (bazel-rs): the evaluating heap references the globals' heap
+// (Heap::owned_frozen_value); see vendor provenance.
 
 //! Evaluate some code, typically done by creating an [`Evaluator`], then calling
 //! [`eval_module`](Evaluator::eval_module).
@@ -118,6 +120,9 @@ impl<'v, 'a, 'e> Evaluator<'v, 'a, 'e> {
         )?;
 
         self.frozen_heap().add_reference(globals.heap());
+        // Modified (bazel-rs): the heap references what it reaches
+        // (Heap::owned_frozen_value).
+        self.heap().add_reference(globals.heap());
 
         let scope_names = scope_data.get_scope(ScopeId::module());
         let local_names = self.frozen_heap().alloc_any_array_value(&scope_names.used);

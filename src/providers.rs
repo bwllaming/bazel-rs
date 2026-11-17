@@ -795,6 +795,14 @@ pub(crate) fn check_freezable_payloads<'v>(
 /// analysis-bound value captured by a closure): the same rejection class,
 /// with the freezer's message.
 pub(crate) fn unsupported_payload_freeze(error: starlark::values::FreezeError) -> anyhow::Error {
+    if error.err_msg.contains("RuleCtx") {
+        // Bazel keeps such a closure (the rule context is only unusable
+        // after the analysis); natively the context cannot be frozen.
+        return anyhow!(
+            "unsupported provider payload: {} (a function kept by a returned value — a provider field, or an element of a depset it holds — captured the rule context `ctx`, which the native profile cannot freeze)",
+            error.err_msg
+        );
+    }
     anyhow!("unsupported provider payload: {}", error.err_msg)
 }
 

@@ -159,6 +159,9 @@ impl OwnedHeap {
 struct RetainedRoots<'v> {
     values: Vec<(Value<'v>, RetainedValue)>,
     by_identity: HashMap<usize, usize>,
+    /// Values that pin retained values ([`Heap::anchor`]): the indexes in
+    /// `values` frozen when the anchor value is.
+    anchors: Vec<(Value<'v>, Box<[usize]>)>,
 }
 
 /// Modified (bazel-rs): a value of a heap held by data outside that heap.
@@ -180,6 +183,8 @@ struct RetainedInner {
     /// The address of the value when it was retained frozen.
     frozen_address: Option<usize>,
     frozen: std::sync::OnceLock<OwnedFrozenValue>,
+    /// The module froze without the value: nothing it keeps reached it.
+    dropped: std::sync::atomic::AtomicBool,
 }
 
 impl RetainedValue {
@@ -199,6 +204,16 @@ impl RetainedValue {
                 .get()
                 .map(|owned| owned.value().identity_address())
         })
+    }
+
+    /// Whether the module of the retaining heap has not frozen yet (the
+    /// handle neither owns its frozen value nor was dropped by the freeze).
+    pub fn is_pending(&self) -> bool {
+        self.0.frozen.get().is_none() && !self.0.dropped.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(crate) fn set_dropped(&self) {
+        self.0.dropped.store(true, std::sync::atomic::Ordering::Release);
     }
 
     /// The identity of this handle (one per retained value and heap).
@@ -285,6 +300,16 @@ impl<'v> Heap<'v> {
         }
     }
 
+    /// Modified (bazel-rs): whether `value` is frozen or was frozen by the
+    /// freeze under way (it has been replaced with a forward).
+    pub(crate) fn is_frozen_or_forwarded(value: Value<'v>) -> bool {
+        value.unpack_frozen().is_some()
+            || matches!(
+                value.0.unpack_ptr().map(|ptr| ptr.unpack()),
+                Some(AValueOrForwardUnpack::Forward(_))
+            )
+    }
+
     /// Modified (bazel-rs): `value`, a frozen value this heap reaches, owned
     /// by a frozen heap that references every frozen heap this heap
     /// references now (shared until this heap references another one).
@@ -337,6 +362,7 @@ impl<'v> Heap<'v> {
             index,
             frozen_address: value.unpack_frozen().map(|_| identity),
             frozen: std::sync::OnceLock::new(),
+            dropped: std::sync::atomic::AtomicBool::new(false),
         }));
         roots.values.push((value, handle.dupe()));
         roots.by_identity.insert(identity, index);
@@ -359,7 +385,23 @@ impl<'v> Heap<'v> {
             .map(|(value, _)| *value)
     }
 
-    /// Garbage collection: the retained values are roots.
+    /// Modified (bazel-rs): `anchor` pins the retained `handles` of this
+    /// heap: a module freeze that freezes `anchor` (it is reachable from
+    /// the module's values) freezes them too (data outside the heap that
+    /// `anchor` stands for refers to them). Handles of other heaps, or no
+    /// longer pending, are ignored.
+    pub fn anchor(self, anchor: Value<'v>, handles: &[RetainedValue]) {
+        let indexes: Box<[usize]> = handles
+            .iter()
+            .filter(|handle| handle.0.heap == self.0.id && handle.is_pending())
+            .map(|handle| handle.0.index)
+            .collect();
+        if !indexes.is_empty() {
+            self.retained_roots().anchors.push((anchor, indexes));
+        }
+    }
+
+    /// Garbage collection: the retained values and anchors are roots.
     pub(crate) fn trace_retained(self, tracer: &Tracer<'v>) {
         let mut roots = self.retained_roots();
         let roots = &mut *roots;
@@ -371,13 +413,21 @@ impl<'v> Heap<'v> {
             tracer.trace(value);
             roots.by_identity.insert(value.identity_address(), index);
         }
+        for (anchor, _) in roots.anchors.iter_mut() {
+            tracer.trace(anchor);
+        }
     }
 
-    /// The retained values, to freeze with the module.
-    pub(crate) fn take_retained(self) -> Vec<(Value<'v>, RetainedValue)> {
+    /// The retained values and anchors, to freeze with the module.
+    pub(crate) fn take_retained(
+        self,
+    ) -> (
+        Vec<(Value<'v>, RetainedValue)>,
+        Vec<(Value<'v>, Box<[usize]>)>,
+    ) {
         let mut roots = self.retained_roots();
         roots.by_identity.clear();
-        mem::take(&mut roots.values)
+        (mem::take(&mut roots.values), mem::take(&mut roots.anchors))
     }
 
     /// Get access to the underlying value within the context of this heap.

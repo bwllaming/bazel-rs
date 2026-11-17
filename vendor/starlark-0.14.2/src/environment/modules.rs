@@ -236,6 +236,9 @@ impl FrozenModule {
     pub fn from_globals(globals: &Globals) -> FreezeResult<FrozenModule> {
         Module::with_temp_heap(|module| {
             module.frozen_heap.add_reference(globals.heap());
+            // Modified (bazel-rs): the heap references what it reaches
+            // (Heap::owned_frozen_value).
+            module.heap().add_reference(globals.heap());
 
             for (name, value) in globals.iter() {
                 module.set(name, value.to_value());
@@ -569,13 +572,40 @@ impl<'v> Module<'v> {
         }
         let slots = slots.freeze(&freezer)?;
         let extra_value = extra_value.into_inner().freeze(&freezer)?;
-        // Modified (bazel-rs): the values the heap retained (Heap::retain),
-        // owned by the frozen heap once it exists.
-        let retained = heap
-            .take_retained()
-            .into_iter()
-            .map(|(value, handle)| Ok((value.freeze(&freezer)?, handle)))
-            .collect::<FreezeResult<Vec<_>>>()?;
+        // Modified (bazel-rs): the values the heap retained (Heap::retain)
+        // that the module keeps: reached from its slots, or pinned by an
+        // anchor it reaches (Heap::anchor; to a fixpoint, as freezing a
+        // pinned value may reach more anchors). They are owned by the frozen
+        // heap once it exists; the others are dropped with the heap (their
+        // handles give nothing back), never frozen.
+        let (retained_values, anchors) = heap.take_retained();
+        let mut anchors: Vec<Option<(Value<'v>, Box<[usize]>)>> =
+            anchors.into_iter().map(Some).collect();
+        loop {
+            let mut pinned = Vec::new();
+            for anchor in anchors.iter_mut() {
+                if anchor
+                    .as_ref()
+                    .is_some_and(|(value, _)| Heap::is_frozen_or_forwarded(*value))
+                {
+                    pinned.extend(anchor.take().unwrap().1);
+                }
+            }
+            if pinned.is_empty() {
+                break;
+            }
+            for index in pinned {
+                retained_values[index].0.freeze(&freezer)?;
+            }
+        }
+        let mut retained = Vec::new();
+        for (value, handle) in retained_values {
+            if Heap::is_frozen_or_forwarded(value) {
+                retained.push((value.freeze(&freezer)?, handle));
+            } else {
+                handle.set_dropped();
+            }
+        }
         let stacks = if let Some(mode) = heap_profile_on_freeze.get() {
             // TODO(nga): retained heap profile does not store information about data
             //   allocated in frozen heap before freeze starts.
@@ -646,6 +676,9 @@ impl<'v> Module<'v> {
     /// Import symbols from a module, similar to what is done during `load()`.
     pub fn import_public_symbols(&self, module: &FrozenModule) {
         self.frozen_heap.add_reference(&module.heap);
+        // Modified (bazel-rs): the heap references what it reaches
+        // (Heap::owned_frozen_value).
+        self.heap().add_reference(&module.heap);
         for (k, slot) in module.module.names.symbols() {
             if Self::default_visibility(&k) == Visibility::Public {
                 if let Some(value) = module.module.slots.get_slot(slot) {

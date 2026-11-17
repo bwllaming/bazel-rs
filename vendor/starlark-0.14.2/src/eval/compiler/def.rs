@@ -1208,6 +1208,9 @@ impl<'v> PortableDef<Value<'v>> {
             return Err(format!("function {} has more parameters", self.name));
         }
         module.frozen_heap().add_reference(defining.frozen_heap());
+        // Modified (bazel-rs): the heap references what it reaches
+        // (Heap::owned_frozen_value).
+        module.heap().add_reference(defining.frozen_heap());
         let heap = module.heap();
         let captured = self
             .captured

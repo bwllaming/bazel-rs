@@ -649,10 +649,23 @@ vendored files carry the support (each with a header notice):
     once the module froze. `Heap::retain` returns `None` unless enabled. The
     roots are traced by a garbage collection (`trace_retained`, which also
     re-indexes them by their moved identity).
-* `src/environment/modules.rs`: `Module::trace` traces the retained roots;
-  `Module::freeze` freezes them with the module's slots (before the module
-  data, so a retained `def` is post-frozen like any other) and hands each
-  handle its `OwnedFrozenValue` on the frozen module heap.
+  * `Heap::anchor(value, handles)`: `value` (a bazel-rs depset value, whose
+    owned elements hold the handles) pins retained values for the freeze.
+    `RetainedValue::is_pending` (neither frozen nor dropped).
+* `src/environment/modules.rs`: `Module::trace` traces the retained roots
+  and anchors. `Module::freeze`, after the slots, freezes the anchored
+  values of every anchor the freeze reached (to a fixpoint), then hands
+  each retained value it reached (frozen or forwarded) its
+  `OwnedFrozenValue` on the frozen module heap; the others are never frozen
+  (a discarded depset's closure may capture a value that cannot be frozen)
+  and their handles are marked dropped. All this happens before the module
+  data is allocated, so a retained `def` is post-frozen like any other.
+  `from_globals` and `import_public_symbols` also add the referenced frozen
+  heap to the module's heap (not only to its frozen heap), so
+  `Heap::owned_frozen_value` sees it.
+* `src/eval.rs` (`eval_module`: the globals' heap) and
+  `src/eval/compiler/def.rs` (`PortableDef::instantiate`: the defining
+  module's heap): the same heap reference.
 * `src/values/layout/value.rs`: `Value::identity_address`, the identity
   pointer as an integer (equal exactly when `ptr_eq`, while alive).
 * `src/values.rs`: the `RetainedValue` re-export.
