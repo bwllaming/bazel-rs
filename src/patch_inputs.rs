@@ -177,6 +177,7 @@ impl LocalPatchPlan {
                     .map_err(|e| format!("cannot apply patch {label}: {e}"))?;
             }
         }
+        // snapshot-unrecorded: only shapes a tree published under its own key; reuse never re-runs the commands.
         let bash = std::env::var_os("BAZEL_SH").unwrap_or_else(|| "bash".into());
         for command in &self.commands {
             let output = crate::spawn_lock::output(
