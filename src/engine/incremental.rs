@@ -1711,10 +1711,11 @@ pub(crate) fn fingerprint(package: &Package) -> Fingerprint {
     let mut text = String::new();
     let _ = write!(
         text,
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
         package.exports,
         package.default_visibility,
         package.macro_names,
+        package.macro_inputs,
         package.args,
         package.build_file,
         package.direct_loads,

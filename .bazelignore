@@ -149,6 +149,7 @@ tests/fixtures/source_directories/workspace
 tests/fixtures/split_transitions/workspace
 tests/fixtures/starlark_doc_extract/ws
 tests/fixtures/starlark_transitions/go_shaped
+tests/fixtures/symbolic_macro_attrs/workspace
 tests/fixtures/target_compatible_with/workspace
 tests/fixtures/td_support
 tests/fixtures/test_args/workspace

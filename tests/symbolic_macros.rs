@@ -628,10 +628,12 @@ fn symbolic_macro_constructor_and_invocation_validate_before_callback() {
         );
         ws.untouched();
     }
-    for option in [
-        "attrs={'value':attr.string()}",
-        "inherit_attrs='common'",
-        "finalizer=True",
+    for (option, diagnostic) in [
+        (
+            "inherit_attrs='common'",
+            "If inherit_attrs is set, implementation function must have a **kwargs parameter",
+        ),
+        ("finalizer=True", "macro finalizer=True is unsupported"),
     ] {
         let ws = Workspace::new(
             &format!(
@@ -639,9 +641,14 @@ fn symbolic_macro_constructor_and_invocation_validate_before_callback() {
             ),
             &format!("{LOAD}m(name='demo')\n"),
         );
-        rejected(&ws.run(&["query", "//:all"]), "unsupported");
+        rejected(&ws.run(&["query", "//:all"]), diagnostic);
         ws.untouched();
     }
+    let ws = Workspace::new(
+        "def _impl(name,visibility,value):\n    pass\nm=macro(implementation=_impl,attrs={'value':attr.string()})\n",
+        &format!("{LOAD}m(name='demo',value='v')\n"),
+    );
+    success(&ws.run(&["query", "//:all"]));
 }
 
 #[test]
@@ -710,7 +717,7 @@ make=repository_rule(implementation=_repo)
 
 #[test]
 fn symbolic_macro_non_none_nested_and_native_phase_failures_never_execute() {
-    for body in ["    return 7\n", "    nested(name=name+'_nested')\n"] {
+    for body in ["    return 7\n", "    m(name=name+'_nested')\n"] {
         let ws = Workspace::new(
             &format!(
                 "def _zero(name,visibility):\n    pass\nnested=macro(implementation=_zero)\ndef _impl(name,visibility):\n    native.genrule(name=name,outs=[name+'.out'],cmd='printf forbidden > $@')\n{body}m=macro(implementation=_impl)\n"
@@ -725,9 +732,9 @@ fn symbolic_macro_non_none_nested_and_native_phase_failures_never_execute() {
         rejected(
             &result,
             if body.contains("nested") {
-                "unsupported"
+                "macro 'demo_nested' is a direct recursive call of 'demo'"
             } else {
-                "None"
+                "macro 'demo' may not return a non-None value (got 7)"
             },
         );
         ws.untouched();

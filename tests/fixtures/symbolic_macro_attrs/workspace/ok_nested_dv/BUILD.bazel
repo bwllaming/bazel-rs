@@ -1,0 +1,3 @@
+load(':defs.bzl', 'outer')
+package(default_visibility = ['//foo:__subpackages__'])
+outer(name = 'x')

@@ -1,0 +1,5 @@
+load(":defs.bzl", "rd")
+config_setting(name = "on", values = {"compilation_mode": "opt"})
+rd(name = "a", srcs = {"x.txt": "x", ":y": "why"}, tags = ["zz", "aa"])
+rd(name = "b", srcs = {"x.txt": "x"}, target_triple = "explicit")
+genrule(name = "y", outs = ["y.out"], cmd = "echo y > $@")

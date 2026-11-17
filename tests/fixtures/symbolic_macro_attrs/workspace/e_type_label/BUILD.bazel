@@ -1,0 +1,2 @@
+load(':defs.bzl', 'user')
+user(name = 'x', mand = 'm', b = 1)

@@ -956,6 +956,7 @@ fields!(Package {
     exports,
     default_visibility,
     macro_names,
+    macro_inputs,
     build_file,
     direct_loads,
     load_graph

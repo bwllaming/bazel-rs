@@ -1,0 +1,3 @@
+load(':defs.bzl', 'outer')
+outer(name = 'x', srcs = ['a'], tags = ['t'])
+outer(name = 'y', visibility = ['//visibility:public'])

@@ -239,6 +239,10 @@ pub struct Package {
     pub exports: BTreeMap<Label, Visibility>,
     pub default_visibility: Visibility,
     pub macro_names: BTreeSet<String>,
+    /// The in-package labels of the explicit dependency-attribute values of
+    /// the top-level symbolic macros: assumed input files like the rules'
+    /// (Package.createAssumedInputFiles, packages/Package.java:893-925).
+    pub macro_inputs: BTreeSet<Label>,
     /// Effective REPO.bazel/package() arguments.
     pub args: PackageArgs,
     /// The BUILD file (`Package.getBuildFile`), absolute.
@@ -284,6 +288,13 @@ mod collector {
         pub package_args: RefCell<PackageArgs>,
         pub custom: RefCell<Vec<PendingCustom>>,
         pub active_macro: RefCell<Option<MacroOwner>>,
+        /// The executing symbolic macros, outermost first.
+        pub macro_stack: RefCell<Vec<super::MacroStackEntry>>,
+        /// Package errors reported while evaluation continues (symbolic
+        /// macro attribute population, macro recursion).
+        pub deferred_errors: RefCell<Vec<String>>,
+        /// See [`super::Package::macro_inputs`].
+        pub macro_inputs: RefCell<BTreeSet<Label>>,
         pub macro_names: RefCell<BTreeSet<String>>,
         // An index of actual rule/output/export declarations, not inferred inputs.
         pub declared_names: RefCell<BTreeSet<String>>,
@@ -495,7 +506,8 @@ impl Declarations {
                 .as_ref()
                 .is_none_or(|owner| owner.name != name)
         {
-            bail!("target {name:?} conflicts with an existing macro");
+            // TargetRecorder.checkForExistingMacroName (packages/TargetRecorder.java:747-768).
+            bail!("target '{name}' conflicts with an existing macro (and was not created by it)");
         }
         Ok(())
     }
@@ -952,11 +964,53 @@ impl Drop for MacroFrame<'_> {
     }
 }
 
+/// One executing symbolic macro (TargetRecorder.MacroFrame,
+/// packages/TargetRecorder.java:80-95).
+#[derive(Clone, Debug)]
+pub(crate) struct MacroStackEntry {
+    /// `<defining .bzl canonical form>%<exported name>` (the macro class).
+    class: String,
+    name: String,
+    main_submacro_defined: bool,
+}
+
+struct MacroStackFrame<'a>(&'a RefCell<Vec<MacroStackEntry>>);
+
+impl Drop for MacroStackFrame<'_> {
+    fn drop(&mut self) {
+        self.0.borrow_mut().pop();
+    }
+}
+
+/// TargetRecorder.MACRO_NAMING_RULES (packages/TargetRecorder.java:48-50).
+const MACRO_NAMING_RULES: &str = "Name must be the same as the macro's name, or the macro's name followed by '_' (recommended), '-', or '.', and a non-empty string.";
+
+/// TargetRecorder.nameIsWithinMacroNamespace (packages/TargetRecorder.java:619-630).
+fn name_is_within_macro_namespace(name: &str, macro_name: &str) -> bool {
+    name == macro_name
+        || name
+            .strip_prefix(macro_name)
+            .is_some_and(|suffix| suffix.len() >= 2 && suffix.starts_with(['_', '.', '-']))
+}
+
+/// The `native.package_relative_label`-style canonical form of a package
+/// (PackageIdentifier.getCanonicalForm).
+fn package_canonical_form(package: &PackageId) -> String {
+    if package.repository.is_empty() {
+        format!("//{}", package.package)
+    } else {
+        format!("@@{}//{}", package.repository, package.package)
+    }
+}
+
+/// MacroFunction.call: MacroClass.instantiateAndAddMacro and the eager
+/// executeMacroImplementation (packages/MacroClass.java:178-280, 300-420).
 pub(crate) fn invoke_symbolic_macro<'v>(
     eval: &mut Evaluator<'v, '_, '_>,
     definition_label: &str,
     exported: Option<&str>,
     implementation: Value<'v>,
+    attrs: &[crate::symbolic_macro::MacroAttr],
     args: &Arguments<'v, '_>,
 ) -> anyhow::Result<Value<'v>> {
     // Copy the independent extra reference: never borrow eval or a RefMut over
@@ -968,49 +1022,175 @@ pub(crate) fn invoke_symbolic_macro<'v>(
     if context.transient.get() {
         bail!("{TRANSIENT}");
     }
-    if exported.is_none() {
+    let Some(class_name) = exported else {
         bail!("symbolic macro must be exported before invocation");
-    }
-    if context.active_macro.borrow().is_some() {
-        bail!("nested symbolic macro invocations are unsupported");
-    }
+    };
     args.no_positional_args(eval.heap())
         .map_err(|e| anyhow!(e.to_string()))?;
     let named = args.names_map().map_err(|e| anyhow!(e.to_string()))?;
-    let mut name = None;
-    let mut visibility = None;
+    let mut given: HashMap<&str, Value<'v>> = HashMap::new();
+    // MacroClass.instantiateMacro (MacroClass.java:182-205).
     for (key, value) in named.iter() {
-        match key.as_str() {
-            // Deliberately reject None cleanly (upstream 9.3 crashes here).
-            "name" => {
-                name = Some(
-                    value
-                        .unpack_str()
-                        .ok_or_else(|| anyhow!("macro name must be a string"))?,
-                )
-            }
-            "visibility" => visibility = Some(*value),
-            key => bail!("unknown macro attribute {key:?}"),
+        let key = key.as_str();
+        if !matches!(key, "name" | "visibility") && !attrs.iter().any(|attr| attr.name == key) {
+            let candidates = ["name", "visibility"]
+                .into_iter()
+                .chain(attrs.iter().map(|attr| attr.name.as_str()))
+                .collect::<Vec<_>>();
+            bail!(
+                "no such attribute '{key}' in '{class_name}' macro{}",
+                crate::native_rules::did_you_mean(key, &candidates)
+            );
         }
+        if value.is_none() {
+            continue;
+        }
+        if key.starts_with('_') {
+            bail!("cannot set value of implicit attribute '{key}'");
+        }
+        given.insert(key, *value);
     }
-    let name = name.ok_or_else(|| anyhow!("missing mandatory macro attribute name"))?;
-    local_label(name, &context.package_id(), "macro name")?;
-    let raw = match visibility.filter(|value| !value.is_none()) {
-        Some(value) => visibility_labels(value, context)?,
+    // MacroClass.java:207-233: an omitted visibility is the package default
+    // at top level and private inside another macro; the result always
+    // includes the instantiating location.
+    let parent_package = context
+        .active_macro
+        .borrow()
+        .as_ref()
+        .map(|owner| owner.definition_package.clone());
+    let raw = match given.get("visibility") {
+        Some(value) => visibility_labels(*value, context)?,
+        None if parent_package.is_some() => Vec::new(),
         None => context.default_visibility.borrow().declared_labels(),
     };
-    let labels = crate::visibility::macro_visibility_labels(raw, &context.package_id())
+    let instantiating = parent_package.unwrap_or_else(|| context.package_id());
+    let labels = crate::visibility::macro_visibility_labels(raw, &instantiating)
         .map_err(anyhow::Error::msg)?;
+    let package = context.package_id();
+    let name = match given.get("name") {
+        // Deliberately reject a non-string cleanly (upstream 9.3 crashes here).
+        Some(value) => Some(
+            value
+                .unpack_str()
+                .ok_or_else(|| anyhow!("macro name must be a string"))?,
+        ),
+        None if named.iter().any(|(key, _)| key.as_str() == "name") => {
+            bail!("macro name must be a string")
+        }
+        None => None,
+    };
+    let site_label = local_label(name.unwrap_or("__macro__"), &package, "macro name")?;
+    let target = crate::rule_declarations::canonical_form(&site_label);
+    let resolve = |text: &str| -> anyhow::Result<Label> {
+        context
+            .repositories
+            .parse(text, &package.repository, &package.package)
+            .map_err(anyhow::Error::msg)
+            .or_else(|error| {
+                if error.to_string().starts_with("unknown apparent repository") {
+                    return context
+                        .repositories
+                        .parse_deferred(text, &package.repository, &package.package)
+                        .map_err(anyhow::Error::msg);
+                }
+                Err(error)
+            })
+    };
+    let heap = eval.heap();
+    let mut deferred = Vec::new();
+    let mut inputs = BTreeSet::new();
+    let parent_package_is_none = context.active_macro.borrow().is_none();
+    let mut values = Vec::with_capacity(attrs.len());
+    for attr in attrs {
+        let mut value = None;
+        let mut set = false;
+        if let Some(raw) = given.get(attr.name.as_str()) {
+            match crate::custom_rule::macro_attribute_value(
+                &attr.value_type(),
+                &attr.name,
+                class_name,
+                *raw,
+                &resolve,
+                &site_label,
+                heap,
+            ) {
+                Ok(converted) => {
+                    set = converted.is_some();
+                    value = converted;
+                }
+                // Starlark-defined attributes are converted at instantiation
+                // (BuildType.copyAndLiftStarlarkValue, MacroClass.java:235-250).
+                Err(error) if attr.starlark_defined => bail!("{error}"),
+                // AttributeProvider.populateRuleAttributeValues reports the
+                // others as package errors; the attribute stays unset.
+                Err(error) => deferred.push(format!("{target}: {error}")),
+            }
+        }
+        if !set {
+            if attr.spec.mandatory && !given.contains_key(attr.name.as_str()) {
+                deferred.push(format!(
+                    "{target}: missing value for mandatory attribute '{}' in '{class_name}' macro",
+                    attr.name
+                ));
+            }
+            // MacroClass.executeMacroImplementation (:357-364).
+            value = if attr.default_none {
+                None
+            } else {
+                crate::custom_rule::attr_value_to_starlark(heap, &attr.spec.default, &site_label)?
+            };
+        }
+        let value = match value {
+            Some(value)
+                if attr.configurable
+                    && crate::rule_declarations::select_pieces(value).is_none() =>
+            {
+                crate::custom_rule::wrap_single_value(heap, value)
+            }
+            Some(value) => value,
+            None => Value::new_none(),
+        };
+        if set && parent_package_is_none && attr.dependency() {
+            collect_package_labels(value, &package, &mut inputs);
+        }
+        values.push((attr.name.as_str(), value));
+    }
+    let Some(name) = name else {
+        bail!("missing value for mandatory attribute 'name' in '{class_name}' macro");
+    };
+    let definition = Label::parse_canonical(definition_label).map_err(anyhow::Error::msg)?;
     let owner = MacroOwner {
-        definition_package: Label::parse_canonical(definition_label)
-            .map_err(anyhow::Error::msg)?
-            .package_id(),
+        definition_package: definition.package_id(),
         name: name.to_owned(),
     };
-    if context.declared_names.borrow().contains(name) || context.macro_names.borrow().contains(name)
-    {
-        bail!("macro {name:?} conflicts with an existing target or macro");
+    // TargetRecorder.checkMacroName (packages/TargetRecorder.java:725-745).
+    if context.declared_names.borrow().contains(name) {
+        bail!("macro '{name}' conflicts with an existing target.");
     }
+    {
+        let mut stack = context.macro_stack.borrow_mut();
+        if context.macro_names.borrow().contains(name)
+            && !stack
+                .last()
+                .is_some_and(|top| top.name == name && !top.main_submacro_defined)
+        {
+            bail!("macro '{name}' conflicts with an existing macro (and was not created by it)");
+        }
+        if let Some(top) = stack.last_mut() {
+            if !name_is_within_macro_namespace(name, &top.name) {
+                bail!(
+                    "macro '{}' cannot declare submacro named '{name}'. {MACRO_NAMING_RULES}",
+                    top.name
+                );
+            }
+            // TargetRecorder.addMacro (:438-451).
+            if top.name == name {
+                top.main_submacro_defined = true;
+            }
+        }
+    }
+    context.deferred_errors.borrow_mut().extend(deferred);
+    context.macro_inputs.borrow_mut().extend(inputs);
     // Freeze a fresh list on an isolated heap, never the caller's containers.
     let owned = Module::with_temp_heap(|module| -> anyhow::Result<_> {
         let values = labels
@@ -1025,32 +1205,117 @@ pub(crate) fn invoke_symbolic_macro<'v>(
     })?;
     let visibility = eval.heap().access_owned_frozen_value(&owned);
     context.macro_names.borrow_mut().insert(name.to_owned());
+    let class = format!(
+        "{}%{class_name}",
+        crate::rule_declarations::canonical_form(&definition)
+    );
+    // MacroClass.getRecursionErrorMessage (:425-470): reported as a package
+    // error; the implementation does not run.
+    {
+        let stack = context.macro_stack.borrow();
+        if let Some(index) = stack.iter().rposition(|entry| entry.class == class) {
+            let shown = package_canonical_form(&package);
+            let mut message = format!(
+                "macro '{name}' is {} recursive call of '{}'. Macro instantiation traceback (most recent call last):",
+                if index + 1 == stack.len() {
+                    "a direct"
+                } else {
+                    "an indirect"
+                },
+                stack[index].name
+            );
+            for entry in stack.iter().chain(std::iter::once(&MacroStackEntry {
+                class: class.clone(),
+                name: name.to_owned(),
+                main_submacro_defined: false,
+            })) {
+                message.push_str(&format!(
+                    "\n\tPackage {shown}, macro '{}' of type {}",
+                    entry.name, entry.class
+                ));
+            }
+            context.deferred_errors.borrow_mut().push(message);
+            return Ok(Value::new_none());
+        }
+    }
     // MacroInstance generator name and parent call stack
     // (TargetDefinitionContext.createMacro, packages/TargetDefinitionContext.java:570-595):
-    // the BUILD call site, and the macro callable as the interior function.
-    let site = call_site(eval, &context.calls).map(|site| CallSite {
-        function: exported.map(str::to_owned),
-        ..site
-    });
+    // the outermost macro's BUILD call site, and the macro callable as the
+    // interior function.
+    let nested = context.active_macro.borrow().is_some();
+    let site = if nested {
+        context.macro_site.borrow().clone()
+    } else {
+        call_site(eval, &context.calls).map(|site| CallSite {
+            function: exported.map(str::to_owned),
+            ..site
+        })
+    };
     let _site = MacroSiteFrame::enter(&context.macro_site, site);
     let _frame = MacroFrame::enter(&context.active_macro, owner);
+    context.macro_stack.borrow_mut().push(MacroStackEntry {
+        class,
+        name: name.to_owned(),
+        main_submacro_defined: false,
+    });
+    let _stack = MacroStackFrame(&context.macro_stack);
     // Bazel runs the implementation in a new Starlark thread
     // (packages/MacroClass.java:390-420), so the calls that instantiated
     // the macro do not make calls within it recursive.
-    let name = eval.heap().alloc(name);
+    let mut kwargs = vec![("name", heap.alloc(name)), ("visibility", visibility)];
+    kwargs.extend(values);
     let result = eval
-        .with_new_recursion_scope(|eval| {
-            eval.eval_function(
-                implementation,
-                &[],
-                &[("name", name), ("visibility", visibility)],
-            )
-        })
+        .with_new_recursion_scope(|eval| eval.eval_function(implementation, &[], &kwargs))
         .map_err(|e| anyhow!(e.to_string()))?;
     if !result.is_none() {
-        bail!("symbolic macro {name:?} must return None");
+        bail!(
+            "macro '{name}' may not return a non-None value (got {})",
+            result.to_repr()
+        );
     }
     Ok(Value::new_none())
+}
+
+/// The Labels of `package` in a converted macro attribute value (lists,
+/// dict keys and values, select branch values; MacroInstance.visitExplicitAttributeLabels,
+/// packages/MacroInstance.java:306-345).
+fn collect_package_labels(value: Value<'_>, package: &PackageId, out: &mut BTreeSet<Label>) {
+    if let Some((repository, pkg, name)) = crate::starlark_types::label_parts(value) {
+        if repository == package.repository && pkg == package.package {
+            out.insert(Label {
+                repository: repository.to_owned(),
+                package: pkg.to_owned(),
+                name: name.to_owned(),
+            });
+        }
+    } else if let Some(pieces) = crate::rule_declarations::select_pieces(value) {
+        for piece in pieces {
+            match piece {
+                crate::rule_declarations::SelectPiece::Plain(value) => {
+                    collect_package_labels(value, package, out)
+                }
+                crate::rule_declarations::SelectPiece::Select { branches, .. } => {
+                    for (_, value) in branches {
+                        collect_package_labels(value, package, out);
+                    }
+                }
+            }
+        }
+    } else if let Some(items) = crate::custom_rule::sequence_ref(value) {
+        for item in items.iter() {
+            collect_package_labels(*item, package, out);
+        }
+    } else if let Some(dict) = starlark::values::dict::DictRef::from_value(value) {
+        for (key, value) in dict.iter() {
+            collect_package_labels(key, package, out);
+            collect_package_labels(value, package, out);
+        }
+    }
+}
+
+/// The class name of a native rule function (`native.filegroup`).
+pub(crate) fn native_rule_class(value: Value<'_>) -> Option<&str> {
+    native_functions::NativeRuleFunction::from_value(value).map(|function| function.0.as_str())
 }
 
 fn declarations<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a Declarations> {
@@ -2484,6 +2749,9 @@ fn evaluate_at(
         package_args: RefCell::new(repo_defaults),
         custom: RefCell::new(Vec::new()),
         active_macro: RefCell::new(None),
+        macro_stack: RefCell::default(),
+        deferred_errors: RefCell::default(),
+        macro_inputs: RefCell::default(),
         macro_names: RefCell::new(BTreeSet::new()),
         declared_names: RefCell::new(BTreeSet::new()),
         group_budget: RefCell::new(HostBudget::default()),
@@ -2543,6 +2811,10 @@ fn evaluate_at(
         return Err(format!("no such package '{package_display}': {error}"));
     }
     let frozen = evaluated?;
+    let deferred = declarations.deferred_errors.take();
+    if !deferred.is_empty() {
+        return Err(deferred.join("\n"));
+    }
     if let Some(issue) = declarations.glob_symlink_issue.borrow_mut().take() {
         return Err(crate::glob::symlink_issue_error(&issue, &package_display));
     }
@@ -2645,6 +2917,7 @@ fn evaluate_at(
         exports,
         default_visibility,
         macro_names: declarations.macro_names.into_inner(),
+        macro_inputs: declarations.macro_inputs.into_inner(),
         args,
         build_file: PathBuf::from(filename),
         direct_loads,
@@ -3941,7 +4214,7 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
         symbolic_error(
             "def impl(name, visibility):\n    return 1\nm = macro(implementation=impl)",
             "m(name='x')",
-            "must return None",
+            "macro 'x' may not return a non-None value (got 1)",
         );
         // StarlarkFunction.java:385-397 for the implementation call.
         symbolic_error(
@@ -3952,7 +4225,7 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
         symbolic_error(
             "def impl(name, visibility):\n    m(name=name + '_nested')\nm = macro(implementation=impl)",
             "m(name='x')",
-            "nested symbolic",
+            "macro 'x_nested' is a direct recursive call of 'x'",
         );
         symbolic_error(
             "def impl(name, visibility):\n    pass\nbox = [macro(implementation=impl)]\ndef m():\n    box[0](name='x')",
@@ -4219,6 +4492,9 @@ def legacy():
                 package_args: RefCell::new(PackageArgs::default()),
                 custom: RefCell::new(Vec::new()),
                 active_macro: RefCell::new(None),
+                macro_stack: RefCell::default(),
+                deferred_errors: RefCell::default(),
+                macro_inputs: RefCell::default(),
                 macro_names: RefCell::new(BTreeSet::new()),
                 declared_names: RefCell::new(BTreeSet::new()),
                 group_budget: RefCell::new(HostBudget::default()),

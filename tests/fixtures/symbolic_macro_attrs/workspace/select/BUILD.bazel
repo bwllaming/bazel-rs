@@ -1,0 +1,3 @@
+load(":defs.bzl", "m")
+config_setting(name = "cfg", values = {"cpu": "k8"})
+m(name = "x", a = select({":cfg": ["a"], "//conditions:default": None}) + ["b"], s = select({":cfg": "c"}, no_match_error = "nm"), tags = ["b", "a", "b"], features = ("f2", "f1"), t = ("q",), o = ["o1"], target_compatible_with = ["@platforms//os:linux"], exec_properties = {"k": "v"})

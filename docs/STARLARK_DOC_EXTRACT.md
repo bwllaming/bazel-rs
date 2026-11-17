@@ -98,10 +98,9 @@ of this enters serialized schemas or keys (the attribute fields are
 (bool or unbound): `rule()` rejects a set value with genuine's text,
 symbolic macros keep `configurable = False` as non-configurable, repository
 rules and tag classes accept it like the reference. `macro()` with user
-attributes or `finalizer = True` now loads (documented); invoking such a
-macro still fails explicitly (`macro user attributes are unsupported`,
-`macro finalizer=True is unsupported`, docs/SYMBOLIC_MACROS.md).
-`inherit_attrs` remains unsupported at definition.
+attributes, `inherit_attrs` or `finalizer = True` loads (documented);
+invoking a finalizer still fails explicitly (`macro finalizer=True is
+unsupported`, docs/SYMBOLIC_MACROS.md).
 
 The vendored interpreter gains one read-only accessor,
 `starlark::eval::def_documentation` (a `def`/`lambda`'s raw docstring,
@@ -133,4 +132,7 @@ some progress messages are not modelled, docs/AQUERY.md).
 * The main repository mapping is ordered by apparent name natively, so a
   repository visible under two apparent names renders with the first by
   name (genuine: insertion order; docs/REPR.md).
-* `inherit_attrs` macros and `@_builtins` modules are not documented.
+* `@_builtins` modules are not documented. The inherited attributes of an
+  `inherit_attrs` macro are documented from their native model (a native
+  type as the Starlark attribute type with the same conversion, default
+  `None`), not verified against genuine.

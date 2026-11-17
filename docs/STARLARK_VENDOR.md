@@ -388,9 +388,9 @@ message. Pre-existing gaps the capture records and N48 does not change: rule
 instantiation inside a rule initializer is not rejected natively (Bazel: `a
 rule can only be instantiated while evaluating a BUILD file or a legacy or
 symbolic macro`; natively the initializer then re-enters itself and is
-reported as recursive), nested symbolic macros are unsupported natively, and
-Bazel's symbolic macro instantiation recursion check (`macro 'x_x' is a direct
-recursive call of 'x'`) is not implemented. Binding errors keep their call-site
+reported as recursive). Nested symbolic macros and Bazel's macro
+instantiation recursion check (`macro 'x_x' is a direct recursive call of
+'x'`) were implemented later (docs/SYMBOLIC_MACROS.md). Binding errors keep their call-site
 location (N33).
 
 ### Portable `def` and `lambda` values (analysis snapshot, P1)

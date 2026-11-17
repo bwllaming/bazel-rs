@@ -1293,6 +1293,24 @@ pub(crate) fn lift_select<'v>(
     Some(lifted)
 }
 
+/// A `select()` value of select elements, each a dict with its no-match
+/// error (SelectorList.of over SelectorValues, packages/SelectorList.java:126-150).
+pub(crate) fn alloc_selector_list<'v>(
+    heap: Heap<'v>,
+    elements: Vec<(Value<'v>, String)>,
+    native_type: String,
+) -> Value<'v> {
+    let (values, selects) = elements
+        .into_iter()
+        .map(|(dict, no_match_error)| (dict, Some(no_match_error)))
+        .unzip();
+    heap.alloc(SelectorListGen {
+        values,
+        selects,
+        native_type,
+    })
+}
+
 pub(crate) struct Pieces<'v> {
     values: Vec<Value<'v>>,
     selects: Vec<Option<String>>,

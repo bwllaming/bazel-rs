@@ -18342,6 +18342,7 @@ fn package_input_labels_in(repositories: &RepositorySet, package: &Package) -> H
                 .filter_map(|text| Label::parse_canonical(text).ok()),
         );
     }
+    labels.extend(package.macro_inputs.iter().cloned());
     labels
 }
 
@@ -18355,6 +18356,7 @@ fn package_target_names_in(
         return names;
     };
     names.extend(rules.exports.keys().map(|label| label.name.clone()));
+    names.extend(rules.macro_inputs.iter().map(|label| label.name.clone()));
     for rule in rules.values() {
         names.insert(rule.label.name.clone());
         names.extend(rule.outs.iter().cloned());

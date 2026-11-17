@@ -1,0 +1,3 @@
+load(':defs.bzl', 'inner')
+inner(name = 'x')
+inner(name = 'x')

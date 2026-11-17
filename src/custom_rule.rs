@@ -2744,6 +2744,261 @@ pub(crate) fn attr_value_to_starlark<'v>(
     }))
 }
 
+/// `Type.concat` (packages/Type.java:245, 378, 478, 604, 774) of the
+/// unconditional values of a simplified select expression.
+fn concat_attr_values(kind: &AttrKind, values: Vec<AttrValue>) -> anyhow::Result<AttrValue> {
+    fn merged(entries: impl Iterator<Item = (String, String)>) -> Vec<(String, String)> {
+        // ImmutableMap.Builder.buildKeepingLast: first position, last value.
+        let mut out: Vec<(String, String)> = Vec::new();
+        for (key, value) in entries {
+            match out.iter_mut().find(|(seen, _)| *seen == key) {
+                Some(slot) => slot.1 = value,
+                None => out.push((key, value)),
+            }
+        }
+        out
+    }
+    let mut values = values.into_iter();
+    let Some(mut acc) = values.next() else {
+        return Ok(kind.type_default());
+    };
+    for value in values {
+        acc = match (acc, value) {
+            (AttrValue::String(a), AttrValue::String(b)) => AttrValue::String(a + &b),
+            // StarlarkInt.truncateToInt.
+            (AttrValue::Int(a), AttrValue::Int(b)) => AttrValue::Int(a.wrapping_add(b)),
+            (AttrValue::Strings(mut a), AttrValue::Strings(b)) => {
+                a.extend(b);
+                AttrValue::Strings(a)
+            }
+            (AttrValue::Labels(mut a), AttrValue::Labels(b)) => {
+                a.extend(b);
+                AttrValue::Labels(a)
+            }
+            (AttrValue::Outputs(mut a), AttrValue::Outputs(b)) => {
+                a.extend(b);
+                AttrValue::Outputs(a)
+            }
+            (AttrValue::Ints(mut a), AttrValue::Ints(b)) => {
+                a.extend(b);
+                AttrValue::Ints(a)
+            }
+            (AttrValue::StringDict(a), AttrValue::StringDict(b)) => {
+                AttrValue::StringDict(merged(a.into_iter().chain(b)))
+            }
+            (AttrValue::LabelKeyedStringDict(a), AttrValue::LabelKeyedStringDict(b)) => {
+                AttrValue::LabelKeyedStringDict(merged(a.into_iter().chain(b)))
+            }
+            (AttrValue::StringKeyedLabelDict(a), AttrValue::StringKeyedLabelDict(b)) => {
+                AttrValue::StringKeyedLabelDict(merged(a.into_iter().chain(b)))
+            }
+            (AttrValue::StringListDict(a), AttrValue::StringListDict(b)) => {
+                let mut out: Vec<(String, Vec<String>)> = Vec::new();
+                for (key, value) in a.into_iter().chain(b) {
+                    match out.iter_mut().find(|(seen, _)| *seen == key) {
+                        Some(slot) => slot.1 = value,
+                        None => out.push((key, value)),
+                    }
+                }
+                AttrValue::StringListDict(out)
+            }
+            (AttrValue::LabelListDict(a), AttrValue::LabelListDict(b)) => {
+                let mut out: Vec<(String, Vec<String>)> = Vec::new();
+                for (key, value) in a.into_iter().chain(b) {
+                    match out.iter_mut().find(|(seen, _)| *seen == key) {
+                        Some(slot) => slot.1 = value,
+                        None => out.push((key, value)),
+                    }
+                }
+                AttrValue::LabelListDict(out)
+            }
+            _ => bail!(
+                "type '{}' doesn't support select concatenation",
+                kind.type_name()
+            ),
+        };
+    }
+    Ok(acc)
+}
+
+/// The type of one symbolic macro attribute (crate::symbolic_macro).
+pub(crate) struct MacroAttrType<'a> {
+    pub spec: &'a AttrSpec,
+    /// Attribute.isConfigurable.
+    pub configurable: bool,
+    /// BuildType.TRISTATE (an int attribute that also converts booleans).
+    pub tristate: bool,
+}
+
+/// A symbolic macro attribute value as the implementation function sees it
+/// (MacroClass.instantiateMacro/executeMacroImplementation,
+/// packages/MacroClass.java:178-244, 342-370): BuildType.copyAndLiftStarlarkValue
+/// and the populated attribute's conversion (BuildType.selectableConvert with
+/// unconditional-select simplification, packages/BuildType.java:165-210,
+/// canonicalized order-independent lists), back through
+/// Attribute.valueToStarlark (packages/Attribute.java:2442-2490): Labels,
+/// select keys as Labels and plain select elements as default branches.
+/// `None` for a null (unset) value. `package` is a label of the macro's package.
+pub(crate) fn macro_attribute_value<'v>(
+    ty: &MacroAttrType<'_>,
+    name: &str,
+    owner: &str,
+    value: Value<'v>,
+    resolve: &LabelResolver<'_>,
+    package: &crate::label::Label,
+    heap: starlark::values::Heap<'v>,
+) -> anyhow::Result<Option<Value<'v>>> {
+    use crate::rule_declarations::SelectPiece;
+    const DEFAULT: &str = "//conditions:default";
+    let spec = ty.spec;
+    let plain = |value: Value<'v>, what: &str| -> anyhow::Result<AttrValue> {
+        let value = match (ty.tristate, value.unpack_bool()) {
+            (true, Some(flag)) => heap.alloc(i32::from(flag)),
+            _ => value,
+        };
+        if let Some(error) = spec.kind.conversion_error(value, what) {
+            bail!("{error}");
+        }
+        if spec.kind == AttrKind::LabelKeyedStringDict
+            && let Some(error) = value_label_duplicates(value, Some(resolve), what)
+        {
+            bail!("{error}");
+        }
+        let parsed = spec.kind.parse(value, Some(resolve))?;
+        order_independent_sorted(spec, parsed)
+    };
+    let attribute = format!("attribute '{name}' of '{owner}'");
+    let Some(pieces) = crate::rule_declarations::select_pieces(value) else {
+        let parsed = plain(value, &attribute)?;
+        return attr_value_to_starlark(heap, &parsed, package);
+    };
+    if !ty.configurable {
+        bail!("attribute \"{name}\" is not configurable");
+    }
+    if pieces.len() > 1 && (ty.tristate || matches!(spec.kind, AttrKind::Bool | AttrKind::Label)) {
+        bail!(
+            "type '{}' doesn't support select concatenation",
+            if ty.tristate {
+                "tristate"
+            } else {
+                spec.kind.type_name()
+            }
+        );
+    }
+    let key_label = |key: Value<'v>| -> anyhow::Result<String> {
+        if let Some(label) = crate::starlark_types::unpack_label(key) {
+            return Ok(label);
+        }
+        let text = key.unpack_str().expect("validated select key");
+        if text == DEFAULT {
+            return Ok(format!("@@{DEFAULT}"));
+        }
+        Ok(resolve(text)?.to_string())
+    };
+    let branch_what = |label: &str| {
+        let shown = crate::label::Label::parse_canonical(label)
+            .map(|label| crate::rule_declarations::canonical_form(&label))
+            .unwrap_or_else(|_| label.to_owned());
+        // SelectBranchMessage (BuildType.java:654-668).
+        format!("each branch in select expression of {attribute} (including '{shown}')")
+    };
+    let default_label = format!("@@{DEFAULT}");
+    let unconditional = pieces.iter().all(|piece| match piece {
+        SelectPiece::Plain(_) => true,
+        SelectPiece::Select { branches, .. } => {
+            branches.len() == 1
+                && key_label(branches[0].0).is_ok_and(|label| label == default_label)
+        }
+    });
+    if unconditional {
+        let mut values = Vec::new();
+        for piece in &pieces {
+            values.push(match piece {
+                SelectPiece::Plain(value) => plain(*value, &attribute)?,
+                // Selector.getDefault of a None branch: the type default.
+                SelectPiece::Select { branches, .. } if branches[0].1.is_none() => {
+                    spec.kind.type_default()
+                }
+                SelectPiece::Select { branches, .. } => {
+                    plain(branches[0].1, &branch_what(&default_label))?
+                }
+            });
+        }
+        let combined = concat_attr_values(&spec.kind, values)?;
+        return attr_value_to_starlark(heap, &combined, package);
+    }
+    let mut elements = Vec::new();
+    let mut native_type = None;
+    for piece in pieces {
+        let (branches, no_match_error) = match piece {
+            SelectPiece::Plain(value) => (vec![(None, value)], String::new()),
+            SelectPiece::Select {
+                branches,
+                no_match_error,
+            } => (
+                branches
+                    .into_iter()
+                    .map(|(key, value)| (Some(key), value))
+                    .collect(),
+                no_match_error,
+            ),
+        };
+        let mut entries: Vec<(String, Value<'v>)> = Vec::new();
+        for (key, value) in branches {
+            let label = match key {
+                Some(key) => key_label(key)?,
+                None => default_label.clone(),
+            };
+            let converted = if value.is_none() {
+                Value::new_none()
+            } else {
+                let what = if key.is_some() {
+                    branch_what(&label)
+                } else {
+                    attribute.clone()
+                };
+                attr_value_to_starlark(heap, &plain(value, &what)?, package)?
+                    .unwrap_or_else(Value::new_none)
+            };
+            match entries.iter_mut().find(|(seen, _)| *seen == label) {
+                Some(slot) => slot.1 = converted,
+                None => entries.push((label, converted)),
+            }
+        }
+        if entries.is_empty() {
+            continue;
+        }
+        native_type.get_or_insert_with(|| entries[0].1.get_type().to_owned());
+        let mut dict = Vec::new();
+        for (label, value) in entries {
+            dict.push((crate::starlark_types::alloc_label(heap, &label)?, value));
+        }
+        elements.push((
+            heap.alloc(starlark::values::dict::AllocDict(dict)),
+            no_match_error,
+        ));
+    }
+    Ok(Some(crate::rule_declarations::alloc_selector_list(
+        heap,
+        elements,
+        native_type.unwrap_or_else(|| "NoneType".to_owned()),
+    )))
+}
+
+/// Wrap a plain configurable macro attribute value
+/// (SelectorList.wrapSingleValue, packages/SelectorList.java:156-159).
+pub(crate) fn wrap_single_value<'v>(
+    heap: starlark::values::Heap<'v>,
+    value: Value<'v>,
+) -> Value<'v> {
+    let native_type = value.get_type().to_owned();
+    let dict = heap.alloc(starlark::values::dict::AllocDict([(
+        "//conditions:default",
+        value,
+    )]));
+    crate::rule_declarations::alloc_selector_list(heap, vec![(dict, String::new())], native_type)
+}
+
 /// StarlarkComputedDefaultTemplate.computePossibleValues/computeValue/invokeCallback
 /// (packages/Attribute.java:1405-1500) for one rule instance. Each parameter
 /// names an attribute (StarlarkCallbackHelper.buildArgumentList,
@@ -3366,6 +3621,44 @@ pub(crate) fn rule_doc(value: Value<'_>) -> Option<crate::starlark_doc_extract::
         attrs,
         advertised: declaration.provides.clone(),
     })
+}
+
+/// What a symbolic macro inherits from a Starlark rule (`macro(inherit_attrs=
+/// <rule>)`, StarlarkRuleClassFunctions.getAttrsOf, :507-522): the rule kind
+/// (its built-in attributes) and the schema attributes in rule-class order
+/// with `(spec, starlark_defined, configurable)`. `None` when `value` is not
+/// a Starlark rule; an error when it is not exported.
+#[allow(clippy::type_complexity)]
+pub(crate) fn rule_inheritance(
+    value: Value<'_>,
+) -> Option<
+    anyhow::Result<(
+        crate::native_rules::StarlarkRuleKind,
+        Vec<(String, AttrSpec, bool, bool)>,
+    )>,
+> {
+    let definition = Definition::from_value(value)?;
+    if definition.exported.get().is_none() {
+        return Some(Err(anyhow!(
+            "Invalid 'inherit_attrs' value: a rule or macro callable must be assigned to a global variable in a .bzl file before it can be inherited from"
+        )));
+    }
+    let attrs = definition
+        .attr_order
+        .iter()
+        .filter_map(|name| {
+            let spec = definition.schema.get(name)?;
+            // build_setting_default and help are built in and nonconfigurable
+            // (RuleClass.java:904-914).
+            let built_in = definition.build_setting.is_some()
+                && matches!(name.as_str(), "build_setting_default" | "help");
+            let configurable = !built_in
+                && !spec.declaration.nonconfigurable
+                && !matches!(spec.kind, AttrKind::Output | AttrKind::OutputList);
+            Some((name.clone(), spec.clone(), !built_in, configurable))
+        })
+        .collect();
+    Some(Ok((definition.declaration.kind(), attrs)))
 }
 
 /// Copy the owned schema without exposing the private Starlark descriptor type.

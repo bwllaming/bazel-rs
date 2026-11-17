@@ -1,0 +1,999 @@
+{
+ "schema": "symbolic-macro-attrs-reference-receipt/v1",
+ "fixture": "symbolic_macro_attrs",
+ "purpose": "Symbolic macros with user attributes and inherit_attrs (StarlarkRuleClassFunctions.macro :414-530, MacroClass.instantiateMacro/executeMacroImplementation): the implementation's kwargs (inherited attribute sets of Starlark rules, test rules, native rules, macros and \"common\"; None-defaulted inherited attributes; configurable values as select(); Label conversion), nested macros (visibility, naming, conflicts, recursion), macro()/invocation error texts, query --output=build of macro-created targets and a build through an inherit_attrs macro.",
+ "reference": {
+  "binary": "bazel-9.3.1-linux-x86_64",
+  "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch>",
+  "command_flags": "<argv> --noshow_progress",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8; fresh fixture copy per case"
+ },
+ "normalization": "<WS> = the workspace copy. stdout = the lines not starting with '#' (query --output=build location/call-stack comments). debug = the DEBUG lines without the `DEBUG: <file>:L:C: ` prefix. errors = the distinct `Error...:` lines without the `Error[ in f]: ` prefix and the package-error `ERROR: ` lines (with their tab-indented macro traceback lines).",
+ "script": {
+  "path": "/tmp/opencode/w/corpus-macros-scratch/capture.py (not committed)",
+  "sha256": "dbbf40a6e8f9445edf6b3280e09dd8b0748bc9130f96b51b65eb0c450fe90c59"
+ },
+ "fixture_files_sha256": {
+  "MODULE.bazel": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "e_return/BUILD.bazel": "0cb01952ed488b910476f02a4e7a02988c12de9f290650fedfa39f0a70d4a91d",
+  "e_return/defs.bzl": "aa35c79b3beda26dd06f9f0720255315a8174fef4f6e0818df8d9172edd276e9",
+  "e_macro_vs_target/BUILD.bazel": "49b1709f25d69bb8997c2a3ec589ec46ef764a08ad008ace1af1c375b1c93ecb",
+  "e_macro_vs_target/defs.bzl": "8ee7e6b942b3ce54bd5041b4322b8544acbc8dbb9bca8379be63f6081805b267",
+  "e_unexported/BUILD.bazel": "dcbd618e98a8aa538513d1a3dca52e9ff45a51bee8037def47f6f4078fddc7ec",
+  "e_unexported/defs.bzl": "480d97825c7c75fa894afc818c715208a2a7f0cbf857cd2668fa2cd4e437ede4",
+  "e_computed/BUILD.bazel": "dcbd618e98a8aa538513d1a3dca52e9ff45a51bee8037def47f6f4078fddc7ec",
+  "e_computed/defs.bzl": "b925a1afaf00256250599f74357b6a820603237fabdde714e51bc3fc4ee73b15",
+  "ok_nested_dv/BUILD.bazel": "4387a36aed717af2b4a4bd4eb430a894542aa669febc618c8d715714f049d6fb",
+  "ok_nested_dv/defs.bzl": "88bcf7061a4764d31c92324e35bd1fb1e9022e2bed835ea67235d96f67cf0d7f",
+  "e_unknown/BUILD.bazel": "91ba3e827c5da674765dda418c16bb49d9115b8d30ea1544b1eeb0683b3be294",
+  "e_unknown/defs.bzl": "0a3cac86dcc10fd0d62696118a308ca4874bee1e791c65450131e8b03773783b",
+  "e_inh_str/BUILD.bazel": "dcbd618e98a8aa538513d1a3dca52e9ff45a51bee8037def47f6f4078fddc7ec",
+  "e_inh_str/defs.bzl": "803efefcd268aa122b7b843a07d82861dc3e0507afc9edd176deb7af3a155923",
+  "e_tags_select/BUILD.bazel": "7ff2ddc2d8bf5d21094e5ab07f9c22b0d1a48c32a0813a0553c783b9f9d8c85b",
+  "e_tags_select/defs.bzl": "f2a5fbf86bfe763c9823a822544882f5f1f1acb21cbcefcda0ce8460b831e788",
+  "e_noncfg/BUILD.bazel": "a41be7a721c32a81b4692e9f621ad31987f367b9b8436dc0ed838a9e2c5ce7f7",
+  "e_noncfg/defs.bzl": "0a3cac86dcc10fd0d62696118a308ca4874bee1e791c65450131e8b03773783b",
+  "ok_nested/BUILD.bazel": "4544343ae9117a99a24565cb64a336820ed088cb9ac7df35cad33b078c3c47ea",
+  "ok_nested/defs.bzl": "88bcf7061a4764d31c92324e35bd1fb1e9022e2bed835ea67235d96f67cf0d7f",
+  "e_recursion/BUILD.bazel": "cb988fb70a3cef8d5ec87af2fa5db4f3abd0ea4b28a689676cdf7ac3d3564a19",
+  "e_recursion/defs.bzl": "f3e1c320b2a04551df70cfd19888da9a1a161a175421183041f359c7148e13ce",
+  "e_dup/BUILD.bazel": "bc5182ffd975f8a04f403d4d5e8ec8f0a3576ec74605db6941ed595f2d0a6083",
+  "e_dup/defs.bzl": "8ee7e6b942b3ce54bd5041b4322b8544acbc8dbb9bca8379be63f6081805b267",
+  "inherit/BUILD.bazel": "337e64c411cb98656a19ffcd49a37dff5b2f8bc7661ea9fa11d943f3a0237abe",
+  "inherit/defs.bzl": "c0bee8bb25470e11bcfaeb47d4e9215a4a99587d204a9122ebc513c4a00096c7",
+  "e_kwargs/BUILD.bazel": "dcbd618e98a8aa538513d1a3dca52e9ff45a51bee8037def47f6f4078fddc7ec",
+  "e_kwargs/defs.bzl": "c1c7d5b0bdc0bdb5f6c624db6381e2f7ee6f6f5dbf1d6b814430e66551143639",
+  "e_attrs_val/BUILD.bazel": "dcbd618e98a8aa538513d1a3dca52e9ff45a51bee8037def47f6f4078fddc7ec",
+  "e_attrs_val/defs.bzl": "7057894e0130963e96523a6d1a1809be4a5555abce335b16bbda03b877ef0c57",
+  "e_indirect/BUILD.bazel": "cb988fb70a3cef8d5ec87af2fa5db4f3abd0ea4b28a689676cdf7ac3d3564a19",
+  "e_indirect/defs.bzl": "e77889b7f1881292618605d557bd41455057ee76fcab02ce59bcb1d273c032df",
+  "e_inh_list/BUILD.bazel": "dcbd618e98a8aa538513d1a3dca52e9ff45a51bee8037def47f6f4078fddc7ec",
+  "e_inh_list/defs.bzl": "0103012b295656d63998b16e402f1f870682f28ec76bd9f4987f7fce5e753999",
+  "e_submacro_name/BUILD.bazel": "cb988fb70a3cef8d5ec87af2fa5db4f3abd0ea4b28a689676cdf7ac3d3564a19",
+  "e_submacro_name/defs.bzl": "9a925e78f0ddea4fd12fdea6909b494bcf8786df925b7efbf8ea52cf170b3f83",
+  "select/BUILD.bazel": "46906617d52686c4bd5e5391c99191e41bbb78b194d1d4bf54c79eab71f15a99",
+  "select/defs.bzl": "809d20fc50a59c42d30f4757bcceac153393ac169ae5283cb0d701acab0f5c43",
+  "e_type_label/BUILD.bazel": "9a998ffbe6040d8873d6ce888f2a01a9846d7f84216bfa36e1ee4cee18d3e9de",
+  "e_type_label/defs.bzl": "0a3cac86dcc10fd0d62696118a308ca4874bee1e791c65450131e8b03773783b",
+  "e_dup_main/BUILD.bazel": "cb988fb70a3cef8d5ec87af2fa5db4f3abd0ea4b28a689676cdf7ac3d3564a19",
+  "e_dup_main/defs.bzl": "d59730bb6e6d4f102c9e21432c9451d2a1c5b71f1e2093c6ea9f469eac82fa22",
+  "e_target_vs_macro/BUILD.bazel": "60f5fa678bb87cf7518f855d2be33653d7813bf577f5c7f911f780e83dbb73a4",
+  "e_target_vs_macro/defs.bzl": "8ee7e6b942b3ce54bd5041b4322b8544acbc8dbb9bca8379be63f6081805b267",
+  "e_type_branch/BUILD.bazel": "f147c10b6a73ba4bfad73263002d878a41a682b86713a82f36fbc7c2253bfdf7",
+  "e_type_branch/defs.bzl": "0a3cac86dcc10fd0d62696118a308ca4874bee1e791c65450131e8b03773783b",
+  "e_attrs_key/BUILD.bazel": "dcbd618e98a8aa538513d1a3dca52e9ff45a51bee8037def47f6f4078fddc7ec",
+  "e_attrs_key/defs.bzl": "518e440352025e489921c6f40a9c764be8128a18cbd982dca10cf1a49ed42a64",
+  "e_tags/BUILD.bazel": "49629112095369c1f9cfb438810a50b7ee5700ed9c64f47e37f420386831c569",
+  "e_tags/defs.bzl": "f2a5fbf86bfe763c9823a822544882f5f1f1acb21cbcefcda0ce8460b831e788",
+  "e_reserved/BUILD.bazel": "dcbd618e98a8aa538513d1a3dca52e9ff45a51bee8037def47f6f4078fddc7ec",
+  "e_reserved/defs.bzl": "d48601b1b0b18c78738f8bf62b16eacbfde9e0dee4429b0c4a012f5b4fe12fe0",
+  "e_implicit/BUILD.bazel": "56bea7b04a23d348ff7e0e9f491deab41f977e312378094623fc606bfb3239ea",
+  "e_implicit/defs.bzl": "0a3cac86dcc10fd0d62696118a308ca4874bee1e791c65450131e8b03773783b",
+  "e_late/BUILD.bazel": "dcbd618e98a8aa538513d1a3dca52e9ff45a51bee8037def47f6f4078fddc7ec",
+  "e_late/defs.bzl": "232598c0b804ef1bab8d845be70188de84a10b89f363da69e53968ef7b00c8d8",
+  "e_mand/BUILD.bazel": "4147f3662c9d0b4969c6ee8208b34e67bb290b579db01d350b8d781fa33e2ddf",
+  "e_mand/defs.bzl": "0a3cac86dcc10fd0d62696118a308ca4874bee1e791c65450131e8b03773783b",
+  "build/BUILD.bazel": "20dafb67a8d54d9bf7373e6c6c53c3d50d010c257754a2e8bbdd7bf9a966fb38",
+  "build/defs.bzl": "a5e8da5f2cddd86b9d731ccf364b45016a33100a4cfcf9876eaf037307721efe",
+  "build/x.txt": "73cb3858a687a8494ca3323053016282f3dad39d42cf62ca4e79dda2aac7d9ac",
+  "e_noname/BUILD.bazel": "714a9ee8fa6b6dcfa4901cd803d02cb45a7dc9a7f850f396c0739d501b381678",
+  "e_noname/defs.bzl": "0a3cac86dcc10fd0d62696118a308ca4874bee1e791c65450131e8b03773783b",
+  "e_inh_int/BUILD.bazel": "dcbd618e98a8aa538513d1a3dca52e9ff45a51bee8037def47f6f4078fddc7ec",
+  "e_inh_int/defs.bzl": "eec24a7625bc1d8f74cf2642bd1ec539c8d5a907787dba436f5a696eb92d8b8d",
+  "e_badname/BUILD.bazel": "dcbd618e98a8aa538513d1a3dca52e9ff45a51bee8037def47f6f4078fddc7ec",
+  "e_badname/defs.bzl": "d17f3caf95c8124a4c2574ea085d0cdd7e98f41bf9e9c8e7e636d028102ebeac",
+  "e_type/BUILD.bazel": "435c8f275d803e243bf8108ed05ed14a065a81bf0cb88a9a69df9481ee84ed85",
+  "e_type/defs.bzl": "0a3cac86dcc10fd0d62696118a308ca4874bee1e791c65450131e8b03773783b"
+ },
+ "cases": {
+  "e_kwargs": {
+   "argv": [
+    "query",
+    "//e_kwargs:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "If inherit_attrs is set, implementation function must have a **kwargs parameter"
+    ]
+   }
+  },
+  "e_inh_int": {
+   "argv": [
+    "query",
+    "//e_inh_int:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "in call to macro(), parameter 'inherit_attrs' got value of type 'int', want 'rule, macro, string, or NoneType'"
+    ]
+   }
+  },
+  "e_inh_str": {
+   "argv": [
+    "query",
+    "//e_inh_str:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "Invalid 'inherit_attrs' value \"foo\"; expected a rule, a macro, or \"common\""
+    ]
+   }
+  },
+  "e_inh_list": {
+   "argv": [
+    "query",
+    "//e_inh_list:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "in call to macro(), parameter 'inherit_attrs' got value of type 'list', want 'rule, macro, string, or NoneType'"
+    ]
+   }
+  },
+  "e_reserved": {
+   "argv": [
+    "query",
+    "//e_reserved:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "Cannot declare a macro attribute named 'visibility'"
+    ]
+   }
+  },
+  "e_computed": {
+   "argv": [
+    "query",
+    "//e_computed:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "In macro attribute 'a': Macros do not support computed defaults or late-bound defaults"
+    ]
+   }
+  },
+  "e_late": {
+   "argv": [
+    "query",
+    "//e_late:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "In macro attribute 'a': Macros do not support computed defaults or late-bound defaults"
+    ]
+   }
+  },
+  "e_badname": {
+   "argv": [
+    "query",
+    "//e_badname:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "attribute name `1a` is not a valid identifier."
+    ]
+   }
+  },
+  "e_attrs_val": {
+   "argv": [
+    "query",
+    "//e_attrs_val:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "got dict<string, int> for 'attrs', want dict<string, Attribute|None>"
+    ]
+   }
+  },
+  "e_attrs_key": {
+   "argv": [
+    "query",
+    "//e_attrs_key:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "got dict<int, Attribute> for 'attrs', want dict<string, Attribute|None>"
+    ]
+   }
+  },
+  "e_unexported": {
+   "argv": [
+    "query",
+    "//e_unexported:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "Invalid 'inherit_attrs' value: a rule or macro callable must be assigned to a global variable in a .bzl file before it can be inherited from"
+    ]
+   }
+  },
+  "e_unknown": {
+   "argv": [
+    "query",
+    "//e_unknown:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "no such attribute 'ab' in 'user' macro"
+    ]
+   }
+  },
+  "e_mand": {
+   "argv": [
+    "query",
+    "//e_mand:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [
+     "NAME x VIS [Label(\"//e_mand:__pkg__\")]",
+     "KW a select select({\"//conditions:default\": \"\"})",
+     "KW aa select select({\"//conditions:default\": \"\"})",
+     "KW b NoneType None",
+     "KW d string \"x\"",
+     "KW e select select({\"//conditions:default\": 3})",
+     "KW mand select select({\"//conditions:default\": \"\"})",
+     "KW _p select select({\"//conditions:default\": \"pp\"})"
+    ],
+    "errors": [
+     "//e_mand:x: missing value for mandatory attribute 'mand' in 'user' macro"
+    ]
+   }
+  },
+  "e_type": {
+   "argv": [
+    "query",
+    "//e_type:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "expected value of type 'int' for attribute 'e' of 'user', but got \"str\" (string)"
+    ]
+   }
+  },
+  "e_type_label": {
+   "argv": [
+    "query",
+    "//e_type_label:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "expected value of type 'string' for attribute 'b' of 'user', but got 1 (int)"
+    ]
+   }
+  },
+  "e_type_branch": {
+   "argv": [
+    "query",
+    "//e_type_branch:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "expected value of type 'int' for each branch in select expression of attribute 'e' of 'user' (including '//conditions:default'), but got \"q\" (string)"
+    ]
+   }
+  },
+  "e_noncfg": {
+   "argv": [
+    "query",
+    "//e_noncfg:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "attribute \"d\" is not configurable"
+    ]
+   }
+  },
+  "e_implicit": {
+   "argv": [
+    "query",
+    "//e_implicit:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "cannot set value of implicit attribute '_p'"
+    ]
+   }
+  },
+  "e_noname": {
+   "argv": [
+    "query",
+    "//e_noname:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "missing value for mandatory attribute 'name' in 'user' macro"
+    ]
+   }
+  },
+  "e_tags": {
+   "argv": [
+    "query",
+    "//e_tags:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [
+     "NAME x VIS [Label(\"//e_tags:__pkg__\")]",
+     "KW expect_failure NoneType None",
+     "KW transitive_configs NoneType None",
+     "KW deprecation NoneType None",
+     "KW tags NoneType None",
+     "KW testonly NoneType None",
+     "KW features NoneType None",
+     "KW compatible_with NoneType None",
+     "KW restricted_to NoneType None",
+     "KW package_metadata NoneType None",
+     "KW aspect_hints NoneType None",
+     "KW toolchains NoneType None",
+     "KW exec_properties NoneType None",
+     "KW exec_compatible_with NoneType None",
+     "KW exec_group_compatible_with NoneType None",
+     "KW target_compatible_with NoneType None"
+    ],
+    "errors": [
+     "//e_tags:x: expected value of type 'list(string)' for attribute 'tags' of 'm', but got \"str\" (string)"
+    ]
+   }
+  },
+  "e_tags_select": {
+   "argv": [
+    "query",
+    "//e_tags_select:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [
+     "NAME x VIS [Label(\"//e_tags_select:__pkg__\")]",
+     "KW expect_failure NoneType None",
+     "KW transitive_configs NoneType None",
+     "KW deprecation NoneType None",
+     "KW tags NoneType None",
+     "KW testonly NoneType None",
+     "KW features NoneType None",
+     "KW compatible_with NoneType None",
+     "KW restricted_to NoneType None",
+     "KW package_metadata NoneType None",
+     "KW aspect_hints NoneType None",
+     "KW toolchains NoneType None",
+     "KW exec_properties NoneType None",
+     "KW exec_compatible_with NoneType None",
+     "KW exec_group_compatible_with NoneType None",
+     "KW target_compatible_with NoneType None"
+    ],
+    "errors": [
+     "//e_tags_select:x: attribute \"tags\" is not configurable"
+    ]
+   }
+  },
+  "e_return": {
+   "argv": [
+    "query",
+    "//e_return:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "macro 'x' may not return a non-None value (got 1)"
+    ]
+   }
+  },
+  "e_submacro_name": {
+   "argv": [
+    "query",
+    "//e_submacro_name:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "macro 'x' cannot declare submacro named 'other'. Name must be the same as the macro's name, or the macro's name followed by '_' (recommended), '-', or '.', and a non-empty string."
+    ]
+   }
+  },
+  "e_recursion": {
+   "argv": [
+    "query",
+    "//e_recursion:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "macro 'x_a' is a direct recursive call of 'x'. Macro instantiation traceback (most recent call last):\n\tPackage //e_recursion, macro 'x' of type //e_recursion:defs.bzl%outer\n\tPackage //e_recursion, macro 'x_a' of type //e_recursion:defs.bzl%outer"
+    ]
+   }
+  },
+  "e_indirect": {
+   "argv": [
+    "query",
+    "//e_indirect:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "macro 'x_a_b' is an indirect recursive call of 'x'. Macro instantiation traceback (most recent call last):\n\tPackage //e_indirect, macro 'x' of type //e_indirect:defs.bzl%outer\n\tPackage //e_indirect, macro 'x_a' of type //e_indirect:defs.bzl%inner\n\tPackage //e_indirect, macro 'x_a_b' of type //e_indirect:defs.bzl%outer"
+    ]
+   }
+  },
+  "e_dup": {
+   "argv": [
+    "query",
+    "//e_dup:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "macro 'x' conflicts with an existing macro (and was not created by it)"
+    ]
+   }
+  },
+  "e_dup_main": {
+   "argv": [
+    "query",
+    "//e_dup_main:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "macro 'x' conflicts with an existing macro (and was not created by it)"
+    ]
+   }
+  },
+  "e_target_vs_macro": {
+   "argv": [
+    "query",
+    "//e_target_vs_macro:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "target 'x' conflicts with an existing macro (and was not created by it)"
+    ]
+   }
+  },
+  "e_macro_vs_target": {
+   "argv": [
+    "query",
+    "//e_macro_vs_target:all"
+   ],
+   "genuine": {
+    "exit": 7,
+    "stdout": [],
+    "debug": [],
+    "errors": [
+     "macro 'x' conflicts with an existing target."
+    ]
+   }
+  },
+  "ok_nested": {
+   "argv": [
+    "query",
+    "--output=build",
+    "//ok_nested:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "stdout": [
+     "filegroup(",
+     "  name = \"x\",",
+     "  visibility = [\"//ok_nested:__pkg__\"],",
+     "  generator_name = \"x\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested/BUILD.bazel:2:6\",",
+     "  srcs = [\"//ok_nested:a\"],",
+     ")",
+     "",
+     "filegroup(",
+     "  name = \"x-c\",",
+     "  visibility = [\"//ok_nested:__pkg__\", \"//other:__pkg__\"],",
+     "  generator_name = \"x\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested/BUILD.bazel:2:6\",",
+     ")",
+     "",
+     "filegroup(",
+     "  name = \"x-c_priv\",",
+     "  generator_name = \"x\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested/BUILD.bazel:2:6\",",
+     ")",
+     "",
+     "filegroup(",
+     "  name = \"x.d\",",
+     "  generator_name = \"x\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested/BUILD.bazel:2:6\",",
+     ")",
+     "",
+     "filegroup(",
+     "  name = \"x_b\",",
+     "  visibility = [\"//ok_nested:__pkg__\"],",
+     "  generator_name = \"x\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested/BUILD.bazel:2:6\",",
+     "  srcs = [\"//ok_nested:c\"],",
+     ")",
+     "",
+     "filegroup(",
+     "  name = \"x_b_priv\",",
+     "  generator_name = \"x\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested/BUILD.bazel:2:6\",",
+     ")",
+     "",
+     "filegroup(",
+     "  name = \"x_priv\",",
+     "  generator_name = \"x\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested/BUILD.bazel:2:6\",",
+     ")",
+     "",
+     "filegroup(",
+     "  name = \"y\",",
+     "  visibility = [\"//visibility:public\"],",
+     "  generator_name = \"y\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested/BUILD.bazel:3:6\",",
+     ")",
+     "",
+     "filegroup(",
+     "  name = \"y-c\",",
+     "  visibility = [\"//ok_nested:__pkg__\", \"//other:__pkg__\"],",
+     "  generator_name = \"y\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested/BUILD.bazel:3:6\",",
+     ")",
+     "",
+     "filegroup(",
+     "  name = \"y-c_priv\",",
+     "  generator_name = \"y\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested/BUILD.bazel:3:6\",",
+     ")",
+     "",
+     "filegroup(",
+     "  name = \"y.d\",",
+     "  generator_name = \"y\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested/BUILD.bazel:3:6\",",
+     ")",
+     "",
+     "filegroup(",
+     "  name = \"y_b\",",
+     "  visibility = [\"//ok_nested:__pkg__\"],",
+     "  generator_name = \"y\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested/BUILD.bazel:3:6\",",
+     "  srcs = [\"//ok_nested:c\"],",
+     ")",
+     "",
+     "filegroup(",
+     "  name = \"y_b_priv\",",
+     "  generator_name = \"y\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested/BUILD.bazel:3:6\",",
+     ")",
+     "",
+     "filegroup(",
+     "  name = \"y_priv\",",
+     "  generator_name = \"y\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested/BUILD.bazel:3:6\",",
+     ")",
+     ""
+    ],
+    "debug": [
+     "OUT x [Label(\"//ok_nested:__pkg__\")] select({\"//conditions:default\": [Label(\"//ok_nested:a\")]})",
+     "IN x [Label(\"//ok_nested:__pkg__\")] {\"transitive_configs\": None, \"deprecation\": None, \"tags\": None, \"testonly\": None, \"features\": None, \"compatible_with\": None, \"restricted_to\": None, \"package_metadata\": None, \"aspect_hints\": None, \"licenses\": None, \"distribs\": None, \"target_compatible_with\": None, \"srcs\": select({\"//conditions:default\": [Label(\"//ok_nested:a\")]}), \"output_group\": None, \"data\": None, \"output_licenses\": None}",
+     "IN x_b [Label(\"//ok_nested:__pkg__\")] {\"transitive_configs\": None, \"deprecation\": None, \"tags\": None, \"testonly\": None, \"features\": None, \"compatible_with\": None, \"restricted_to\": None, \"package_metadata\": None, \"aspect_hints\": None, \"licenses\": None, \"distribs\": None, \"target_compatible_with\": None, \"srcs\": select({\"//conditions:default\": [Label(\"//ok_nested:c\")]}), \"output_group\": None, \"data\": None, \"output_licenses\": None}",
+     "IN x-c [Label(\"//ok_nested:__pkg__\"), Label(\"//other:__pkg__\")] {\"transitive_configs\": None, \"deprecation\": None, \"tags\": None, \"testonly\": None, \"features\": None, \"compatible_with\": None, \"restricted_to\": None, \"package_metadata\": None, \"aspect_hints\": None, \"licenses\": None, \"distribs\": None, \"target_compatible_with\": None, \"srcs\": None, \"output_group\": None, \"data\": None, \"output_licenses\": None}",
+     "OUT y [Label(\"//visibility:public\")] None",
+     "IN y [Label(\"//visibility:public\")] {\"transitive_configs\": None, \"deprecation\": None, \"tags\": None, \"testonly\": None, \"features\": None, \"compatible_with\": None, \"restricted_to\": None, \"package_metadata\": None, \"aspect_hints\": None, \"licenses\": None, \"distribs\": None, \"target_compatible_with\": None, \"srcs\": None, \"output_group\": None, \"data\": None, \"output_licenses\": None}",
+     "IN y_b [Label(\"//ok_nested:__pkg__\")] {\"transitive_configs\": None, \"deprecation\": None, \"tags\": None, \"testonly\": None, \"features\": None, \"compatible_with\": None, \"restricted_to\": None, \"package_metadata\": None, \"aspect_hints\": None, \"licenses\": None, \"distribs\": None, \"target_compatible_with\": None, \"srcs\": select({\"//conditions:default\": [Label(\"//ok_nested:c\")]}), \"output_group\": None, \"data\": None, \"output_licenses\": None}",
+     "IN y-c [Label(\"//ok_nested:__pkg__\"), Label(\"//other:__pkg__\")] {\"transitive_configs\": None, \"deprecation\": None, \"tags\": None, \"testonly\": None, \"features\": None, \"compatible_with\": None, \"restricted_to\": None, \"package_metadata\": None, \"aspect_hints\": None, \"licenses\": None, \"distribs\": None, \"target_compatible_with\": None, \"srcs\": None, \"output_group\": None, \"data\": None, \"output_licenses\": None}"
+    ],
+    "errors": []
+   }
+  },
+  "ok_nested_dv": {
+   "argv": [
+    "query",
+    "--output=build",
+    "//ok_nested_dv:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "stdout": [
+     "filegroup(",
+     "  name = \"x\",",
+     "  visibility = [\"//foo:__subpackages__\", \"//ok_nested_dv:__pkg__\"],",
+     "  generator_name = \"x\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested_dv/BUILD.bazel:3:6\",",
+     ")",
+     "",
+     "filegroup(",
+     "  name = \"x-c\",",
+     "  visibility = [\"//ok_nested_dv:__pkg__\", \"//other:__pkg__\"],",
+     "  generator_name = \"x\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested_dv/BUILD.bazel:3:6\",",
+     ")",
+     "",
+     "filegroup(",
+     "  name = \"x-c_priv\",",
+     "  generator_name = \"x\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested_dv/BUILD.bazel:3:6\",",
+     ")",
+     "",
+     "filegroup(",
+     "  name = \"x.d\",",
+     "  generator_name = \"x\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested_dv/BUILD.bazel:3:6\",",
+     ")",
+     "",
+     "filegroup(",
+     "  name = \"x_b\",",
+     "  visibility = [\"//ok_nested_dv:__pkg__\"],",
+     "  generator_name = \"x\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested_dv/BUILD.bazel:3:6\",",
+     "  srcs = [\"//ok_nested_dv:c\"],",
+     ")",
+     "",
+     "filegroup(",
+     "  name = \"x_b_priv\",",
+     "  generator_name = \"x\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested_dv/BUILD.bazel:3:6\",",
+     ")",
+     "",
+     "filegroup(",
+     "  name = \"x_priv\",",
+     "  generator_name = \"x\",",
+     "  generator_function = \"outer\",",
+     "  generator_location = \"ok_nested_dv/BUILD.bazel:3:6\",",
+     ")",
+     ""
+    ],
+    "debug": [
+     "OUT x [Label(\"//foo:__subpackages__\"), Label(\"//ok_nested_dv:__pkg__\")] None",
+     "IN x [Label(\"//foo:__subpackages__\"), Label(\"//ok_nested_dv:__pkg__\")] {\"transitive_configs\": None, \"deprecation\": None, \"tags\": None, \"testonly\": None, \"features\": None, \"compatible_with\": None, \"restricted_to\": None, \"package_metadata\": None, \"aspect_hints\": None, \"licenses\": None, \"distribs\": None, \"target_compatible_with\": None, \"srcs\": None, \"output_group\": None, \"data\": None, \"output_licenses\": None}",
+     "IN x_b [Label(\"//ok_nested_dv:__pkg__\")] {\"transitive_configs\": None, \"deprecation\": None, \"tags\": None, \"testonly\": None, \"features\": None, \"compatible_with\": None, \"restricted_to\": None, \"package_metadata\": None, \"aspect_hints\": None, \"licenses\": None, \"distribs\": None, \"target_compatible_with\": None, \"srcs\": select({\"//conditions:default\": [Label(\"//ok_nested_dv:c\")]}), \"output_group\": None, \"data\": None, \"output_licenses\": None}",
+     "IN x-c [Label(\"//ok_nested_dv:__pkg__\"), Label(\"//other:__pkg__\")] {\"transitive_configs\": None, \"deprecation\": None, \"tags\": None, \"testonly\": None, \"features\": None, \"compatible_with\": None, \"restricted_to\": None, \"package_metadata\": None, \"aspect_hints\": None, \"licenses\": None, \"distribs\": None, \"target_compatible_with\": None, \"srcs\": None, \"output_group\": None, \"data\": None, \"output_licenses\": None}"
+    ],
+    "errors": []
+   }
+  },
+  "inherit": {
+   "argv": [
+    "query",
+    "//inherit:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "stdout": [
+     "//inherit:r1"
+    ],
+    "debug": [
+     "NAME r1 VIS [Label(\"//inherit:__pkg__\")]",
+     "KW expect_failure NoneType None",
+     "KW transitive_configs NoneType None",
+     "KW deprecation NoneType None",
+     "KW tags list [\"t1\"]",
+     "KW testonly NoneType None",
+     "KW features NoneType None",
+     "KW compatible_with NoneType None",
+     "KW restricted_to NoneType None",
+     "KW package_metadata NoneType None",
+     "KW aspect_hints NoneType None",
+     "KW toolchains NoneType None",
+     "KW exec_properties NoneType None",
+     "KW exec_compatible_with NoneType None",
+     "KW exec_group_compatible_with NoneType None",
+     "KW target_compatible_with NoneType None",
+     "KW srcs select select({\"//conditions:default\": [Label(\"//inherit:a.txt\"), Label(\"//other:b\")]})",
+     "KW s NoneType None",
+     "KW m select select({\"//conditions:default\": \"mm\"})",
+     "KW lk select select({\"//conditions:default\": {Label(\"//inherit:k\"): \"v\"}})",
+     "KW nc NoneType None",
+     "KW one NoneType None",
+     "NAME t1 VIS [Label(\"//inherit:__pkg__\")]",
+     "KW expect_failure NoneType None",
+     "KW transitive_configs NoneType None",
+     "KW deprecation NoneType None",
+     "KW tags NoneType None",
+     "KW testonly NoneType None",
+     "KW features NoneType None",
+     "KW compatible_with NoneType None",
+     "KW restricted_to NoneType None",
+     "KW package_metadata NoneType None",
+     "KW aspect_hints NoneType None",
+     "KW toolchains NoneType None",
+     "KW exec_properties NoneType None",
+     "KW exec_compatible_with NoneType None",
+     "KW exec_group_compatible_with NoneType None",
+     "KW target_compatible_with NoneType None",
+     "KW size NoneType None",
+     "KW timeout NoneType None",
+     "KW flaky NoneType None",
+     "KW shard_count NoneType None",
+     "KW local NoneType None",
+     "KW args NoneType None",
+     "KW x NoneType None",
+     "NAME c1 VIS [Label(\"//inherit:__pkg__\")]",
+     "KW expect_failure NoneType None",
+     "KW transitive_configs NoneType None",
+     "KW deprecation NoneType None",
+     "KW tags NoneType None",
+     "KW testonly NoneType None",
+     "KW features NoneType None",
+     "KW compatible_with NoneType None",
+     "KW restricted_to NoneType None",
+     "KW package_metadata NoneType None",
+     "KW aspect_hints NoneType None",
+     "KW toolchains NoneType None",
+     "KW exec_properties NoneType None",
+     "KW exec_compatible_with NoneType None",
+     "KW exec_group_compatible_with NoneType None",
+     "KW target_compatible_with NoneType None",
+     "NAME f1 VIS [Label(\"//inherit:__pkg__\")]",
+     "KW transitive_configs NoneType None",
+     "KW deprecation NoneType None",
+     "KW tags NoneType None",
+     "KW testonly NoneType None",
+     "KW features NoneType None",
+     "KW compatible_with NoneType None",
+     "KW restricted_to NoneType None",
+     "KW package_metadata NoneType None",
+     "KW aspect_hints NoneType None",
+     "KW licenses NoneType None",
+     "KW distribs NoneType None",
+     "KW target_compatible_with NoneType None",
+     "KW srcs NoneType None",
+     "KW output_group NoneType None",
+     "KW data NoneType None",
+     "KW output_licenses NoneType None",
+     "NAME g1 VIS [Label(\"//inherit:__pkg__\")]",
+     "KW transitive_configs NoneType None",
+     "KW deprecation NoneType None",
+     "KW tags NoneType None",
+     "KW testonly NoneType None",
+     "KW features NoneType None",
+     "KW compatible_with NoneType None",
+     "KW restricted_to NoneType None",
+     "KW package_metadata NoneType None",
+     "KW aspect_hints NoneType None",
+     "KW licenses NoneType None",
+     "KW distribs NoneType None",
+     "KW target_compatible_with NoneType None",
+     "KW exec_properties NoneType None",
+     "KW exec_compatible_with NoneType None",
+     "KW exec_group_compatible_with NoneType None",
+     "KW toolchains NoneType None",
+     "KW srcs NoneType None",
+     "KW tools NoneType None",
+     "KW outs list [Label(\"//inherit:o\")]",
+     "KW cmd NoneType None",
+     "KW cmd_bash NoneType None",
+     "KW cmd_bat NoneType None",
+     "KW cmd_ps NoneType None",
+     "KW output_to_bindir NoneType None",
+     "KW local NoneType None",
+     "KW message NoneType None",
+     "KW output_licenses NoneType None",
+     "KW executable NoneType None",
+     "KW heuristic_label_expansion NoneType None",
+     "KW stamp NoneType None",
+     "NAME u1 VIS [Label(\"//inherit:__pkg__\")]",
+     "KW a select select({\"//conditions:default\": \"sel\"})",
+     "KW b select select({\"//conditions:default\": Label(\"//inherit:b\")})",
+     "KW c select select({\"//conditions:default\": [Label(\"//inherit:c1\"), Label(\"@@[unknown repo 'foo' requested from @@]//x:x\")]})",
+     "KW d string \"x\"",
+     "KW e select select({\"//conditions:default\": 3})",
+     "KW f select select({\"//conditions:default\": False})",
+     "KW g select select({\"//conditions:default\": {}})",
+     "KW h Label Label(\"//inherit:h\")",
+     "KW i select select({\"//conditions:default\": [\"z\"]})",
+     "KW j Label Label(\"//inherit:jj\")",
+     "KW k select select({\"//conditions:default\": {}})",
+     "KW mand select select({\"//conditions:default\": \"M\"})",
+     "KW _p select select({\"//conditions:default\": \"pp\"})",
+     "NAME u2 VIS [Label(\"//inherit:__pkg__\")]",
+     "KW a select select({\"//conditions:default\": \"\"})",
+     "KW b NoneType None",
+     "KW c select select({\"//conditions:default\": []})",
+     "KW d string \"x\"",
+     "KW e select select({\"//conditions:default\": 3})",
+     "KW f select select({\"//conditions:default\": False})",
+     "KW g select select({\"//conditions:default\": {}})",
+     "KW h NoneType None",
+     "KW i select select({\"//conditions:default\": [\"z\"]})",
+     "KW j NoneType None",
+     "KW k select select({\"//conditions:default\": {}})",
+     "KW mand select select({\"//conditions:default\": \"M\"})",
+     "KW _p select select({\"//conditions:default\": \"pp\"})",
+     "NAME m1 VIS [Label(\"//inherit:__pkg__\")]",
+     "KW extra select select({\"//conditions:default\": \"\"})",
+     "KW a NoneType None",
+     "KW b NoneType None",
+     "KW c NoneType None",
+     "KW d NoneType None",
+     "KW f NoneType None",
+     "KW g NoneType None",
+     "KW h NoneType None",
+     "KW i NoneType None",
+     "KW j NoneType None",
+     "KW k NoneType None",
+     "KW mand select select({\"//conditions:default\": \"X\"})",
+     "KW _p NoneType None"
+    ],
+    "errors": []
+   }
+  },
+  "select": {
+   "argv": [
+    "query",
+    "//select:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "stdout": [
+     "//select:cfg"
+    ],
+    "debug": [
+     "KW a select select({Label(\"//select:cfg\"): [Label(\"//select:a\")], Label(\"//conditions:default\"): None}) + select({Label(\"//conditions:default\"): [Label(\"//select:b\")]})",
+     "KW s select select({Label(\"//select:cfg\"): \"c\"})",
+     "KW t select select({\"//conditions:default\": [\"q\"]})",
+     "KW o list [Label(\"//select:o1\")]",
+     "KW expect_failure NoneType None",
+     "KW transitive_configs NoneType None",
+     "KW deprecation NoneType None",
+     "KW tags list [\"a\", \"b\", \"b\"]",
+     "KW testonly NoneType None",
+     "KW features select select({\"//conditions:default\": [\"f1\", \"f2\"]})",
+     "KW compatible_with NoneType None",
+     "KW restricted_to NoneType None",
+     "KW package_metadata NoneType None",
+     "KW aspect_hints NoneType None",
+     "KW toolchains NoneType None",
+     "KW exec_properties select select({\"//conditions:default\": {\"k\": \"v\"}})",
+     "KW exec_compatible_with NoneType None",
+     "KW exec_group_compatible_with NoneType None",
+     "KW target_compatible_with select select({\"//conditions:default\": [Label(\"@@[unknown repo 'platforms' requested from @@]//os:linux\")]})"
+    ],
+    "errors": []
+   }
+  },
+  "build": {
+   "argv": [
+    "query",
+    "--output=build",
+    "//build:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "stdout": [
+     "_rd(",
+     "  name = \"a\",",
+     "  visibility = [\"//build:__pkg__\"],",
+     "  tags = [\"aa\", \"zz\"],",
+     "  generator_name = \"a\",",
+     "  generator_function = \"rd\",",
+     "  generator_location = \"build/BUILD.bazel:3:3\",",
+     "  srcs = {\"//build:x.txt\": \"x\", \"//build:y\": \"why\"},",
+     "  target_triple = select({\"//build:on\": \"on-triple\", \"//conditions:default\": \"default-triple\"}),",
+     ")",
+     "",
+     "_rd(",
+     "  name = \"b\",",
+     "  visibility = [\"//build:__pkg__\"],",
+     "  generator_name = \"b\",",
+     "  generator_function = \"rd\",",
+     "  generator_location = \"build/BUILD.bazel:4:3\",",
+     "  srcs = {\"//build:x.txt\": \"x\"},",
+     "  target_triple = \"explicit\",",
+     ")",
+     "",
+     "config_setting(",
+     "  name = \"on\",",
+     "  values = {\"compilation_mode\": \"opt\"},",
+     ")",
+     "",
+     "genrule(",
+     "  name = \"y\",",
+     "  outs = [\"//build:y.out\"],",
+     "  cmd = \"echo y > $@\",",
+     ")",
+     ""
+    ],
+    "debug": [],
+    "errors": [],
+    "build": {
+     "argv": [
+      "build",
+      "//build:all"
+     ],
+     "exit": 0,
+     "outputs": {
+      "a.txt": "default-triple\n@@//build:x.txt=x\n@@//build:y=why\naa\nzz\n",
+      "b.txt": "explicit\n@@//build:x.txt=x\n"
+     }
+    }
+   }
+  }
+ }
+}

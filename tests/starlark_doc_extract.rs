@@ -155,10 +155,10 @@ fn starlark_doc_extract_errors_match_genuine() {
     }
 }
 
-/// Doc-only symbolic macro features load (their definitions are
-/// documented) but an invocation fails explicitly.
+/// A documented macro with attributes is invocable; a finalizer (doc-only)
+/// fails explicitly.
 #[test]
-fn macro_with_attributes_loads_but_invocation_is_unsupported() {
+fn macro_with_attributes_invokes_and_finalizer_is_unsupported() {
     let ws = Workspace::new();
     fs::write(
         ws.0.path().join("pkg/BUILD"),
@@ -167,9 +167,20 @@ fn macro_with_attributes_loads_but_invocation_is_unsupported() {
     .unwrap();
     let output = ws.build(&["//pkg:all"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("my_macro") && !stderr.contains("unsupported"),
+        "{stderr}"
+    );
+    fs::write(
+        ws.0.path().join("pkg/BUILD"),
+        "load(':defs.bzl', 'my_finalizer')\nmy_finalizer(name = 'm')\n",
+    )
+    .unwrap();
+    let output = ws.build(&["//pkg:all"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stderr}");
     assert!(
-        stderr.contains("macro user attributes are unsupported"),
+        stderr.contains("macro finalizer=True is unsupported"),
         "{stderr}"
     );
 }
