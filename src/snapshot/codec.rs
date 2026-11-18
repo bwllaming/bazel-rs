@@ -446,9 +446,10 @@ struct GroupIn {
 }
 
 impl GroupIn {
-    /// The decoded group, its `valid` flag recomputed from what it lists:
-    /// never taken from the bytes, since the scheduler's validation trusts
-    /// it (a tampered destination must fail validation, not pass it).
+    /// The decoded group, not valid yet: [`decode_groups`] recomputes its
+    /// `valid` flag from what it lists, never taken from the bytes, since
+    /// the scheduler's validation trusts it (a tampered destination must
+    /// fail validation, not pass it).
     fn into_group(self) -> InputGroup {
         let GroupIn {
             root,
@@ -461,7 +462,7 @@ impl GroupIn {
             empty_files,
             sources,
         } = self;
-        let mut group = InputGroup {
+        InputGroup {
             root,
             runfiles,
             inputs,
@@ -472,9 +473,7 @@ impl GroupIn {
             empty_files,
             sources,
             valid: false,
-        };
-        group.valid = group.listed_valid();
-        group
+        }
     }
 }
 
@@ -636,10 +635,15 @@ fn classify<T>(sections: Vec<(u32, T)>) -> Result<(T, T, Vec<T>), String> {
 fn decode_groups(section: &[u8]) -> Result<Vec<Arc<InputGroup>>, String> {
     let table: Vec<GroupIn> =
         from_section(section).map_err(|error| format!("shared input groups: {error}"))?;
-    Ok(table
-        .into_iter()
-        .map(|group| Arc::new(group.into_group()))
-        .collect())
+    let mut groups: Vec<InputGroup> = table.into_iter().map(GroupIn::into_group).collect();
+    // Each group's `valid` flag recomputed from what it lists (sorting its
+    // paths: C++ compiles share hundreds of runs of thousands of headers),
+    // the groups on several threads.
+    let valid = on_threads(&groups, InputGroup::listed_valid);
+    for (group, valid) in groups.iter_mut().zip(valid) {
+        group.valid = valid.ok_or("shared input groups: a validity check panicked")?;
+    }
+    Ok(groups.into_iter().map(Arc::new).collect())
 }
 
 /// One NODES chunk, every action's groups resolved into `table` (the
