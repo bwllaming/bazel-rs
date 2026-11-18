@@ -141,6 +141,7 @@ pub fn extract_named(
         destination,
         archive_name,
         None,
+        &[],
     )
     .map_err(|failure| match failure {
         Failure::PrefixNotFound(_) => {
@@ -158,6 +159,7 @@ pub fn extract_file(
     strip_prefix: &str,
     destination: &Path,
     archive_name: &str,
+    rename_files: &[(Vec<u8>, Vec<u8>)],
 ) -> Result<(), Failure> {
     let file = File::open(archive).map_err(|e| format!("open archive: {e}"))?;
     if crate::module_root_warm::active() {
@@ -168,6 +170,7 @@ pub fn extract_file(
             destination,
             archive_name,
             None,
+            rename_files,
         );
     }
     if let Some(kind) = slow_decoder(archive_type)
@@ -182,6 +185,7 @@ pub fn extract_file(
             strip_prefix,
             destination,
             archive_name,
+            rename_files,
         );
     }
     run(
@@ -191,6 +195,7 @@ pub fn extract_file(
         destination,
         archive_name,
         None,
+        rename_files,
     )
 }
 
@@ -342,6 +347,7 @@ fn extract_slow_decoded(
     strip_prefix: &str,
     destination: &Path,
     archive_name: &str,
+    rename_files: &[(Vec<u8>, Vec<u8>)],
 ) -> Result<(), Failure> {
     use sha2::Digest;
     let digest: [u8; 32] = {
@@ -370,6 +376,7 @@ fn extract_slow_decoded(
             destination,
             archive_name,
             None,
+            rename_files,
         );
     }
     // snapshot-unrecorded: a private unnamed scratch file of this process.
@@ -381,6 +388,7 @@ fn extract_slow_decoded(
             destination,
             archive_name,
             None,
+            rename_files,
         );
     };
     let complete = std::sync::atomic::AtomicBool::new(false);
@@ -391,6 +399,7 @@ fn extract_slow_decoded(
         destination,
         archive_name,
         Some((&tee, &complete)),
+        rename_files,
     );
     if result.is_ok() && complete.load(std::sync::atomic::Ordering::Acquire) {
         let replaced = DECODED
@@ -453,13 +462,14 @@ fn run<R: Read + Seek + Send>(
     destination: &Path,
     archive_name: &str,
     tee: Tee<'_>,
+    rename_files: &[(Vec<u8>, Vec<u8>)],
 ) -> Result<(), Failure> {
     if matches!(archive_type, "ar" | "deb") {
         // ArFunction ignores the prefix (ArFunction.java:27-30).
         let options = ArOptions {
             shown: destination,
             state: ArDestination::Directory,
-            rename_files: &[],
+            rename_files,
         };
         return extract_ar(
             BufReader::with_capacity(BUFFER_SIZE, source),
@@ -476,6 +486,7 @@ fn run<R: Read + Seek + Send>(
         available: BTreeSet::new(),
         archive: archive_name,
         symlinks: BTreeMap::new(),
+        rename_files,
     };
     match archive_type {
         "tar" => extract_tar(BufReader::with_capacity(BUFFER_SIZE, source), &mut state)?,
@@ -802,6 +813,10 @@ struct Extraction<'a> {
     // Like Bazel's deferred `Map<Path, PathFragment> symlinks`, a later entry
     // for the same path replaces an earlier one. Keys are stripped components.
     symlinks: BTreeMap<Vec<String>, String>,
+    /// `rename_files`: an entry's raw name is replaced before the prefix
+    /// is stripped (`renameFiles.getOrDefault(entryName, entryName)`,
+    /// CompressedTarFunction.java:89-90, ZipDecompressor.java:90-91).
+    rename_files: &'a [(Vec<u8>, Vec<u8>)],
 }
 
 /// Output location of an included entry: absolute staging path and its
@@ -810,6 +825,11 @@ type Output = (PathBuf, Vec<String>);
 
 impl Extraction<'_> {
     fn output(&mut self, raw: &[u8], directory: bool) -> Result<Option<Output>, String> {
+        let raw = self
+            .rename_files
+            .iter()
+            .find(|(from, _)| from.as_slice() == raw)
+            .map_or(raw, |(_, to)| to.as_slice());
         let parts = safe_components(raw)?;
         if parts.is_empty() && !directory {
             return Err("archive file has an empty normalized path".into());
@@ -2711,6 +2731,7 @@ mod tests {
             available: BTreeSet::new(),
             archive: "archive",
             symlinks: BTreeMap::new(),
+            rename_files: &[],
         };
         assert!(
             state
@@ -3296,7 +3317,7 @@ mod tests {
         let extract = |path: PathBuf| {
             std::thread::spawn(move || {
                 let destination = tempfile::tempdir().unwrap();
-                extract_file(&path, "tar.xz", "top", destination.path(), "archive").unwrap();
+                extract_file(&path, "tar.xz", "top", destination.path(), "archive", &[]).unwrap();
                 let content = fs::read(destination.path().join("retained")).unwrap();
                 release_decoded();
                 content
@@ -3397,16 +3418,16 @@ mod tests {
                 entries
             };
             let first = tempfile::tempdir().unwrap();
-            extract_file(&path, kind, "top", first.path(), "archive").unwrap();
+            extract_file(&path, kind, "top", first.path(), "archive", &[]).unwrap();
             let second = tempfile::tempdir().unwrap();
-            extract_file(&path, kind, "top", second.path(), "archive").unwrap();
+            extract_file(&path, kind, "top", second.path(), "archive", &[]).unwrap();
             assert_eq!(listing(first.path()), listing(second.path()), "{kind}");
             let other = tempfile::tempdir().unwrap();
-            extract_file(&path, kind, "other", other.path(), "archive").unwrap();
+            extract_file(&path, kind, "other", other.path(), "archive", &[]).unwrap();
             assert_eq!(fs::read(other.path().join("file")).unwrap(), b"x");
             let missing = tempfile::tempdir().unwrap();
             assert!(matches!(
-                extract_file(&path, kind, "missing", missing.path(), "archive"),
+                extract_file(&path, kind, "missing", missing.path(), "archive", &[]),
                 Err(Failure::PrefixNotFound(_))
             ));
         }
@@ -3418,7 +3439,7 @@ mod tests {
         let errors: Vec<String> = (0..2)
             .map(|_| {
                 let destination = tempfile::tempdir().unwrap();
-                match extract_file(&path, "tar.xz", "top", destination.path(), "archive") {
+                match extract_file(&path, "tar.xz", "top", destination.path(), "archive", &[]) {
                     Err(Failure::Io(message) | Failure::Other(message)) => message,
                     other => panic!("unexpected {other:?}"),
                 }
@@ -3451,10 +3472,10 @@ mod tests {
             let path = source.path().join(format!("archive.{kind}"));
             fs::write(&path, bytes).unwrap();
             let destination = tempfile::tempdir().unwrap();
-            extract_file(&path, kind, "b/c", destination.path(), "archive").unwrap();
+            extract_file(&path, kind, "b/c", destination.path(), "archive", &[]).unwrap();
             assert_eq!(fs::read(destination.path().join("two")).unwrap(), b"2");
             let destination = tempfile::tempdir().unwrap();
-            match extract_file(&path, kind, "missing", destination.path(), "archive") {
+            match extract_file(&path, kind, "missing", destination.path(), "archive", &[]) {
                 Err(Failure::PrefixNotFound(available)) => assert_eq!(
                     available.into_iter().collect::<Vec<_>>(),
                     ["a", "b"],
@@ -3661,6 +3682,43 @@ mod tests {
             assert_eq!(metadata.mtime(), mtime, "{name}");
             assert_eq!(metadata.atime(), mtime, "{name}");
             assert_eq!(fs::read(root.join(name)).unwrap(), data, "{name}");
+        }
+    }
+
+    /// rename_files replaces the raw entry name before the prefix is
+    /// stripped, for zip and tar (genuine 9.3.0 repository_ctx_api probe
+    /// B9/extract/rename_files: `pre/a.txt` renamed `pre/renamed.txt`).
+    #[test]
+    fn zip_and_tar_apply_rename_files_before_the_prefix() {
+        let entries: &[(&str, u32, &[u8])] = &[
+            ("pre/a.txt", 0o644, b"A\n"),
+            ("pre/sub/b.txt", 0o644, b"B\n"),
+        ];
+        let tar = tar_fixture(&[
+            ("pre/a.txt", b'0', 0o644, b"A\n"),
+            ("pre/sub/b.txt", b'0', 0o644, b"B\n"),
+        ]);
+        let rename = [(b"pre/a.txt".to_vec(), b"pre/renamed.txt".to_vec())];
+        for (kind, bytes) in [("zip", zip_fixture(entries)), ("tar", tar)] {
+            let archive = tempfile::NamedTempFile::new().unwrap();
+            fs::write(archive.path(), &bytes).unwrap();
+            let destination = tempfile::tempdir().unwrap();
+            extract_file(
+                archive.path(),
+                kind,
+                "pre",
+                destination.path(),
+                "archive",
+                &rename,
+            )
+            .unwrap();
+            assert_eq!(
+                fs::read(destination.path().join("renamed.txt")).unwrap(),
+                b"A\n",
+                "{kind}"
+            );
+            assert!(destination.path().join("sub/b.txt").is_file(), "{kind}");
+            assert!(!destination.path().join("a.txt").exists(), "{kind}");
         }
     }
 

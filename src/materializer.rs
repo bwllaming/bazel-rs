@@ -528,8 +528,15 @@ fn materialize_registry(
             })
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| url.to_owned());
-        crate::archive::extract_file(&blob, &archive_type, prefix, staging.path(), &archive_name)
-            .map_err(|failure| match failure {
+        crate::archive::extract_file(
+            &blob,
+            &archive_type,
+            prefix,
+            staging.path(),
+            &archive_name,
+            &[],
+        )
+        .map_err(|failure| match failure {
             crate::archive::Failure::PrefixNotFound(_) => {
                 format!("archive strip_prefix {prefix:?} did not match")
             }
@@ -836,16 +843,15 @@ pub fn materialize_override<T>(
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| url.to_owned());
     let prefix = spec.strip_prefix.trim_end_matches('/');
-    crate::archive::extract_file(&blob, &kind, prefix, staging.path(), &archive_name).map_err(
-        |failure| match failure {
+    crate::archive::extract_file(&blob, &kind, prefix, staging.path(), &archive_name, &[])
+        .map_err(|failure| match failure {
             crate::archive::Failure::PrefixNotFound(_) => {
                 format!("Prefix \"{prefix}\" was given, but not found in the archive.")
             }
             crate::archive::Failure::Io(message) | crate::archive::Failure::Other(message) => {
                 message
             }
-        },
-    )?;
+        })?;
     if !spec.build_file_content.is_empty() {
         write_source_file(
             staging.path(),

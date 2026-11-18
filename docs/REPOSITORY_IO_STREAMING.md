@@ -120,6 +120,6 @@ Kept:
   extension preparation budgets and the callback evaluator tick/heap bounds
   were removed in N43 (docs/EXTENSION_CTX_SURFACE.md).
 - Explicitly unsupported: single-file gz/xz/zst/bz2, 7z, and for zip/tar
-  `rename_files` and `strip_components > 0` (N43 added `auth`/`headers` and
+  `strip_components > 0` (`rename_files` applies since corpus-parity3, B35; N43 added `auth`/`headers` and
   `download(block = False)`; `.ar`/`.deb` stream like ArFunction,
   docs/AR_ARCHIVES.md).

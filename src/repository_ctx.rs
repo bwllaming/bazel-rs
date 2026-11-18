@@ -2913,6 +2913,7 @@ impl Context {
             &normalized,
             temporary.path(),
             &archive_name,
+            rename_files,
         ) {
             Ok(()) => {}
             Err(crate::archive::Failure::PrefixNotFound(available)) => {
@@ -3272,25 +3273,16 @@ fn validate_stripping(
 }
 
 /// What the native extractor does not implement once the decompressor is
-/// known: `strip_components` and `rename_files` for zip and tar. ArFunction
-/// ignores `strip_components` and applies `rename_files` (ArFunction.java:
-/// 45-53).
-fn native_extraction_limits(
-    method: &str,
-    kind: &str,
-    strip_components: i32,
-    rename_files: &[(Vec<u8>, Vec<u8>)],
-) -> anyhow::Result<()> {
+/// known: `strip_components` for zip and tar (ArFunction ignores it,
+/// ArFunction.java:45-53). `rename_files` is applied by every extractor
+/// (crate::archive).
+fn native_extraction_limits(method: &str, kind: &str, strip_components: i32) -> anyhow::Result<()> {
     if kind == "ar" {
         return Ok(());
     }
     ensure!(
         strip_components == 0,
         "{method}() strip_components is not supported by the native extractor"
-    );
-    ensure!(
-        rename_files.is_empty(),
-        "{method}() rename_files is not supported by the native extractor"
     );
     Ok(())
 }
@@ -4140,7 +4132,7 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
         } else {
             decompressor(r#type)?
         };
-        native_extraction_limits("extract", kind, strip_components, &rename_files)?;
+        native_extraction_limits("extract", kind, strip_components)?;
         context.extract_archive(
             &host,
             kind,
@@ -4270,12 +4262,7 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
         // DecompressorValue.getDecompressor(downloadedPath): by name only
         // (java:1186-1190), the `type` being part of the name.
         let kind = decompressor_for_name(name.as_bytes(), &display(&archive))?;
-        native_extraction_limits(
-            "download_and_extract",
-            kind,
-            strip_components,
-            &rename_files,
-        )?;
+        native_extraction_limits("download_and_extract", kind, strip_components)?;
         context.extract_archive(
             &file,
             kind,
@@ -7316,10 +7303,15 @@ ctx.extract("archive.tar.gz", "out", strip_prefix = "top")"#);
             "ctx.extract('archive.tar.gz', strip_components = 1)",
             "strip_components is not supported by the native extractor",
         );
-        fixture.error(
-            "ctx.extract('archive.tar.gz', rename_files = {'a': 'b'})",
-            "rename_files is not supported by the native extractor",
+        // rename_files replaces an entry's archive name before the prefix
+        // is stripped (CompressedTarFunction.java:89-90; genuine 9.3.0's
+        // repository_ctx_api capture, probe B9/extract/rename_files).
+        fixture.ok(
+            r#"ctx.extract("archive.tar.gz", output = "renamed", strip_prefix = "top", rename_files = {"top/a.txt": "top/r/renamed.txt", "missing": "x"})"#,
         );
+        assert_eq!(fixture.bytes("renamed/r/renamed.txt"), b"A");
+        assert_eq!(fixture.bytes("renamed/sub/b.txt"), b"B");
+        assert!(!fixture.stage.path().join("renamed/a.txt").exists());
         fixture.error("ctx.extract('noext')", "Expected a file with a .zip, .jar, .war, .aar, .nupkg, .whl, .tar, .tar.gz, .tgz, .gz, .tar.xz, .txz, .xz, .tar.zst, .tzst, .zst, .tar.bz2, .tbz, .bz2, .ar, .deb or .7z suffix (got ");
         fixture.error("ctx.extract('noext', type = 'foo')", "No decompressor found for type foo. Available types are: zip, jar, war, aar, nupkg, whl, tar, tar.gz, tgz, gz, tar.xz, txz, xz, tar.zst, tzst, zst, tar.bz2, tbz, bz2, ar, deb or 7z");
         fixture.error(
