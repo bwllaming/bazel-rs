@@ -158,7 +158,7 @@ sample.
 
 | project | verdict | cold nobuild g / rs (s) | warm nobuild g-batch / g-server / rs (s) | build g / rs (s) | peak RSS cold g / rs (MB) | outputs (common, only g, only rs, hash diff) | tests g / rs | blocking bugs |
 |---|---|---|---|---|---|---|---|---|
-| abseil-cpp | **OK**¹⁵ | 14.8 / 12.0 | 3.3 / 0.2 / 0.2 | 97.7 / 76.3 | 1131 / 453 | 2767, 0, 0, 0 | PASSED:252 / PASSED:252 | (B2) |
+| abseil-cpp | **OK**¹⁵ ¹⁹ | 14.8 / 12.0 (rerun: 16.1–17.5 / 16.7–44.6) | 3.3 / 0.2 / 0.2 | 97.7 / 76.3 | 1131 / 453 | 2767, 0, 0, 0 | PASSED:252 / PASSED:252 | (B2) |
 | limdor-cpp | **OK** | 11.0 / 6.7 | 2.8 / 0.1 / 0.1 | 7.3 / 0.7 | 704 / 217 | 18, 0, 0, 0 | PASSED:1 / PASSED:1 | |
 | limdor-rust | **OK** | 29.0 / 20.5 | 2.8 / 0.1 / 0.2 | 4.7 / 1.9 | 807 / 426 | 91, 0, 0, 0 | PASSED:1 / PASSED:1 | |
 | examples-bzlmod-01 | **OK** | 11.5 / 6.7 | 3.0 / 0.1 / 0.1 | 5.4 / 2.6 | 641 / 217 | 187, 0, 0, 0 | — | |
@@ -166,7 +166,7 @@ sample.
 | examples-cpp-tutorial | **OK** | 10.8 / 6.7 | 2.8 / 0.2 / 0.1 | 3.6 / 0.7 | 755 / 203 | 13, 0, 0, 0 | — | |
 | examples-rust-ffi | **OK** | 27.0 / 17.4 | 2.9 / 0.2 / 0.1 | 4.0 / 1.6 | 788 / 373 | 57, 0, 0, 0 | — | (B2) |
 | rules_go-basic_gazelle | **OK** | 27.5 / 23.9 | 5.9 / 0.2 / 0.2 | 42.6 / 32.0 | 1281 / 490 | 117, 0, 0, 0 | PASSED:1 / PASSED:1 | |
-| rules_python-pip_parse | **OK**¹⁵ | 30.3–35.7 / 46.5–51.7 | 3.5 / 0.2 / 0.2 | 4.7 / 1.1 | 1625 / 614 | 56, 0, 0, 0 | PASSED:2 / PASSED:2 | (B2) |
+| rules_python-pip_parse | **OK**¹⁵ ¹⁹ | 30.3–35.7 / 46.5–51.7 (rerun: 34.9–37.8 / 38.7–61.0) | 3.5 / 0.2 / 0.2 | 4.7 / 1.1 | 1625 / 614 | 56, 0, 0, 0 | PASSED:2 / PASSED:2 | (B2) |
 | rules-template | BOTH-FAIL¹ | 25.8 / 24.1 | 3.7 / 0.2 / 0.2 | 26.4 / 25.6 | 1405 / 423 | 446, 0, 0, 0 | FAILED:1 PASSED:1 / same | (B2) |
 | yalantinglibs | DIFF² | 12.2 / 7.5 | 3.1 / 0.2 / 0.1 | 61.5 (exit 1) / 52.1 (exit 1) | 638 / 213 | 126, 6, 0, 0 | same | (B2) |
 | buildtools | BOTH-FAIL¹⁷ | 40.4 / 62.3 | 4.7 / — / 0.2 | 56.4 / 83.4 | 1990 / 1471 | 566, 0, 0, 0 | FAILED:2 PASSED:23 / same | |
@@ -187,7 +187,7 @@ sample.
 | rules_cc | RS-FAIL¹⁵ | 20.0 (exit 1) / 20.4 (exit 1) | 5.3 (exit 1) / — / 4.7 (exit 1) | 52.6 (exit 1) / 63.6 (exit 1) | 2635 / 1392 | 1348, 636, 0, 1 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:3 FAILED TO BUILD:2 PASSED:258 SKIPPED:2 | B32, B17, B18 |
 | examples-rust-deps-cargo | RS-FAIL | 44.0 / 0.3 (exit 1) | 2.9 / 0.2 / 0.3 (exit 1) | 28.8 / 0.3 (exit 1) | 1034 / 29 | 0, 103, 0, 0 | — | B9, (B2) |
 | protobuf | BOTH-FAIL¹⁵ | 49.3 (exit 1) / 79.0 (exit 1) | 7.0 (exit 1) / — / 18.1 (exit 1) | — | 2699 / 3315 | — | — | B33 |
-| openroad | DIFF¹¹ ¹⁶ ¹⁸ | 89.6 / 242.5 | 8.9 / — / 1.8 | `//:openroad` 676–702 / 1536 | 3014 / 9169 | `//:openroad`: 15223, 3978, 301, 0 | — | B40, B41, P6 |
+| openroad | DIFF¹¹ ¹⁶ ¹⁸ ¹⁹ | 89.6 / 242.5 (corpus-fetch rerun, exit 1 before B18: 77.9–85.5 / 184.3–248.9) | 8.9 / — / 1.8 | `//:openroad` 676–702 / 1536 | 3014 / 9169 | `//:openroad`: 15223, 3978, 301, 0 | — | B40, B41, P6 |
 | rules_kotlin | RS-FAIL¹⁵ | 36.9 / 35.7 (exit 1) | 4.7 / — / 7.4 (exit 1) | — | 2027 / 2165 | — | — | B35 |
 | riegeli | BOTH-FAIL⁶ | 30.2 (exit 1) / 31.0 (exit 1) | 4.1 / 0.2 / 3.7 (all exit 1) | 78.2 (exit 1) / 92.5 (exit 1) | 1427 / 794 | 2800, 0, 0, 0 | PASSED:2 / PASSED:2 | |
 | examples-frontend | DIFF⁷ | 89.7 (exit 1) / 129.3 (exit 1) | 60.6 / 110.6 / 100.7 (all exit 1) | 60.7 (exit 1) / 208.3 (exit 1) | 1350 / 1838 | 44827, 170986, 2, 0 | PASSED:14 / — | B8, B25, (B2) |
@@ -334,6 +334,18 @@ Notes:
     only-genuine files are C2 (`_javac` class directories) and runfiles
     trees of targets in the `_with_reset`/`cc_no_copt_binary` packages, as
     in earlier runs.
+
+19. Rerun 2026-11-18 on branch corpus-fetch (main 0b26c20d plus the
+    fetch changes below, with the side-by-side lane experiment that was
+    then left unmerged; non-LTO), phase `nobuild_cold` only, the
+    harness's flags and isolation driven by hand, three rounds each, main
+    and the branch and genuine `--batch` alternating (load 7–36; cold
+    downloads from the public mirrors, whose speed varied by 2× between
+    rounds: abseil-cpp's own runs took 16.7–44.6 s on both binaries). The
+    ranges are the branch's. Exit codes, stdout, stderr (without timings
+    and progress), `MODULE.bazel.lock` and the repository-to-tree map
+    match main's in every round; abseil-cpp's and pip_parse's action
+    dumps (2,313 and 88 actions) are byte-identical.
 
 **Summary.** 37 projects ran. On 13 of them bazel-rs matches genuine exactly
 (10 before the corpus-parent rerun, footnote 17: diff.bzl, bazel-skylib
@@ -779,7 +791,9 @@ files hash identically before and after the scheduler change.
   evaluator: demands of different pool attempts fetched side by side (the
   lane's queue fetched concurrently, or speculation requested for every
   queued demand), keeping the order-independence of recorded inputs
-  (docs/EVALUATOR.md "Repositories").
+  (docs/EVALUATOR.md "Repositories"). corpus-fetch tried the lane's
+  queue fetched side by side (branch `corpus-fetch-lane`, not merged): it
+  was not the bottleneck; the next design items are P4a and P4b below.
 - **P3: rules_python-pip_parse cold fetch is ~1.4× genuine** (open; same
   cause as P4). The timeline is one chain: the Python interpreter
   (8.8 s), the wheels, then rules_rust's `stable_tools` (16 s, on the
@@ -787,7 +801,9 @@ files hash identically before and after the scheduler change.
   evaluation fetches `rust_host_tools` (12.2 s) on `main`: both rust
   repositories decompress the same `rustc`, `llvm-tools` and `rust-std`
   archives (the second from the download cache, 5.3 s of xz alone), one
-  after the other. Genuine runs them side by side.
+  after the other. Genuine runs them side by side. Since corpus-fetch the
+  second extraction reads the first's decoded tar (`rust_host_tools`
+  11.8 s → 3.4 s); the chain itself remains (below).
 - **First repeat after a cold OpenROAD run** (open, by design): 31–45 s,
   because the files of every repository tree published by the cold run
   were younger than the digest memo's racy margin, so the first repeat
@@ -797,6 +813,87 @@ files hash identically before and after the scheduler change.
   example 453 MB against 1,131 MB on abseil). The exceptions are the large JS
   (1.8 GB against 1.35 GB) and rules_python bzlmod (2.6 GB, about equal)
   workspaces.
+
+### Findings and fixes (branch corpus-fetch)
+
+Non-LTO release builds of main (0b26c20d) and the branch, alternating with
+genuine 9.3.1 `--batch`, three rounds, the corpus harness's flags and
+isolation (note 19). The "corpus-fetch" column is the measured build:
+the merged changes plus the side-by-side lane experiment (kept on branch
+`corpus-fetch-lane`, not merged: no measured win, the riskiest part). The
+load average is the 1-minute value when each
+command started.
+
+| | load | genuine | main | corpus-fetch |
+|---|---|---|---|---|
+| OpenROAD cold `--nobuild` (exit 1 on bazel-rs) | 7–23 | 77.9 / 85.5 / 84.6 s | 182.3 / 211.5 / 198.7 s | 184.3 / 248.9 / 195.1 s |
+| rules_python-pip_parse cold `--nobuild` | 8–29 | 34.9 / 37.8 / 35.8 s | 71.6 / 62.2 / 49.5 s | 61.0 / 38.7 / 52.7 s |
+| abseil-cpp cold `--nobuild` | 8–36 | 17.5 / 16.6 / 16.1 s | 40.6 / 38.7 / 16.7 s | 24.4 / 44.6 / 41.9 s |
+| library suite (`cargo test --lib`, debug) | 11–28 | | 18.3 / 18.0 / 18.2 s | 17.9 / 17.8 / 22.7 s |
+| the same from a background job (`trap '' INT QUIT`) | 12–32 | | 106.7 / 113.1 / 120.0 s | 18.7 / 18.6 / 25.2 s |
+| 2,000 trivial genrules, `build` (`trap '' INT` or not) | 20–27 | | 1.0–1.03 s either way | 0.99–1.30 s either way |
+
+- **Experiment, not merged: the repository lane side by side** (branch
+  `corpus-fetch-lane`, commit 76fc6e48 there). The pool's queued lane
+  demands (registry module roots, extension and local-rule blockers) ran
+  on up to 8 threads (`BAZEL_RS_EVAL_LANE_WIDTH`), each demand's parked
+  loads re-queued when its own fetch ended instead of behind the queue's
+  head (icu's 4.4 s root held 20 ready roots' demanders); what a fetch
+  wrote and observed stayed keyed by its blocker. On OpenROAD the lane's
+  busy time (the union of its module-root spans) fell from 102.5 s to
+  80.0 s (175 and 146 fetches, up to 8 overlapping), but the wall time
+  did not move beyond the mirrors' noise (table): the run is not
+  lane-bound. The timeline (`BAZEL_RS_TIMING_TIMELINE`,
+  `BAZEL_RS_EVAL_TIMELINE`) shows the process at ~0 cores most of the
+  time, waiting on one chain at a time, for the two causes below.
+  Single long downloads remain too (`m4-1.4.18.tar.xz` 33 s,
+  kepler-formal's `boost_headers` 11–23 s, `abc+` 15 s during the
+  configuration phase).
+- **P4a (next design item): pool loads that need a direct or
+  extension-generated repository wait for the sequential pass.** Such a
+  load parks (`INLINE`); its repository speculation starts, but every
+  configured target behind it waits until the sequential pass reaches it
+  in the requested targets' order, so later repositories are discovered
+  only then (`//:_openroad.so`, the first requested target, took 105 s;
+  `openssl+` was first demanded at +119 s, `capnp-cpp+` at +170 s, each a
+  lone 4–7 s root). Direction: let the parked load adopt the finished
+  speculation on the pool (as local-rule blockers already do,
+  docs/EVALUATOR.md "The lane resolves what such a load waits for"),
+  committed where the tape replays the load, with the recorded-input
+  order checks the sequential pass applies.
+- **P4b (next design item): module extensions never run ahead on a cold
+  run.** An extension speculation is eligible only with a reusable
+  lockfile entry (docs/COLD_ANALYSIS.md), so every extension evaluates on
+  the sequential pass, one after another: pip_parse's `crate` extension
+  waits for rules_rust's `stable_tools` (15–17 s). Direction: evaluate
+  extensions ahead of the sequential order and commit them
+  deterministically (console output, lockfile entries and recorded
+  inputs at the sequential position), as Bazel's Skyframe evaluates
+  them in parallel.
+- **Decoding shared between rules** (docs/COLD_FETCH.md). A finished
+  rule's decoded tar stream is kept for any thread, by decoder and
+  archive SHA-256, at most 1 GiB in all (`archive::RETAINED`):
+  `rust_host_tools` (the `crate` extension, on the coordinator) reads the
+  `rustc`, `llvm-tools` and `rust-std` tar streams `stable_tools` decoded on
+  a fetch worker, 11.8 s → 3.4 s on pip_parse's chain. Only decoding is
+  skipped; every entry and check runs as before.
+- **Inherited-ignored signals are held** (docs/PROCESS_WRAPPER.md,
+  src/signals.rs). Started from a background job (SIGINT/SIGQUIT ignored)
+  or under nohup, every start added a `pre_exec` reset hook, which forces
+  std's fork path; forking a large many-threaded process is slow. bazel-rs
+  now blocks such signals in every thread from main's first line with a
+  handler that does nothing (it still never acts on them), so exec(2) and
+  std's cleared start mask give children the defaults without a hook.
+  Starts that want the process-wrapper's defaults (and the spawn
+  supervisors) keep posix_spawn; `Client`/`Jvm` starts and
+  `spawn_lock::spawn` without defaults (which inherits) get a hook that
+  sets the held signals back to SIG_IGN in the child. The CLI's actions
+  were not affected (they start through the posix-spawned supervisor);
+  direct starts from the big process (git for git repositories,
+  persistent workers, credential helpers) and every library-test start
+  were: the library suite from a background job takes 18.6–25.2 s instead
+  of 107–120 s. tests/signal_dispositions.rs (genuine's receipt) passes
+  unchanged.
 
 ## Recommendations
 
