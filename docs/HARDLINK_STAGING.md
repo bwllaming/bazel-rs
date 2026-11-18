@@ -73,7 +73,14 @@ therefore share one inode. When a hardlink fails the file is renamed into place
 (Bazel moves sandbox outputs by rename, falling back to a copy,
 `sandbox/SandboxHelpers.java:178-236`), and only then copied. Tree outputs are
 renamed as a whole, each file is replaced by its store inode, then directories
-become `0555` deepest first. The completed directory is renamed into
+become `0555` deepest first. An output file sharing its inode with another
+file (`nlink > 1`: a tool hardlinked an input into its output, as bazel_lib's
+`copy_to_directory` does) is first replaced by a private copy, so neither the
+mode change nor the store link reaches the other file — a repository tree
+file staged as a link (OpenROAD's libcxx `copy_file` + `copy_to_directory`)
+was made `0555` and hard-linked into the store, failing every later action
+that staged it (`changed while it was being staged`) and republishing the
+repository. Genuine chmods the shared inode and never re-checks it. The completed directory is renamed into
 `actions/<key>` as before.
 
 **`actions.symlink` outputs are real symlinks.** Like

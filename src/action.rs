@@ -2623,6 +2623,7 @@ fn walk_tree(root: &Path, cache: Option<&Path>, mode: TreeRead<'_>) -> Result<Wa
                     });
                 } else if metadata.is_file() {
                     if normalize {
+                        unshare_output(&path, &metadata)?;
                         set_mode(&path, OUTPUT_MODE)?;
                     }
                     files.push(WalkedFile {
@@ -4370,6 +4371,32 @@ fn ensure_directory(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Give an execution-root output file that shares its inode with another
+/// file (nlink > 1) an inode of its own before publication changes its mode
+/// and links it into the store: a tool may hardlink an input into its
+/// output (bazel_lib's copy_to_directory hardlinks the files it copies), and
+/// an input staged as a link to a repository tree file
+/// ([`stage_tree_link`]) would otherwise have that tree file made 0555 and
+/// hardlinked into the store — every later action staging it fails "changed
+/// while it was being staged" and the store re-executes the repository
+/// (its trees keep exactly one link per file, [`in_repository_store`]).
+/// Genuine chmods the shared inode (OutputPermissions.READONLY) and never
+/// re-checks the external file; the private copy has the same bytes.
+fn unshare_output(path: &Path, metadata: &fs::Metadata) -> Result<(), String> {
+    if metadata.nlink() <= 1 {
+        return Ok(());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("invalid output path {}", path.display()))?;
+    let copy = temporary(parent, "unshare");
+    fs::copy(path, &copy).map_err(|e| io_error("cannot copy output", path, e))?;
+    fs::rename(&copy, path).map_err(|e| {
+        let _ = fs::remove_file(&copy);
+        io_error("cannot replace output", path, e)
+    })
+}
+
 fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
     fs::set_permissions(path, fs::Permissions::from_mode(mode))
         .map_err(|e| io_error("cannot set permissions", path, e))
@@ -5314,6 +5341,9 @@ fn holds_keyed(path: &Path, digest: Sha256Digest, mode: u32) -> bool {
 fn publish_file(cas: &Path, root: &Path, source: &Path, target: &Path) -> Result<Input, String> {
     // The execution root is the process's: always checked in full.
     regular_file(source, None)?;
+    let metadata =
+        fs::symlink_metadata(source).map_err(|e| io_error("cannot inspect", source, e))?;
+    unshare_output(source, &metadata)?;
     set_mode(source, OUTPUT_MODE)?;
     let metadata =
         fs::symlink_metadata(source).map_err(|e| io_error("cannot inspect", source, e))?;
@@ -11810,6 +11840,26 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
                 .ends_with("\nhello\n")
         );
         assert_eq!(fs::read(copy(1)).unwrap(), b"hello\n");
+    }
+
+    #[test]
+    fn an_output_hardlinked_to_another_file_gets_its_own_inode() {
+        // bazel_lib's copy_to_directory hardlinks its inputs into its output
+        // tree; an input staged as a link to a repository tree file then
+        // shared the tree file's inode, which publication made 0555 and
+        // linked into the store (OpenROAD: libcxx's default_assertion_handler.in).
+        let fixture = Fixture::new();
+        let outside = fixture.0.join("tree-file");
+        fs::write(&outside, b"tree\n").unwrap();
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o444)).unwrap();
+        let mut action = fixture.action();
+        action.command = format!("ln {} out/result", outside.display());
+        let result = execute(&fixture.cache(), &action).unwrap();
+        assert_eq!(fs::read(&result.outputs[0]).unwrap(), b"tree\n");
+        let metadata = fs::metadata(&outside).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o7777, 0o444);
+        assert_eq!(metadata.nlink(), 1);
+        assert_ne!(ino(&result.outputs[0]), metadata.ino());
     }
 
     #[test]
