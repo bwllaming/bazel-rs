@@ -172,7 +172,13 @@ def _files_impl(ctx):
         e = ctx.actions.declare_file(name)
         ctx.actions.run_shell(outputs = [e], command = "env | LC_ALL=C sort | grep -v '^PWD=\\|^SHLVL=\\|^_=\\|^TMPDIR=' > $1 || true", arguments = [e.path], use_default_shell_env = default, env = env, execution_requirements = {"no-sandbox": "1"})
         envs.append(e)
-    return [DefaultInfo(files = depset([link, out] + envs))]
+    # StarlarkActionFactory.write's execution_requirements (a dict or None;
+    # rules_cc_autoconf's ctx_actions_write.bzl).
+    req = ctx.actions.declare_file("requirements.txt")
+    ctx.actions.write(req, "req\n", execution_requirements = {"supports-path-mapping": ""})
+    req_args = ctx.actions.declare_file("requirements_args.txt")
+    ctx.actions.write(req_args, ctx.actions.args().add("a"), execution_requirements = None)
+    return [DefaultInfo(files = depset([link, out, req, req_args] + envs))]
 
 files = rule(implementation = _files_impl, attrs = {"src": attr.label(allow_single_file = True)})
 
@@ -200,6 +206,8 @@ def _bad_impl(ctx):
     elif m == "file_dir":
         ctx.actions.declare_file("same")
         ctx.actions.declare_directory("same")
+    elif m == "write_requirements":
+        ctx.actions.write(o, "x", execution_requirements = ["no-sandbox"])
     elif m == "duplicate":
         td = ctx.actions.template_dict().add("K", "2")
         ctx.actions.expand_template(template = ctx.file.src, output = o, substitutions = {"K": "1"}, computed_substitutions = td)
@@ -213,7 +221,7 @@ load(":defs.bzl", "bad", "files", "params", "tree")
 params(name = "params", word = "one")
 tree(name = "tree", word = "a")
 files(name = "files", src = "src.txt")
-[bad(name = m, mode = m, src = "src.txt") for m in ["param_arg", "format_twice", "symlink_path", "symlink_exec", "add_dir", "dir_not_input", "declare_symlink", "transform", "duplicate", "file_dir"]]
+[bad(name = m, mode = m, src = "src.txt") for m in ["param_arg", "format_twice", "symlink_path", "symlink_exec", "add_dir", "dir_not_input", "declare_symlink", "transform", "duplicate", "file_dir", "write_requirements"]]
 "#;
 
 fn workspace() -> Workspace {
@@ -318,6 +326,8 @@ fn symlink_template_and_spawn_environments() {
         "PATH=/bin:/usr/bin:/usr/local/bin\nX=1\n"
     );
     assert_eq!(read(&outputs, "pkg/env_plain.txt"), "X=1\n");
+    assert_eq!(read(&outputs, "pkg/requirements.txt"), "req\n");
+    assert_eq!(read(&outputs, "pkg/requirements_args.txt"), "a\n");
 }
 
 #[test]
@@ -362,6 +372,10 @@ fn rejections_are_bazel_messages_or_explicit_native_gaps() {
         (
             "//pkg:file_dir",
             "The following directories were also declared as files:\npkg/same",
+        ),
+        (
+            "//pkg:write_requirements",
+            "in call to write(), parameter 'execution_requirements' got value of type 'list', want 'dict or NoneType'",
         ),
     ] {
         ws.rejected(target, diagnostic);

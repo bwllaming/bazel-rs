@@ -1699,10 +1699,27 @@ fn action_methods(builder: &mut MethodsBuilder) {
         content: Value<'v>,
         #[starlark(default = false)] is_executable: bool,
         #[starlark(require = named)] mnemonic: Option<Value<'v>>,
+        #[starlark(require = named)] execution_requirements: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let context = action_receiver(this, eval, false)?;
         let _ = mnemonic;
+        // StarlarkActionFactory.write (:363-403): a dict or None. A string
+        // write ignores it; an Args write passes it to
+        // ParameterFileWriteAction, whose execution info is only
+        // `supports-path-mapping` under --experimental_output_paths=strip
+        // (ParameterFileWriteAction.java:126-146), which the native profile
+        // does not model, so it is empty either way (rules_cc_autoconf's
+        // `execution_requirements = {"supports-path-mapping": ""}`).
+        if let Some(requirements) = execution_requirements
+            && !requirements.is_none()
+            && requirements.get_type() != "dict"
+        {
+            bail!(
+                "in call to write(), parameter 'execution_requirements' got value of type '{}', want 'dict or NoneType'",
+                requirements.get_type()
+            );
+        }
         let output = unpack_file(output)?;
         ensure!(
             !output.is_directory,
