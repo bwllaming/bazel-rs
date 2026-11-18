@@ -415,12 +415,12 @@ fn output_file_edges_apply_generating_rules_only_when_asked() {
     // N09: an aspect along an output-file edge applies to the generating
     // rule only with apply_to_generating_rules (AspectDefinition's
     // applyToGeneratingRules); the consumer reads the aspect's providers
-    // through the aspect-configured dependency. (Both edges name //:gg.gen1,
-    // and the native dependency map is keyed per configured target, so both
-    // attributes see the union of their aspects — the one that applies.)
+    // through the aspect-configured dependency. Both edges name //:gg.gen1;
+    // each attribute sees its own aspects' view (genuine 9.3.1 writes
+    // `dep1=none dep2=generating` for this workspace).
     let ws = Workspace::new();
     ok(&ws.build_with(&[], &["//:use"]));
-    assert_eq!(ws.output("use.which"), "dep1=generating dep2=generating");
+    assert_eq!(ws.output("use.which"), "dep1=none dep2=generating");
     assert_eq!(ws.outputs(), ["k8-fastbuild/bin/use.which"]);
 }
 

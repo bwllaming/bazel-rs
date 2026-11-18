@@ -28,3 +28,24 @@ def check(name, target):
         attrs = {"target": attr.label(aspects = [seen])},
         attr_values = {"target": target},
     )
+
+# The same target in two attributes, only one with the aspect (rules_kotlin's
+# analysis tests: `target` with rules_testing's testing_aspect and
+# `transitive_compile_deps` without): each attribute sees its own view.
+def _both_impl(ctx):
+    with_aspect = Seen in ctx.attr.target
+    without = [Seen in dep for dep in ctx.attr.others]
+    if not with_aspect or without != [False]:
+        fail("aspect views: target %s, others %s" % (with_aspect, without))
+    return [AnalysisTestResultInfo(success = True, message = "ok")]
+
+def both(name, target):
+    testing.analysis_test(
+        name = name,
+        implementation = _both_impl,
+        attrs = {
+            "others": attr.label_list(),
+            "target": attr.label(aspects = [seen]),
+        },
+        attr_values = {"others": [target], "target": target},
+    )

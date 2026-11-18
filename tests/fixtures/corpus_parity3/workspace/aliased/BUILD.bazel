@@ -1,4 +1,4 @@
-load(":defs.bzl", "check", "gen")
+load(":defs.bzl", "both", "check", "gen")
 
 gen(name = "gen")
 
@@ -20,4 +20,9 @@ check(
 check(
     name = "alias_test",
     target = ":alias2",
+)
+
+both(
+    name = "both_test",
+    target = ":gen",
 )

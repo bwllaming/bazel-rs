@@ -1208,6 +1208,22 @@ fn plan_application<C: AspectCx>(
                 .entry(edge.attribute.clone())
                 .or_default()
                 .push(map_key.clone());
+            // `ctx.rule.attr` of an attribute declaring aspects reads its own
+            // key (analysis::attribute_dependency_key); the propagating
+            // aspects decide the view here either way.
+            let aspect_key = spec
+                .filter(|spec| !spec.declaration.aspects.is_empty())
+                .filter(|_| !matches!(&edge.cfg, EdgeCfg::NoConfig))
+                .filter(|_| {
+                    !base_rule.custom.as_ref().is_some_and(|custom| {
+                        custom.split_dependencies.contains_key(&edge.attribute)
+                    })
+                })
+                .map(|_| analysis::aspect_dependency_key(&map_key, &edge.attribute))
+                .filter(|_| !map_key.ends_with(&format!(" (aspects {})", edge.attribute)));
+            if let Some(aspect_key) = aspect_key {
+                dependencies.insert(aspect_key, view.clone());
+            }
             dependencies.insert(map_key, view);
         }
     }

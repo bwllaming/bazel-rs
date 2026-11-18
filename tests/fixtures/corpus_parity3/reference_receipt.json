@@ -1,6 +1,25 @@
 {
  "bazel": "9.3.1",
  "cases": {
+  "aspect_view_per_attribute": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/aliased/both_test.sh": "#!/bin/sh\necho \\o\\k\nexit 0"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//aliased:both_test"
+   ],
+   "workspace": "workspace"
+  },
   "declared_outputs_below_subpackage": {
    "bin_paths": {},
    "command": "build",

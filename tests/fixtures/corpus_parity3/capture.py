@@ -59,6 +59,8 @@ CASES = {
     'target_actions_through_alias': (
         [], 'build', BUILD, ['//aliased:direct_test', '//aliased:alias_test'], [],
         ['direct_test.sh', 'alias_test.sh']),
+    'aspect_view_per_attribute': (
+        [], 'build', BUILD, ['//aliased:both_test'], [], ['both_test.sh']),
 }
 
 TIME = re.compile(r'^\(\d\d:\d\d:\d\d\) ')

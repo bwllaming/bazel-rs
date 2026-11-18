@@ -9026,8 +9026,29 @@ impl Engine {
         }
         for (label, edge_config, map_key, attribute) in dependency_labels {
             let aspects = edge_aspects.get(&attribute).cloned().unwrap_or_default();
+            // The readers' condition (analysis::attribute_dependency_key):
+            // the attribute declares aspects; split attributes keep their
+            // own keys.
+            let with_aspects = rule.custom.as_ref().is_some_and(|custom| {
+                !custom.split_dependencies.contains_key(&attribute)
+                    && custom
+                        .schema
+                        .get(&attribute)
+                        .is_some_and(|spec| !spec.declaration.aspects.is_empty())
+            });
             let view = cx.edge_view(rule, &label, edge_config, aspects)?;
-            dependency_targets.insert(map_key, view);
+            if with_aspects {
+                // The attribute's own view (analysis::aspect_dependency_key);
+                // under the plain key only when no attribute without the
+                // aspects names the target.
+                dependency_targets
+                    .entry(map_key.clone())
+                    .or_insert_with(|| view.clone());
+                dependency_targets
+                    .insert(analysis::aspect_dependency_key(&map_key, &attribute), view);
+            } else {
+                dependency_targets.insert(map_key, view);
+            }
         }
         // Prerequisite validation runs here, before the snapshot (and
         // so before the compute, which may run on another thread in

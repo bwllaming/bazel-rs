@@ -242,14 +242,29 @@ pub(crate) fn dependency_labels(value: &AttrValue) -> Vec<&str> {
 /// The key of `label` in the dependency map through attribute `name`: its
 /// edge configuration (target, exec or the attribute's Starlark transition).
 pub(crate) fn attribute_dependency_key(label: &str, name: &str, spec: &AttrSpec) -> String {
-    if starlark_transition(spec) {
+    let key = if starlark_transition(spec) {
         transition_dependency_key(label, name)
     } else {
         dependency_key(
             label,
             matches!(spec.declaration.cfg, crate::rule_declarations::Cfg::Exec(_)),
         )
+    };
+    if spec.declaration.aspects.is_empty() {
+        key
+    } else {
+        aspect_dependency_key(&key, name)
     }
+}
+
+/// The key of a dependency through attribute `attribute`, which applies
+/// aspects (`attr.label(aspects = [...])`): that attribute's view of the
+/// target carries the aspects' providers, another attribute naming the same
+/// target sees it without them (the merged ConfiguredTargetAndData per
+/// attribute edge; rules_kotlin's analysis tests name one target in
+/// `target`, with rules_testing's testing_aspect, and in plain label lists).
+pub(crate) fn aspect_dependency_key(key: &str, attribute: &str) -> String {
+    format!("{key} (aspects {attribute})")
 }
 
 /// Whether the attribute named `name` (a rule-class attribute, Starlark
