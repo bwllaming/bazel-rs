@@ -2175,7 +2175,7 @@ mod tests {
             unchecked: true,
             uses: Vec::new(),
             failed_output: None,
-            reads: Vec::new(),
+            own_reads: Vec::new(),
             shared_reads: Vec::new(),
         }
     }

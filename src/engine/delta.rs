@@ -490,7 +490,7 @@ pub(super) struct TargetDelta {
     pub(super) failed_output: Option<PathBuf>,
     /// T2: the index reads it depends on (a worker's build,
     /// [`ProvisionalRead`]).
-    pub(super) reads: Vec<ProvisionalRead>,
+    pub(super) own_reads: Vec<ProvisionalRead>,
     /// T2: the reads of the memo values it used that other builds filled
     /// (a shared input run's, a tool runfiles group's), each memo value's
     /// list once, shared with the memo instead of copied into every delta
@@ -501,19 +501,19 @@ pub(super) struct TargetDelta {
 impl TargetDelta {
     /// Every index read it depends on: its own, then the memo values'.
     pub(super) fn all_reads(&self) -> impl Iterator<Item = &ProvisionalRead> {
-        self.reads
+        self.own_reads
             .iter()
             .chain(self.shared_reads.iter().flat_map(|reads| reads.iter()))
     }
 
     /// Whether it depends on no index read.
     pub(super) fn reads_nothing(&self) -> bool {
-        self.reads.is_empty() && self.shared_reads.iter().all(|reads| reads.is_empty())
+        self.own_reads.is_empty() && self.shared_reads.iter().all(|reads| reads.is_empty())
     }
 
     /// Forget its reads (checked).
     pub(super) fn clear_reads(&mut self) {
-        self.reads.clear();
+        self.own_reads.clear();
         self.shared_reads.clear();
     }
 }
@@ -845,7 +845,7 @@ impl<'a> DeltaBuilder<'a> {
             error: result.err(),
             uses: self.uses,
             failed_output: self.failed_output,
-            reads,
+            own_reads: reads,
             shared_reads,
         })
     }

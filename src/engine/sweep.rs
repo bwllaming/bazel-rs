@@ -535,7 +535,7 @@ pub(super) fn rewrite(
         unchecked,
         uses,
         failed_output,
-        reads: _,
+        own_reads: _,
         shared_reads: _,
     } = delta;
     let rewrite = Arc::new(Rewrite {
@@ -634,7 +634,7 @@ pub(super) fn rewrite(
         unchecked,
         uses,
         failed_output,
-        reads: Vec::new(),
+        own_reads: Vec::new(),
         shared_reads: Vec::new(),
     };
     if cfg!(debug_assertions) || verify() {
@@ -1087,7 +1087,7 @@ mod tests {
             unchecked: true,
             uses: Vec::new(),
             failed_output: None,
-            reads: Vec::new(),
+            own_reads: Vec::new(),
             shared_reads: Vec::new(),
         };
         let mut aliases = Aliases::default();
@@ -1127,7 +1127,7 @@ mod tests {
             unchecked: true,
             uses: Vec::new(),
             failed_output: None,
-            reads: Vec::new(),
+            own_reads: Vec::new(),
             shared_reads: Vec::new(),
         };
         assert!(localize(&conflicting, &delta, &mut Aliases::default()).is_none());

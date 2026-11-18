@@ -9533,13 +9533,17 @@ impl Engine {
         // whose reads are stale now (a shared output's winner is another
         // target) is rebuilt here, like one meeting a producer.
         let stale = |state: &ActionPlanning, built: &delta::TargetDelta| {
-            if built.reads.is_empty() {
+            if built.reads_nothing() {
                 return false;
             }
             let reader = state.artifact_index.turn;
             let merging = (reader as usize) < state.done;
-            let check =
-                delta::check_reads(&state.artifact_index.shared, &built.reads, reader, merging);
+            let check = delta::check_reads(
+                &state.artifact_index.shared,
+                built.all_reads(),
+                reader,
+                merging,
+            );
             check != delta::ReadsCheck::Valid
         };
         // T3: a worker whose outputs met an earlier entry's kept the
