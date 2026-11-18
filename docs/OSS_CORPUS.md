@@ -179,19 +179,19 @@ sample.
 | re2 | RS-FAIL³ | 13.7 (exit 1) / 9.5 (exit 1) | 2.9 / 0.2 / 1.4 (both exit 1) | 15.3 (exit 1) / 6.6 (exit 1) | 1071 / 313 | 324, 761, 0, 0 | PASSED:21 / PASSED:1 | B1 |
 | highway | RS-FAIL | 11.9 / 7.6 (exit 1) | — | — | 736 / 234 | — | — | B1 |
 | bazel-skylib | BOTH-FAIL¹⁷ | 27.5 / 43.3 | 3.6 / — / 0.2 | 57.9 / 62.9 | 1327 / 558 | 689, 0, 0, 0 | FAILED:4 PASSED:158 / same | |
-| junit5-starter | DIFF¹⁷ | 29.5 / 46.7 | 3.8 / — / 0.1 | 8.7 / 6.1 | 1243 / 488 | 100, 28, 0, 0 | PASSED:1 / PASSED:1 | C2 |
+| junit5-starter | DIFF¹⁷ ²¹ | 25.9 / 21.4 | 3.4 / — / 0.1 | 7.6 / 5.4 | 1239 / 481 | 100, 28, 0, 0 | PASSED:1 / PASSED:1 | C2 |
 | rules_zig | RS-FAIL¹⁵ | 30.7 / 36.8 (exit 1) | 13.2 / — / 12.0 (exit 1) | 36.9 / 11.9 (exit 1) | 1909 / 2042 | 0, 1292, 0, 0 | PASSED:211 SKIPPED:4 / SKIPPED:4 | B13c |
 | capnproto | RS-FAIL⁴ | 17.1 / 11.3 (exit 1) | 3.3 / 0.1 / 1.5 (exit 1) | 22.6 (exit 1) / 7.5 (exit 1) | 1127 / 384 | 317, 1085, 0, 0 | both: FAILED TO BUILD:5 SKIPPED:14 | B11, B20, (B2) |
 | tink-cc-examples | RS-FAIL | 17.3 / 17.1 (exit 1) | — | — | 1127 / 490 | — | — | B11, B14 |
-| examples-java-maven | RS-FAIL¹⁷ | 36.4 / 64.0 (exit 1) | 3.5 / — / 1.3 (exit 1) | 7.9 / 1.5 (exit 1) | 1225 / 445 | 1, 134, 0, 0 | PASSED:2 / 0 | B31 |
+| examples-java-maven | DIFF²¹ | 33.0 / 25.4 | 3.3 / — / 0.1 | 7.0 / 5.5 | 1137 / 479 | 133, 2, 0, 0 | PASSED:2 / PASSED:2 | C2 |
 | rules_cc | RS-FAIL¹⁵ | 20.0 (exit 1) / 20.4 (exit 1) | 5.3 (exit 1) / — / 4.7 (exit 1) | 52.6 (exit 1) / 63.6 (exit 1) | 2635 / 1392 | 1348, 636, 0, 1 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:3 FAILED TO BUILD:2 PASSED:258 SKIPPED:2 | B32, B17, B18 |
 | examples-rust-deps-cargo | RS-FAIL | 44.0 / 0.3 (exit 1) | 2.9 / 0.2 / 0.3 (exit 1) | 28.8 / 0.3 (exit 1) | 1034 / 29 | 0, 103, 0, 0 | — | B9, (B2) |
 | protobuf | BOTH-FAIL¹⁵ | 49.3 (exit 1) / 79.0 (exit 1) | 7.0 (exit 1) / — / 18.1 (exit 1) | — | 2699 / 3315 | — | — | B33 |
-| openroad | DIFF¹¹ ¹⁶ ¹⁸ ¹⁹ ²⁰ | 89.6 / 87.2–96.4 (openroad-perf²⁰; before: 242.5, corpus-fetch exit 1 before B18: 77.9–85.5 / 184.3–248.9) | 8.9 / — / 1.2–1.3 | `//:openroad` 676–702, 693.5 / 773.9 (was 1536) | 3014 / 6957–6983 (was 9169) | `//:openroad`: 15223, 3978, 301, 0 | — | B40, B41 |
-| rules_kotlin | RS-FAIL¹⁵ | 36.9 / 35.7 (exit 1) | 4.7 / — / 7.4 (exit 1) | — | 2027 / 2165 | — | — | B35 |
+| openroad | OK²¹ (nobuild, query) | 89.6 / 87.2–96.4 (openroad-perf²⁰; corpus-parity3²¹ at load 52–91: 78.0 / 178.1) | 8.9 / — / 1.2–1.3 (corpus-parity3: 10.4 / — / 1.4) | `//:openroad` 676–702, 693.5 / 773.9 (was 1536) | 3014 / 6957–6983 (was 9169) | `//:openroad` before corpus-parity3: 15223, 3978, 301, 0; the B40/B41 targets now match²¹ | — | (C1) |
+| rules_kotlin | RS-FAIL¹⁵ ²¹ | 36.4 / 37.5 (exit 1) | 4.6 / — / 6.7 (exit 1) | — | 2169 / 2066 | — | — | B46 |
 | riegeli | BOTH-FAIL⁶ | 30.2 (exit 1) / 31.0 (exit 1) | 4.1 / 0.2 / 3.7 (all exit 1) | 78.2 (exit 1) / 92.5 (exit 1) | 1427 / 794 | 2800, 0, 0, 0 | PASSED:2 / PASSED:2 | |
-| examples-frontend | DIFF⁷ | 89.7 (exit 1) / 129.3 (exit 1) | 60.6 / 110.6 / 100.7 (all exit 1) | 60.7 (exit 1) / 208.3 (exit 1) | 1350 / 1838 | 44827, 170986, 2, 0 | PASSED:14 / — | B8, B25, (B2) |
-| rules_jvm_external-simple | BOTH-FAIL¹⁵ | 62.6 (exit 1) / 6.2 (exit 1) | 4.0 (exit 1) / — / 0.3 (exit 1) | 4.1 (exit 1) / 0.3 (exit 1) | 1505 / 110 | 0, 0, 0, 0 | — | B31 |
+| examples-frontend | DIFF⁷ ²¹ | 87.8 (exit 1) / 128.8 (exit 1) | 64.5 / — / 96.5 (all exit 1) | 60.5 (exit 1) / 135.9 (exit 1) | 1524 / 1933 | 215801, 12, 2, 0 | PASSED:14 / PASSED:14 | C3, (B2) |
+| rules_jvm_external-simple | BOTH-FAIL¹⁵ ²¹ | 55.8 (exit 1) / 30.4 (exit 1) | 3.7 (exit 1) / — / 1.6 (exit 1) | 3.9 (exit 1) / 1.5 (exit 1) | 1726 / 607 | 0, 0, 0, 0 | — | B47 |
 | flatbuffers | BOTH-FAIL⁸ | 21.7 (exit 1) / 8.2 (exit 1) | — | — | 864 / 184 | — | — | B12 |
 | examples-java-tutorial | DIFF | 18.7 (exit 1) / 15.1 (exit 1) | 3.2 / 0.2 / 1.6 (both exit 1) | 5.9 (exit 1) / 4.2 (exit 1) | 881 / 266 | 11, 2, 0, 0 | — | C2 |
 | examples-configurations | DIFF⁹ | 9.1 (exit 1) / 7.2 (exit 1) | 1.8 / 0.1 / 0.8 (both exit 1) | 2.0 (exit 1) / 0.8 (exit 1) | 460 / 225 | 0, 0, 16, 0 | — | B24 |
@@ -359,10 +359,40 @@ Notes:
     //src/sta:opensta_lib` is byte-identical to b8ce9666's. P6 and the
     OpenROAD memory below.
 
-**Summary.** 37 projects ran. On 13 of them bazel-rs matches genuine exactly
+21. Rerun 2026-11-18/19 on branch corpus-parity3 (main 97611a75 = 0.4.30
+    plus its commits; non-LTO), phases `nobuild_cold,nobuild_warm,query,
+    build,test` for junit5-starter, examples-java-maven,
+    rules_jvm_external-simple and examples-frontend,
+    `nobuild_cold,nobuild_warm,query` for rules_kotlin and openroad (load
+    14–91 with other workers' runs). Fixed: B8, B25 (not reproduced: the
+    warm `test` passes 14/14; 502d3267's sentinel fix covers it), B31, B35
+    (and the next rules_kotlin errors: `check_java_toolchain_is_declared_on_rule`,
+    mutable `default_jvm_opts`, per-attribute aspect views, genquery
+    `buildfiles` scope), B40, B41, B44, B45 and rules_android's `$x`
+    private attribute keywords. examples-java-maven builds and passes both
+    tests; only C2 is left. examples-frontend: query (8,701 labels) and
+    tests match; `bazel-bin` differs by 10 rules_js lifecycle `.bin` files
+    (C3) and next.js's random build id (2 files each side); was 170,965
+    only-genuine files (B41). rules_kotlin: `query //...` matches (1,319
+    labels), one analysis error left (B46). rules_jvm_external-simple fails
+    on both (no Android SDK); query matches. OpenROAD: `build --nobuild
+    //...` exits 0 on both, `query //...` matches (7,079 labels); by hand on
+    the openroad-perf state: `build //src/utl:utl` runs 829 actions (630
+    spawns), genuine's exact counts (was 1,109/867), its 40 common
+    `bazel-bin/src/utl` files are byte-identical (only genuine: C1's
+    params file); `aquery --output=summary 'deps(//src/utl:utl)'` is
+    identical; after `build //src/web:node_modules
+    @llvm//toolchain:linux_x86_64_cc_toolchain_resource_directory`,
+    `bazel-bin/src/web` holds genuine's 7,387 files (B41) and the resource
+    directory genuine's 2 (B40). The full `//:openroad` build was not
+    rerun.
+
+**Summary.** 37 projects ran. On 14 of them bazel-rs matches genuine exactly
 (10 before the corpus-parent rerun, footnote 17: diff.bzl, bazel-skylib
 and buildtools since B6's fix; bazel-skylib's and buildtools' own failing
-tests fail identically on both tools; junit5-starter differs only by C2):
+tests fail identically on both tools; junit5-starter and, since
+corpus-parity3, examples-java-maven differ only by C2; OpenROAD's compared
+phases and outputs match too, its full build not rerun, footnote 21):
 same exit codes, `query //...` labels, `bazel-bin` file lists, sampled
 SHA-256s and test results. abseil-cpp is the largest: 2,767 outputs and 252
 passing tests. Two more (rules-template, yalantinglibs; riegeli too since the
@@ -400,7 +430,7 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B15 | fixed (corpus-runfiles) | test runfiles were hardlinks, not symlinks |
 | B7 | fixed (corpus-parity2) | transition: "Starlark flag and its alias have different values: False and "false"" |
 | B5 | fixed (corpus-parity2) | `local_repository` → `rctx.symlink(path, ".")` rejected (now a copy plus a `watch_tree` input, docs/LOCAL_REPOSITORIES.md) |
-| B8 | 1 (examples-frontend) | declared output "crosses a package boundary" |
+| B8 | fixed (corpus-parity3) | declared output "crosses a package boundary": a `declare_file`/`declare_directory` output may lie below a subpackage; predeclared outputs keep genuine's `Label ... is invalid because ... is a subpackage` |
 | B17 | fixed (corpus-parent) | `rule(parent=…)` rule extension (docs/RULE_EXTENSION.md) |
 | B18, B19 | fixed (corpus-ccshared) | `cc_shared_library` (`cc_common.check_experimental_cc_shared_library`); solib naming in transitioned configurations |
 | B26 | fixed | depset elements holding functions that are not top-level defs (skylib `DirectoryInfo` in rules_cc `cc_args`; openroad) |
@@ -411,24 +441,26 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B23 | 1 (examples-rules) | predeclared `attr.output` given as `":name"` |
 | B12 | 1 (flatbuffers) | `@local_config_platform` unknown |
 | B24 | 1 (examples-configurations) | no PROJECT.scl project-file check |
-| B25 | 1 (examples-frontend) | "needs-repository: repository @@rules_diff+ is unfetched and this thread does not fetch" on a warm `test` |
+| B25 | fixed (502d3267; not reproduced in corpus-parity3) | "needs-repository: repository @@rules_diff+ is unfetched and this thread does not fetch" on a warm `test` (a worker's sentinel answer cached by the ignored-subdirectories memo) |
 | B30 | fixed (corpus-ccshared) | `provider in target` fails "Target membership requires an exported provider constructor" in with_cfg's `transitioning_alias.bzl:55` (toolchains_llvm's `*_with_cfg` glibc/libunwind/libcxxabi targets; one of with_cfg's forwarded builtin providers is not an exported constructor natively: `apple_common.Objc`) |
-| B31 | 2 (examples-java-maven, rules_jvm_external-simple); every rules_android user | `config_common.config_feature_flag_transition` (rules_android `android_binary/rule.bzl:93`, at load time) is not implemented |
+| B31 | fixed (corpus-parity3) | `config_common.config_feature_flag_transition`: loads; no transition unless the attribute sets flag values, which fails explicitly (docs/TEST_FLAGS.md) |
 | B32 | 1 (rules_cc's own tests) | Starlark transitions on unmodelled native options (`fdo_optimize`, `cs_fdo_profile`, `instrumentation_filter`, `experimental_cpp_modules`, `build_test_dwp`, `fission`, `custom_malloc`, `incompatible_remove_legacy_whole_archive`), `cc_internal.freeze` of mutable structs / unfrozen functions, `objc.target_should_alwayslink` with an `alwayslink` attribute, `Target.actions` read in an aspect |
-| B33 | 1 (protobuf) | analysis: `java_common.check_java_toolchain_is_declared_on_rule`, aspect providers (`does not provide …UpbMinitableCcInfo` / `JavaInfo` on proto_library targets), `Target.actions` in aspect tests, `cc_common.check_experimental_cc_shared_library` (B18) |
+| B33 | 1 (protobuf) | analysis: `java_common.check_java_toolchain_is_declared_on_rule` (implemented on corpus-parity3, protobuf not rerun), aspect providers (`does not provide …UpbMinitableCcInfo` / `JavaInfo` on proto_library targets), `Target.actions` in aspect tests, `cc_common.check_experimental_cc_shared_library` (B18) |
 | B34 | 1 (rules_python-bzlmod); not blocking | `external/other_module+/other_module/pkg/bin_zipapp.zip` differs from genuine's: rules_python's zipper stores each input's mode and relative symlinks as it finds them in the sandbox; native staging hardlinks read-only store blobs (docs/HARDLINK_STAGING.md) |
 | B43 | 1 (with_cfg); not blocking | genuine builds `cc_no_copt_binary/binary_/binary.runfiles_manifest` and `.repo_mapping` (the manual `cc_binary` behind with_cfg's frontend and transitioning alias, a no-op transition); bazel-rs does not (not investigated) |
-| B35 | 1 (rules_kotlin) | rules_testing `TestingAspectInfo provider missing` (8 analysis tests), `download_and_extract(rename_files=…)` unsupported (ksp repository), `Target.actions` in an aspect |
+| B35 | fixed (corpus-parity3) | rules_kotlin: `download_and_extract(rename_files=…)`, `Target.actions` through an alias, TestingAspectInfo (per-attribute aspect views), `check_java_toolchain_is_declared_on_rule`, mutable `default_jvm_opts`, genquery `buildfiles` scope |
 | B27 | fixed (corpus-runfiles) | `depset` was not a BUILD-file global, and list-typed attributes did not accept depsets (`@openssl//:BUILD.bazel:508`, `select({...: depset([...])})`) |
 | B36 | fixed (corpus-ccshared) | `ctx.actions.write(execution_requirements=…)` rejected (rules_cc_autoconf `ctx_actions_write.bzl`; 360 OpenROAD targets) |
 | B37 | fixed (corpus-ccshared) | a repository's BUILD file symlinked into another repository's tree: "build file … resolves outside workspace" (sv-elab's `vendored-hashlib`) |
 | B38 | fixed (corpus-ccshared) | `repository_ctx.delete()` of the repository directory itself (bazel_tools `git_repository`'s `git_worker.bzl`; sv-elab's `vendored-slang`) |
 | B39 | fixed (corpus-ccshared) | a tool hardlinking a repository file into its output (bazel_lib `copy_to_directory`): publication chmod'ed the shared tree file, then libcxx compiles failed "changed while it was being staged" |
-| B40 | 1 (openroad); outputs only | `copy_to_directory` over a source-directory input: native stages the directory as a real directory, genuine's sandbox as a symlink that the tool does not descend, so native's output tree has 301 more files |
-| B41 | 1 (openroad); outputs only | rules_js `node_modules` links in `bazel-bin` (`src/web/node_modules`, 3,978 files) do not resolve natively: a relative package link points into another action's cache entry |
+| B40 | fixed (corpus-parity3) | `copy_to_directory` over a source-directory input: sandboxed spawns now see the directory as a symlink, as genuine's sandboxes stage it (docs/SOURCE_DIRECTORIES.md) |
+| B41 | fixed (corpus-parity3) | rules_js `node_modules` links in `bazel-bin`: a relative symlink output keeps its text in the output tree (docs/UNRESOLVED_SYMLINKS.md) |
 | B42 | fixed (corpus-ccshared) | a test's runfile of an `actions.symlink` output of a generated file was a copy at the link's exec path, so `$ORIGIN` of a with_cfg-forwarded `cc_binary` missed its `dynamic_deps` |
-| B44 | 1 (openroad); aquery only | `aquery --output=summary` counts C++ module map writes as `FileWrite`; genuine as `CppModuleMap` (225 of `deps(//src/utl:utl)`'s actions; the totals match) |
-| B45 | 1 (openroad); extra work | `build //src/utl:utl` (a `cc_library`) executes 1,109 actions (867 spawns) against genuine's 829 (630); `//:openroad` (a `cc_binary`) runs the same 13,479. Not analysed: bazel-rs apparently builds outputs of the dependencies that genuine's files to build do not need (openroad-perf) |
+| B44 | fixed (corpus-parity3) | `ctx.actions.write(mnemonic=...)` was dropped: rules_cc's module maps are `CppModuleMap` in aquery, the profile and `Target.actions` |
+| B45 | fixed (corpus-parity3) | compiles staged the toolchain's `all_files` instead of `compiler_files` (`as_files` for `assemble`), so `build //src/utl:utl` also built the toolchain's link-time runtimes (1,109 actions against genuine's 829) |
+| B46 | 1 (rules_kotlin) | `Target.actions` `argv` is empty for an action whose `Args` use `map_each` (deferred to execution natively; genuine expands it at analysis): rules_kotlin's `windows_coverage_test_suite_flag_test` (`JavaLauncherMaker`) fails analysis on `jvm_flags[0]`, and the `javac_receives_the_plugins_of_the_flag` test sees an empty `Javac` argv |
+| B47 | 1 (rules_jvm_external-simple); not blocking (genuine fails too, no Android SDK) | rules_android's `android_split_transition` reads `//command_line_option:Android configuration distinguisher`: "transition inputs ... do not correspond to valid settings" (an unmodelled Android native option) |
 | B28 | fixed (corpus-runfiles) | `build //...` missed genuine's `.pic.o`/`.pic.d` of external C++ deps: the rule-returned `_hidden_top_level_INTERNAL_` group (rules_cc cc_library's transitive objects) was not built |
 
 ### Details and minimal repros
@@ -561,7 +593,11 @@ repository directory itself cannot be a symlink" (bazel_tools `local.bzl:64`
 where `react-router/public/BUILD.bazel` exists. bazel-rs fails with "output
 public/build crosses a package boundary" (engine.rs:2626). Genuine builds it,
 and its `//react-router:build_smoke_test` passes. Genuine does not check
-`declare_directory` / `declare_file` outputs this way.
+`declare_directory` / `declare_file` outputs this way. Fixed on
+corpus-parity3: only predeclared outputs (targets of the package) are
+checked, with genuine's `Label '//p:sub/x' is invalid because 'p/sub' is a
+subpackage; perhaps you meant to put the colon here: '//p/sub:x'?`
+(tests/corpus_parity3.rs).
 
 **B16–B19 (with_cfg.bzl):**
 
@@ -633,7 +669,10 @@ failed every target with "While resolving toolchains … invalid registered
 toolchain '//diff/toolchain/...': needs-repository: repository @@rules_diff+
 is unfetched and this thread does not fetch". The earlier commands had
 fetched that repository. It looks like an internal fetch-scheduling bug on a
-warm command.
+warm command. Not reproduced on corpus-parity3 (the warm `test` passes
+14/14): 502d3267 stopped the ignored-subdirectories memo from caching a
+worker's sentinel answer, the same path (a recursive registration pattern
+in a repository a pool attempt may not fetch).
 
 **B13 (fixed).** skylib `analysistest`, rules_testing and
 `analysis_test_transition`, including `expect_failure`, are analysed
@@ -681,14 +720,21 @@ store's relative link does not resolve (the declared `bazel run`
 difference of docs/RUNFILES_TREES.md, here in `bazel-bin`).
 
 **B31–B35** are the next blockers the corpus-parity2 rerun found (details in
-the table above and footnote 15).
+the table above and footnote 15). B31, B35, B40, B41, B44 and B45 are fixed
+on corpus-parity3 (footnote 21); B46 and B47 are what that rerun found next.
 
 ### Cosmetic differences
 
 - C1: C++ link actions' `<output>-N.params` files remain in genuine's
   `bazel-bin`, not in bazel-rs's.
 - C2: genuine leaves JavaBuilder's `_javac/<target>/<target>_classes/*.class`
-  in `bazel-bin`; bazel-rs does not.
+  in `bazel-bin`; bazel-rs does not (genuine's persistent JavaBuilder
+  worker writes them into the shared execution root; native workers have
+  their own working directories; not matched).
+- C3: genuine leaves rules_js lifecycle hooks' undeclared
+  `node_modules/.aspect_rules_js/<pkg>/node_modules/.bin/*` shims in
+  `bazel-bin` (10 files in examples-frontend; no action declares them);
+  bazel-rs does not.
 - Error message formats differ; for example, Starlark tracebacks use the
   `* file:line` style. The exit codes match.
 
