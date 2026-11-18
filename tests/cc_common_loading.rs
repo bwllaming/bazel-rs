@@ -268,3 +268,47 @@ fn guarded_predeclareds_fail_at_compile_time() {
         "py_internal may only be used from one of the following repositories or prefixes: @@_builtins//, @@bazel_tools//, @@rules_python//, tools/build_defs/python",
     );
 }
+
+#[test]
+fn check_experimental_cc_shared_library_reads_the_starlark_semantics_flag() {
+    // CcModule.checkExperimentalCcSharedLibrary (CcModule.java:156-159):
+    // `--experimental_cc_shared_library`, default false (rules_cc's
+    // cc_shared_library rejects `static_deps` without it, B18).
+    let fixture = Fixture::new();
+    fixture.file(
+        "rules_cc/cc/shared.bzl",
+        "V = cc_common.check_experimental_cc_shared_library()
+def shared_probe(name):
+    native.filegroup(name = name + '_%s' % V, srcs = [])
+",
+    );
+    fixture.file(
+        "BUILD.bazel",
+        "load('@rules_cc//cc:shared.bzl', 'shared_probe')\nshared_probe(name = 'probe')\n",
+    );
+    for (flags, expected) in [
+        (&[][..], "//:probe_False\n"),
+        (&["--experimental_cc_shared_library"][..], "//:probe_True\n"),
+        (
+            &["--noexperimental_cc_shared_library"][..],
+            "//:probe_False\n",
+        ),
+    ] {
+        let mut args = vec!["query"];
+        args.extend_from_slice(flags);
+        args.push("//:all");
+        let output = fixture.run(&args);
+        assert!(output.status.success(), "{flags:?}: {}", errors(&output));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            expected,
+            "{flags:?}"
+        );
+    }
+    fixture.file(
+        "other_rules/shared.bzl",
+        "V = cc_common.check_experimental_cc_shared_library()\n",
+    );
+    fixture.build_file("load('@other_rules//:shared.bzl', 'V')");
+    fixture.reject("file '@@other_rules+//:shared.bzl' cannot use private API");
+}

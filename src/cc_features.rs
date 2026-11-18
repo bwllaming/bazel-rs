@@ -1632,6 +1632,11 @@ pub(crate) enum Op {
     GetEnvironmentVariables,
     EmptyVariables,
     GetToolRequirementForAction,
+    /// cc_common_bazel.bzl `_check_experimental_cc_shared_library`: the
+    /// private-API check, then CcModule.checkExperimentalCcSharedLibrary
+    /// (CcModule.java:156-159), the `--experimental_cc_shared_library`
+    /// Starlark semantics value.
+    CheckExperimentalCcSharedLibrary,
     /// cc_internal (CcStarlarkInternal) methods.
     CcToolchainFeatures,
     CcToolchainVariables,
@@ -1651,6 +1656,7 @@ impl Op {
             "get_environment_variables" => Op::GetEnvironmentVariables,
             "empty_variables" => Op::EmptyVariables,
             "get_tool_requirement_for_action" => Op::GetToolRequirementForAction,
+            "check_experimental_cc_shared_library" => Op::CheckExperimentalCcSharedLibrary,
             _ => return None,
         })
     }
@@ -1781,6 +1787,18 @@ pub(crate) fn call<'v>(
         Op::EmptyVariables => {
             bind_styled(style, name, &[], args, heap)?;
             Ok(crate::cc_variables::empty(eval))
+        }
+        Op::CheckExperimentalCcSharedLibrary => {
+            bind_styled(style, name, &[], args, heap)?;
+            let allowlist: Vec<(String, String)> = BUILTINS_PRIVATE_STARLARKIFICATION_ALLOWLIST
+                .iter()
+                .map(|(repo, prefix)| ((*repo).to_owned(), (*prefix).to_owned()))
+                .collect();
+            crate::cc_common::check_private_api(eval, 0, &allowlist)?;
+            let semantics = crate::loading::repositories(eval)
+                .map(|repositories| repositories.java_semantics())
+                .unwrap_or_default();
+            Ok(Value::new_bool(semantics.experimental_cc_shared_library))
         }
         Op::CcToolchainFeatures => {
             const F: &str = "cc_toolchain_features";

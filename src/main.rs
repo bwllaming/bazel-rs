@@ -2005,6 +2005,10 @@ fn info_command(
     // crate::info strips the prefix after sorting).
     let mut starlark_semantics: Vec<String> = [
         (
+            "-experimental_cc_shared_library",
+            resolver.java_semantics.experimental_cc_shared_library,
+        ),
+        (
             "-experimental_google_legacy_api",
             resolver.java_semantics.google_legacy_api,
         ),
@@ -5219,6 +5223,13 @@ impl NativeOptions {
             self.resolver
                 .java_semantics
                 .java_info_merge_runtime_module_flags = value?;
+            false
+        } else if let Some(value) =
+            bazel_rs::configuration::boolean_option(arg, "experimental_cc_shared_library")
+        {
+            // A Starlark semantics option (BuildLanguageOptions.java), read by
+            // cc_common.check_experimental_cc_shared_library().
+            self.resolver.java_semantics.experimental_cc_shared_library = value?;
             false
         } else if let Some(value) = bazel_rs::configuration::boolean_option(
             arg,

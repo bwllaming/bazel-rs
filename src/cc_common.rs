@@ -796,6 +796,8 @@ native_cc_common = cc_common
 (cc_common.empty_variables == native_cc_common.empty_variables) or fail("identity")
 _cc_common_internal = native_cc_common
 x = struct(do_not_use_tools_cpp_compiler_present = _cc_common_internal.do_not_use_tools_cpp_compiler_present)
+# CcModule.checkExperimentalCcSharedLibrary: --experimental_cc_shared_library (default false).
+(cc_common.check_experimental_cc_shared_library() == False) or fail("cc_shared_library")
 "#,
         );
         for (call, message) in [
@@ -809,16 +811,18 @@ x = struct(do_not_use_tools_cpp_compiler_present = _cc_common_internal.do_not_us
                 "cc_common.legacy_cc_flags_make_variable_do_not_use is not implemented in the native profile (analysis-time C++ API)",
             ),
             (
-                "cc_common.check_experimental_cc_shared_library()",
-                "cc_common.check_experimental_cc_shared_library is not implemented",
-            ),
-            (
                 "cc_common.internal_DO_NOT_USE(1)",
                 "_internal_exports() does not accept positional arguments, but got 1",
             ),
         ] {
             fails("@@rules_cc+//cc:x.bzl", call, message);
         }
+        // cc_common_bazel.bzl:42-44: the private-API check comes first.
+        fails(
+            "@@other+//cc:x.bzl",
+            "cc_common.check_experimental_cc_shared_library()",
+            "file '@@other+//cc:x.bzl' cannot use private API",
+        );
     }
 
     #[test]

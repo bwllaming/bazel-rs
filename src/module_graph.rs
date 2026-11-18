@@ -131,6 +131,11 @@ pub struct JavaSemantics {
     pub google_legacy_api: bool,
     pub java_info_merge_runtime_module_flags: bool,
     pub disable_non_executable_java_binary: bool,
+    /// `--experimental_cc_shared_library` (BuildLanguageOptions.java,
+    /// default false), read by `cc_common.check_experimental_cc_shared_library()`
+    /// (CcModule.java:156-159): rules_cc's cc_shared_library rejects
+    /// `static_deps` and cc_binary/cc_test `dynamic_deps` checks it.
+    pub experimental_cc_shared_library: bool,
 }
 
 impl ResolverOptions {
