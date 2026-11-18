@@ -582,7 +582,10 @@ lock, so the end removes it or it is refused (`no_stash_outlives_the_last_scope`
 crashing) leaves its execution roots in `work/` — with reuse up to 64
 stashed ones per mnemonic, whose hardlinks keep store blobs alive past a
 cache collection. Each process claims its work directories before creating
-any: `work/.owner-<pid>`, exclusively `flock`ed until it exits. When a
+any: `work/.owner-<pid>`, exclusively `flock`ed until it exits or a
+scheduler's execution on the cache ends (the file is then unlinked while
+still locked, so a finished command leaves nothing in `work/`; a later
+action claims it again). When a
 process first sets up a cache (`ensure_cache`) it removes the work
 directories `{key}-{pid}-{n}` of every other pid whose owner file it can
 lock (the owner is gone, even if another process has the pid now), then that

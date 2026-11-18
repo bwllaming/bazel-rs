@@ -6797,12 +6797,14 @@ fn work_owner(name: &OsStr) -> Option<u32> {
 /// so that another process can tell them from a dead one's even after the
 /// pid is reused ([`sweep_work`]). Taken (and held) once per directory; a
 /// removed owner file (a test removing a cache) is claimed again.
+/// This process's claimed owner files, by work directory ([`claim_work`]).
+static CLAIMED: Mutex<Option<HashMap<PathBuf, File>>> = Mutex::new(None);
+
 fn claim_work(work: &Path) -> Result<(), String> {
-    static CLAIMED: Mutex<Option<HashMap<PathBuf, File>>> = Mutex::new(None);
     let owner = work_owner_file(work, std::process::id());
     let mut claimed = CLAIMED.lock().unwrap_or_else(|e| e.into_inner());
     let claimed = claimed.get_or_insert_with(HashMap::new);
-    if claimed.contains_key(work) && owner.exists() {
+    if claimed.contains_key(work) {
         return Ok(());
     }
     let file = OpenOptions::new()
@@ -6817,6 +6819,26 @@ fn claim_work(work: &Path) -> Result<(), String> {
     FileExt::lock_exclusive(&file).map_err(|e| io_error("cannot lock", &owner, e))?;
     claimed.insert(work.to_path_buf(), file);
     Ok(())
+}
+
+/// The end of a scheduler's execution on `cache_root` (its last
+/// reuse::StashScope): its owner file goes (unlinked while still locked,
+/// then unlocked), so that a command leaves nothing in `work/`. Work
+/// directories of this process created later or left behind (a
+/// `--sandbox_debug` root) are then kept while the pid runs (sweep_work's
+/// fallback).
+pub(crate) fn release_cache_work(cache_root: &Path) {
+    let Some(directories) = ensured_cache(cache_root) else {
+        return;
+    };
+    let mut claimed = CLAIMED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(file) = claimed
+        .as_mut()
+        .and_then(|claimed| claimed.remove(&directories.work))
+    {
+        let _ = fs::remove_file(work_owner_file(&directories.work, std::process::id()));
+        drop(file);
+    }
 }
 
 /// Remove the work directories in `work` of processes that are gone, and
@@ -6879,6 +6901,13 @@ fn sweep_work(work: &Path) {
 }
 
 fn forget_ensured_cache(cache_root: &Path) {
+    // The cache was removed: its owner file with it (claimed again).
+    if let Some(directories) = ensured_cache(cache_root) {
+        let mut claimed = CLAIMED.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(claimed) = claimed.as_mut() {
+            claimed.remove(&directories.work);
+        }
+    }
     ensured_caches()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -6895,6 +6924,8 @@ fn forget_ensured_cache(cache_root: &Path) {
 /// missing) and the directories created again.
 fn ensure_cache(cache_root: &Path) -> Result<Arc<CacheDirectories>, String> {
     if let Some(directories) = ensured_cache(cache_root) {
+        // Claimed again after an execution's end released it.
+        claim_work(&directories.work)?;
         return Ok(directories);
     }
     fs::create_dir_all(cache_root).map_err(|e| io_error("cannot create cache", cache_root, e))?;
@@ -9419,11 +9450,13 @@ mod tests {
         }
 
         fn assert_unpublished(&self) {
-            for name in ["actions", "work"] {
-                let path = self.cache().join(name);
-                if path.exists() {
-                    assert_eq!(fs::read_dir(path).unwrap().count(), 0);
-                }
+            let path = self.cache().join("actions");
+            if path.exists() {
+                assert_eq!(fs::read_dir(path).unwrap().count(), 0);
+            }
+            let path = self.cache().join("work");
+            if path.exists() {
+                assert_eq!(work_directories(&path), Vec::<PathBuf>::new());
             }
         }
 

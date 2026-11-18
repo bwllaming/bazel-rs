@@ -78,13 +78,18 @@ fn work_of(cache: &Path, pid: u32) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Wait until `child` has a work directory in `cache`.
+/// Wait until `child` has a work directory in `cache` that lasts (the slow
+/// genrule's; the workspace status writes' come and go).
 fn wait_for_work(cache: &Path, child: &Child) -> Vec<PathBuf> {
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let work = work_of(cache, child.id());
         if !work.is_empty() {
-            return work;
+            std::thread::sleep(Duration::from_millis(500));
+            let lasting: Vec<PathBuf> = work.into_iter().filter(|path| path.exists()).collect();
+            if !lasting.is_empty() {
+                return lasting;
+            }
         }
         assert!(Instant::now() < deadline, "no work directory appeared");
         std::thread::sleep(Duration::from_millis(20));

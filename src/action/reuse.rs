@@ -156,6 +156,7 @@ impl Drop for StashScope {
             let _ = remove_directory(&stash.work);
         }
         staging_part(PART_REMOVE, &mut clock);
+        release_cache_work(&self.0);
     }
 }
 
