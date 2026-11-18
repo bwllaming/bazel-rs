@@ -133,6 +133,17 @@ fn root_relative_path(path: &str) -> &str {
     crate::label::split_generated_root(path).map_or(path, |(_, relative)| relative)
 }
 
+/// BuildConfigurationValue.getMnemonic of the configuration whose output
+/// root is `bazel-out/<mnemonic>/bin`: getDynamicLibrarySoname mangles the
+/// `ST-<hash>` part of the mnemonic, never the `/bin` after it (genuine
+/// 9.3.1: `_solib_k8/libST-b44ef279653a_external_Srules_Ucc+_..._Slibrunfiles.so`).
+fn configuration_mnemonic(output_root: &str) -> &str {
+    let rest = output_root
+        .strip_prefix("bazel-out/")
+        .unwrap_or(output_root);
+    rest.split_once('/').map_or(rest, |(mnemonic, _)| mnemonic)
+}
+
 /// `SolibSymlinkAction.getMangledName` (:273-295).
 fn mangled_name(
     label: &Label,
@@ -784,7 +795,7 @@ pub(crate) fn call<'v>(
                 mangled_name(
                     &context.label,
                     &solib,
-                    &context.output_root,
+                    configuration_mnemonic(&context.output_root),
                     root_relative_path(&library.path),
                     preserve,
                     prefix_consumer,
@@ -1542,6 +1553,30 @@ mod tests {
         assert_eq!(
             dynamic_library_soname("cdep/libprebuilt.so", true, "k8-fastbuild"),
             "libprebuilt.so"
+        );
+    }
+
+    #[test]
+    fn transitioned_solib_names_mangle_the_configuration_mnemonic() {
+        // Genuine 9.3.1 (with_cfg.bzl examples, `cc_define_test`):
+        // _solib_k8/libST-b44ef279653a_external_Srules_Ucc+_Scc_Srunfiles_Slibrunfiles.so.
+        let mnemonic = configuration_mnemonic("bazel-out/k8-fastbuild-ST-b44ef279653a/bin");
+        assert_eq!(mnemonic, "k8-fastbuild-ST-b44ef279653a");
+        let label = Label::parse_canonical("@@rules_cc+//cc/runfiles:runfiles").unwrap();
+        assert_eq!(
+            mangled_name(
+                &label,
+                "_solib_k8",
+                mnemonic,
+                "external/rules_cc+/cc/runfiles/librunfiles.so",
+                false,
+                false
+            ),
+            "_solib_k8/libST-b44ef279653a_external_Srules_Ucc+_Scc_Srunfiles_Slibrunfiles.so"
+        );
+        assert_eq!(
+            configuration_mnemonic("bazel-out/k8-fastbuild/bin"),
+            "k8-fastbuild"
         );
     }
 
