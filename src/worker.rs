@@ -750,8 +750,7 @@ impl Worker {
             // terminal signals for bazel-rs's group never reach it.
             command.process_group(0);
         }
-        crate::signals::reset_in_child(&mut command, crate::signals::Defaults::ProcessWrapper);
-        let mut child = crate::spawn_lock::spawn(&mut command)
+        let mut child = crate::spawn_lock::spawn_with(&mut command, crate::signals::Defaults::ProcessWrapper)
             .map_err(|e| format!("IOException while preparing the execution environment of a worker: cannot run program \"{}\": {e}", args[0]))?;
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = BufReader::new(child.stdout.take().expect("piped stdout"));

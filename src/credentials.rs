@@ -509,15 +509,15 @@ pub fn invoke(
         command.current_dir(workspace);
     }
     // Started by the server itself (crate::signals::Defaults::Jvm).
-    crate::signals::reset_in_child(&mut command, crate::signals::Defaults::Jvm);
+    let jvm = crate::signals::Defaults::Jvm;
     // A helper written just before may still be open for writing in another
     // concurrently forked child (ETXTBSY); retry like crate::action.
-    let mut spawned = crate::spawn_lock::spawn(&mut command);
+    let mut spawned = crate::spawn_lock::spawn_with(&mut command, jvm);
     for delay in [1, 2, 4, 8, 16, 32, 64] {
         match &spawned {
             Err(error) if error.raw_os_error() == Some(26) => {
                 std::thread::sleep(Duration::from_millis(delay));
-                spawned = crate::spawn_lock::spawn(&mut command);
+                spawned = crate::spawn_lock::spawn_with(&mut command, jvm);
             }
             _ => break,
         }

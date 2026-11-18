@@ -316,8 +316,7 @@ pub(crate) fn run(request: &Request<'_>) -> Result<Outcome, String> {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .process_group(0);
-            crate::signals::reset_in_child(&mut command, crate::signals::Defaults::ProcessWrapper);
-            crate::spawn_lock::spawn(&mut command)
+            crate::spawn_lock::spawn_with(&mut command, crate::signals::Defaults::ProcessWrapper)
         })
         .map(Spawned::direct)
     };

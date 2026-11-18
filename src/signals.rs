@@ -25,12 +25,27 @@
 //!   inherited, except the signals HotSpot handles itself: SIGQUIT (thread
 //!   dumps) and SIGPIPE. SIGINT, SIGTERM and SIGHUP stay ignored.
 //!
-//! The reset runs in the child between fork and exec (a `pre_exec` hook that
-//! only calls sigaction, which is async-signal-safe), never in this process:
-//! bazel-rs itself keeps ignoring what it was told to ignore (nohup, `&`), and
-//! the progress display's handlers (crate::progress) stay untouched. The hook
-//! is added only when one of the signals is actually ignored here, so the
-//! usual start keeps std's posix_spawn fast path (a hook forces fork).
+//! **Held, not ignored** ([`hold_ignored`]): a `pre_exec` hook forces std's
+//! fork path instead of posix_spawn, and forking a large many-threaded
+//! process for every start is slow (the library suite started from a
+//! background job: 18 s → 108–144 s). So the CLI, first thing (and any other
+//! process at its first start), turns every signal it inherited ignored into
+//! a *held* one: blocked in every thread (the mask is inherited by each
+//! thread started later, so the signal is never delivered — bazel-rs itself
+//! keeps ignoring it) with a handler that does nothing. exec(2) resets a
+//! handled signal to its default action and std clears the signal mask of
+//! every process it starts (posix_spawn's `POSIX_SPAWN_SETSIGMASK`, or in
+//! the forked child), so a start that wants the defaults
+//! ([`Defaults::ProcessWrapper`], the spawn supervisors) needs no hook at
+//! all and keeps the posix_spawn fast path. Only a start that must keep a
+//! held signal ignored gets a hook setting it back to SIG_IGN in the child
+//! (fork): [`Defaults::Client`] and [`Defaults::Jvm`] for the signals they
+//! keep, and every start through crate::spawn_lock::spawn without defaults
+//! ([`inherit_in_child`]: it inherits the dispositions as they were). A
+//! signal still ignored here (one the hold could not take) is reset in the
+//! child by a hook as before. The progress display's handlers
+//! (crate::progress) replace a held signal's no-op handler while they are
+//! installed; blocked, they never run for it either.
 //!
 //! The other handwritten signal code is the progress display's handler
 //! (crate::progress::terminal::signals), which needs that module's state.
@@ -68,9 +83,90 @@ impl Defaults {
     }
 }
 
-/// Whether `signal` is ignored in this process (false for a number that
-/// sigaction refuses, e.g. glibc's reserved real-time signals 32 and 33).
+/// The signals [`hold_ignored`] holds (bit `n - 1` for signal `n`).
+static HELD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// [`hold_ignored`] runs once per process.
+static HOLD: std::sync::Once = std::sync::Once::new();
+
+/// A held signal's handler: never runs (the signal stays blocked), and does
+/// nothing if it does (a thread that started before the hold in a process
+/// that is not the CLI).
+extern "C" fn held_signal(_: libc::c_int) {}
+
+/// Hold every signal this process inherited ignored (module documentation):
+/// block it in this thread, which every thread started later inherits, and
+/// give it a handler that does nothing. The CLI calls it first thing, while
+/// it is single-threaded; any other process holds them at its first start
+/// (crate::spawn_lock), the threads started before then still unblocked
+/// (the handler does nothing, `SA_RESTART`). SIGPIPE stays std's (ignored
+/// by its runtime, reset by its starts).
+pub fn hold_ignored() {
+    HOLD.call_once(|| {
+        let wanted = (1..=LAST_SIGNAL)
+            .filter(|&signal| !matches!(signal, libc::SIGKILL | libc::SIGSTOP | libc::SIGPIPE))
+            .filter(|&signal| ignored_now(signal))
+            .fold(0u64, |mask, signal| mask | 1 << (signal - 1));
+        if wanted == 0 {
+            return;
+        }
+        let mut held = 0u64;
+        // SAFETY: sigset_t values are initialized by sigemptyset before
+        // use; pthread_sigmask changes only this thread's mask; each
+        // sigaction installs a fully initialized action (zeroed, a full
+        // mask, SA_RESTART, a handler that does nothing) for a signal that
+        // was ignored. Blocked first: no delivery between the two steps.
+        unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            for signal in signals_of(wanted) {
+                libc::sigaddset(&mut set, signal);
+            }
+            libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+            for signal in signals_of(wanted) {
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = held_signal as *const () as libc::sighandler_t;
+                action.sa_flags = libc::SA_RESTART;
+                libc::sigfillset(&mut action.sa_mask);
+                if libc::sigaction(signal, &action, std::ptr::null_mut()) == 0 {
+                    held |= 1 << (signal - 1);
+                }
+            }
+            let refused = wanted & !held;
+            if refused != 0 {
+                // Still ignored: unblocked again, reset in children by hooks.
+                let mut set: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut set);
+                for signal in signals_of(refused) {
+                    libc::sigaddset(&mut set, signal);
+                }
+                libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+            }
+        }
+        HELD.store(held, std::sync::atomic::Ordering::SeqCst);
+    });
+}
+
+/// The signals of a bit mask (bit `n - 1` for signal `n`).
+fn signals_of(mask: u64) -> impl Iterator<Item = libc::c_int> {
+    (1..=LAST_SIGNAL).filter(move |&signal| mask >> (signal - 1) & 1 == 1)
+}
+
+/// The held signals ([`hold_ignored`]).
+fn held() -> u64 {
+    HELD.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Whether `signal` is ignored by this process: held ([`hold_ignored`]) or
+/// still SIG_IGN.
+#[cfg(test)]
 fn ignored(signal: libc::c_int) -> bool {
+    held() >> (signal - 1) & 1 == 1 || ignored_now(signal)
+}
+
+/// Whether `signal`'s disposition is SIG_IGN here (false for a number that
+/// sigaction refuses, e.g. glibc's reserved real-time signals 32 and 33).
+fn ignored_now(signal: libc::c_int) -> bool {
     // SAFETY: with a null new action, sigaction only writes the current
     // disposition into `current`, a zero-initialized (valid) struct.
     unsafe {
@@ -86,31 +182,68 @@ fn ignored(signal: libc::c_int) -> bool {
 fn ignored_mask(defaults: Defaults) -> u64 {
     (1..=LAST_SIGNAL)
         .filter(|&signal| !matches!(signal, libc::SIGKILL | libc::SIGSTOP | libc::SIGPIPE))
-        .filter(|&signal| defaults.covers(signal) && ignored(signal))
+        .filter(|&signal| defaults.covers(signal) && ignored_now(signal))
+        .fold(0, |mask, signal| mask | 1 << (signal - 1))
+}
+
+/// The signals `defaults` gives back their default action, as a bit mask.
+fn covered_mask(defaults: Defaults) -> u64 {
+    (1..=LAST_SIGNAL)
+        .filter(|&signal| defaults.covers(signal))
         .fold(0, |mask, signal| mask | 1 << (signal - 1))
 }
 
 /// Makes `command`'s process start with the signals of `defaults` that are
-/// ignored here at their default action (module documentation). Call it on
-/// the configured command right before it is started or exec'd.
+/// ignored here at their default action, and the other held ones ignored
+/// (module documentation). Call it on the configured command right before
+/// it is started or exec'd (crate::spawn_lock::spawn_with does).
 pub fn reset_in_child(command: &mut Command, defaults: Defaults) {
-    let mask = ignored_mask(defaults);
-    if mask == 0 {
+    hold_ignored();
+    child_dispositions(
+        command,
+        ignored_mask(defaults),
+        held() & !covered_mask(defaults),
+    );
+}
+
+/// Makes `command`'s process start with the dispositions this process
+/// inherited: its held signals ([`hold_ignored`]) ignored again. Every
+/// start without [`Defaults`] (crate::spawn_lock::spawn).
+pub fn inherit_in_child(command: &mut Command) {
+    hold_ignored();
+    child_dispositions(command, 0, held());
+}
+
+/// The hooks [`child_dispositions`] installed (tests).
+#[cfg(test)]
+static HOOKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A `pre_exec` hook setting the signals of `reset` to their default action
+/// and those of `ignore` to SIG_IGN, when there are any (a hook forces
+/// std's fork path: none for the usual start).
+fn child_dispositions(command: &mut Command, reset: u64, ignore: u64) {
+    if reset == 0 && ignore == 0 {
         return;
     }
-    let reset = move || {
+    #[cfg(test)]
+    HOOKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let hook = move || {
         for signal in 1..=LAST_SIGNAL {
-            if mask >> (signal - 1) & 1 == 0 {
+            let disposition = if reset >> (signal - 1) & 1 == 1 {
+                libc::SIG_DFL
+            } else if ignore >> (signal - 1) & 1 == 1 {
+                libc::SIG_IGN
+            } else {
                 continue;
-            }
+            };
             // SAFETY: runs in the child between fork and exec (or right
             // before this process's own exec): only stack values, no
             // allocation or lock; sigemptyset and sigaction are
             // async-signal-safe (signal-safety(7)). `action` is fully
-            // initialized (zeroed, then an empty mask and SIG_DFL).
+            // initialized (zeroed, then an empty mask and the disposition).
             unsafe {
                 let mut action: libc::sigaction = std::mem::zeroed();
-                action.sa_sigaction = libc::SIG_DFL;
+                action.sa_sigaction = disposition;
                 libc::sigemptyset(&mut action.sa_mask);
                 libc::sigaction(signal, &action, std::ptr::null_mut());
             }
@@ -118,9 +251,9 @@ pub fn reset_in_child(command: &mut Command, defaults: Defaults) {
         Ok(())
     };
     // SAFETY: the hook is async-signal-safe (above) and touches no state
-    // shared with the parent; `mask` is moved in by value.
+    // shared with the parent; the masks are moved in by value.
     unsafe {
-        command.pre_exec(reset);
+        command.pre_exec(hook);
     }
 }
 
@@ -182,22 +315,38 @@ pub fn exit_on_interrupt() {
 mod tests {
     use super::*;
 
-    /// The ignored signals (SigIgn of /proc/self/status) of a `sh` started
-    /// through crate::spawn_lock with `defaults`, among [`PROBED`], which
-    /// this process ignores.
-    fn child_ignores(defaults: Option<Defaults>) -> Vec<libc::c_int> {
+    /// A `/proc/self/status` mask line's value (`SigIgn:`, `SigBlk:`).
+    fn status_mask(text: &str, field: &str) -> u64 {
+        let line = text
+            .lines()
+            .find(|line| line.starts_with(field))
+            .unwrap_or_else(|| panic!("no {field} in {text}"));
+        u64::from_str_radix(line.split_whitespace().last().unwrap(), 16).unwrap()
+    }
+
+    /// The ignored signals among [`PROBED`] and the blocked mask of a `sh`
+    /// started through crate::spawn_lock (with `defaults`, or inheriting).
+    fn child_status(defaults: Option<Defaults>) -> (Vec<libc::c_int>, u64) {
         let mut command = Command::new("/bin/sh");
-        command.args(["-c", "grep SigIgn /proc/self/status"]);
-        if let Some(defaults) = defaults {
-            reset_in_child(&mut command, defaults);
+        command.args(["-c", "grep -E '^Sig(Ign|Blk)' /proc/self/status"]);
+        let output = match defaults {
+            Some(defaults) => crate::spawn_lock::output_with(&mut command, defaults),
+            None => crate::spawn_lock::output(&mut command),
         }
-        let output = crate::spawn_lock::output(&mut command).unwrap();
+        .unwrap();
         let text = String::from_utf8(output.stdout).unwrap();
-        let mask = u64::from_str_radix(text.split_whitespace().last().unwrap(), 16).unwrap();
-        PROBED
+        let ignored = status_mask(&text, "SigIgn:");
+        let ignored = PROBED
             .into_iter()
-            .filter(|&signal| mask >> (signal - 1) & 1 == 1)
-            .collect()
+            .filter(|&signal| ignored >> (signal - 1) & 1 == 1)
+            .collect();
+        (ignored, status_mask(&text, "SigBlk:"))
+    }
+
+    fn child_ignores(defaults: Option<Defaults>) -> Vec<libc::c_int> {
+        let (ignored, blocked) = child_status(defaults);
+        assert_eq!(blocked, 0, "a started process blocks nothing");
+        ignored
     }
 
     const PROBED: [libc::c_int; 5] = [
@@ -207,6 +356,11 @@ mod tests {
         libc::SIGTERM,
         libc::SIGUSR1,
     ];
+
+    /// Hooks installed by [`child_dispositions`] in this process so far.
+    fn hooks() -> u64 {
+        HOOKS.load(std::sync::atomic::Ordering::SeqCst)
+    }
 
     #[test]
     fn children_get_the_defaults_genuine_bazel_gives_them() {
@@ -241,20 +395,47 @@ mod tests {
             }
         }
         let [hup, int, quit, term, usr1] = PROBED;
-        assert_eq!(child_ignores(None), PROBED);
-        assert_eq!(
-            child_ignores(Some(Defaults::ProcessWrapper)),
-            Vec::<libc::c_int>::new()
-        );
-        assert_eq!(child_ignores(Some(Defaults::Client)), [hup, usr1]);
-        assert_eq!(child_ignores(Some(Defaults::Jvm)), [hup, int, term, usr1]);
-        // This process still ignores them.
-        assert!(PROBED.into_iter().all(ignored));
         let bit = |signal: libc::c_int| 1u64 << (signal - 1);
+        let probed = PROBED
+            .into_iter()
+            .fold(0, |mask, signal| mask | bit(signal));
+        // Before the hold: plain SIG_IGN.
+        assert_eq!(held(), 0);
         assert_eq!(ignored_mask(Defaults::Jvm), bit(quit));
         assert_eq!(
             ignored_mask(Defaults::Client),
             bit(int) | bit(quit) | bit(term)
         );
+        // The first start holds them; every start gets genuine's dispositions.
+        assert_eq!(child_ignores(None), PROBED);
+        assert_eq!(held() & probed, probed);
+        let before = hooks();
+        assert_eq!(
+            child_ignores(Some(Defaults::ProcessWrapper)),
+            Vec::<libc::c_int>::new()
+        );
+        assert_eq!(hooks(), before, "the defaults need no hook (posix_spawn)");
+        assert_eq!(child_ignores(Some(Defaults::Client)), [hup, usr1]);
+        assert_eq!(child_ignores(Some(Defaults::Jvm)), [hup, int, term, usr1]);
+        assert_eq!(child_ignores(None), PROBED);
+        // This process still ignores them: held (blocked here), no longer
+        // SIG_IGN.
+        assert!(PROBED.into_iter().all(ignored));
+        assert_eq!(ignored_mask(Defaults::Jvm), 0);
+        let status = std::fs::read_to_string("/proc/thread-self/status").unwrap();
+        assert_eq!(status_mask(&status, "SigBlk:") & probed, probed);
+        assert_eq!(status_mask(&status, "SigIgn:") & probed, 0);
+        // A thread started now inherits the block.
+        let status =
+            std::thread::spawn(|| std::fs::read_to_string("/proc/thread-self/status").unwrap())
+                .join()
+                .unwrap();
+        assert_eq!(status_mask(&status, "SigBlk:") & probed, probed);
+        // A held signal sent to this process does nothing.
+        // SAFETY: kill(2) of this process with a signal it holds.
+        unsafe {
+            libc::kill(libc::getpid(), libc::SIGTERM);
+        }
+        assert_eq!(child_ignores(None), PROBED);
     }
 }

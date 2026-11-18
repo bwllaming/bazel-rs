@@ -72,9 +72,18 @@ PostgreSQL servers in one survey, /tmp/opencode/perf-research/TEST-SURVEY.md B1)
   descendants; a child that leads its own process group takes the group along,
   which only its descendants can be in) and reaps them until none is left.
 * The command starts with every signal this process inherited as ignored back
-  at its default action (crate::signals, `Defaults::ProcessWrapper`: a
-  `pre_exec` hook added only when such a signal exists, between fork and
-  exec); the supervisor and bazel-rs themselves keep ignoring them.
+  at its default action (crate::signals, `Defaults::ProcessWrapper`).
+  bazel-rs *holds* such a signal from its first instruction on
+  (`signals::hold_ignored`: blocked in every thread, a handler that does
+  nothing), so it keeps ignoring it while exec(2) and std's cleared start
+  mask give every process it starts the default action with no `pre_exec`
+  hook: the supervisor (and a direct start without the CLI) keeps std's
+  posix_spawn path instead of a fork of the whole multi-threaded process
+  (the library suite from a background job: 107–120 s → 18.6–25 s, corpus-fetch).
+  Starts that must keep a held signal ignored (`Defaults::Client`/`Jvm`, and
+  `spawn_lock::spawn` without defaults, which inherits) get a hook setting it
+  back to SIG_IGN in the child. The supervisor starts with the defaults and
+  applies them to the command anyway.
 * The control channel is one end of a Unix socket pair, the supervisor's stdin.
   Supervisor to executor: `S<pid>` once the command runs (the executor registers
   the command's group with the memory watchdog), `E<errno>` when it cannot start

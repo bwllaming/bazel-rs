@@ -6888,6 +6888,11 @@ fn main() {
         let args: Vec<String> = raw.map(|arg| arg.to_string_lossy().into_owned()).collect();
         std::process::exit(bazel_rs::coverage::output_generator_main(&args));
     }
+    // The signals this process inherited ignored are held (blocked, a
+    // handler that does nothing) while it is still single-threaded: its
+    // starts keep posix_spawn instead of forking for a reset hook
+    // (crate::signals).
+    bazel_rs::signals::hold_ignored();
     // Bazel's client raises the soft RLIMIT_NOFILE/RLIMIT_NPROC limits to
     // the hard ones first thing (UnlimitResources, blaze.cc:1650); every
     // spawn inherits them (crate::resource_limits).

@@ -250,11 +250,11 @@ impl Launch {
         self.command.process_group(0);
         if !self.supervised {
             self.command.stdin(Stdio::null());
-            crate::signals::reset_in_child(
+            return crate::spawn_lock::spawn_with(
                 &mut self.command,
                 crate::signals::Defaults::ProcessWrapper,
-            );
-            return crate::spawn_lock::spawn(&mut self.command).map(Spawned::direct);
+            )
+            .map(Spawned::direct);
         }
         let (ours, theirs) = UnixStream::pair()?;
         self.command.stdin(Stdio::from(OwnedFd::from(theirs)));
@@ -510,8 +510,7 @@ fn start_command(command: &mut Command) -> io::Result<Child> {
     crate::signals::new_session_in_child(command);
     // Every signal at its default action (ClearSignalMask in the
     // process-wrapper's child, process-wrapper-legacy.cc:72).
-    crate::signals::reset_in_child(command, crate::signals::Defaults::ProcessWrapper);
-    crate::spawn_lock::spawn(command)
+    crate::spawn_lock::spawn_with(command, crate::signals::Defaults::ProcessWrapper)
 }
 
 /// The sandbox worker's supervision of its action (crate::sandbox, after the

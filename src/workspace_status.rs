@@ -313,8 +313,7 @@ fn compute_into(
             .envs(client_env.iter())
             .stdin(Stdio::null());
         // Started by the server itself (crate::signals::Defaults::Jvm).
-        crate::signals::reset_in_child(&mut command, crate::signals::Defaults::Jvm);
-        let output = crate::spawn_lock::output(&mut command)
+        let output = crate::spawn_lock::output_with(&mut command, crate::signals::Defaults::Jvm)
             .map_err(|error| WorkspaceStatusError(format!("exec failed: {error}")))?;
         stderr.extend_from_slice(&output.stderr);
         if !output.status.success() {

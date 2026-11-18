@@ -64,8 +64,25 @@ static LOCK: RwLock<()> = RwLock::new(());
 /// in their OWN group (callers that set `process_group(0)`) are
 /// registered — signalling a shared group (e.g. this process's own, for
 /// short-lived grouped-in-parent helpers) would kill bazel-rs itself.
-#[allow(clippy::disallowed_methods)]
+///
+/// The child inherits this process's signal dispositions
+/// (crate::signals::inherit_in_child); [`spawn_with`] gives it `Defaults`.
 pub fn spawn(command: &mut Command) -> io::Result<Child> {
+    crate::signals::inherit_in_child(command);
+    start(command)
+}
+
+/// [`spawn`] with the signals of `defaults` at their default action in the
+/// child (crate::signals::reset_in_child): without a hook, and so through
+/// posix_spawn, for [`crate::signals::Defaults::ProcessWrapper`] even when
+/// this process inherited ignored signals.
+pub fn spawn_with(command: &mut Command, defaults: crate::signals::Defaults) -> io::Result<Child> {
+    crate::signals::reset_in_child(command, defaults);
+    start(command)
+}
+
+#[allow(clippy::disallowed_methods)]
+fn start(command: &mut Command) -> io::Result<Child> {
     let _shared = LOCK.read().unwrap_or_else(|e| e.into_inner());
     let child = command.spawn()?;
     if crate::memory_limit::watchdog_armed() {
@@ -85,8 +102,13 @@ pub fn spawn(command: &mut Command) -> io::Result<Child> {
 /// registered with the memory watchdog — a watchdog kill of the supervisor
 /// would orphan the command it supervises. The supervisor reports the
 /// command's PID and the executor registers the command's group instead.
+///
+/// The supervisor starts with every held signal at its default action
+/// (crate::signals::hold_ignored: no hook, posix_spawn); it gives the command
+/// the process-wrapper's defaults anyway.
 #[allow(clippy::disallowed_methods)]
 pub fn spawn_supervisor(command: &mut Command) -> io::Result<Child> {
+    crate::signals::hold_ignored();
     let _shared = LOCK.read().unwrap_or_else(|e| e.into_inner());
     command.spawn()
 }
@@ -106,6 +128,18 @@ fn process_group_of(pid: u32) -> Option<u32> {
 /// the wait outside the lock.
 pub fn output(command: &mut Command) -> io::Result<Output> {
     spawn(command.stdout(Stdio::piped()).stderr(Stdio::piped()))?.wait_with_output()
+}
+
+/// [`output`] through [`spawn_with`].
+pub fn output_with(
+    command: &mut Command,
+    defaults: crate::signals::Defaults,
+) -> io::Result<Output> {
+    spawn_with(
+        command.stdout(Stdio::piped()).stderr(Stdio::piped()),
+        defaults,
+    )?
+    .wait_with_output()
 }
 
 /// `CommandExt::exec` holding the shared lock: the new program image starts
