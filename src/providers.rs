@@ -588,20 +588,12 @@ pub fn provider_identity(value: Value<'_>) -> Option<String> {
     if crate::template_variable_info::is_constructor(value) {
         return Some(crate::template_variable_info::PROVIDER_ID.to_owned());
     }
-    // platform_common.ConstraintSettingInfo / ConstraintValueInfo /
-    // PlatformInfo: native providers of the platform rules
-    // (crate::platform_providers).
-    if let Some((id, _)) = crate::language_modules::builtin_provider_requirement(value)
-        && [
-            crate::platform_providers::CONSTRAINT_SETTING_ID,
-            crate::platform_providers::CONSTRAINT_VALUE_ID,
-            crate::platform_providers::PLATFORM_ID,
-            crate::toolchain_info::PROVIDER_ID,
-            crate::feature_flags::PROVIDER_ID,
-            crate::execution_info::PROVIDER_ID,
-        ]
-        .contains(&id.as_str())
-    {
+    // Every Bazel-owned provider key is an exported constructor: the native
+    // providers of the platform rules (crate::platform_providers),
+    // ToolchainInfo, FeatureFlagInfo, ExecutionInfo, and the `@_builtins`
+    // Starlark providers such as `apple_common.Objc` (ObjcInfo), which with_cfg's
+    // transitioning_alias.bzl:55 queries with `provider in target`.
+    if let Some((id, _)) = crate::language_modules::builtin_provider_requirement(value) {
         return Some(id);
     }
     ProviderConstructor::from_value(value)?.identity()
@@ -1953,6 +1945,36 @@ empty = P(files=set(), metadata=metadata)
                     "{source}: {error}"
                 );
             }
+        });
+    }
+
+    #[test]
+    fn builtin_provider_keys_are_exported_constructors_for_target_membership() {
+        // Genuine 9.3.1 (B30, with_cfg.bzl transitioning_alias.bzl:55 over
+        // rule_defaults.bzl DEFAULT_PROVIDERS): every Bazel-owned provider
+        // key answers `in` (False when absent), the `@_builtins` Starlark
+        // ObjcInfo (`apple_common.Objc`, repr `<provider>`) included.
+        Module::with_temp_heap(|module| {
+            module.set(
+                "target",
+                alloc_target_with_providers(module.heap(), "//pkg:target", vec![], BTreeMap::new()),
+            );
+            let source = "(apple_common.Objc not in target and apple_common.XcodeVersionConfig not in target and platform_common.ToolchainInfo not in target and platform_common.TemplateVariableInfo not in target and config_common.FeatureFlagInfo not in target and RunEnvironmentInfo not in target and InstrumentedFilesInfo not in target and AnalysisTestResultInfo not in target) or fail('membership')";
+            let ast = AstModule::parse("use.star", source.into(), &Dialect::Standard).unwrap();
+            Evaluator::new(&module)
+                .eval_module(ast, &crate::package::bzl_globals())
+                .unwrap();
+            let ast = AstModule::parse(
+                "use.star",
+                "target[apple_common.Objc]".into(),
+                &Dialect::Standard,
+            )
+            .unwrap();
+            let error = Evaluator::new(&module)
+                .eval_module(ast, &crate::package::bzl_globals())
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("does not provide"), "{error}");
         });
     }
 
