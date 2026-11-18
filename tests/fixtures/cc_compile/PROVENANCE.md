@@ -27,3 +27,13 @@ from the BCR (host gcc, `--batch --ignore_all_rc_files`); the genuine
 binary prints `112`. Its `bazel-bin/shared` holds the same files as the
 native build (`_objs`, `lib{base,foo,bar}.{a,so}`, `libfoo_so.so`,
 `libbarcustom.so`, `main`, runfiles) apart from C1's `-0.params` files.
+
+`workspace/tcfiles` (OSS corpus B45) is hand-written: a `cc_toolchain`
+whose `compiler_files`, `as_files`, `ar_files` and `all_files` hold
+different marker files, and a `cc_library` with a `.c`, a `.S` and a `.s`
+source. `genuine_aquery_tcfiles.txt` is genuine Bazel 9.3.1's
+`aquery --extra_toolchains=//tcfiles:tc "mnemonic('CppCompile|CppArchive', //tcfiles:lib)"`
+of the same package in a scratch module with `bazel_dep(rules_cc, 0.2.17)`
+and `bazel_dep(platforms, 1.1.0)` from the BCR (`--batch
+--ignore_all_rc_files`): compiles stage `compiler_files` (`as_files` for
+the `assemble` `.s` source), the archive `ar_files`.

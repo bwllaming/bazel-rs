@@ -506,6 +506,49 @@ fn aquery_matches_genuine_cc_action_keys() {
     );
 }
 
+/// OSS corpus B45: a compile stages the toolchain's `compiler_files`
+/// (`as_files` for an `assemble` source), not `all_files`
+/// (CppCompileActionBuilder.buildAndVerify with
+/// `--incompatible_use_specific_tool_files`); the archive its `ar_files`.
+/// genuine_aquery_tcfiles.txt is genuine 9.3.1's `aquery
+/// --extra_toolchains=//tcfiles:tc "mnemonic('CppCompile|CppArchive',
+/// //tcfiles:lib)"` of the same package over BCR rules_cc 0.2.17.
+#[test]
+fn compiles_stage_the_toolchain_compiler_files_like_genuine() {
+    let ws = Workspace::new();
+    let output = ws.aquery(
+        "cache",
+        &[
+            "--extra_toolchains=//tcfiles:tc",
+            "mnemonic('CppCompile|CppArchive', //tcfiles:lib)",
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let blocks = |text: &str| -> Vec<String> {
+        let mut blocks: Vec<String> = text
+            .split("\n\n")
+            .filter(|block| !block.trim().is_empty())
+            .map(|block| {
+                block
+                    .lines()
+                    .filter(|line| {
+                        !line.starts_with("  Execution platform: ")
+                            && !line.starts_with("# Configuration: ")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .collect();
+        blocks.sort();
+        blocks
+    };
+    let expected = fs::read_to_string(fixture().join("genuine_aquery_tcfiles.txt")).unwrap();
+    assert_eq!(
+        blocks(&String::from_utf8_lossy(&output.stdout)),
+        blocks(&expected)
+    );
+}
+
 /// OSS corpus B13e: `cc_import` of `mylib.dll`/`mylib.lib` on a Linux target
 /// analyses (Link.SHARED_LIBRARY_FILETYPES, rules/cpp/Link.java:39-44, has
 /// .dll and the interface types .ifso/.tbd/.lib/.dll.a whatever the

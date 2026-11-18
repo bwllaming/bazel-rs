@@ -1104,9 +1104,13 @@ fn create_cc_compile_action<'v>(
     // The compilation context payload (declared headers and module maps).
     let compilation = compilation_context_inputs(F, compilation_info, heap)?;
 
-    // The toolchain file groups: with --use_specific_tool_files off (the
-    // default) every action stages all_files; include scanning (which would
-    // use compiler_files_without_includes) just failed explicitly above.
+    // The toolchain file groups (buildAndVerify, CppCompileActionBuilder
+    // .java:280-288): with --incompatible_use_specific_tool_files (default
+    // true) a compile stages compiler_files (as_files for `assemble`),
+    // all_files only for a tree artifact source; include scanning (which
+    // would use compiler_files_without_includes) just failed explicitly
+    // above. (B45: staging all_files made a cc_library build the
+    // toolchain's link-time runtimes.)
     let mut inputs = files_arg(7, "additional_compilation_inputs")?;
     // (Membership by a set beside the ordered list: a toolchain's
     // all_files of thousands scanned the list per file.)
@@ -1157,15 +1161,22 @@ fn create_cc_compile_action<'v>(
     {
         push(&mut inputs, &mut listed, grep);
     }
-    // The toolchain's all_files, walked through the build's memo of large
+    // The toolchain's files, walked through the build's memo of large
     // depsets: when its memoized walk is listed in full (none of its files
     // listed before), the action's inputs carry it as a shared run
     // (RegisteredAction::input_memo), resolved and checked once per build
     // and held by every compile of the toolchain (crate::engine
     // SharedInputs), like the one NestedSet Bazel's compiles share.
-    let (all_files, memo) = match struct_field(toolchain_info, "all_files", heap) {
+    let toolchain_group = if source.is_directory {
+        "all_files"
+    } else if action_name == "assemble" {
+        "_as_files"
+    } else {
+        "_compiler_files"
+    };
+    let (all_files, memo) = match struct_field(toolchain_info, toolchain_group, heap) {
         Some(value) => crate::starlark_types::file_list_with_memo(value)
-            .map_err(|error| failure(format!("{F}: all_files: {error}")))?,
+            .map_err(|error| failure(format!("{F}: {toolchain_group}: {error}")))?,
         None => (Vec::new(), None),
     };
     let start = inputs.len();

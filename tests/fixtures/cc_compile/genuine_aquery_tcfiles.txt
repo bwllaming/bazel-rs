@@ -1,0 +1,84 @@
+action 'Compiling tcfiles/asm.S'
+  Mnemonic: CppCompile
+  Target: //tcfiles:lib
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: cc0b88e139bcde736f29907a2092e2a8468164172195a856bcdd72e544091715
+  Inputs: [tcfiles/asm.S, tcfiles/compiler_only.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/tcfiles/_objs/lib/asm.d, bazel-out/k8-fastbuild/bin/tcfiles/_objs/lib/asm.o]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /usr/bin/gcc \
+    -MD \
+    -MF \
+    bazel-out/k8-fastbuild/bin/tcfiles/_objs/lib/asm.d \
+    -iquote \
+    . \
+    -iquote \
+    bazel-out/k8-fastbuild/bin \
+    -c \
+    tcfiles/asm.S \
+    -o \
+    bazel-out/k8-fastbuild/bin/tcfiles/_objs/lib/asm.o)
+# Configuration: 43435cf1e85c9ad86bab67df60bb127bac9bb623077fcae48a41d21964fc7359
+# Execution platform: @@platforms//host:host
+
+action 'Compiling tcfiles/plain.s'
+  Mnemonic: CppCompile
+  Target: //tcfiles:lib
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 61391b0e12077902c1f080e3abe6b5a726f3801be460e41252fdebc1a25507bb
+  Inputs: [tcfiles/as_only.txt, tcfiles/plain.s]
+  Outputs: [bazel-out/k8-fastbuild/bin/tcfiles/_objs/lib/plain.o]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /usr/bin/gcc \
+    -c \
+    tcfiles/plain.s \
+    -o \
+    bazel-out/k8-fastbuild/bin/tcfiles/_objs/lib/plain.o)
+# Configuration: 43435cf1e85c9ad86bab67df60bb127bac9bb623077fcae48a41d21964fc7359
+# Execution platform: @@platforms//host:host
+
+action 'Compiling tcfiles/lib.c'
+  Mnemonic: CppCompile
+  Target: //tcfiles:lib
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 1e6ed7fc50d4f362e0d60386727e50753d54fd14b4a47b25e4a047d22f9f6d00
+  Inputs: [tcfiles/compiler_only.txt, tcfiles/lib.c]
+  Outputs: [bazel-out/k8-fastbuild/bin/tcfiles/_objs/lib/lib.d, bazel-out/k8-fastbuild/bin/tcfiles/_objs/lib/lib.o]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /usr/bin/gcc \
+    -MD \
+    -MF \
+    bazel-out/k8-fastbuild/bin/tcfiles/_objs/lib/lib.d \
+    '-frandom-seed=bazel-out/k8-fastbuild/bin/tcfiles/_objs/lib/lib.o' \
+    -iquote \
+    . \
+    -iquote \
+    bazel-out/k8-fastbuild/bin \
+    -c \
+    tcfiles/lib.c \
+    -o \
+    bazel-out/k8-fastbuild/bin/tcfiles/_objs/lib/lib.o)
+# Configuration: 43435cf1e85c9ad86bab67df60bb127bac9bb623077fcae48a41d21964fc7359
+# Execution platform: @@platforms//host:host
+
+action 'Linking tcfiles/liblib.a'
+  Mnemonic: CppArchive
+  Target: //tcfiles:lib
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: a19e6918850530e32003ed2dccbc865ce0f07552e4c7a778d9df1a835568b575
+  Inputs: [bazel-out/k8-fastbuild/bin/tcfiles/_objs/lib/asm.o, bazel-out/k8-fastbuild/bin/tcfiles/_objs/lib/lib.o, bazel-out/k8-fastbuild/bin/tcfiles/_objs/lib/plain.o, tcfiles/ar_only.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/tcfiles/liblib.a]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, PWD=/proc/self/cwd]
+  Command Line: (exec /usr/bin/ar \
+    rcsD \
+    bazel-out/k8-fastbuild/bin/tcfiles/liblib.a \
+    bazel-out/k8-fastbuild/bin/tcfiles/_objs/lib/asm.o \
+    bazel-out/k8-fastbuild/bin/tcfiles/_objs/lib/plain.o \
+    bazel-out/k8-fastbuild/bin/tcfiles/_objs/lib/lib.o)
+# Configuration: 43435cf1e85c9ad86bab67df60bb127bac9bb623077fcae48a41d21964fc7359
+# Execution platform: @@platforms//host:host
+

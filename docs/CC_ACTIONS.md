@@ -30,7 +30,10 @@ noted):
   inputs = the mandatory inputs of `buildMandatoryInputs` (additional inputs
   and their depset form, builtin include files + build info headers, the
   compilation context's `headers`/`_non_code_inputs`/`_direct_module_maps`/
-  `_module_map`, the source, `_grep_includes`, `all_files`) plus the prunable
+  `_module_map`, the source, `_grep_includes`, the toolchain's
+  `compiler_files` — `as_files` for `assemble`, `all_files` for a tree
+  artifact source, CppCompileActionBuilder.java:280-288 with
+  `--incompatible_use_specific_tool_files`) plus the prunable
   headers (include scanning is off), outputs = the object/dotd/diagnostics/
   gcno/dwo/lto-indexing files and `additional_outputs`, the mnemonic from
   `actionNameToMnemonic` (CppCompileAction.java:1993-2018), and the action
