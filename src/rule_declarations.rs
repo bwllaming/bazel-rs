@@ -2714,8 +2714,10 @@ mod tests {
             "Omit executable parameter when extending rules.",
         );
         fails(
-            &format!("{IMPL}parent = rule(impl)\nx = rule(impl, parent = parent)\n"),
-            "rule(parent=...) rule extension is not supported by the native profile",
+            &format!(
+                "{IMPL}parent = rule(impl, extendable = False)\nx = rule(impl, parent = parent)\n"
+            ),
+            "The rule 'parent' is not extendable.",
         );
         fails(
             &format!("{IMPL}def make():\n    return rule(impl)\nx = rule(impl, parent = make())\n"),

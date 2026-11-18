@@ -1,0 +1,1 @@
+package_group(name = "list", packages = ["//allow/..."])

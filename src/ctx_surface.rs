@@ -274,7 +274,7 @@ impl RuleSurface {
     }
 
     /// EventHandlingErrorReporter.prefixRuleMessage (crate::rule_errors).
-    fn rule_error(&self, message: &str) {
+    pub(crate) fn rule_error(&self, message: &str) {
         let label = self.label_text();
         self.push(
             crate::rule_errors::RuleEvents {
@@ -289,6 +289,14 @@ impl RuleSurface {
         if let Ok(mut errors) = self.errors.lock() {
             errors.push(error);
         }
+    }
+
+    /// Whether an error was reported (RuleContext.hasErrors).
+    pub(crate) fn has_errors(&self) -> bool {
+        self.errors
+            .lock()
+            .map(|errors| !errors.is_empty())
+            .unwrap_or(false)
     }
 
     /// The reported errors, in order.

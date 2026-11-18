@@ -617,6 +617,10 @@ pub struct CustomInvocation {
     /// crate::engine before analysis (crate::ctx_surface).
     pub surface: std::sync::Arc<crate::ctx_surface::CtxSurface>,
     pub implementation: OwnedFrozenValue,
+    /// `rule(parent=...)`: the ancestors' implementations with their rule
+    /// class names, direct parent first (`ctx.super()`,
+    /// StarlarkRuleContext.callParent).
+    pub parents: Vec<(String, OwnedFrozenValue)>,
     /// Strong frozen roots for direct declarations, including factory closures.
     pub subrules: Vec<OwnedFrozenValue>,
     /// The package's transitive `.bzl` top-level functions (shared).
@@ -1435,6 +1439,8 @@ mod values {
     #[repr(C)]
     pub(super) struct DefinitionGen<V> {
         pub implementation: V,
+        /// `rule(parent=...)`: zero or one exported rule (RuleClass.getStarlarkParent).
+        pub parent: Vec<V>,
         pub subrules: Vec<V>,
         /// `rule(initializer=...)`: zero or one Starlark function.
         pub initializer: Vec<V>,
@@ -1590,6 +1596,49 @@ mod values {
                     &self.declaration,
                     &definition,
                     &resolve,
+                    None,
+                    eval,
+                )
+                .map_err(starlark::Error::new_other)?;
+            }
+            // The initializers of the ancestors, child to ancestor, each
+            // over the attributes it knows (StarlarkRuleFunction.call,
+            // StarlarkRuleClassFunctions.java:1797-1882); a level's results
+            // are reified relative to its own definition.
+            if !self.initializer.is_empty() && !self.parent.is_empty() {
+                lift_initialized(
+                    &mut arguments,
+                    &self.schema,
+                    &resolve_definition,
+                    eval.heap(),
+                )
+                .map_err(starlark::Error::new_other)?;
+            }
+            let mut ancestor = self.parent.first().map(|value| value.to_value());
+            while let Some(value) = ancestor {
+                let level = Definition::from_value(value).expect("rule() checked the parent");
+                ancestor = level.parent.first().map(|value| value.to_value());
+                let Some(initializer) = level.initializer.first() else {
+                    continue;
+                };
+                let level_definition =
+                    crate::label::Label::parse_canonical(&level.declaration.definition_label)
+                        .map_err(|e| starlark::Error::new_other(anyhow!(e)))?;
+                let resolve_level = |text: &str| {
+                    resolve_in(
+                        text,
+                        &level_definition.repository,
+                        &level_definition.package,
+                    )
+                };
+                arguments = run_initializer(
+                    initializer.to_value(),
+                    arguments,
+                    &level.schema,
+                    &level.declaration,
+                    &level_definition,
+                    &resolve,
+                    Some(&resolve_level),
                     eval,
                 )
                 .map_err(starlark::Error::new_other)?;
@@ -1956,6 +2005,20 @@ mod values {
                 name,
                 visibility,
                 self.implementation.to_value(),
+                {
+                    let mut parents = Vec::new();
+                    let mut ancestor = self.parent.first().map(|value| value.to_value());
+                    while let Some(value) = ancestor {
+                        let level =
+                            Definition::from_value(value).expect("rule() checked the parent");
+                        parents.push((
+                            level.exported.get().cloned().unwrap_or_default(),
+                            level.implementation.to_value(),
+                        ));
+                        ancestor = level.parent.first().map(|value| value.to_value());
+                    }
+                    parents
+                },
                 self.subrules.iter().map(|value| value.to_value()).collect(),
                 self.transition_keys
                     .iter()
@@ -2054,6 +2117,28 @@ pub(crate) enum ImplicitOutputs {
 }
 
 impl RuleDeclaration {
+    /// RuleClass.isExtendable (packages/RuleClass.java:926-937): a
+    /// NORMAL or TEST Starlark rule writing to the bin directory, not
+    /// `_skylark_testable`, not an analysis test, unless `extendable =
+    /// False` (the build-setting condition is the definition's).
+    pub(crate) fn is_extendable(&self) -> bool {
+        !self.output_to_genfiles
+            && !self.skylark_testable
+            && !self.analysis_test
+            && self.extendable.as_deref() != Some("False")
+    }
+
+    /// RuleClass.getExtendableAllowlist: the `extendable` label, or the
+    /// default allowlist when `extendable` was not given; `None` for
+    /// `extendable = True`.
+    pub(crate) fn extendable_allowlist(&self) -> Option<String> {
+        match self.extendable.as_deref() {
+            None => Some(EXTEND_RULE_ALLOWLIST_DEFAULT.to_owned()),
+            Some("True" | "False") => None,
+            Some(label) => Some(label.to_owned()),
+        }
+    }
+
     /// The Starlark base rule class this rule extends.
     pub(crate) fn kind(&self) -> crate::native_rules::StarlarkRuleKind {
         crate::native_rules::StarlarkRuleKind {
@@ -2478,6 +2563,9 @@ fn run_initializer<'v>(
     declaration: &RuleDeclaration,
     definition: &crate::label::Label,
     resolve: &LabelResolver<'_>,
+    // An ancestor's initializer (rule(parent=...)): its label results are
+    // reified relative to its definition at once.
+    reify: Option<&LabelResolver<'_>>,
     eval: &mut Evaluator<'v, '_, '_>,
 ) -> anyhow::Result<Vec<(String, Value<'v>, Origin)>> {
     let heap = eval.heap();
@@ -2557,6 +2645,16 @@ fn run_initializer<'v>(
             bail!("Initializer can only set Starlark defined attributes, not '{key}'");
         }
         budget.string(key).map_err(anyhow::Error::msg)?;
+        let value = match (reify, schema.get(key)) {
+            (Some(reify), Some(spec))
+                if !value.is_none()
+                    && !matches!(spec.kind, AttrKind::Output | AttrKind::OutputList) =>
+            {
+                lift(&spec.kind, value, reify, heap)
+                    .map_err(|e| anyhow!("attribute {key:?}: {e}"))?
+            }
+            _ => value,
+        };
         if let Some(entry) = arguments.iter_mut().find(|(seen, _, _)| seen == key) {
             entry.1 = value;
             entry.2 = Origin::Initializer;
@@ -2565,6 +2663,30 @@ fn run_initializer<'v>(
         }
     }
     Ok(arguments)
+}
+
+/// The child initializer's results of an extending rule, reified relative
+/// to the child's definition before its ancestors' initializers see them
+/// (BuildType.copyAndLiftStarlarkValue with the rule's
+/// getLabelConverterForInitializer, StarlarkRuleClassFunctions.java:1866-1881).
+fn lift_initialized<'v>(
+    arguments: &mut [(String, Value<'v>, Origin)],
+    schema: &BTreeMap<String, AttrSpec>,
+    resolve: &LabelResolver<'_>,
+    heap: starlark::values::Heap<'v>,
+) -> anyhow::Result<()> {
+    for (key, value, origin) in arguments {
+        if *origin != Origin::Initializer || value.is_none() {
+            continue;
+        }
+        if let Some(spec) = schema.get(key.as_str())
+            && !matches!(spec.kind, AttrKind::Output | AttrKind::OutputList)
+        {
+            *value = lift(&spec.kind, *value, resolve, heap)
+                .map_err(|e| anyhow!("attribute {key:?}: {e}"))?;
+        }
+    }
+    Ok(())
 }
 
 /// Coerce a `select()` attribute value (BuildType.selectableConvert,
@@ -4650,7 +4772,9 @@ fn define_rule<'v>(
         cfg,
         ..
     } = args;
-    if !args.parent.is_none() {
+    let parent = if args.parent.is_none() {
+        None
+    } else {
         // StarlarkRuleClassFunctions.java:585-622.
         let Some(parent) = Definition::from_value(args.parent) else {
             bail!(
@@ -4658,8 +4782,13 @@ fn define_rule<'v>(
                 args.parent.get_type()
             );
         };
-        if parent.exported.get().is_none() {
+        let Some(parent_name) = parent.exported.get() else {
             bail!("Please export the parent rule before extending it.");
+        };
+        if !parent.declaration.is_extendable() || parent.build_setting.is_some() {
+            bail!(
+                "The rule '{parent_name}' is not extendable. Only Starlark rules not using deprecated features (like implicit outputs, output to genfiles) may be extended. Special rules like analysis tests or rules using build_settings cannot be extended."
+            );
         }
         for (failed, message) in [
             (
@@ -4700,10 +4829,25 @@ fn define_rule<'v>(
                 bail!("{message}");
             }
         }
-        bail!("rule(parent=...) rule extension is not supported by the native profile");
-    }
-    let executable = args.executable.unwrap_or(false);
-    let test = args.test.unwrap_or(false) || args.analysis_test;
+        // createRule (StarlarkRuleClassFunctions.java:761-776).
+        if args.dependency_resolution_rule {
+            bail!("rules used in dependency resolution cannot have a parent");
+        }
+        if parent.declaration.dependency_resolution_rule {
+            bail!("dependency resolution rules cannot be parents");
+        }
+        Some(parent)
+    };
+    // An extending rule is executable or a test as its parent
+    // (StarlarkRuleClassFunctions.java:596-597).
+    let executable = match parent {
+        Some(parent) => parent.declaration.executable,
+        None => args.executable.unwrap_or(false),
+    };
+    let test = match parent {
+        Some(parent) => parent.declaration.test,
+        None => args.test.unwrap_or(false) || args.analysis_test,
+    };
     let build_setting = if build_setting.is_none() {
         None
     } else {
@@ -4769,8 +4913,41 @@ fn define_rule<'v>(
     let mut function_transitions = false;
     let mut budget = crate::repository_budget::HostBudget::default();
     budget.node().map_err(anyhow::Error::msg)?;
-    let subrules = crate::subrule::snapshot(args.subrules, &mut budget)?;
-    crate::subrule::validate_exports(&subrules, &mut budget)?;
+    let own_subrules = crate::subrule::snapshot(args.subrules, &mut budget)?;
+    crate::subrule::validate_exports(&own_subrules, &mut budget)?;
+    // RuleClass.Builder(parent) (packages/RuleClass.java:762-850): the
+    // parent's attributes in its order (its lifted subrule attributes and
+    // allowlists included), computed defaults, attribute transitions and
+    // subrules; the child's are added or override them.
+    let mut subrules = Vec::new();
+    if let Some(parent) = parent {
+        schema = (*parent.schema).clone();
+        attr_order = parent.attr_order.clone();
+        computed = parent.computed.clone();
+        computed_functions = parent.computed_functions.clone();
+        for (key, transition) in parent.transition_keys.iter().zip(&parent.transitions) {
+            transition_keys.push(key.clone());
+            transitions.push(*transition);
+        }
+        subrules.extend(parent.subrules.iter().copied());
+        // The parent's allowlist is in its schema already.
+        function_transitions |= parent
+            .transitions
+            .iter()
+            .any(|transition| crate::rule_declarations::is_starlark_transition(*transition));
+    }
+    // Lifted are the subrules not already the parent's
+    // (StarlarkRuleFunction.export, getParentSubrules).
+    let new_subrules: Vec<Value<'v>> = own_subrules
+        .iter()
+        .copied()
+        .filter(|subrule| {
+            !subrules
+                .iter()
+                .any(|known: &Value<'v>| known.ptr_eq(*subrule))
+        })
+        .collect();
+    subrules.extend(new_subrules.iter().copied());
     let mut propagates_aspects = false;
     if let Some(attrs) = attrs {
         let dict = DictRef::from_value(attrs)
@@ -4833,6 +5010,19 @@ fn define_rule<'v>(
             propagates_aspects |= !spec.declaration.aspects.is_empty();
             budget.string(name).map_err(anyhow::Error::msg)?;
             budget.spec(spec).map_err(anyhow::Error::msg)?;
+            if parent.is_some()
+                && let Some(inherited) = schema.get(name)
+            {
+                let merged = override_attribute(name, inherited, spec, function.is_some())?;
+                if merged.default != inherited.default
+                    && let Some(index) = computed.iter().position(|(known, _)| known == name)
+                {
+                    computed.remove(index);
+                    computed_functions.remove(index);
+                }
+                schema.insert(name.to_owned(), merged);
+                continue;
+            }
             if let Some(function) = function {
                 let parameters = parameter_names(function)?;
                 for parameter in &parameters {
@@ -4882,19 +5072,76 @@ fn define_rule<'v>(
             args.outputs.get_type()
         );
     };
-    let fragments = crate::rule_declarations::cast_strings(args.fragments, "fragments")?;
-    let host_fragments =
+    // An extending rule inherits its parent's implicit outputs
+    // (RuleClass.Builder, packages/RuleClass.java:832-837).
+    let (implicit_outputs, outputs_function) = match parent {
+        Some(parent) => (
+            parent.declaration.implicit_outputs.clone(),
+            parent.outputs_function.clone(),
+        ),
+        None => (implicit_outputs, outputs_function),
+    };
+    let mut fragments = crate::rule_declarations::cast_strings(args.fragments, "fragments")?;
+    let mut host_fragments =
         crate::rule_declarations::cast_strings(args.host_fragments, "host_fragments")?;
-    let toolchains = crate::rule_declarations::toolchains(eval, args.toolchains, eval.heap())?;
-    let exec_groups = crate::rule_declarations::declared_exec_groups(args.exec_groups)?;
+    let mut toolchains = crate::rule_declarations::toolchains(eval, args.toolchains, eval.heap())?;
+    let mut exec_groups = crate::rule_declarations::declared_exec_groups(args.exec_groups)?;
     if build_setting.is_some() && !cfg.is_none() {
         bail!("Build setting rules cannot use the `cfg` param to apply transitions to themselves.");
     }
-    let rule_cfg = crate::rule_declarations::rule_cfg(cfg)?;
+    let mut rule_cfg = crate::rule_declarations::rule_cfg(cfg)?;
+    if let Some(parent) = parent {
+        // The parent's rule transition composed after the child's
+        // (ComposingTransitionFactory.of(child, parent),
+        // StarlarkRuleClassFunctions.java:1101-1104).
+        if parent.declaration.cfg != crate::rule_declarations::Cfg::Target {
+            if rule_cfg != crate::rule_declarations::Cfg::Target {
+                bail!(
+                    "rule(parent=...) where both the rule and its parent have a `cfg` transition (a composed rule transition) is not supported by the native profile"
+                );
+            }
+            rule_cfg = parent.declaration.cfg.clone();
+        }
+    }
     if crate::rule_declarations::is_starlark_transition(cfg) {
         function_transitions = true;
         transition_keys.push(String::new());
         transitions.push(cfg);
+    }
+    if let Some(parent) = parent {
+        // RuleClass.Builder(parent): the parent's fragments, toolchain
+        // types, execution constraints and exec groups first; the child's
+        // exec groups override same-named ones (addExecGroups(..., true),
+        // StarlarkRuleClassFunctions.java:1066-1077).
+        let mut inherited = parent.declaration.fragments.clone();
+        for fragment in fragments {
+            if !inherited.contains(&fragment) {
+                inherited.push(fragment);
+            }
+        }
+        fragments = inherited;
+        let mut inherited = parent.declaration.host_fragments.clone();
+        for fragment in host_fragments {
+            if !inherited.contains(&fragment) {
+                inherited.push(fragment);
+            }
+        }
+        host_fragments = inherited;
+        let mut inherited = parent.declaration.toolchains.clone();
+        for toolchain in toolchains {
+            if !inherited.contains(&toolchain) {
+                inherited.push(toolchain);
+            }
+        }
+        toolchains = inherited;
+        let mut inherited = parent.declaration.exec_groups.clone();
+        for group in exec_groups {
+            match inherited.iter_mut().find(|known| known.name == group.name) {
+                Some(known) => *known = group,
+                None => inherited.push(group),
+            }
+        }
+        exec_groups = inherited;
     }
     if args.dependency_resolution_rule {
         // StarlarkRuleClassFunctions.java:1133-1146.
@@ -4908,9 +5155,25 @@ fn define_rule<'v>(
             bail!("Rules that can be required for materializes cannot propagate aspects");
         }
     }
-    let provides = crate::rule_declarations::provider_identifiers(args.provides, "provides")?;
-    let exec_compatible_with =
+    let mut provides = crate::rule_declarations::provider_identifiers(args.provides, "provides")?;
+    let mut exec_compatible_with =
         crate::rule_declarations::exec_compatible_with(eval, args.exec_compatible_with)?;
+    if let Some(parent) = parent {
+        let mut inherited = parent.declaration.provides.clone();
+        for provider in provides {
+            if !inherited.contains(&provider) {
+                inherited.push(provider);
+            }
+        }
+        provides = inherited;
+        let mut inherited = parent.declaration.exec_compatible_with.clone();
+        for constraint in exec_compatible_with {
+            if !inherited.contains(&constraint) {
+                inherited.push(constraint);
+            }
+        }
+        exec_compatible_with = inherited;
+    }
     if let Some(setting) = build_setting {
         for name in ["build_setting_default", "help"] {
             if schema.contains_key(name) {
@@ -4963,17 +5226,53 @@ fn define_rule<'v>(
     // are requested by the rule before its own
     // (StarlarkRuleClassFunctions.java:1024-1027, 1064; RuleClass.Builder
     // keeps a LinkedHashSet, packages/RuleClass.java:743, 1587-1590).
-    for (name, spec) in crate::subrule::lifted_attributes(&subrules, &mut budget)? {
+    for (name, spec) in crate::subrule::lifted_attributes(&new_subrules, &mut budget)? {
         schema.insert(name.clone(), spec);
         attr_order.push(name);
     }
-    let mut toolchains_with_subrules = crate::subrule::lifted_toolchains(&subrules, &mut budget)?;
-    for toolchain in toolchains {
-        if !toolchains_with_subrules.contains(&toolchain) {
-            toolchains_with_subrules.push(toolchain);
+    let toolchains = match parent {
+        // The parent's toolchain types (its subrules' included), then the
+        // new subrules', then the child's own.
+        Some(parent) => {
+            let mut merged = parent.declaration.toolchains.clone();
+            for toolchain in crate::subrule::lifted_toolchains(&new_subrules, &mut budget)?
+                .into_iter()
+                .chain(toolchains)
+            {
+                if !merged.contains(&toolchain) {
+                    merged.push(toolchain);
+                }
+            }
+            merged
+        }
+        None => {
+            let mut toolchains_with_subrules =
+                crate::subrule::lifted_toolchains(&subrules, &mut budget)?;
+            for toolchain in toolchains {
+                if !toolchains_with_subrules.contains(&toolchain) {
+                    toolchains_with_subrules.push(toolchain);
+                }
+            }
+            toolchains_with_subrules
+        }
+    };
+    // The extend-rule allowlist (StarlarkRuleClassFunctions.java:809-827):
+    // a child of a parent with an allowlist (its own, or the default
+    // `@bazel_tools` one) gets `$allowlist_extend_rule` (cfg = exec), the
+    // direct parent's replacing an inherited one; targets are checked
+    // against it at analysis (crate::engine).
+    if let Some(allowlist) = parent.and_then(|parent| parent.declaration.extendable_allowlist()) {
+        let mut spec = descriptor(AttrKind::Label, None, false, false, false)?.0;
+        spec.default = AttrValue::Label(Some(allowlist));
+        spec.declaration.explicit_default = true;
+        spec.declaration.cfg = crate::rule_declarations::Cfg::Exec(None);
+        if schema
+            .insert(EXTEND_RULE_ALLOWLIST_ATTRIBUTE.to_owned(), spec)
+            .is_none()
+        {
+            attr_order.push(EXTEND_RULE_ALLOWLIST_ATTRIBUTE.to_owned());
         }
     }
-    let toolchains = toolchains_with_subrules;
     let declaration = RuleDeclaration {
         definition_label: definition.to_string(),
         definition_environment_label: environment.to_string(),
@@ -5001,6 +5300,7 @@ fn define_rule<'v>(
         .map_err(anyhow::Error::msg)?;
     Ok(eval.heap().alloc(DefinitionGen {
         implementation,
+        parent: parent.map(|_| args.parent).into_iter().collect(),
         subrules,
         initializer,
         outputs_function,
@@ -5014,6 +5314,85 @@ fn define_rule<'v>(
         declaration,
         exported: OnceLock::new(),
     }))
+}
+
+/// `$allowlist_extend_rule` (StarlarkRuleClassFunctions.java:813-826) by its
+/// Starlark name.
+pub(crate) const EXTEND_RULE_ALLOWLIST_ATTRIBUTE: &str = "_allowlist_extend_rule";
+
+/// `ruleDefinitionEnvironment.getToolsLabel("//tools/allowlists/extend_rule_allowlist")`
+/// (StarlarkRuleClassFunctions.java:787-788): the default extend-rule
+/// allowlist, a public `package_group` (tools/allowlists/extend_rule_allowlist/BUILD.tools).
+pub(crate) const EXTEND_RULE_ALLOWLIST_DEFAULT: &str =
+    "@@bazel_tools//tools/allowlists/extend_rule_allowlist:extend_rule_allowlist";
+
+/// RuleClass.Builder.override for a Starlark attribute redeclared by an
+/// extending rule (packages/RuleClass.java:1300-1330,
+/// Attribute.failIfNotAValidOverride, packages/Attribute.java:2328-2352):
+/// only public label (list) attributes of the same type, setting nothing but
+/// a default, doc or aspects; the result is the parent's attribute with the
+/// child's default (when the child's is not null) and the aspects added.
+fn override_attribute(
+    name: &str,
+    inherited: &AttrSpec,
+    spec: &AttrSpec,
+    computed_default: bool,
+) -> anyhow::Result<AttrSpec> {
+    if name.starts_with('_') {
+        bail!("attribute `{name}`: private attributes cannot be overridden.");
+    }
+    if !matches!(inherited.kind, AttrKind::Label | AttrKind::LabelList) {
+        bail!("attribute `{name}`: Only label types maybe be overridden.");
+    }
+    if inherited.kind != spec.kind {
+        bail!("attribute `{name}`: Types of parent and child's attributes mismatch.");
+    }
+    let declaration = &spec.declaration;
+    if declaration.allow_rules.is_some() {
+        bail!("attribute `{name}`: can't override allowed rule classes");
+    }
+    if declaration.cfg != crate::rule_declarations::Cfg::Target {
+        bail!("attribute `{name}`: can't override configuration transition");
+    }
+    if spec.allow_files || spec.allow_single_file || declaration.file_types.is_some() {
+        bail!("attribute `{name}`: can't override allowed files");
+    }
+    if !spec.required_providers.is_empty() {
+        bail!("attribute `{name}`: can't override required providers");
+    }
+    if spec.mandatory
+        || declaration.executable
+        || spec.non_empty
+        || declaration.skip_validations
+        || !declaration.flags.is_empty()
+    {
+        bail!("attribute `{name}`: can't have additional flags");
+    }
+    if computed_default {
+        bail!(
+            "attribute `{name}`: overriding an inherited attribute with a computed default is not supported by the native profile"
+        );
+    }
+    let mut merged = inherited.clone();
+    // A null default (attr.label() without one) keeps the parent's.
+    if spec.default != AttrValue::Label(None) {
+        merged.default = spec.default.clone();
+        merged.declaration.explicit_default = declaration.explicit_default;
+        merged.declaration.late_bound = declaration.late_bound;
+        merged.declaration.configuration_field = declaration.configuration_field.clone();
+    }
+    for (index, aspect) in declaration.aspects.iter().enumerate() {
+        if !merged.declaration.aspects.contains(aspect) {
+            merged.declaration.aspects.push(aspect.clone());
+            if let Some(definition) = declaration.aspect_definitions.get(index) {
+                merged
+                    .declaration
+                    .aspect_definitions
+                    .push(definition.clone());
+            }
+        }
+    }
+    Ok(merged)
 }
 
 /// The Starlark name of FunctionSplitTransitionAllowlist.ATTRIBUTE_NAME

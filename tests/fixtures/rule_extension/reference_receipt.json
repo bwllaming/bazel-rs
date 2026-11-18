@@ -1,0 +1,119 @@
+{
+ "schema": "rule-extension-reference-receipt/v1",
+ "purpose": "B17 (docs/OSS_CORPUS.md): rule(parent=...) - inherited attributes, initializer chain, ctx.super(), extend-rule allowlist and genuine's error texts. Genuine Bazel 9.3.1 capture; tests/rule_extension.rs asserts these.",
+ "reference": {
+  "binary": "bazel-9.3.1-linux-x86_64",
+  "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private>",
+  "flags": "--lockfile_mode=off --noshow_progress --color=no --curses=no",
+  "workspace": "tests/fixtures/rule_extension/workspace"
+ },
+ "build": {
+  "command": "build //ok:use //ok:c //ok:g",
+  "exit": 0,
+  "prints": [
+   "ok/child.bzl:17:10: RX|child_init|c_deps|extra=|keys=[\"deps\"]",
+   "ok/child.bzl:17:10: RX|child_init|c|extra=x|keys=[\"msg\"]",
+   "ok/child.bzl:17:10: RX|child_init|g|extra=|keys=[\"msg\"]",
+   "ok/child.bzl:33:10: RX|grandchild_impl|g|[[\"parent\", \"child\"]]",
+   "ok/child.bzl:43:14: RX|consumer|c_deps|v=m+from_child+parent_init+child|chain=[\"parent\", \"child\"]|files=[\"c_deps.parent.txt\"]",
+   "ok/child.bzl:43:14: RX|consumer|c|v=hello+from_child+parent_init+child|chain=[\"parent\", \"child\"]|files=[\"c.parent.txt\"]",
+   "ok/child.bzl:43:14: RX|consumer|g|v=gm+from_child+parent_init+child|chain=[\"parent\", \"child\"]|files=[\"g.parent.txt\"]",
+   "ok/child.bzl:4:10: RX|child_impl_before|c_deps|extra=+child_init|attrs=[\"_extra_tool\", \"_tool\", \"args\", \"compatible_with\", \"deprecation\", \"deps\", \"exec_compatible_with\", \"exec_properties\", \"expect_failure\", \"extra\", \"features\", \"generator_function\", \"generator_location\", \"generator_name\", \"msg\", \"name\", \"output_licenses\", \"package_metadata\", \"restricted_to\", \"tags\", \"target_compatible_with\", \"testonly\", \"toolchains\", \"transitive_configs\", \"visibility\"]",
+   "ok/child.bzl:4:10: RX|child_impl_before|c|extra=x+child_init|attrs=[\"_extra_tool\", \"_tool\", \"args\", \"compatible_with\", \"deprecation\", \"deps\", \"exec_compatible_with\", \"exec_properties\", \"expect_failure\", \"extra\", \"features\", \"generator_function\", \"generator_location\", \"generator_name\", \"msg\", \"name\", \"output_licenses\", \"package_metadata\", \"restricted_to\", \"tags\", \"target_compatible_with\", \"testonly\", \"toolchains\", \"transitive_configs\", \"visibility\"]",
+   "ok/child.bzl:4:10: RX|child_impl_before|g|extra=+child_init|attrs=[\"_extra_tool\", \"_tool\", \"args\", \"compatible_with\", \"deprecation\", \"deps\", \"exec_compatible_with\", \"exec_properties\", \"expect_failure\", \"extra\", \"features\", \"generator_function\", \"generator_location\", \"generator_name\", \"msg\", \"name\", \"output_licenses\", \"package_metadata\", \"restricted_to\", \"tags\", \"target_compatible_with\", \"testonly\", \"toolchains\", \"transitive_configs\", \"visibility\"]",
+   "ok/child.bzl:6:10: RX|child_impl_after|c_deps|[\"DefaultInfo\", \"struct\"]",
+   "ok/child.bzl:6:10: RX|child_impl_after|c|[\"DefaultInfo\", \"struct\"]",
+   "ok/child.bzl:6:10: RX|child_impl_after|g|[\"DefaultInfo\", \"struct\"]",
+   "ok/parent.bzl:17:10: RX|parent_init|c_deps|msg=m+from_child|keys=[\"deps\"]",
+   "ok/parent.bzl:17:10: RX|parent_init|c|msg=hello+from_child|keys=[]",
+   "ok/parent.bzl:17:10: RX|parent_init|g|msg=gm+from_child|keys=[]",
+   "ok/parent.bzl:4:10: RX|parent_impl|c_deps|msg=m+from_child+parent_init|deps=[\"@@//ok:dep\"]|tool=@@//ok:tool.txt",
+   "ok/parent.bzl:4:10: RX|parent_impl|c|msg=hello+from_child+parent_init|deps=[\"@@//ok:dep\"]|tool=@@//ok:tool.txt",
+   "ok/parent.bzl:4:10: RX|parent_impl|g|msg=gm+from_child+parent_init|deps=[\"@@//ok:dep\"]|tool=@@//ok:tool.txt"
+  ],
+  "outputs": [
+   "c.parent.txt",
+   "c.sh",
+   "c.sh.repo_mapping",
+   "c.sh.runfiles",
+   "c.sh.runfiles_manifest",
+   "g.parent.txt",
+   "g.sh",
+   "g.sh.repo_mapping",
+   "g.sh.runfiles",
+   "g.sh.runfiles_manifest"
+  ]
+ },
+ "errors": {
+  "command": "build //errs/<case>:t",
+  "cases": {
+   "disallowed": {
+    "exit": 1,
+    "messages": [
+     "in child rule //errs/disallowed:t: Non-allowlisted attempt to extend a rule."
+    ]
+   },
+   "executable_arg": {
+    "exit": 1,
+    "messages": [
+     "Omit executable parameter when extending rules."
+    ]
+   },
+   "grandchild_no_super": {
+    "exit": 1,
+    "messages": [
+     "in child rule //errs/grandchild_no_super:t: in mid rule: 'super' was not called."
+    ]
+   },
+   "no_parent": {
+    "exit": 1,
+    "messages": [
+     "Can't use 'super' call, the rule has no parent."
+    ]
+   },
+   "no_super": {
+    "exit": 1,
+    "messages": [
+     "in child rule //errs/no_super:t: 'super' was not called."
+    ]
+   },
+   "not_extendable": {
+    "exit": 1,
+    "messages": [
+     "The rule 'closed' is not extendable. Only Starlark rules not using deprecated features (like implicit outputs, output to genfiles) may be extended. Special rules like analysis tests or rules using build_settings cannot be extended."
+    ]
+   },
+   "override_cfg": {
+    "exit": 1,
+    "messages": [
+     "attribute `d`: can't override configuration transition"
+    ]
+   },
+   "override_kind": {
+    "exit": 1,
+    "messages": [
+     "attribute `d`: Types of parent and child's attributes mismatch."
+    ]
+   },
+   "override_private": {
+    "exit": 1,
+    "messages": [
+     "attribute `_p`: private attributes cannot be overridden."
+    ]
+   },
+   "override_type": {
+    "exit": 1,
+    "messages": [
+     "attribute `s`: Only label types maybe be overridden."
+    ]
+   },
+   "twice": {
+    "exit": 1,
+    "messages": [
+     "'super' called the second time."
+    ]
+   }
+  }
+ }
+}

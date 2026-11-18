@@ -230,6 +230,8 @@ mod owned {
         /// `rule(analysis_test=True)`: the implementation may not register
         /// actions (StarlarkActionFactory.validateActionCreation, :533-548).
         pub analysis_test: bool,
+        /// `ctx.super()` of an extending rule (rule(parent=...)).
+        pub super_chain: RefCell<SuperChain>,
     }
 
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
@@ -714,6 +716,18 @@ impl Context {
         actions.push(registered);
         Ok(())
     }
+}
+
+/// StarlarkRuleContext's `ruleClassUnderEvaluation` and `superCalled`
+/// (analysis/starlark/StarlarkRuleContext.java:148-152, 615-665): the
+/// ancestors' implementations with their rule class names (direct parent
+/// first), how many of them are being evaluated, and whether the
+/// implementation being evaluated called `ctx.super()`.
+#[derive(Default)]
+pub(crate) struct SuperChain {
+    pub parents: Vec<(String, OwnedFrozenValue)>,
+    pub depth: usize,
+    pub called: bool,
 }
 
 impl Context {
@@ -2643,6 +2657,7 @@ mod tests {
             exec_groups: Default::default(),
             propagated_tags: Default::default(),
             retained_mappers: Default::default(),
+            super_chain: Default::default(),
             analysis_test: false,
         }
     }
@@ -2995,6 +3010,7 @@ r=rule(implementation=_rule,subrules=[S])
             exec_groups: Default::default(),
             propagated_tags: Default::default(),
             retained_mappers: Default::default(),
+            super_chain: Default::default(),
             analysis_test: false,
         };
         let owner = make_context();

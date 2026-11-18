@@ -729,7 +729,10 @@ pub(crate) fn prerequisite_errors(
     // does not reject them. The message carries its own attribute prefix,
     // with the native attribute name (:365-375), so Bazel prints it twice.
     if target.is_package_group
-        && !matches!(name, "visibility" | "_allowlist_function_transition")
+        && !matches!(
+            name,
+            "visibility" | "_allowlist_function_transition" | "_allowlist_extend_rule"
+        )
         && !spec.required_providers.iter().flatten().any(|provider| {
             provider
                 .display_name
@@ -2249,6 +2252,7 @@ fn analyze_aspect_inner(
         // target's rule, crate::engine's aspect commit).
         propagated_tags: crate::engine::rule_execution_info(rule),
         retained_mappers: Default::default(),
+        super_chain: Default::default(),
         analysis_test: false,
     };
     Module::with_temp_heap(|module| -> anyhow::Result<_> {
@@ -3055,6 +3059,10 @@ fn analyze_inner(
         },
         propagated_tags: crate::engine::rule_execution_info(rule),
         retained_mappers: Default::default(),
+        super_chain: std::cell::RefCell::new(crate::analysis_runtime::SuperChain {
+            parents: invocation.parents.clone(),
+            ..Default::default()
+        }),
         analysis_test: invocation.declaration.analysis_test,
     };
     for output in &rule.outs {
@@ -3092,6 +3100,14 @@ fn analyze_inner(
                 .heap()
                 .access_owned_frozen_value(&invocation.implementation);
             let returned = eval.eval_function(implementation, &[ctx], &[]);
+            // StarlarkRuleContext.close (:466-469): an extending rule's
+            // implementation must have called ctx.super().
+            {
+                let chain = context.super_chain.borrow();
+                if !chain.parents.is_empty() && !chain.called {
+                    surface.rule_error("'super' was not called.");
+                }
+            }
             // Invalidate capabilities before inspecting or freezing providers,
             // on both successful callback return and ordinary evaluation error.
             context.scope.finish();
@@ -4199,6 +4215,7 @@ r = rule(implementation=impl, attrs={
             exec_groups: Default::default(),
             propagated_tags: Default::default(),
             retained_mappers: Default::default(),
+            super_chain: Default::default(),
             analysis_test: false,
         }
     }

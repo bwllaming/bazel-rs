@@ -357,6 +357,9 @@ use collector::{Declarations, RepoFile};
 struct PendingCustom {
     index: usize,
     slot: String,
+    /// The ancestors' implementations (rule(parent=...)) with their rule
+    /// class names, direct parent first.
+    parent_slots: Vec<(String, String)>,
     subrule_slots: Vec<String>,
     /// (`""` for the rule's `cfg`, else the attribute name, module slot).
     transition_slots: Vec<(String, String)>,
@@ -413,6 +416,7 @@ pub(crate) fn register_custom<'v>(
     name: &str,
     visibility: Option<Value<'v>>,
     implementation: Value<'v>,
+    parents: Vec<(String, Value<'v>)>,
     subrules: Vec<Value<'v>>,
     transitions: Vec<(String, Value<'v>)>,
     attrs: BTreeMap<String, AttrValue>,
@@ -477,6 +481,15 @@ pub(crate) fn register_custom<'v>(
     // Not a valid Starlark identifier: BUILD assignments cannot overwrite roots.
     let slot = format!("__custom_implementation${index}");
     eval.module().set(&slot, implementation);
+    let parent_slots = parents
+        .into_iter()
+        .enumerate()
+        .map(|(i, (rule_class, value))| {
+            let slot = format!("__custom_parent${index}${i}");
+            eval.module().set(&slot, value);
+            (rule_class, slot)
+        })
+        .collect();
     let subrule_slots = subrules
         .into_iter()
         .enumerate()
@@ -498,6 +511,7 @@ pub(crate) fn register_custom<'v>(
     context.custom.borrow_mut().push(PendingCustom {
         index,
         slot,
+        parent_slots,
         subrule_slots,
         transition_slots,
         attrs,
@@ -2864,6 +2878,16 @@ fn evaluate_at(
         declared_rules[pending.index].custom = Some(CustomInvocation {
             split_dependencies: Default::default(),
             implementation,
+            parents: pending
+                .parent_slots
+                .iter()
+                .map(|(rule_class, slot)| {
+                    frozen
+                        .get_any_visibility(slot)
+                        .map(|(value, _)| (rule_class.clone(), value))
+                        .map_err(|error| error.to_string())
+                })
+                .collect::<Result<_, _>>()?,
             subrules: pending
                 .subrule_slots
                 .iter()

@@ -5524,6 +5524,7 @@ impl Engine {
         let Some(custom) = &rule.custom else {
             return Ok(());
         };
+        self.check_extend_allowlist(rule, key, configured)?;
         // analysis_test_transitions need no allowlist (StarlarkAttrModule.java:489-498).
         if custom
             .transitions
@@ -5591,6 +5592,66 @@ impl Engine {
                 rule.location.as_deref(),
                 format!(
                     "in {} rule {}: Non-allowlisted use of Starlark transition",
+                    rule.rule_class_name(),
+                    crate::rule_declarations::canonical_form(&rule.label)
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// RuleConfiguredTargetBuilder.handleAllowlistChecker for
+    /// EXTEND_RULE_ALLOWLIST_CHECKER (StarlarkRuleClassFunctions.java:2068-2073,
+    /// LocationCheck.DEFINITION): a rule extending a rule with an
+    /// extend-rule allowlist (`_allowlist_extend_rule`) must be defined in
+    /// a package of it, else the rule error `Non-allowlisted attempt to
+    /// extend a rule.`
+    fn check_extend_allowlist(
+        &mut self,
+        rule: &Rule,
+        key: &ConfiguredTargetKey,
+        configured: &ConfiguredNodes,
+    ) -> Result<(), String> {
+        let Some(custom) = &rule.custom else {
+            return Ok(());
+        };
+        let name = crate::custom_rule::EXTEND_RULE_ALLOWLIST_ATTRIBUTE;
+        let Some(crate::custom_rule::AttrValue::Label(Some(text))) = custom.attrs.get(name) else {
+            return Ok(());
+        };
+        if !custom.schema.contains_key(name) {
+            return Ok(());
+        }
+        let label = self.resolve_rule_src(rule, text)?;
+        let edge_configs = self.analyzed_edge_configurations(key, &EdgeCfg::Exec(None))?;
+        for edge_config in edge_configs.ids() {
+            let actual = self
+                .forwarded_actual(
+                    configured,
+                    &ConfiguredTargetKey::new(label.clone(), edge_config),
+                )
+                .unwrap_or_else(|| label.clone());
+            let group = match self.target(&actual)? {
+                Target::Rule(group) if matches!(group.kind, RuleKind::PackageGroup(_)) => {
+                    self.resolve_group(&actual, &mut Vec::new())?
+                }
+                _ => {
+                    return Err(format!(
+                        "{}: the extend-rule allowlist {} is not a package_group (a PackageSpecificationProvider that is not a package_group is not modelled natively)",
+                        rule.label,
+                        crate::rule_declarations::canonical_form(&actual)
+                    ));
+                }
+            };
+            let definition =
+                Label::parse_canonical(&custom.declaration.definition_environment_label)?;
+            if group.contains(&definition.package_id()) {
+                continue;
+            }
+            return Err(located(
+                rule.location.as_deref(),
+                format!(
+                    "in {} rule {}: Non-allowlisted attempt to extend a rule.",
                     rule.rule_class_name(),
                     crate::rule_declarations::canonical_form(&rule.label)
                 ),

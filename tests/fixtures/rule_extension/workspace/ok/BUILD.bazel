@@ -1,0 +1,27 @@
+load(":child.bzl", "child_rule", "consumer", "grandchild_rule")
+load(":parent.bzl", "plain_rule")
+
+exports_files(["tool.txt"])
+
+plain_rule(name = "dep")
+
+child_rule(
+    name = "c",
+    msg = "hello",
+    extra = "x",
+)
+
+child_rule(
+    name = "c_deps",
+    deps = [":dep"],
+)
+
+grandchild_rule(
+    name = "g",
+    msg = "gm",
+)
+
+consumer(
+    name = "use",
+    deps = [":c", ":c_deps", ":g"],
+)

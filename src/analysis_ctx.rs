@@ -54,6 +54,12 @@ mod values {
         #[trace(static)]
         pub surface: Arc<RuleSurface>,
     }
+    /// `ctx.super` of a rule context (StarlarkRuleContext.callParent,
+    /// StarlarkRuleContext.java:615-665), bound to its context.
+    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
+    pub(crate) struct SuperCall<'v> {
+        pub ctx: RuleCtx<'v>,
+    }
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
     pub(crate) struct SettingCtx<'v> {
         pub ctx: RuleCtx<'v>,
@@ -193,7 +199,7 @@ mod values {
     starlark::starlark_simple_value!(AspectSuperMethod);
 }
 use values::field;
-pub(crate) use values::{AspectCtx, RuleAttributes, RuleCtx, SettingCtx, SubruleCtx};
+pub(crate) use values::{AspectCtx, RuleAttributes, RuleCtx, SettingCtx, SubruleCtx, SuperCall};
 
 /// StarlarkRuleContext.repr (analysis/starlark/StarlarkRuleContext.java:590-597)
 /// for a rule (not aspect) context; `label` is the canonical form
@@ -295,10 +301,133 @@ fn unknown_ctx_member(name: &str) -> String {
     crate::ctx_surface::no_field_message("ctx", name, &fields)
 }
 
+impl<'v> RuleCtx<'v> {
+    /// The same context (its backing, scope and surface) as a new value.
+    fn duplicate(&self) -> Self {
+        RuleCtx {
+            backing: self.backing,
+            scope: self.scope.clone(),
+            platform: self.platform.clone(),
+            toolchains: self.toolchains.clone(),
+            exec_groups: self.exec_groups.clone(),
+            surface: self.surface.clone(),
+        }
+    }
+}
+
+impl fmt::Display for SuperCall<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<built-in method super of ctx value>")
+    }
+}
+
+#[starlark_value(type = "builtin_function_or_method")]
+impl<'v> StarlarkValue<'v> for SuperCall<'v> {
+    /// StarlarkRuleContext.callParent (:615-665): the parent's
+    /// implementation (StarlarkRuleConfiguredTargetUtil.evalRule) on the
+    /// same context, its result normalized to a list of providers.
+    fn invoke(
+        &self,
+        _me: Value<'v>,
+        args: &Arguments<'v, '_>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Value<'v>> {
+        args.no_named_args()?;
+        args.no_positional_args(eval.heap())?;
+        self.ctx
+            .scope
+            .check_current()
+            .map_err(starlark::Error::new_other)?;
+        let fail = |message: &str| starlark::Error::new_other(anyhow!("{message}"));
+        let Some(context) = eval
+            .extra
+            .and_then(|extra| extra.downcast_ref::<crate::analysis_runtime::Context>())
+        else {
+            return Err(fail("Can't use 'super' call, the rule has no parent."));
+        };
+        let (rule_class, implementation, has_parent) = {
+            let mut chain = context.super_chain.borrow_mut();
+            if chain.depth >= chain.parents.len() {
+                return Err(fail("Can't use 'super' call, the rule has no parent."));
+            }
+            if chain.called {
+                return Err(fail("'super' called the second time."));
+            }
+            let (rule_class, implementation) = chain.parents[chain.depth].clone();
+            chain.depth += 1;
+            chain.called = false;
+            let has_parent = chain.depth < chain.parents.len();
+            (rule_class, implementation, has_parent)
+        };
+        let ctx = eval.heap().alloc_complex_no_freeze(self.ctx.duplicate());
+        let implementation = eval.heap().access_owned_frozen_value(&implementation);
+        let returned = eval.eval_function(implementation, &[ctx], &[]);
+        // evalRule (StarlarkRuleConfiguredTargetUtil.java:76-130): an
+        // evaluation error, earlier errors or a wrong result type are rule
+        // errors, and the parent rule's evaluation failed.
+        let evaluated = match returned {
+            Err(error) => {
+                self.ctx.surface.rule_error(&format!("\n{error}"));
+                None
+            }
+            Ok(_) if self.ctx.surface.has_errors() => None,
+            Ok(returned) => {
+                let accepted = returned.is_none()
+                    || starlark::values::list::ListRef::from_value(returned).is_some()
+                    || starlark::values::tuple::TupleRef::from_value(returned).is_some()
+                    || crate::starlark_types::is_default_info(returned)
+                    || crate::providers::instance_identity(returned).is_some()
+                    || starlark::values::structs::StructRef::from_value(returned).is_some();
+                if !accepted {
+                    self.ctx.surface.rule_error(&format!(
+                        "Rule should return a struct or a list, but got {}",
+                        returned.get_type()
+                    ));
+                }
+                accepted.then_some(returned)
+            }
+        };
+        // callParent's `finally` (:637-644).
+        {
+            let mut chain = context.super_chain.borrow_mut();
+            if has_parent && !chain.called {
+                self.ctx
+                    .surface
+                    .rule_error(&format!("in {rule_class} rule: 'super' was not called."));
+            }
+            chain.depth -= 1;
+        }
+        let Some(returned) = evaluated else {
+            return Err(fail("Error evaluating parent rule."));
+        };
+        let is_info = crate::starlark_types::is_default_info(returned)
+            || crate::providers::instance_identity(returned).is_some();
+        let is_struct =
+            !is_info && starlark::values::structs::StructRef::from_value(returned).is_some();
+        let returned = if is_struct {
+            return Err(fail(
+                "Parent rule returned struct providers. Rules returning struct providers can't be extended.",
+            ));
+        } else if is_info {
+            eval.heap().alloc(vec![returned])
+        } else if returned.is_none() {
+            eval.heap().alloc(Vec::<Value<'v>>::new())
+        } else {
+            returned
+        };
+        context.super_chain.borrow_mut().called = true;
+        Ok(returned)
+    }
+}
+
 #[starlark_value(type = "ctx")]
 impl<'v> StarlarkValue<'v> for RuleCtx<'v> {
     fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
-        crate::ctx_surface::ctx_super(name, heap)
+        (name == "super").then(|| {
+            heap.alloc_complex_no_freeze(SuperCall {
+                ctx: self.duplicate(),
+            })
+        })
     }
     fn dir_attr(&self) -> Vec<String> {
         vec!["super".to_owned()]
