@@ -187,7 +187,7 @@ sample.
 | rules_cc | RS-FAIL¹⁵ | 20.0 (exit 1) / 20.4 (exit 1) | 5.3 (exit 1) / — / 4.7 (exit 1) | 52.6 (exit 1) / 63.6 (exit 1) | 2635 / 1392 | 1348, 636, 0, 1 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:3 FAILED TO BUILD:2 PASSED:258 SKIPPED:2 | B32, B17, B18 |
 | examples-rust-deps-cargo | RS-FAIL | 44.0 / 0.3 (exit 1) | 2.9 / 0.2 / 0.3 (exit 1) | 28.8 / 0.3 (exit 1) | 1034 / 29 | 0, 103, 0, 0 | — | B9, (B2) |
 | protobuf | BOTH-FAIL¹⁵ | 49.3 (exit 1) / 79.0 (exit 1) | 7.0 (exit 1) / — / 18.1 (exit 1) | — | 2699 / 3315 | — | — | B33 |
-| openroad | DIFF¹¹ ¹⁶ ¹⁸ ¹⁹ | 89.6 / 242.5 (corpus-fetch rerun, exit 1 before B18: 77.9–85.5 / 184.3–248.9) | 8.9 / — / 1.8 | `//:openroad` 676–702 / 1536 | 3014 / 9169 | `//:openroad`: 15223, 3978, 301, 0 | — | B40, B41, P6 |
+| openroad | DIFF¹¹ ¹⁶ ¹⁸ ¹⁹ ²⁰ | 89.6 / 87.2–96.4 (openroad-perf²⁰; before: 242.5, corpus-fetch exit 1 before B18: 77.9–85.5 / 184.3–248.9) | 8.9 / — / 1.2–1.3 | `//:openroad` 676–702, 693.5 / 773.9 (was 1536) | 3014 / 6957–6983 (was 9169) | `//:openroad`: 15223, 3978, 301, 0 | — | B40, B41 |
 | rules_kotlin | RS-FAIL¹⁵ | 36.9 / 35.7 (exit 1) | 4.7 / — / 7.4 (exit 1) | — | 2027 / 2165 | — | — | B35 |
 | riegeli | BOTH-FAIL⁶ | 30.2 (exit 1) / 31.0 (exit 1) | 4.1 / 0.2 / 3.7 (all exit 1) | 78.2 (exit 1) / 92.5 (exit 1) | 1427 / 794 | 2800, 0, 0, 0 | PASSED:2 / PASSED:2 | |
 | examples-frontend | DIFF⁷ | 89.7 (exit 1) / 129.3 (exit 1) | 60.6 / 110.6 / 100.7 (all exit 1) | 60.7 (exit 1) / 208.3 (exit 1) | 1350 / 1838 | 44827, 170986, 2, 0 | PASSED:14 / — | B8, B25, (B2) |
@@ -347,6 +347,18 @@ Notes:
     match main's in every round; abseil-cpp's and pip_parse's action
     dumps (2,313 and 88 actions) are byte-identical.
 
+20. Rerun 2026-11-18 on branch openroad-perf (b8ce9666 plus its
+    commits; non-LTO builds), by hand with the harness's flags and
+    isolation, three rounds alternating with b8ce9666 (load 12–42): cold
+    `--nobuild //...` (every fetch), its first repeat, a snapshot miss
+    (`--define` changed) and hit; then `build //:openroad` after the
+    `--nobuild` (action cache and store removed; genuine: `clean`) once per
+    tool (load 21–34). The 15,223 common `bazel-bin` files of `//:openroad`
+    match genuine's byte for byte (all compared; only genuine: B41's 3,978,
+    only bazel-rs: B40's 301); the action dump of `//src/utl:utl
+    //src/sta:opensta_lib` is byte-identical to b8ce9666's. P6 and the
+    OpenROAD memory below.
+
 **Summary.** 37 projects ran. On 13 of them bazel-rs matches genuine exactly
 (10 before the corpus-parent rerun, footnote 17: diff.bzl, bazel-skylib
 and buildtools since B6's fix; bazel-skylib's and buildtools' own failing
@@ -415,6 +427,8 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B40 | 1 (openroad); outputs only | `copy_to_directory` over a source-directory input: native stages the directory as a real directory, genuine's sandbox as a symlink that the tool does not descend, so native's output tree has 301 more files |
 | B41 | 1 (openroad); outputs only | rules_js `node_modules` links in `bazel-bin` (`src/web/node_modules`, 3,978 files) do not resolve natively: a relative package link points into another action's cache entry |
 | B42 | fixed (corpus-ccshared) | a test's runfile of an `actions.symlink` output of a generated file was a copy at the link's exec path, so `$ORIGIN` of a with_cfg-forwarded `cc_binary` missed its `dynamic_deps` |
+| B44 | 1 (openroad); aquery only | `aquery --output=summary` counts C++ module map writes as `FileWrite`; genuine as `CppModuleMap` (225 of `deps(//src/utl:utl)`'s actions; the totals match) |
+| B45 | 1 (openroad); extra work | `build //src/utl:utl` (a `cc_library`) executes 1,109 actions (867 spawns) against genuine's 829 (630); `//:openroad` (a `cc_binary`) runs the same 13,479. Not analysed: bazel-rs apparently builds outputs of the dependencies that genuine's files to build do not need (openroad-perf) |
 | B28 | fixed (corpus-runfiles) | `build //...` missed genuine's `.pic.o`/`.pic.d` of external C++ deps: the rule-returned `_hidden_top_level_INTERNAL_` group (rules_cc cc_library's transitive objects) was not built |
 
 ### Details and minimal repros
@@ -658,7 +672,10 @@ its inputs; a source directory input is a symlink in genuine's sandbox
 the tool apparently copies nothing below it, while bazel-rs stages a real
 directory and the tool copies `include/` and `share/` of the prebuilt
 clang's resource directory. The compiles do not read that tree, so the
-binary is identical. B41: in the output tree, `node_modules/<pkg>` is an
+binary is identical. (openroad-perf: matching genuine means staging a
+source directory of a repository tree as a directory symlink under the
+sandbox strategies — genuine's local execution shows the real directory —
+not done.) B41: in the output tree, `node_modules/<pkg>` is an
 absolute link into the producing action's cache entry, where the package
 store's relative link does not resolve (the declared `bazel run`
 difference of docs/RUNFILES_TREES.md, here in `bazel-bin`).
@@ -761,12 +778,32 @@ files hash identically before and after the scheduler change.
   dependent actions first (`Graph::ready_key`; Bazel's evaluator orders by
   depth likewise). The jobs stay busy to the end (16.0 per 5 s window from
   the first to the last but one).
-- **P6: OpenROAD `build //:openroad` is 2.2× genuine** (open; corpus-ccshared,
-  footnote 18): 1,536 s against 676–702 s for the same 13,480 actions and
-  7,642 sandboxed spawns, critical path 77 s against 55–59 s. Not profiled
-  yet; each C++ compile stages the hermetic LLVM toolchain's headers and
-  sysroot (thousands of inputs) by hardlink, where genuine's
-  processwrapper-sandbox makes symlinks.
+- **P6: OpenROAD `build //:openroad` was 2.2× genuine** (mostly fixed;
+  openroad-perf, footnote 20): 1,490.9 s → 773.9 s against genuine's
+  693.5 s (676–702 s before) for the same 13,479/13,480 actions and 7,642
+  sandboxed spawns; critical path 80.1 → 61.0 s against 56.6 s. The
+  profile (`PERF-STAGE parts`) showed the time in the kernel (sys 11,167 s
+  of 20,428 s CPU): staging (7,563 s summed over the jobs: a tree link,
+  two inspections and a directory check per input, 5,600 inputs per
+  compile) and removing execution roots (2,726 s). On the overlay
+  filesystem a link or unlink costs ~70 µs with 16 jobs and absolute-path
+  lookups of shared directories serialize. Now execution roots are reused
+  like genuine's `--reuse_sandbox_directories` (95% of the input files
+  kept) and staging inspects through open directories
+  (docs/HARDLINK_STAGING.md, "Execution-root reuse"); sys 2,333 s. What
+  remains is reconciliation (400 s summed, a `readlinkat` per kept link,
+  as genuine's) and the checks genuine does not make (the inputs' and the
+  staged inodes' states before and after the process, ~670 s).
+- **OpenROAD memory** (openroad-perf, footnote 20; docs/MEMORY.md
+  "OpenROAD"): cold `--nobuild //...` peak 9.2 → 7.0 GB (genuine 3.0 GB),
+  a snapshot miss 9.1 → 6.9 GB in 56–57 → 30–34 s, a hit 3.3 → 1.7 GB in
+  1.6 → 1.2–1.3 s. Each compile listed its compilation context's
+  transitive headers (54 M input pairs); it now holds them as one shared
+  input group. The rest of the peak is the analysis results and deltas
+  waiting for pass 2's cursor. genuine's "150,522 targets configured"
+  against bazel-rs's 65,387 is the counting difference of
+  docs/BENCHMARKS.md (genuine counts every configured target value, file
+  targets included; bazel-rs the rule targets it plans), not missing work.
 - **OpenROAD cold `--nobuild` after B18/B30** (corpus-ccshared): now that
   analysis passes, 242.5 s against genuine's 89.6 s (peak RSS 9.2 GB
   against 3.0 GB), the first repeat 58.2 s against 20.5 s, the second

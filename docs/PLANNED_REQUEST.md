@@ -136,6 +136,14 @@ from what it lists (`InputGroup::listed_valid`: its inputs', dependencies' and e
 inputs listed), so a tampered destination fails validation instead of passing the shortcut. Verify mode
 compares the groups by value (once per pair of groups).
 
+**Shared runs in the middle (format 10, openroad-perf, docs/MEMORY.md "OpenROAD").** A group also holds
+a run of inputs many actions list alike (a C++ compilation context's transitive headers, `runfiles: false`,
+root `""`), placed among the action's own inputs at `PlannedAction::groups_at` (after that many own source and
+generated inputs; `None`: after all of them, as for a tool's runfiles tree). Every listing (`inputs()`,
+`all_dependencies()`, `flattened()`, the dispatch, the dumps, aquery) lists the group there; a decoded node whose
+`groups_at` lies beyond its own lists, or whose groups there hold tree, symlink or constant-metadata inputs or
+empty files, is an error. Decoding recomputes the groups' `valid` flags on several threads.
+
 **Path tables (format 8, MEM5, docs/MEMORY.md).** A GROUPS or NODES section is its path table (the distinct
 path byte strings, first-seen order) followed by its content, in which every path is its index. Runfiles names
 are indices into the same table, and a runfiles entry list is written once per section by content; later

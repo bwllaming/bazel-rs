@@ -172,3 +172,36 @@ What remains:
   thread out of the other threads' reach. With `_RJEM_MALLOC_CONF=narenas:4` the ts hit peaks at 776 MB instead of
   920 MB, and with `dirty_decay_ms:0` at 697 MB.
   - This is not changed here. It is process-wide, and fewer arenas may slow the parallel analysis.
+
+## OpenROAD (openroad-perf, docs/OSS_CORPUS.md P6)
+
+`build --nobuild //...` of OpenROAD (6,773 targets, 65,387 configured rule targets, 18,561 C++ compiles) peaked
+at 9.2 GB (genuine 9.3.1: 3.0 GB). Heap profiles at every `PERF` mark (`BAZEL_RS_TIMING_HEAP_DUMP`) placed the
+peak at the end of pass 2, when every target's delta waits for the cursor (the analysis critical path, boost's
+cc_libraries, ends ~90% into the plan):
+
+| what | at the peak | fix |
+|---|---|---|
+| each compile lists its compilation context's transitive headers (3,000–11,000; 54 M input pairs) | ~2.0 GB | `create_cc_compile_action` walks the headers (or the toolchain's `all_files`) through the memoized depset walk, so the registration carries it as a shared run (`input_memo`); the lowering holds it as one shared input group at its place among the action's own inputs (`PlannedAction::groups_at`, docs/PLANNED_REQUEST.md format 10) when listing it changes nothing but the list (none of the action's own execution paths is one of the run's; the listed action validates against the run's namespace) |
+| the provisional reads of a memo value copied into every worker delta using it | ~0.8 GB | `TargetDelta::shared_reads`: the memo value's list, shared |
+| a shared group's source paths as owned `PathBuf`s | ~0.5 GB | `InputGroup::sources` share the artifacts' `SharedPath`s |
+| the linearizer's tape buffer kept the capacity of its largest step (recording runs only) | ~0.4 GB | shrunk to 64 Ki ops after a step |
+| transcripts kept with their growth's spare room | ~0.2 GB | shrunk when published |
+
+Result (non-LTO builds of b8ce9666 and the branch, alternating, three rounds, load 12–42; private caches; the
+cold run fetches everything):
+
+| run | b8ce9666 | openroad-perf |
+|---|---|---|
+| cold `--nobuild //...` | 125.9 / 111.0 / 110.8 s, 9,169 / 9,167 / 9,126 MB | 87.2 / 93.7 / 96.4 s, 6,961 / 6,957 / 6,983 MB |
+| first repeat (re-analysis, recording) | 85.8 / 60.7 / 87.0 s, 9,130 / 9,116 / 9,141 MB | 66.4 / 47.1 / 48.9 s, 6,947 / 6,955 / 6,950 MB |
+| snapshot miss (`--define` changed) | 57.0 / 57.1 / 56.0 s, 9,121 / 9,097 / 9,159 MB | 30.5 / 34.0 / 31.0 s, 6,934 / 6,944 / 6,952 MB |
+| snapshot hit | 1.7 / 1.6 / 1.6 s, 3,333 / 3,309 / 3,328 MB | 1.3 / 1.2 s, 1,674 / 1,675 MB |
+| `--nobuild`, snapshot off (heap profile's run) | 8.33 GB peak | 6.36 GB peak |
+
+The action dump of `//src/utl:utl //src/sta:opensta_lib` (7,843 actions) is byte-identical, and the
+`//:openroad` build's 15,223 `bazel-bin` files match genuine's. What holds the remaining ~6 GB live at the peak: the
+analysis results awaiting their merge (Starlark heaps, providers, the registered actions' input lists, ~1.6 GB),
+the deltas (~0.9 GB), the phase-1 configured rules and packages (~1.5 GB), the remaining listed inputs (~0.4 GB)
+and, while recording, the transcripts (~1.1 GB at the end of phase 1). The next step is the cursor's lag: deltas
+merged as their entries' turns come would not all be alive at once.

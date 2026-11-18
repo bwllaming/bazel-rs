@@ -546,6 +546,57 @@ capture above).
 `execute.end`, under `BAZEL_RS_TIMING`) reports the summed wall time of input
 staging over all workers and how many files took each path.
 
+## Execution-root reuse (openroad-perf, P6)
+
+Genuine reuses sandbox directories by default (`--reuse_sandbox_directories`,
+SandboxStash, `SandboxHelpers.cleanExisting`: a stashed sandbox of the same
+mnemonic is cleaned against the next spawn's inputs — every entry that is not
+an expected symlink with the expected target goes — and only the missing
+inputs are created). Native execution roots now do the same
+(`src/action/reuse.rs`): while a scheduler executes a graph on a cache
+(`StashScope`), the execution root of a successful local process action
+(standalone, processwrapper-sandbox, the Landlock sandbox; not the namespace
+sandbox, not workers, Java or `--sandbox_debug`) is stashed with what staging
+placed in it (`Placed`: a repository tree link's text, a store hardlink's
+store file and inode state), and the next action of its mnemonic takes one —
+its owner's latest, else its package's, else the latest. `reconcile` walks
+the root through directory descriptors and keeps an entry only when it is
+exactly what staging places now: a symlink whose text (`readlinkat`) is the
+tree file's path, a regular file in the recorded state of the same store
+file (staging then also checks that store file is valid and still that
+inode), a directory an input lies below with the mode this process creates
+directories with (the umask from `/proc/self/status`). Everything else —
+outputs, parameter files, logs, what the process created, an input it
+replaced, directories no input needs — goes; any error drops the stash and
+stages into a fresh root. Kept inputs are checked exactly like new ones
+(tree files by size, mode and digest; after the process every staged inode).
+The process sees the same paths, link texts, inodes and modes as in a fresh
+root; only the change times of kept links and directories differ, as in
+genuine's reused sandboxes. The stashes are removed when the scope ends.
+`BAZEL_RS_REUSE_EXECROOTS=0` stages every root fresh (unit test
+`reused_execution_roots_hold_exactly_each_actions_inputs`).
+
+**Inspections through open directories.** On an overlay filesystem, path
+lookups of directories every job shares serialize: with 16 jobs an `lstat`
+of a repository header took 36 µs by its absolute path and 5 µs through its
+open directory, a link or unlink ~70 µs. Staging checks each execution-root
+directory once per staging (`EnsuredDirectories`), inspects repository tree
+files through their directories opened once per staging (the descriptors
+capped at an eighth of the open-file limit, `fd_budget::try_directory`, else
+by path), store blobs through the `cas/` directory (opened once per thread)
+and, after the process, staged destinations through the execution root's
+directories. Each is the same `lstat` (directories resolved alike, the last
+component not followed).
+
+`PERF-STAGE parts` (summed seconds of directories, tree links and their
+inspection, blob ensure/link/inspection, the check after the process,
+removal, reconciliation) and `PERF-STAGE reuse` (roots reused, entries kept,
+entries removed) under `BAZEL_RS_TIMING`. OpenROAD's `build //:openroad`
+(13,479 actions, 7,642 spawns, `--jobs=16`, non-LTO): b8ce9666 1,490.9 s
+(sys 11,167 s; staging 7,563 s summed) → 773.9 s (sys 2,333 s; staging 649 s,
+reconciliation 400 s, kept 40.1 M of 42.2 M input files) at load 21–34;
+genuine 9.3.1 693.5 s at load 24 (676–702 s before).
+
 ## Benchmark
 
 `tests/staging_bench.rs` (ignored; `cargo test --release --test

@@ -91,6 +91,8 @@ pub const MAGIC: &[u8; 8] = b"BZRSPLN1";
 // 8: GROUPS and NODES sections carry a path table, paths as indices (MEM5).
 // 9: actions carry their console owner and raw progress message
 // (crate::action_console).
+// 10: a node's `groups_at` and a group's `runfiles` flag (shared runs of
+// inputs in the middle of an action's own, docs/PLANNED_REQUEST.md).
 pub const FORMAT: u32 = 10;
 /// Actions per NODES section (fixed: the encoding must not depend on the
 /// machine).
