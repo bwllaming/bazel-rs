@@ -11296,6 +11296,34 @@ impl Engine {
             }
             inspected.extend(custom.declaration.configurable_labels.iter().cloned());
         }
+        // An attribute naming an `alias` hands the test (and its aspects:
+        // rules_testing's testing_aspect reads `target.actions`) the alias's
+        // actual target (rules_kotlin's `//kotlin/compiler:btapi_runtime`,
+        // B35), so a non-configurable `actual` of an alias whose package is
+        // loaded is inspected too, chains followed.
+        let mut pending: Vec<Label> = inspected.iter().cloned().collect();
+        while let Some(label) = pending.pop() {
+            let Some(rule) = self
+                .packages
+                .get(&label.package_id())
+                .and_then(|package| package.get(&label))
+            else {
+                continue;
+            };
+            let (RuleKind::Native("alias"), Some(native)) = (&rule.kind, &rule.native) else {
+                continue;
+            };
+            if native.configurable.contains_key("actual") {
+                continue;
+            }
+            if let Some(crate::custom_rule::AttrValue::Label(Some(actual))) =
+                native.attrs.get("actual")
+                && let Ok(actual) = self.resolve_rule_src(rule, actual)
+                && inspected.insert(actual.clone())
+            {
+                pending.push(actual);
+            }
+        }
         inspected
     }
 

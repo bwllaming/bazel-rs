@@ -71,7 +71,11 @@ values (`RuleConfiguredTarget.rawGetStarlarkProvider`,
 The analysis keeps a compact view of each registered action only for the
 targets an analysis test of the request can inspect: every label an
 attribute of a requested `rule(analysis_test = True)` target names
-(`select()` branches included). The engine decides that set from the
+(`select()` branches included), and the `actual` of each such label that
+is an `alias` with a non-configurable `actual` in a package loaded by then
+(chains followed; rules_kotlin's analysis tests name
+`//kotlin/compiler:btapi_runtime`, an alias of `@btapi_impl//:runtime`,
+B35). The engine decides that set from the
 requested labels and their packages before the analysis
 (`Engine::inspected_targets`), so it never depends on the analysis order.
 A snapshot holds no providers, and an incremental re-analysis requests

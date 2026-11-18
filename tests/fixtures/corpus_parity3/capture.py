@@ -55,6 +55,10 @@ CASES = {
     'java_toolchain_undeclared': (
         [], 'build', BUILD + ['--extra_toolchains=//third_party/bazel_rules/rules_java/java:fake_java'],
         ['//third_party/bazel_rules/rules_java/java:undeclared'], [r'must declare'], []),
+    'fragment_lists_are_mutable_copies': ([], 'build', BUILD, ['//jvmopts:show'], [], ['show.txt']),
+    'target_actions_through_alias': (
+        [], 'build', BUILD, ['//aliased:direct_test', '//aliased:alias_test'], [],
+        ['direct_test.sh', 'alias_test.sh']),
 }
 
 TIME = re.compile(r'^\(\d\d:\d\d:\d\d\) ')

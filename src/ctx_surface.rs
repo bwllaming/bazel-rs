@@ -334,6 +334,15 @@ fn frozen_owned_strings<'v>(heap: Heap<'v>, items: &[String]) -> Value<'v> {
     })
 }
 
+/// A Java `List` result of a fragment method: Starlark.fromJava copies it
+/// into a fresh list of the calling thread's mutability
+/// (`StarlarkList.copyOf(mutability, list)`, net/starlark/java/eval/
+/// Starlark.java:213-214), so each read is a new mutable list (rules_kotlin
+/// extends `ctx.fragments.java.default_jvm_opts`).
+fn mutable_strings<'v, S: AsRef<str>>(heap: Heap<'v>, items: &[S]) -> Value<'v> {
+    heap.alloc(AllocList(items.iter().map(AsRef::as_ref)))
+}
+
 fn frozen_dict<'v>(heap: Heap<'v>, entries: &[(String, String)]) -> Value<'v> {
     frozen(heap, |h| {
         h.alloc(AllocDict(
@@ -1083,8 +1092,8 @@ fn target_platforms<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<
 /// `--experimental_objc_fastbuild_options` (default `-O0,-DDEBUG=1`, :61-62).
 fn objc_copts<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
     Ok(match surface.compilation_mode {
-        "fastbuild" => frozen_strings(heap, &["-O0", "-DDEBUG=1"]),
-        _ => crate::subrule_fragments::empty_list(),
+        "fastbuild" => mutable_strings(heap, &["-O0", "-DDEBUG=1"]),
+        _ => mutable_strings::<&str>(heap, &[]),
     })
 }
 
@@ -1178,7 +1187,7 @@ fn single_arch_platform<'v>(_: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Va
 /// JavaConfiguration.getDefaultJvmFlags (:116, 225-228): `--jvmopt`
 /// (an exec configuration's `--host_jvmopt` or `-XX:ErrorFile=/dev/stderr`).
 fn default_jvm_opts<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
-    Ok(frozen_owned_strings(heap, &surface.jvmopts))
+    Ok(mutable_strings(heap, &surface.jvmopts))
 }
 
 /// ObjcConfiguration.useDeviceDebugEntitlements (rules/objc/ObjcConfiguration.java:150-157):
@@ -1282,7 +1291,7 @@ fn default_javac_flags<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Resu
     let flags = command_line_javac_flags(surface)
         .map(|flags| tokenize(&flags).unwrap_or_else(|_| vec![flags]))
         .unwrap_or_default();
-    Ok(frozen_owned_strings(heap, &flags))
+    Ok(mutable_strings(heap, &flags))
 }
 
 /// JavaConfiguration.explicitJavaTestDepsStarlark (:347-350):

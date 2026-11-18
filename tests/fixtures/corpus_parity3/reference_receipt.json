@@ -60,6 +60,25 @@
    ],
    "workspace": "workspace"
   },
+  "fragment_lists_are_mutable_copies": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/jvmopts/show.txt": "[\"-Xextra\"]\n[\"-Xlint\"]\n[]\nFalse\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//jvmopts:show"
+   ],
+   "workspace": "workspace"
+  },
   "java_toolchain_declared": {
    "bin_paths": {},
    "command": "build",
@@ -197,6 +216,27 @@
    "stdout": "",
    "targets": [
     "//links"
+   ],
+   "workspace": "workspace"
+  },
+  "target_actions_through_alias": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/aliased/alias_test.sh": "#!/bin/sh\necho \\[\\\"\\F\\i\\l\\e\\W\\r\\i\\t\\e\\\"\\]\nexit 0",
+    "k8-fastbuild/bin/aliased/direct_test.sh": "#!/bin/sh\necho \\[\\\"\\F\\i\\l\\e\\W\\r\\i\\t\\e\\\"\\]\nexit 0"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//aliased:direct_test",
+    "//aliased:alias_test"
    ],
    "workspace": "workspace"
   },

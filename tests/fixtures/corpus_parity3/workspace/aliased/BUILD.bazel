@@ -1,0 +1,23 @@
+load(":defs.bzl", "check", "gen")
+
+gen(name = "gen")
+
+alias(
+    name = "alias",
+    actual = ":gen",
+)
+
+alias(
+    name = "alias2",
+    actual = ":alias",
+)
+
+check(
+    name = "direct_test",
+    target = ":gen",
+)
+
+check(
+    name = "alias_test",
+    target = ":alias2",
+)
