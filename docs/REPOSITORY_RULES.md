@@ -98,7 +98,13 @@ stays a mutable directory (absolute links into it are replanted, below).
 * `ctx.delete(path)` (string or path only) returns whether something was
   removed (SRC:373-405). Workspace paths that are not ignored fail with Bazel's
   `delete() can only be applied to external paths ...`; the native profile
-  refuses other paths outside the repository directory.
+  refuses other paths outside the repository directory. Deleting the
+  repository directory itself (bazel_tools `git_worker.bzl` `_update` before
+  `git init`) removes every entry and makes it "not yet created" again
+  (`read('.')` fails as before the first write); it returns False before the
+  first write and True after, like genuine 9.3.1. Divergence: the native
+  stage directory stays, so `ctx.path(".").exists` is True (genuine: False
+  until something recreates it), as before the first write.
 * `ctx.rename(src, dst)` fails if `dst` exists (SRC:407-473), with Bazel's
   `java.io.IOException: Could not rename ...` texts (including unix_jni's
   `[unix_jni.cc:638] SRC -> DST (REASON)`).

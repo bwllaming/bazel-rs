@@ -4453,10 +4453,26 @@ fn repository_methods(builder: &mut MethodsBuilder) {
                 display(&path)
             );
         };
-        ensure!(
-            !relative.is_empty(),
-            "repository_ctx.delete() of the repository directory itself is not supported by the native profile"
-        );
+        if relative.is_empty() {
+            // `ctx.delete(ctx.path("."))` (bazel_tools git_worker.bzl
+            // `_update` before `git init`): Bazel deletes the repository
+            // directory (deleteTree), which exists only once something
+            // created it. The native stage directory stays (it is the
+            // physical stage); its entries go and it is "not yet created"
+            // again, as after Bazel's delete.
+            ensure!(
+                context.kind != Kind::ModuleExtension,
+                "repository_ctx.delete() of the module extension's working directory itself is not supported by the native profile"
+            );
+            let existed = context.state.borrow().created
+                || fs::read_dir(&context.stage).is_ok_and(|mut entries| entries.next().is_some());
+            let _writable = crate::nofollow_modes::WritableDirectory::of(&context.stage);
+            for entry in fs::read_dir(&context.stage)? {
+                remove_tree(&entry?.path())?;
+            }
+            context.state.borrow_mut().created = false;
+            return Ok(existed);
+        }
         let relative = context.output(&path)?;
         let target = parents(&context.stage, &relative, false)?;
         let _writable = context.writable_holding(&relative);
@@ -7150,6 +7166,29 @@ for name, tool in lock.items():
             b"# https://example.invalid/tool\n"
         );
         assert_eq!(inputs.files[0].path, "//:multitool.lock.json");
+    }
+
+    #[test]
+    fn deleting_the_repository_directory_empties_it_like_git_worker_update() {
+        // bazel_tools git_worker.bzl `_update`: ctx.delete(directory) of the
+        // repository directory, then `git init <directory>`. Bazel's
+        // directory does not exist before the first write (False), and
+        // every entry goes (True); read('.') fails again afterwards.
+        let fixture = Fixture::new();
+        fixture.ok(
+            r#"(not ctx.delete(ctx.path("."))) or fail("fresh")
+ctx.file("d/x", "1")
+ctx.file("top", "2", executable = False)
+ctx.symlink("top", "link")
+(ctx.delete(ctx.path(".")) and not ctx.path("top").exists and not ctx.path("d").exists) or fail("delete")
+ctx.file("after", "3")"#,
+        );
+        let mut names: Vec<_> = fs::read_dir(fixture.stage.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["after"]);
     }
 
     #[test]
