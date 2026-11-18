@@ -138,6 +138,7 @@ tests/fixtures/query_outputs/ws
 tests/fixtures/registry_failure_exit_codes/workspace
 tests/fixtures/registry_lockfile/workspace
 tests/fixtures/repo_cache_friendly_paths/workspace
+tests/fixtures/repo_mapping_closure/workspace
 tests/fixtures/repositories/p
 tests/fixtures/repositories/repos
 tests/fixtures/repository_cache/workspace

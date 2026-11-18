@@ -7266,6 +7266,14 @@ impl Engine {
         let Some(config) = config else {
             return own;
         };
+        // An output file's configured target carries its generating rule's
+        // transitive packages (OutputFileConfiguredTarget: ConfiguredTargetFunction
+        // looks the generating rule up with the same TransitiveDependencyState;
+        // B6 in docs/OSS_CORPUS.md).
+        let label = match self.generated.get(&label) {
+            Some((owner, _)) => owner.clone(),
+            None => label,
+        };
         let key = ConfiguredTargetKey::new(label, config);
         let key = self.rule_delegations.get(&key).cloned().unwrap_or(key);
         reads
@@ -8913,6 +8921,8 @@ impl Engine {
                     Some(*edge_config),
                 ));
             }
+            cx.engine()
+                .config_condition_transitive_in(cx.reads(), rule, config, &mut transitive);
         }
         if !edge_aspects.is_empty() {
             cx.spread_edges(

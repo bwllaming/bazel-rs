@@ -1,0 +1,3 @@
+module(name = "maker")
+
+bazel_dep(name = "ext")

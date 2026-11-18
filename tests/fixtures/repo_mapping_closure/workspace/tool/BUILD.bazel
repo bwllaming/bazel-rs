@@ -1,0 +1,7 @@
+load("//:defs.bzl", "gen")
+
+gen(
+    name = "made",
+    out = "made.txt",
+    visibility = ["//visibility:public"],
+)

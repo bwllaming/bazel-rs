@@ -1304,3 +1304,56 @@ fn write_mode(path: &Path, text: &str, mode: u32) {
         fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
     }
 }
+
+/// Copy the fixture directory `from` below `to` (files and their modes).
+fn copy_fixture(from: &Path, to: &Path) {
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            fs::create_dir_all(&target).unwrap();
+            copy_fixture(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
+#[test]
+fn repo_mapping_manifests_include_generating_rules_and_select_keys() {
+    // B6 (docs/OSS_CORPUS.md): RepoMappingManifestAction's transitive
+    // packages include an output file's generating rule's (here its exec
+    // tool in @maker) and every select() key's (@cond's config_setting).
+    // Expected bytes: genuine 9.3.1's, tests/fixtures/repo_mapping_closure.
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/repo_mapping_closure");
+    let receipt: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fixture.join("reference_receipt.json")).unwrap())
+            .unwrap();
+    let ws = Workspace(
+        tempfile::Builder::new()
+            .prefix("repo-mapping-closure-")
+            .tempdir_in(crate::test_temp::root())
+            .unwrap(),
+    );
+    copy_fixture(&fixture.join("workspace"), ws.path());
+    let output = ws.run(&[
+        "build",
+        "--platforms=//:p",
+        "--host_platform=//:p",
+        "//:from_output",
+        "//:from_select",
+        "//:plain",
+    ]);
+    success(&output);
+    let expected = receipt["repo_mapping"].as_object().unwrap();
+    assert_eq!(expected.len(), 3);
+    for (name, content) in expected {
+        let exec = name.replace("bazel-bin/", "bazel-out/k8-fastbuild/bin/");
+        let path = single(&ws, &exec);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            content.as_str().unwrap(),
+            "{name}"
+        );
+    }
+}

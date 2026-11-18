@@ -87,8 +87,12 @@ files and runfiles may use them (N23a failed explicitly).
   repositories with equal mappings whose names agree up to their last `+`
   (one module extension's repositories) become one `prefix+*` source.
   Native transitive packages are the repositories of the configured target's
-  dependency edges (attributes after select() resolution, toolchains),
-  transitively, per configured target key: a select() that picks another
+  dependency edges (attributes after select() resolution, toolchains), of
+  its select() keys (ConfigConditionsProducer shares the target's
+  TransitiveDependencyState) and, for a dependency on an output file, of
+  its generating rule's closure (exec tools included), transitively, per
+  configured target key (genuine 9.3.1 capture
+  `tests/fixtures/repo_mapping_closure`): a select() that picks another
   repository's target in one configuration changes only that
   configuration's manifest.
 * The tree (SymlinkTreeHelper.createSymlinks, exec/SymlinkTreeHelper.java:98-146):

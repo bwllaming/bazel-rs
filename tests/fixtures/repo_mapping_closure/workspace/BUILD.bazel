@@ -1,0 +1,30 @@
+load("//:defs.bzl", "my_bin")
+
+# A data dependency on an output file: the generating rule's transitive
+# packages (its exec tool in @maker) are the consumer's.
+my_bin(
+    name = "from_output",
+    data = [
+        "@ext//:e.txt",
+        "@tool//:made.txt",
+    ],
+)
+
+# A select() key's package (@cond) is a transitive package too.
+my_bin(
+    name = "from_select",
+    data = ["@ext//:e.txt"],
+    flag = select({
+        "@cond//:opt": "opt",
+        "//conditions:default": "other",
+    }),
+)
+
+# Neither: only the main repository and @ext.
+my_bin(
+    name = "plain",
+    data = ["@ext//:e.txt"],
+)
+
+# The target and host platform (no @platforms / @bazel_tools needed).
+platform(name = "p")

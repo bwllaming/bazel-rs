@@ -74,6 +74,39 @@ pub(super) fn output_group_files(
 }
 
 impl Engine {
+    /// The transitive repositories of the `select()` keys of `rule` (its
+    /// loaded package's rule, selects unresolved), added to
+    /// `transitive`: ConfigConditionsProducer looks every
+    /// `$config_dependencies` label up through a ConfiguredTargetAndDataProducer
+    /// sharing the target's TransitiveDependencyState
+    /// (analysis/producers/ConfigConditionsProducer.java:104,
+    /// ConfiguredTargetAndDataProducer.java:121-127), so their packages are
+    /// in the target's transitive packages and hence in its repo mapping
+    /// manifest (RepoMappingManifestAction; B6 in docs/OSS_CORPUS.md).
+    pub(super) fn config_condition_transitive_in(
+        &self,
+        reads: &dyn PlanReads,
+        rule: &Rule,
+        config: ConfigId,
+        transitive: &mut BTreeSet<String>,
+    ) {
+        // The loaded package's rule: the configured one has its selects
+        // resolved (configured_attributes::configure).
+        let Some(declared) = self
+            .packages
+            .get(&rule.label.package_id())
+            .and_then(|package| package.get(&rule.label))
+        else {
+            return;
+        };
+        for text in crate::configured_attributes::rule_config_dependencies(declared) {
+            let Ok(label) = self.resolve_rule_src(rule, &text) else {
+                continue;
+            };
+            transitive.extend(self.dependency_repositories_in(reads, label, Some(config)));
+        }
+    }
+
     /// The transitive repositories of a native rule's configured target
     /// (`Engine::prepare_target`): those of every configured dependency
     /// edge, added to `transitive`.
@@ -106,6 +139,7 @@ impl Engine {
             };
             transitive.extend(self.dependency_repositories_in(reads, label, edge_config));
         }
+        self.config_condition_transitive_in(reads, rule, key.config, transitive);
     }
 
     /// RuleConfiguredTargetBuilder.propagateTransitiveValidationOutputGroups

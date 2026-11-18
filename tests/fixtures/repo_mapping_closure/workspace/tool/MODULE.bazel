@@ -1,0 +1,4 @@
+module(name = "tool")
+
+bazel_dep(name = "maker")
+bazel_dep(name = "ext")
