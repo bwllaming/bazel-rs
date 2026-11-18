@@ -227,6 +227,14 @@ runfile to the artifact's path (crate::action::stage_test_inputs):
   `<execroot>/<exec path>`. `readlink` names the exec path and `realpath`
   ends in it (with_cfg.bzl's tests check that a binary's resolved path
   contains `-opt/bin/`);
+* a published output that is a symlink to another published output (an
+  `actions.symlink(target_file = <generated>)` output, a `SolibSymlink`) is
+  a link at its exec path to the target's exec path, where the target is
+  staged (each hop of a chain likewise): as in Bazel's execution root, its
+  `realpath` is the target's, so a with_cfg.bzl-forwarded `cc_binary` finds
+  its `dynamic_deps` through its rpath's `$ORIGIN/../../_solib_k8/...`
+  (`//dynamic_deps:bin_test_from_symlinked_runfiles`; capture row
+  `test_genlink.txt`). The hops are keyed with the runfile;
 * a source file outside the cache (the workspace, a local repository) is an
   absolute symlink to the live file, as genuine's runfiles resolve
   (buildifier's test runner does `readlink` of the binary, `realpath

@@ -68,6 +68,53 @@ enum RunfileLayout {
     AlsoAtExec(PathBuf),
     /// A source directory: the runfile is an absolute symlink to it.
     LiveDirectory(PathBuf),
+    /// A published output that is a symlink to other published outputs
+    /// (`ctx.actions.symlink`, a SolibSymlink): the runfile links to its
+    /// exec path, which links to the next hop's exec path (each hop
+    /// `(link exec path, target exec path)`), and the content is staged at
+    /// the last target's exec path — as in Bazel's execution root, where
+    /// such an output is a symlink to its target, so the program's
+    /// `realpath` (and an rpath's `$ORIGIN`) is the target's directory.
+    LinkVia(PathBuf, Vec<(PathBuf, PathBuf)>),
+}
+
+/// The published outputs `source` (a published output at `exec`) links to,
+/// as `(link exec path, target exec path)` hops; empty when `source` is not
+/// a symlink to another published output.
+fn published_symlink_hops(
+    cache: &Path,
+    source: &Path,
+    exec: &Path,
+) -> Result<Vec<(PathBuf, PathBuf)>, String> {
+    let mut hops = Vec::new();
+    let mut current = source.to_path_buf();
+    let mut current_exec = exec.to_path_buf();
+    // A bounded walk (a published output never links in a cycle).
+    while hops.len() < 32 {
+        let Ok(metadata) = fs::symlink_metadata(&current) else {
+            break;
+        };
+        if !metadata.file_type().is_symlink() {
+            break;
+        }
+        let Ok(target) = fs::read_link(&current) else {
+            break;
+        };
+        let target = match current.parent() {
+            Some(parent) if target.is_relative() => parent.join(target),
+            _ => target,
+        };
+        let Some(target_exec) = crate::action::published_exec_path(cache, &target)? else {
+            break;
+        };
+        if target_exec == current_exec {
+            break;
+        }
+        hops.push((current_exec, target_exec.clone()));
+        current = target;
+        current_exec = target_exec;
+    }
+    Ok(hops)
 }
 
 /// One test target to run.
@@ -1051,7 +1098,14 @@ impl Runner<'_> {
                     match read_content_source(self.cache, source)? {
                         ContentSource::File(input) => {
                             let layout = match exec {
-                                Some(exec) => RunfileLayout::LinkToExec(exec),
+                                Some(exec) => {
+                                    let hops = published_symlink_hops(self.cache, source, &exec)?;
+                                    if hops.is_empty() {
+                                        RunfileLayout::LinkToExec(exec)
+                                    } else {
+                                        RunfileLayout::LinkVia(exec, hops)
+                                    }
+                                }
                                 // A source directory: a link to the live
                                 // directory, like a source file's
                                 // (genuine: `extra_test_srcdir`).
@@ -1163,6 +1217,14 @@ impl Runner<'_> {
                     frame(&mut hash, exec.as_os_str().as_encoded_bytes());
                 }
                 RunfileLayout::LiveDirectory(_) => frame(&mut hash, b"live-directory"),
+                RunfileLayout::LinkVia(exec, hops) => {
+                    frame(&mut hash, b"via");
+                    frame(&mut hash, exec.as_os_str().as_encoded_bytes());
+                    for (link, target) in hops {
+                        frame(&mut hash, link.as_os_str().as_encoded_bytes());
+                        frame(&mut hash, target.as_os_str().as_encoded_bytes());
+                    }
+                }
             }
         }
         for destination in &empty_files {
@@ -1294,11 +1356,24 @@ impl Runner<'_> {
         let mut staging: Vec<(ContentInput, PathBuf)> = Vec::with_capacity(inputs.len());
         let mut links: Vec<(PathBuf, PathBuf)> = Vec::new();
         let mut directories: Vec<(PathBuf, PathBuf, ContentInput)> = Vec::new();
+        // The exec paths that are links to other published outputs, once.
+        let mut hop_links: std::collections::BTreeSet<(PathBuf, PathBuf)> =
+            std::collections::BTreeSet::new();
         for ((input, destination), layout) in inputs.iter().zip(&layouts) {
             match layout {
                 RunfileLayout::LinkToExec(exec) => {
                     staging.push((input.clone(), exec.clone()));
                     links.push((destination.clone(), exec.clone()));
+                }
+                RunfileLayout::LinkVia(exec, hops) => {
+                    let (_, last) = hops.last().expect("a LinkVia has a hop");
+                    staging.push((input.clone(), last.clone()));
+                    links.push((destination.clone(), exec.clone()));
+                    for hop in hops {
+                        if hop_links.insert(hop.clone()) {
+                            links.push(hop.clone());
+                        }
+                    }
                 }
                 RunfileLayout::AlsoAtExec(exec) => {
                     staging.push((input.clone(), destination.clone()));
@@ -1324,6 +1399,13 @@ impl Runner<'_> {
                     fs::create_dir_all(&path).map_err(|e| io("cannot create", &path, e))?;
                 }
             }
+        }
+        // A link's exec path is the link, never also a staged file (a
+        // coverage input at that path).
+        if !hop_links.is_empty() {
+            let linked: std::collections::BTreeSet<&PathBuf> =
+                hop_links.iter().map(|(link, _)| link).collect();
+            staging.retain(|(_, destination)| !linked.contains(destination));
         }
         let mut live = stage_test_inputs(self.cache, &staging, &links, &execroot)?;
         drop(staging);

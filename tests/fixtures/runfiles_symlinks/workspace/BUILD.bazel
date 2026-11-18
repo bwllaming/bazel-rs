@@ -13,7 +13,16 @@ alias(
     src = "src.txt",
 )
 
-FILES = ["src.txt", "sub/nested.txt", ":gen", ":dir", ":link"]
+# An actions.symlink alias of a generated file: in Bazel's execution root a
+# symlink to the target's exec path, so its realpath is the target's
+# (with_cfg.bzl's frontend links a transitioned cc_binary this way, and the
+# binary's rpath `$ORIGIN` must be the target's directory).
+alias(
+    name = "genlink",
+    src = ":gen",
+)
+
+FILES = ["src.txt", "sub/nested.txt", ":gen", ":dir", ":link", ":genlink"]
 
 probe_test(name = "probe_test", data = FILES)
 
