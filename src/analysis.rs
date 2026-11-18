@@ -2223,6 +2223,7 @@ fn analyze_aspect_inner(
         // The base rule's class (cc_internal.rule_class reads
         // RuleContext.getRule().getRuleClass()).
         rule_class: base_class.clone(),
+        rule_location: rule.location.clone(),
         output_root: target.output_root.to_owned(),
         action_owner: target.action_owner.to_owned(),
         declared: RefCell::new(Vec::new()),
@@ -3038,6 +3039,7 @@ fn analyze_inner(
         action_env: target.action_env.clone(),
         label: rule.label.clone(),
         rule_class: invocation.declaration.rule_class.clone(),
+        rule_location: rule.location.clone(),
         output_root: target.output_root.to_owned(),
         action_owner: target.action_owner.to_owned(),
         declared: RefCell::new(Vec::new()),
@@ -4203,6 +4205,7 @@ r = rule(implementation=impl, attrs={
         Context {
             label: Label::parse("//pkg:rule", "").unwrap(),
             rule_class: "rule".into(),
+            rule_location: None,
             action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),
             action_owner: "//pkg:rule".into(),

@@ -295,6 +295,45 @@ fn execution_group<'v>(
         .map_err(starlark::Error::new_other)
 }
 
+/// `java_common_internal._check_java_toolchain_is_declared_on_rule(actions)`
+/// (JavaStarlarkCommon.checkJavaToolchainIsDeclaredOnRuleForStarlark,
+/// :90-110): builtins-only (checkPrivateAccess), then the rule of the action
+/// factory must have resolved the Java toolchain type
+/// (RuleContext.getToolchainInfo non-null). rules_java's `_pack_sources`
+/// and compile helpers call it (rules_kotlin, B35).
+pub(crate) fn check_toolchain_is_declared_on_rule<'v>(
+    args: &Arguments<'v, '_>,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> starlark::Result<Value<'v>> {
+    let heap = eval.heap();
+    let bound = bind(
+        "_check_java_toolchain_is_declared_on_rule",
+        &[param("actions", true, true, true)],
+        args,
+        heap,
+    )?;
+    crate::subrule_fragments::private_api(eval)?;
+    let actions = bound[0].expect("required");
+    let ctx = crate::analysis_runtime::actions_rule_ctx(actions).ok_or_else(|| {
+        failure(
+            "java_common.check_java_toolchain_is_declared_on_rule: the action factory has no rule context in the native profile (a subrule's actions)"
+                .to_owned(),
+        )
+    })?;
+    let context = crate::analysis_runtime::context(eval).map_err(starlark::Error::new_other)?;
+    let rule_class = context.rule_class.clone();
+    let location = context.rule_location.clone().unwrap_or_default();
+    let toolchains = field(ctx, "toolchains", heap)?;
+    let key = crate::starlark_types::alloc_label(heap, TOOLCHAIN_TYPE)
+        .map_err(starlark::Error::new_other)?;
+    if !toolchains.is_in(key)? || toolchains.at(key, heap)?.is_none() {
+        return Err(failure(format!(
+            "Rule '{rule_class}' in '{location}' must declare '{TOOLCHAIN_TYPE}' toolchain in order to use java_common. See https://github.com/bazelbuild/bazel/issues/18970."
+        )));
+    }
+    Ok(Value::new_none())
+}
+
 /// BazelJavaSemantics.utf8Environment / ConstraintConstants: the selected
 /// execution platform's OS constraint wins, including inherited constraints.
 /// Only a missing OS constraint falls back to the local OS.

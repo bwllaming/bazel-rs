@@ -1357,6 +1357,7 @@ r = rule(implementation=impl, subrules=[S])
         drop(frozen);
         let context = Context {
             rule_class: "rule".into(),
+            rule_location: None,
             label: crate::label::Label::parse_canonical("//:target").unwrap(),
             action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),
@@ -1521,6 +1522,7 @@ S = subrule(implementation=callback)
         drop(frozen);
         let context = Context {
             rule_class: "rule".into(),
+            rule_location: None,
             label: crate::label::Label::parse_canonical("//:target").unwrap(),
             action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),

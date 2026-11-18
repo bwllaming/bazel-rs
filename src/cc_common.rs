@@ -75,7 +75,7 @@ const JAVA_INTERNAL_METHODS: [(&str, &str, Behavior); 11] = [
     (
         "check_java_toolchain_is_declared_on_rule",
         "_check_java_toolchain_is_declared_on_rule",
-        Behavior::Unimplemented(Domain::Java),
+        Behavior::JavaCheckToolchainDeclared,
     ),
     (
         "check_provider_instances",

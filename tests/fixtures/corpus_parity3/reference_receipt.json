@@ -60,6 +60,51 @@
    ],
    "workspace": "workspace"
   },
+  "java_toolchain_declared": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--extra_toolchains=//third_party/bazel_rules/rules_java/java:fake_java"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/third_party/bazel_rules/rules_java/java/declared.txt": "declared\n",
+    "k8-fastbuild/bin/third_party/bazel_rules/rules_java/java/optional.txt": "declared\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//third_party/bazel_rules/rules_java/java:declared",
+    "//third_party/bazel_rules/rules_java/java:optional"
+   ],
+   "workspace": "workspace"
+  },
+  "java_toolchain_undeclared": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--extra_toolchains=//third_party/bazel_rules/rules_java/java:fake_java"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "Error in _check_java_toolchain_is_declared_on_rule: Rule 'undeclared' in '<WS>/third_party/bazel_rules/rules_java/java/BUILD.bazel:15:11' must declare '@@bazel_tools//tools/jdk:toolchain_type' toolchain in order to use java_common. See https://github.com/bazelbuild/bazel/issues/18970.",
+     "pattern": "must declare"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//third_party/bazel_rules/rules_java/java:undeclared"
+   ],
+   "workspace": "workspace"
+  },
   "predeclared_output_below_subpackage": {
    "bin_paths": {},
    "command": "build",

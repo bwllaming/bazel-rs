@@ -178,6 +178,9 @@ mod owned {
         pub label: Label,
         /// The analyzed rule's class (cc_internal.rule_class).
         pub rule_class: String,
+        /// The target's BUILD location (`Rule.getLocation`, `path:line:col`),
+        /// for messages that name it.
+        pub rule_location: Option<String>,
         /// The output root of the configured target's configuration
         /// (crate::config_registry::Configurations::output_root).
         pub output_root: String,
@@ -2669,6 +2672,7 @@ mod tests {
         Context {
             label: Label::parse_canonical("//:target").unwrap(),
             rule_class: "rule".into(),
+            rule_location: None,
             action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),
             action_owner: "//:target".into(),
@@ -3021,6 +3025,7 @@ r=rule(implementation=_rule,subrules=[S])
         use starlark::environment::Module;
         let make_context = || Context {
             rule_class: "rule".into(),
+            rule_location: None,
             label: Label::parse_canonical("//:target").unwrap(),
             action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),

@@ -48,6 +48,13 @@ CASES = {
         [], 'build', BUILD, ['//links'], [], [], 'workspace',
         ['links/app/node_modules/pkg', 'links/app/node_modules/pkg/index.js',
          'links/app/dangling']),
+    'java_toolchain_declared': (
+        [], 'build', BUILD + ['--extra_toolchains=//third_party/bazel_rules/rules_java/java:fake_java'],
+        ['//third_party/bazel_rules/rules_java/java:declared',
+         '//third_party/bazel_rules/rules_java/java:optional'], [], ['declared.txt', 'optional.txt']),
+    'java_toolchain_undeclared': (
+        [], 'build', BUILD + ['--extra_toolchains=//third_party/bazel_rules/rules_java/java:fake_java'],
+        ['//third_party/bazel_rules/rules_java/java:undeclared'], [r'must declare'], []),
 }
 
 TIME = re.compile(r'^\(\d\d:\d\d:\d\d\) ')

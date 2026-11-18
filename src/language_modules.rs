@@ -37,7 +37,6 @@ pub(crate) const NOT_IMPLEMENTED: &str = "is not implemented in the native profi
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Allocative)]
 pub(crate) enum Domain {
     Cc,
-    Java,
     Apple,
     Android,
     Python,
@@ -51,7 +50,6 @@ impl Domain {
     fn describe(self) -> &'static str {
         match self {
             Domain::Cc => "analysis-time C++ API",
-            Domain::Java => "analysis-time Java API",
             Domain::Apple => "analysis-time Apple API",
             Domain::Android => "analysis-time Android API",
             Domain::Python => "analysis-time Python API",
@@ -83,6 +81,9 @@ pub(crate) enum Behavior {
     CcInternalExports,
     JavaInternalExports,
     JavaCheckProviderInstances,
+    /// `_check_java_toolchain_is_declared_on_rule`
+    /// (crate::java_actions::check_toolchain_is_declared_on_rule).
+    JavaCheckToolchainDeclared,
     JavaExpandOpts,
     JavaHeaderCompilation,
     JavaCompilation,
@@ -1325,6 +1326,9 @@ fn call<'v>(
         Behavior::JavaCompilation => crate::java_actions::create_compilation(args, eval),
         Behavior::JavaTargetKind => crate::cc_common::java_target_kind(args, eval),
         Behavior::JavaRuntimeClasspath => crate::java_classpath::for_archive(args, eval),
+        Behavior::JavaCheckToolchainDeclared => {
+            crate::java_actions::check_toolchain_is_declared_on_rule(args, eval)
+        }
         Behavior::JavaNativeDepsDirs => crate::java_native_deps::collect(args, eval),
         Behavior::CheckPrivateApi => crate::cc_common::check_private_api_call(args, eval),
         Behavior::CreateHeaderInfo => crate::cc_common::create_header_info(args, eval),

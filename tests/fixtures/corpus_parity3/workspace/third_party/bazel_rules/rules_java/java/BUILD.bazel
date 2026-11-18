@@ -1,0 +1,15 @@
+load(":defs.bzl", "declared", "fake", "optional", "undeclared")
+
+fake(name = "fake")
+
+toolchain(
+    name = "fake_java",
+    toolchain = ":fake",
+    toolchain_type = "@bazel_tools//tools/jdk:toolchain_type",
+)
+
+declared(name = "declared")
+
+optional(name = "optional")
+
+undeclared(name = "undeclared")
