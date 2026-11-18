@@ -1170,6 +1170,9 @@ where
     F: Fn(&Path, &Action) -> Result<ActionResult, String> + Sync,
 {
     let mut graph = validate(nodes, jobs)?;
+    // Execution roots of this cache are reused while the graph runs
+    // (crate::action::StashScope); the stashed ones go when it ends.
+    let _stashes = crate::action::StashScope::enter(cache);
     crate::progress::execution_started(graph.nodes.len());
     // Infrastructure failures (worker spawn, panics) of a keep-going run.
     let mut fatal: Vec<String> = Vec::new();

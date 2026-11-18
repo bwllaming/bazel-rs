@@ -121,11 +121,18 @@ fn reader_cap(soft: Option<u64>) -> Option<usize> {
     Some(quarter.max(MIN_READERS))
 }
 
+/// The cap on directory descriptors staging holds ([`try_directory`]) for
+/// a soft limit: an eighth of it (`None`: unlimited).
+fn directory_cap(soft: Option<u64>) -> Option<usize> {
+    soft.map(|soft| usize::try_from(soft / 8).unwrap_or(usize::MAX))
+}
+
 /// The action slot cap for a soft limit (`None`: unlimited).
 fn action_cap(soft: Option<u64>) -> Option<usize> {
     let soft = soft?;
     let readers = reader_cap(Some(soft)).map_or(0, |cap| cap as u64);
-    let left = soft.saturating_sub(readers + RESERVED_FDS);
+    let directories = directory_cap(Some(soft)).map_or(0, |cap| cap as u64);
+    let left = soft.saturating_sub(readers + directories + RESERVED_FDS);
     Some(
         usize::try_from(left / FDS_PER_ACTION)
             .unwrap_or(usize::MAX)
@@ -192,6 +199,33 @@ pub fn read(path: &Path) -> io::Result<Vec<u8>> {
     retry(|| std::fs::read(path))
 }
 
+/// A descriptor of a directory that action staging keeps open while it
+/// inspects the files in it (crate::action, `tree_file_metadata`): one of at
+/// most [`directory_cap`], counted without a lock (thousands per action).
+pub struct DirectoryPermit(());
+
+static DIRECTORIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A directory descriptor permit, or `None` when the cap is reached (the
+/// caller then works by path, holding no descriptor).
+pub fn try_directory() -> Option<DirectoryPermit> {
+    use std::sync::atomic::Ordering;
+    static CAP: OnceLock<Option<usize>> = OnceLock::new();
+    let cap = *CAP.get_or_init(|| directory_cap(soft_limit()));
+    let before = DIRECTORIES.fetch_add(1, Ordering::Relaxed);
+    if cap.is_some_and(|cap| before >= cap) {
+        DIRECTORIES.fetch_sub(1, Ordering::Relaxed);
+        return None;
+    }
+    Some(DirectoryPermit(()))
+}
+
+impl Drop for DirectoryPermit {
+    fn drop(&mut self) {
+        DIRECTORIES.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,12 +282,19 @@ mod tests {
     #[test]
     fn action_cap_leaves_room_for_readers_and_the_rest() {
         assert_eq!(action_cap(None), None);
-        // 256 - 64 readers - 64 reserved = 128 descriptors: 32 actions.
-        assert_eq!(action_cap(Some(256)), Some(32));
-        // 1024 - 256 - 64 = 704: 176 actions.
-        assert_eq!(action_cap(Some(1024)), Some(176));
-        assert_eq!(action_cap(Some(524_288)), Some(98_288));
+        // 256 - 64 readers - 32 directories - 64 reserved = 96 descriptors:
+        // 24 actions.
+        assert_eq!(action_cap(Some(256)), Some(24));
+        // 1024 - 256 - 128 - 64 = 576: 144 actions.
+        assert_eq!(action_cap(Some(1024)), Some(144));
+        assert_eq!(action_cap(Some(524_288)), Some(81_904));
         assert_eq!(action_cap(Some(16)), Some(1));
+    }
+
+    #[test]
+    fn directory_permits_stop_at_the_cap() {
+        assert_eq!(directory_cap(None), None);
+        assert_eq!(directory_cap(Some(1024)), Some(128));
     }
 
     #[test]

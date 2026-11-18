@@ -868,9 +868,19 @@ struct TreeManifest {
 
 struct WorkDir(PathBuf);
 
+impl WorkDir {
+    /// The directory, no longer removed by this guard.
+    fn release(self) -> PathBuf {
+        let mut guard = std::mem::ManuallyDrop::new(self);
+        std::mem::take(&mut guard.0)
+    }
+}
+
 impl Drop for WorkDir {
     fn drop(&mut self) {
+        let mut clock = std::time::Instant::now();
         let _ = remove_directory(&self.0);
+        staging_part(PART_REMOVE, &mut clock);
     }
 }
 
@@ -4362,13 +4372,191 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
 }
 
 fn ensure_directory(path: &Path) -> Result<(), String> {
+    if ENSURED_DIRECTORIES.with(|ensured| {
+        ensured
+            .borrow()
+            .as_ref()
+            .is_some_and(|ensured| ensured.contains(path))
+    }) {
+        return Ok(());
+    }
     fs::create_dir_all(path).map_err(|e| io_error("cannot create directory", path, e))?;
     let metadata =
         fs::symlink_metadata(path).map_err(|e| io_error("cannot inspect directory", path, e))?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(format!("expected real directory: '{}'", path.display()));
     }
+    ENSURED_DIRECTORIES.with(|ensured| {
+        if let Some(ensured) = ensured.borrow_mut().as_mut() {
+            ensured.insert(path.to_path_buf());
+        }
+    });
     Ok(())
+}
+
+thread_local! {
+    /// The directories [`ensure_directory`] established during one
+    /// [`stage_inputs`] call on this thread ([`EnsuredDirectories`]).
+    static ENSURED_DIRECTORIES: std::cell::RefCell<Option<FxHashSet<PathBuf>>> =
+        const { std::cell::RefCell::new(None) };
+    /// The repository tree directories one [`stage_inputs`] call on this
+    /// thread opened ([`tree_file_metadata`]; `None`: the directory could
+    /// not be opened, its files are inspected by path).
+    static TREE_DIRECTORIES: std::cell::RefCell<Option<FxHashMap<PathBuf, Option<Arc<TreeDirectory>>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// `lstat` of a repository tree file during staging, through its directory
+/// opened once per [`stage_inputs`] call (`openat(O_PATH | O_NOFOLLOW)` of
+/// the name, then `fstat`): the same metadata as `lstat(path)` — the
+/// directory resolved like the path's directories are, the last component
+/// not followed — without walking the path's directories for every file.
+/// Every compile of a C++ target inspects thousands of one toolchain's and
+/// one library's headers, before and after its process, from every job at
+/// once; on an overlay filesystem those absolute-path walks of shared
+/// directories serialize (36 µs per lstat of 16 jobs, 5 µs through the
+/// directory). Returns the directory descriptor used, for the inspection
+/// after the process ([`check_staged`]); outside staging, or when the
+/// directory cannot be opened, the path is inspected as before.
+fn tree_file_metadata(path: &Path) -> io::Result<(fs::Metadata, Option<Arc<TreeDirectory>>)> {
+    let directory = match (path.parent(), path.file_name()) {
+        (Some(parent), Some(_)) if !parent.as_os_str().is_empty() => {
+            TREE_DIRECTORIES.with(|directories| {
+                let mut directories = directories.borrow_mut();
+                let directories = directories.as_mut()?;
+                directories
+                    .entry(parent.to_path_buf())
+                    .or_insert_with(|| {
+                        use rustix::fs::{CWD, Mode, OFlags, openat};
+                        let permit = crate::fd_budget::try_directory()?;
+                        let fd = openat(
+                            CWD,
+                            parent,
+                            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                            Mode::empty(),
+                        )
+                        .ok()?;
+                        Some(Arc::new(TreeDirectory {
+                            fd,
+                            _permit: permit,
+                        }))
+                    })
+                    .clone()
+            })
+        }
+        _ => None,
+    };
+    match directory {
+        Some(directory) => {
+            let metadata = metadata_at(&directory, path)?;
+            Ok((metadata, Some(directory)))
+        }
+        None => Ok((fs::symlink_metadata(path)?, None)),
+    }
+}
+
+/// A repository tree directory open during staging ([`tree_file_metadata`]).
+struct TreeDirectory {
+    fd: std::os::fd::OwnedFd,
+    _permit: crate::fd_budget::DirectoryPermit,
+}
+
+/// `lstat` of the file named by `path`'s last component in `directory`.
+fn metadata_at(directory: &TreeDirectory, path: &Path) -> io::Result<fs::Metadata> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::other("a path without a file name"))?;
+    fd_metadata_at(&directory.fd, name)
+}
+
+/// `lstat` of `name` (one component) in the open `directory`: the entry
+/// opened as a path (`O_PATH | O_NOFOLLOW`, a symlink as itself), then
+/// `fstat` (std's metadata, birth time included).
+fn fd_metadata_at(directory: &std::os::fd::OwnedFd, name: &OsStr) -> io::Result<fs::Metadata> {
+    use rustix::fs::{Mode, OFlags, openat};
+    let fd = openat(
+        directory,
+        name,
+        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    fs::File::from(fd).metadata()
+}
+
+/// `lstat` of a file of the store `cas/` (a blob or a distinct copy)
+/// through the store directory, opened once per process: every job
+/// inspects the blobs of the inputs it stages, and the absolute paths'
+/// directories, which every job shares, serialize on an overlay
+/// filesystem. Any other path, or a store directory that cannot be opened,
+/// is inspected by path.
+fn store_metadata(path: &Path) -> io::Result<fs::Metadata> {
+    thread_local! {
+        /// This thread's descriptor of the store directory it inspected last.
+        static STORE: std::cell::RefCell<Option<(PathBuf, Arc<std::os::fd::OwnedFd>)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return fs::symlink_metadata(path);
+    };
+    let directory = STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        match store.as_ref() {
+            Some((known, fd)) if known == parent => Some(Arc::clone(fd)),
+            _ if parent.file_name() == Some(OsStr::new("cas")) => {
+                use rustix::fs::{CWD, Mode, OFlags, openat};
+                let fd = openat(
+                    CWD,
+                    parent,
+                    OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )
+                .ok()
+                .map(Arc::new);
+                if let Some(fd) = &fd {
+                    *store = Some((parent.to_path_buf(), Arc::clone(fd)));
+                }
+                fd
+            }
+            _ => None,
+        }
+    });
+    match directory {
+        Some(directory) => match fd_metadata_at(&directory, name) {
+            // The store directory may have been replaced since it was
+            // opened (a removed cache is created again): by path, and the
+            // descriptor goes.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                STORE.with(|store| *store.borrow_mut() = None);
+                fs::symlink_metadata(path)
+            }
+            result => result,
+        },
+        None => fs::symlink_metadata(path),
+    }
+}
+
+/// While alive, [`ensure_directory`] on this thread checks each directory
+/// once: staging an execution root's inputs writes nothing but its own
+/// entries, so a directory found (or made) a real directory stays one until
+/// the staging ends — what the check of every later input in it would
+/// find again (a C++ compile staged thousands of headers into a few
+/// hundred directories: three syscalls each on an overlay filesystem whose
+/// path lookups serialize across threads).
+struct EnsuredDirectories;
+
+impl EnsuredDirectories {
+    fn enter() -> Self {
+        ENSURED_DIRECTORIES.with(|ensured| *ensured.borrow_mut() = Some(FxHashSet::default()));
+        TREE_DIRECTORIES.with(|opened| *opened.borrow_mut() = Some(FxHashMap::default()));
+        EnsuredDirectories
+    }
+}
+
+impl Drop for EnsuredDirectories {
+    fn drop(&mut self) {
+        ENSURED_DIRECTORIES.with(|ensured| *ensured.borrow_mut() = None);
+        TREE_DIRECTORIES.with(|opened| *opened.borrow_mut() = None);
+    }
 }
 
 /// Give an execution-root output file that shares its inode with another
@@ -4646,7 +4834,7 @@ fn copy_verified(source: &Path, target: &Path, expected: Sha256Digest) -> Result
 /// ([`remember_owned`]): its name is its content, and this process forgets
 /// it whenever it removes or replaces the blob.
 fn blob_valid(blob: &Path, input: &Input) -> Result<bool, String> {
-    let metadata = match fs::symlink_metadata(blob) {
+    let metadata = match store_metadata(blob) {
         Ok(metadata) => metadata,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(io_error("cannot inspect", blob, e)),
@@ -4880,7 +5068,10 @@ fn link_ensured(
     target: &Path,
     mode: u32,
 ) -> Result<PathBuf, String> {
+    let mut clock = std::time::Instant::now();
     let blob = ensure()?;
+    // (Also counted in the caller's PART_BLOB_LINK.)
+    staging_part(PART_BLOB_ENSURE, &mut clock);
     #[cfg(test)]
     if REMOVE_BLOB_BEFORE_LINK.with(|hook| hook.replace(false)) {
         let _ = fs::remove_file(&blob);
@@ -4957,6 +5148,10 @@ struct StagedFile {
     /// mode in `state`); the file is never removed. `None` for a `cas/`
     /// blob, which a modification removes.
     tree_link: Option<Sha256Digest>,
+    /// The tree file's directory, opened once per staging
+    /// ([`tree_file_metadata`]): its inspections after the process go
+    /// through it too.
+    tree_directory: Option<Arc<TreeDirectory>>,
 }
 
 /// The distinct artifacts staged from each store blob into one execution
@@ -5009,6 +5204,7 @@ impl<'a> DistinctInodes<'a> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stage_file<'a>(
     cas: &Path,
     root: &Path,
@@ -5017,12 +5213,39 @@ fn stage_file<'a>(
     destination: &Path,
     staged: &mut Vec<StagedFile>,
     distinct: &mut DistinctInodes<'a>,
+    kept: Option<&reuse::Placed>,
 ) -> Result<(), String> {
+    let mut clock = std::time::Instant::now();
     let target = execroot.join(destination);
+    let ordinal = distinct.ordinal(input);
+    // A reused execution root's link of the same store file in the state it
+    // was staged in (reuse::reconcile): kept when that store file is valid
+    // and still that inode — what linking it now would give.
+    if let Some(reuse::Placed::Blob { blob, state }) = kept {
+        let ensured = match ordinal {
+            0 => ensure_blob(cas, input, root)?,
+            ordinal => ensure_copy(cas, input, root, ordinal)?,
+        };
+        if ensured == *blob
+            && store_metadata(&ensured).is_ok_and(|metadata| metadata.ino() == state.inode)
+        {
+            staging_part(PART_BLOB_ENSURE, &mut clock);
+            staged.push(StagedFile {
+                destination: destination.to_path_buf(),
+                blob: ensured,
+                state: *state,
+                tree_link: None,
+                tree_directory: None,
+            });
+            return Ok(());
+        }
+        fs::remove_file(&target).map_err(|e| io_error("cannot remove", &target, e))?;
+    }
     if let Some(parent) = target.parent() {
         ensure_directory(parent)?;
     }
-    let blob = match distinct.ordinal(input) {
+    staging_part(PART_DIRECTORIES, &mut clock);
+    let blob = match ordinal {
         0 => link_ensured_blob(cas, root, input, &target, blob_mode(input))?,
         ordinal => link_ensured(
             || ensure_copy(cas, input, root, ordinal),
@@ -5030,13 +5253,16 @@ fn stage_file<'a>(
             blob_mode(input),
         )?,
     };
+    staging_part(PART_BLOB_LINK, &mut clock);
     let metadata =
         fs::symlink_metadata(&target).map_err(|e| io_error("cannot inspect", &target, e))?;
+    staging_part(PART_BLOB_INSPECT, &mut clock);
     staged.push(StagedFile {
         destination: destination.to_path_buf(),
         blob,
         state: inode_state(&metadata),
         tree_link: None,
+        tree_directory: None,
     });
     Ok(())
 }
@@ -5066,15 +5292,24 @@ fn stage_tree_link(
     execroot: &Path,
     destination: &Path,
     staged: &mut Vec<StagedFile>,
+    kept: Option<&reuse::Placed>,
 ) -> Result<(), String> {
-    let target = execroot.join(destination);
-    if let Some(parent) = target.parent() {
-        ensure_directory(parent)?;
+    let mut clock = std::time::Instant::now();
+    // A reused execution root's symlink with this tree file's path as its
+    // text (reuse::reconcile) is the link made now; the file is checked
+    // below as for a new link.
+    if !matches!(kept, Some(reuse::Placed::TreeLink(_))) {
+        let target = execroot.join(destination);
+        if let Some(parent) = target.parent() {
+            ensure_directory(parent)?;
+        }
+        staging_part(PART_DIRECTORIES, &mut clock);
+        std::os::unix::fs::symlink(&input.path, &target)
+            .map_err(|e| io_error("cannot link", &target, e))?;
+        staging_part(PART_TREE_LINK, &mut clock);
     }
-    std::os::unix::fs::symlink(&input.path, &target)
-        .map_err(|e| io_error("cannot link", &target, e))?;
-    let metadata = fs::symlink_metadata(&input.path)
-        .map_err(|e| io_error("cannot inspect", &input.path, e))?;
+    let (metadata, tree_directory) =
+        tree_file_metadata(&input.path).map_err(|e| io_error("cannot inspect", &input.path, e))?;
     let changed = || {
         format!(
             "input '{}' changed while it was being staged",
@@ -5100,11 +5335,13 @@ fn stage_tree_link(
     if digest != input.digest {
         return Err(changed());
     }
+    staging_part(PART_TREE_INSPECT, &mut clock);
     staged.push(StagedFile {
         destination: destination.to_path_buf(),
         blob: input.path.clone(),
         state: inode_state(&metadata),
         tree_link: Some(input.digest),
+        tree_directory,
     });
     Ok(())
 }
@@ -5114,6 +5351,31 @@ fn stage_tree_link(
 /// (over all workers) in microseconds, and the files staged as links into
 /// repository trees and as store blobs.
 static STAGING: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+
+/// Summed microseconds of staging's parts ([`report_staging`]): the
+/// directories, the repository tree links (link, inspection), the store
+/// blobs (ensure, link, inspection), the inspection after the process and
+/// the execution root's removal.
+static STAGING_PARTS: [AtomicU64; 9] = [const { AtomicU64::new(0) }; 9];
+const PART_DIRECTORIES: usize = 0;
+const PART_TREE_LINK: usize = 1;
+const PART_TREE_INSPECT: usize = 2;
+const PART_BLOB_ENSURE: usize = 3;
+const PART_BLOB_LINK: usize = 4;
+const PART_BLOB_INSPECT: usize = 5;
+const PART_CHECK: usize = 6;
+const PART_REMOVE: usize = 7;
+const PART_RECONCILE: usize = 8;
+
+/// Adds the time since `clock` to staging part `part`, and resets `clock`.
+fn staging_part(part: usize, clock: &mut std::time::Instant) {
+    let now = std::time::Instant::now();
+    STAGING_PARTS[part].fetch_add(
+        u64::try_from(now.duration_since(*clock).as_micros()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
+    *clock = now;
+}
 
 /// The `PERF-STAGE staging` line when `BAZEL_RS_TIMING` is set: what input
 /// staging (actions and tests) cost this process.
@@ -5125,6 +5387,17 @@ pub fn report_staging() {
     crate::snapshot::diag::line_fmt(format_args!(
         "PERF-STAGE staging {:.3}s calls={calls} tree_links={links} blobs={blobs}",
         micros as f64 / 1e6
+    ));
+    let [reused, kept, removed] = reuse::COUNTS.each_ref().map(|n| n.load(Ordering::Relaxed));
+    crate::snapshot::diag::line_fmt(format_args!(
+        "PERF-STAGE reuse roots={reused} kept={kept} removed={removed}"
+    ));
+    let parts = STAGING_PARTS
+        .each_ref()
+        .map(|n| n.load(Ordering::Relaxed) as f64 / 1e6);
+    crate::snapshot::diag::line_fmt(format_args!(
+        "PERF-STAGE parts directories={:.3}s tree_link={:.3}s tree_inspect={:.3}s blob_ensure={:.3}s blob_link={:.3}s blob_inspect={:.3}s check={:.3}s remove={:.3}s reconcile={:.3}s",
+        parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], parts[7], parts[8]
     ));
     let [setup, prepare, lock, check, hits, misses] =
         CHECKS.each_ref().map(|n| n.load(Ordering::Relaxed));
@@ -5160,6 +5433,7 @@ fn count_check(slot: usize, clock: &mut std::time::Instant) {
 /// Stage one input file at `destination`: a file of a published repository
 /// tree as a link to it ([`stage_tree_link`]), any other file as its store
 /// blob's hardlink ([`stage_file`]).
+#[allow(clippy::too_many_arguments)]
 fn stage_input_file<'a>(
     cas: &Path,
     root: &Path,
@@ -5168,13 +5442,24 @@ fn stage_input_file<'a>(
     destination: &Path,
     staged: &mut Vec<StagedFile>,
     distinct: &mut DistinctInodes<'a>,
+    kept: Option<&reuse::Kept>,
 ) -> Result<(), String> {
+    let kept = kept.and_then(|kept| kept.get(destination));
     if repository_tree_file(root, &input.path) {
         STAGING[2].fetch_add(1, Ordering::Relaxed);
-        stage_tree_link(input, execroot, destination, staged)
+        stage_tree_link(input, execroot, destination, staged, kept)
     } else {
         STAGING[3].fetch_add(1, Ordering::Relaxed);
-        stage_file(cas, root, input, execroot, destination, staged, distinct)
+        stage_file(
+            cas,
+            root,
+            input,
+            execroot,
+            destination,
+            staged,
+            distinct,
+            kept,
+        )
     }
 }
 
@@ -5191,8 +5476,20 @@ fn stage_inputs(
     inputs: &BTreeMap<PathBuf, Staged>,
     execroot: &Path,
 ) -> Result<Vec<StagedFile>, String> {
+    stage_inputs_kept(cas, root, inputs, execroot, None)
+}
+
+/// [`stage_inputs`] into a reused execution root holding `kept`
+/// (reuse::reconcile).
+fn stage_inputs_kept(
+    cas: &Path,
+    root: &Path,
+    inputs: &BTreeMap<PathBuf, Staged>,
+    execroot: &Path,
+    kept: Option<&reuse::Kept>,
+) -> Result<Vec<StagedFile>, String> {
     let clock = std::time::Instant::now();
-    let staged = stage_inputs_untimed(cas, root, inputs, execroot);
+    let staged = stage_inputs_untimed(cas, root, inputs, execroot, kept);
     STAGING[0].fetch_add(1, Ordering::Relaxed);
     STAGING[1].fetch_add(
         u64::try_from(clock.elapsed().as_micros()).unwrap_or(u64::MAX),
@@ -5206,14 +5503,25 @@ fn stage_inputs_untimed(
     root: &Path,
     inputs: &BTreeMap<PathBuf, Staged>,
     execroot: &Path,
+    kept: Option<&reuse::Kept>,
 ) -> Result<Vec<StagedFile>, String> {
+    let _ensured = EnsuredDirectories::enter();
     let mut staged = Vec::new();
     let mut distinct = DistinctInodes::default();
     for (name, input) in inputs {
         match input {
             Staged::File(input) => {
                 materialize(cas, root, &input.path)?;
-                stage_input_file(cas, root, input, execroot, name, &mut staged, &mut distinct)?
+                stage_input_file(
+                    cas,
+                    root,
+                    input,
+                    execroot,
+                    name,
+                    &mut staged,
+                    &mut distinct,
+                    kept,
+                )?
             }
             Staged::Tree(tree) => {
                 ensure_directory(&execroot.join(name))?;
@@ -5230,6 +5538,7 @@ fn stage_inputs_untimed(
                         &destination,
                         &mut staged,
                         &mut distinct,
+                        kept,
                     )?;
                 }
             }
@@ -5248,6 +5557,7 @@ fn stage_inputs_untimed(
                         &destination,
                         &mut staged,
                         &mut distinct,
+                        kept,
                     )?;
                 }
                 for (link, target) in &directory.dangling {
@@ -5283,7 +5593,60 @@ fn stage_inputs_untimed(
 /// process's republication of the same tree identity replaces every file
 /// by identical bytes and modes).
 fn check_staged(staged: &[StagedFile], execroot: &Path) -> Result<(), String> {
+    let mut clock = std::time::Instant::now();
+    let modified = check_staged_untimed(staged, execroot);
+    staging_part(PART_CHECK, &mut clock);
+    modified
+}
+
+fn check_staged_untimed(staged: &[StagedFile], execroot: &Path) -> Result<(), String> {
     let mut modified = Vec::new();
+    // The execution root's directories, opened once each relative to it:
+    // `lstat` of an input's destination through its directory is the same
+    // as through the whole path (the directories resolved alike, the last
+    // component not followed) without walking the cache's directories,
+    // which every job shares, for every input.
+    let root = {
+        use rustix::fs::{CWD, Mode, OFlags, openat};
+        openat(
+            CWD,
+            execroot,
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .ok()
+    };
+    // (The inputs are staged in path order: one directory after another.)
+    let mut last: Option<(PathBuf, Option<std::os::fd::OwnedFd>)> = None;
+    let mut destination_state = |destination: &Path, inode: u64| -> Option<InodeState> {
+        let metadata = match (&root, destination.parent(), destination.file_name()) {
+            (Some(root), Some(parent), Some(name)) => {
+                if last.as_ref().is_none_or(|(known, _)| known != parent) {
+                    let opened = if parent.as_os_str().is_empty() {
+                        rustix::io::dup(root).ok()
+                    } else {
+                        use rustix::fs::{Mode, OFlags, openat};
+                        openat(
+                            root,
+                            parent,
+                            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                            Mode::empty(),
+                        )
+                        .ok()
+                    };
+                    last = Some((parent.to_path_buf(), opened));
+                }
+                match last.as_ref().and_then(|(_, directory)| directory.as_ref()) {
+                    Some(directory) => fd_metadata_at(directory, name).ok(),
+                    None => fs::symlink_metadata(execroot.join(destination)).ok(),
+                }
+            }
+            _ => fs::symlink_metadata(execroot.join(destination)).ok(),
+        };
+        metadata
+            .map(|metadata| inode_state(&metadata))
+            .filter(|state| state.inode == inode)
+    };
     for file in staged {
         let state = |path: &Path| {
             fs::symlink_metadata(path)
@@ -5292,13 +5655,19 @@ fn check_staged(staged: &[StagedFile], execroot: &Path) -> Result<(), String> {
                 .filter(|state| state.inode == file.state.inode)
         };
         let changed = match file.tree_link {
-            Some(digest) => match state(&file.blob) {
+            Some(digest) => match match &file.tree_directory {
+                Some(directory) => metadata_at(directory, &file.blob)
+                    .ok()
+                    .map(|metadata| inode_state(&metadata))
+                    .filter(|state| state.inode == file.state.inode),
+                None => state(&file.blob),
+            } {
                 Some(current) => current != file.state,
                 None => !holds_keyed(&file.blob, digest, file.state.mode),
             },
             None => {
-                let current =
-                    state(&execroot.join(&file.destination)).or_else(|| state(&file.blob));
+                let current = destination_state(&file.destination, file.state.inode)
+                    .or_else(|| state(&file.blob));
                 let changed = current.is_some_and(|current| current != file.state);
                 if changed && state(&file.blob).is_some() {
                     forget_produced(&file.blob);
@@ -7653,7 +8022,7 @@ pub fn execute_with_remote(
     forget_published(&cached);
     crate::remote_outputs::forget_entry(&cached);
     remove_stale(&cached)?;
-    let work = fresh_work(work_parent, key)?;
+    let mut work = fresh_work(work_parent, key)?;
     let execroot = work.0.join("execroot");
     let tmp = local_tmpdir();
     ensure_directory(&execroot)?;
@@ -7856,7 +8225,7 @@ pub fn execute_with_remote(
         }
         spawn_strategy = Some((strategy, execution_info.clone()));
     }
-    let execroot = match &worker {
+    let mut execroot = match &worker {
         Some((lease, _)) => lease.execroot().to_path_buf(),
         None => execroot,
     };
@@ -7870,11 +8239,51 @@ pub fn execute_with_remote(
             matches!(output, crate::remote_cache::Downloaded::Directory(tree) if !tree.symlinks.is_empty())
         })
     });
+    // A local process action's execution root is reused (reuse): a
+    // stashed one of its mnemonic, reconciled with its inputs, replaces the
+    // fresh one; it is stashed again when the action succeeds.
+    let reusable = process
+        && worker.is_none()
+        && remote_hit.is_none()
+        && java_strategy.is_none()
+        && !crate::sandbox::debug()
+        && match spawn_strategy {
+            Some((
+                crate::sandbox::Strategy::ProcessWrapper | crate::sandbox::Strategy::Standalone,
+                _,
+            )) => true,
+            // The Landlock sandbox sets nothing up in the work directory;
+            // the namespace sandbox mounts below it.
+            Some((crate::sandbox::Strategy::Sandboxed, _)) => {
+                crate::sandbox::backend() == crate::sandbox::Backend::Landlock
+            }
+            _ => false,
+        }
+        && reuse::enabled(cache_root);
+    let mut kept = None;
+    if reusable && let Some(stash) = reuse::take(cache_root, &action.extra.mnemonic, &action.id) {
+        let mut clock = std::time::Instant::now();
+        let stashed = stash.work.clone();
+        let stashed_execroot = stashed.join("execroot");
+        match reuse::reconcile(stash, &stashed_execroot, cas, root, inputs) {
+            Ok(reconciled) => {
+                // The fresh work directory goes (empty but its execroot).
+                work = WorkDir(stashed);
+                execroot = stashed_execroot;
+                kept = Some(reconciled);
+            }
+            Err(_) => {
+                let _ = remove_directory(&stashed);
+            }
+        }
+        staging_part(PART_RECONCILE, &mut clock);
+    }
     let staged = if process && (remote_hit.is_none() || hit_links) && java_strategy.is_none() {
-        stage_inputs(cas, root, inputs, &execroot)?
+        stage_inputs_kept(cas, root, inputs, &execroot, kept.as_ref())?
     } else {
         Vec::new()
     };
+    drop(kept);
     for (name, content) in &action.extra.param_files {
         write_file(&execroot.join(name), content, 0)?;
     }
@@ -8604,6 +9013,19 @@ pub fn execute_with_remote(
     // untouched after a build").
     if sandboxed && crate::sandbox::debug() {
         std::mem::forget(work);
+    } else if reusable {
+        let path = work.release();
+        if !reuse::put(
+            cache_root,
+            &action.extra.mnemonic,
+            &action.id,
+            &path,
+            &staged,
+        ) {
+            let mut clock = std::time::Instant::now();
+            let _ = remove_directory(&path);
+            staging_part(PART_REMOVE, &mut clock);
+        }
     }
     let mut done = result(listings, false, java_remote_hit);
     done.runner = runner;
@@ -8612,7 +9034,10 @@ pub fn execute_with_remote(
 }
 
 mod java;
+mod reuse;
 mod tree_stamps;
+
+pub use reuse::StashScope;
 
 #[cfg(test)]
 mod tests {
@@ -8623,6 +9048,86 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     include!("../tests/support/executable_script.rs");
+
+    /// Execution-root reuse (reuse, docs/HARDLINK_STAGING.md): actions of
+    /// one mnemonic run one after another in one reused root, and each sees
+    /// exactly its own inputs — not the previous action's inputs, outputs,
+    /// parameter files or what its process left (a file, a directory, an
+    /// input's link replaced by another file) — with the same inodes.
+    #[test]
+    fn reused_execution_roots_hold_exactly_each_actions_inputs() {
+        let fixture = Fixture::new();
+        let cache = fixture.cache();
+        let source = |name: &str, content: &str| -> SharedPath {
+            let path = fixture.0.join(name);
+            fs::write(&path, content).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+            path.into()
+        };
+        let (a, b) = (source("a", "alpha\n"), source("b", "beta\n"));
+        let action = |id: &str, inputs: Vec<(SharedPath, &str)>, command: &str| Action {
+            id: id.into(),
+            command: command.into(),
+            inputs: inputs
+                .into_iter()
+                .map(|(path, name)| (path, PathBuf::from(name).into()))
+                .collect(),
+            outputs: vec![PathBuf::from(format!("out/{id}"))],
+            shell_strict: true,
+            execution_info: BTreeSet::from(["no-sandbox".to_owned()]),
+            extra: ActionExtra {
+                mnemonic: "Reuse".into(),
+                ..ActionExtra::default()
+            },
+            ..Default::default()
+        };
+        let reused = reuse::COUNTS[0].load(Ordering::Relaxed);
+        let _scope = StashScope::enter(&cache);
+        // The first leaves junk beside and below its inputs, replaces one
+        // input's link by a file of its own, and records the inode of `a`.
+        let first = execute(
+            &cache,
+            &action(
+                "first",
+                vec![(a.clone(), "src/a"), (b.clone(), "src/b")],
+                "stat -c %i src/a > out/first; touch src/junk; mkdir -p src/dir out/extra; \
+                 touch src/dir/x; rm -f src/b; echo forged > src/b",
+            ),
+        )
+        .unwrap();
+        // The second has `b` only (`a` and the junk are gone, `b` is the
+        // source's content again), the third both (`a` is the same inode).
+        let second = execute(
+            &cache,
+            &action(
+                "second",
+                vec![(b.clone(), "src/b")],
+                "test ! -e src/a && test ! -e src/junk && test ! -e src/dir && \
+                 test ! -e out/first && test ! -e out/extra && cat src/b > out/second",
+            ),
+        )
+        .unwrap();
+        let third = execute(
+            &cache,
+            &action(
+                "third",
+                vec![(a.clone(), "src/a"), (b.clone(), "src/b")],
+                "ls -A src > out/third; stat -c %i src/a >> out/third; cat src/a src/b >> out/third",
+            ),
+        )
+        .unwrap();
+        let first_inode = fs::read_to_string(&first.outputs[0]).unwrap();
+        assert_eq!(fs::read_to_string(&second.outputs[0]).unwrap(), "beta\n");
+        assert_eq!(
+            fs::read_to_string(&third.outputs[0]).unwrap(),
+            format!("a\nb\n{first_inode}alpha\nbeta\n")
+        );
+        assert!(reuse::COUNTS[0].load(Ordering::Relaxed) >= reused + 2);
+        drop(_scope);
+        // The scope's end removes the stashed roots.
+        let work: Vec<_> = fs::read_dir(cache.join("work")).unwrap().collect();
+        assert!(work.is_empty(), "{work:?}");
+    }
 
     struct Fixture(PathBuf);
 
