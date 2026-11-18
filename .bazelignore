@@ -54,6 +54,8 @@ tests/fixtures/corpus_parity2/local_repo
 tests/fixtures/corpus_parity2/other_main
 tests/fixtures/corpus_parity2/rules_cc_main
 tests/fixtures/corpus_parity2/workspace
+tests/fixtures/corpus_parity3/predeclared
+tests/fixtures/corpus_parity3/workspace
 tests/fixtures/coverage_command/workspace
 tests/fixtures/cpp_flag_options/workspace
 tests/fixtures/cquery_artifacts/workspace
