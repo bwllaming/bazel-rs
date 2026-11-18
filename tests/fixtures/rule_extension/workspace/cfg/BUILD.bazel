@@ -1,0 +1,14 @@
+load(":defs.bzl", "base", "mid", "plain_child", "string_flag", "top")
+
+string_flag(
+    name = "flag",
+    build_setting_default = "x",
+)
+
+base(name = "b")
+
+mid(name = "m")
+
+top(name = "t")
+
+plain_child(name = "pc")

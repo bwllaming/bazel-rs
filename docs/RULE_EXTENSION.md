@@ -28,9 +28,13 @@ B17 in docs/OSS_CORPUS.md (with_cfg.bzl, rules_cc). Genuine 9.3.1 capture:
   (`cfg = "exec"`) to the child; a target whose rule's definition package is
   not in the group fails `Non-allowlisted attempt to extend a rule.`
   (LocationCheck.DEFINITION).
-- Not modelled: a `cfg` on both the child and an ancestor (Bazel composes
-  them, child first); overriding an attribute with a computed default.
-  Both fail explicitly.
+- A Starlark `cfg` on both the child and an ancestor composes, child first
+  (ComposingTransitionFactory.of(child, parent)): the child's transition is
+  the rule's `""` transition, the ancestors' follow as `^1`, `^2`, ...
+  (custom_rule::composed_rule_transition_key), applied in turn by the rule
+  transition (and again for the idempotency check).
+- Not modelled: composing `config.none()` with another rule transition;
+  overriding an attribute with a computed default. Both fail explicitly.
 
 ## Instantiation
 

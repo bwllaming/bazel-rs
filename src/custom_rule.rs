@@ -5094,17 +5094,27 @@ fn define_rule<'v>(
         // The parent's rule transition composed after the child's
         // (ComposingTransitionFactory.of(child, parent),
         // StarlarkRuleClassFunctions.java:1101-1104).
-        if parent.declaration.cfg != crate::rule_declarations::Cfg::Target {
-            if rule_cfg != crate::rule_declarations::Cfg::Target {
-                bail!(
-                    "rule(parent=...) where both the rule and its parent have a `cfg` transition (a composed rule transition) is not supported by the native profile"
-                );
-            }
-            rule_cfg = parent.declaration.cfg.clone();
+        use crate::rule_declarations::Cfg;
+        match (&rule_cfg, &parent.declaration.cfg) {
+            (_, Cfg::Target) => {}
+            (Cfg::Target, inherited) => rule_cfg = inherited.clone(),
+            // Composed: the child's Starlark transition, then the
+            // ancestors' (RULE_TRANSITION_KEY and its composed successors).
+            (Cfg::Starlark { .. }, Cfg::Starlark { .. }) => {}
+            _ => bail!(
+                "rule(parent=...) composing a `config.none()` rule transition with another one is not supported by the native profile"
+            ),
         }
     }
     if crate::rule_declarations::is_starlark_transition(cfg) {
         function_transitions = true;
+        // An inherited rule transition applies after the child's: it moves
+        // one step down the composition.
+        for key in &mut transition_keys {
+            if let Some(step) = composed_rule_transition_step(key) {
+                *key = composed_rule_transition_key(step + 1);
+            }
+        }
         transition_keys.push(String::new());
         transitions.push(cfg);
     }
@@ -5314,6 +5324,27 @@ fn define_rule<'v>(
         declaration,
         exported: OnceLock::new(),
     }))
+}
+
+/// The key of the `step`-th rule transition of a composition
+/// (rule(parent=...): ComposingTransitionFactory.of(child, parent),
+/// StarlarkRuleClassFunctions.java:1101-1104): `""` is the first (the
+/// rule's own, or the nearest ancestor's), `^1`, `^2`, ... the ancestors'
+/// applied after it. Never an attribute name.
+pub(crate) fn composed_rule_transition_key(step: usize) -> String {
+    if step == 0 {
+        String::new()
+    } else {
+        format!("^{step}")
+    }
+}
+
+/// The step of a rule transition key ([`composed_rule_transition_key`]).
+pub(crate) fn composed_rule_transition_step(key: &str) -> Option<usize> {
+    if key.is_empty() {
+        return Some(0);
+    }
+    key.strip_prefix('^')?.parse().ok()
 }
 
 /// `$allowlist_extend_rule` (StarlarkRuleClassFunctions.java:813-826) by its

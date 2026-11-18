@@ -73,15 +73,14 @@ fn receipt() -> serde_json::Value {
         .unwrap()
 }
 
-#[test]
-fn extended_rules_inherit_initialize_and_call_super_like_bazel() {
-    let receipt = receipt();
-    let ws = Workspace::new();
-    let output = ws.build(&["//ok:use", "//ok:c", "//ok:g"]);
+/// The sorted `RX|` prints of a build of `targets`, compared with the
+/// receipt's `case`.
+fn assert_prints(ws: &Workspace, receipt: &serde_json::Value, case: &str, targets: &[&str]) {
+    let output = ws.build(targets);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(
         output.status.code(),
-        receipt["build"]["exit"].as_i64().map(|code| code as i32),
+        receipt[case]["exit"].as_i64().map(|code| code as i32),
         "{stderr}"
     );
     let prefix = format!("{}/", ws.0.path().display());
@@ -95,13 +94,25 @@ fn extended_rules_inherit_initialize_and_call_super_like_bazel() {
         })
         .collect();
     prints.sort();
-    let expected: Vec<String> = receipt["build"]["prints"]
+    let expected: Vec<String> = receipt[case]["prints"]
         .as_array()
         .unwrap()
         .iter()
         .map(|line| line.as_str().unwrap().to_owned())
         .collect();
     assert_eq!(prints, expected, "{stderr}");
+}
+
+#[test]
+fn extended_rules_inherit_initialize_and_call_super_like_bazel() {
+    let ws = Workspace::new();
+    assert_prints(&ws, &receipt(), "build", &["//ok:use", "//ok:c", "//ok:g"]);
+}
+
+#[test]
+fn extended_rule_transitions_compose_child_first() {
+    let ws = Workspace::new();
+    assert_prints(&ws, &receipt(), "transitions", &["//cfg:all"]);
 }
 
 #[test]

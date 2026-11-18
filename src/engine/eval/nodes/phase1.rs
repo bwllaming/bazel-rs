@@ -2173,17 +2173,37 @@ pub(crate) trait Phase1: Host {
             lines.join("\n")
         };
         let kind = crate::starlark_transitions::Kind::Rule;
-        let post = self
-            .apply_transition(&def, kind, &rule.label, config, &attributes)
-            .map_err(report)?[0]
-            .1;
+        // An extending rule's transition composes with its ancestors'
+        // (rule(parent=...), ComposingTransition: each applied to the
+        // previous one's result).
+        let mut composed = vec![(def, attributes)];
+        for step in 1.. {
+            let key = crate::custom_rule::composed_rule_transition_key(step);
+            let Some(def) = Self::transition_def(rule, &key)? else {
+                break;
+            };
+            let attributes = configured_attributes::transition_attributes(
+                rule,
+                Some(&resolver),
+                &def.given_outputs(),
+            );
+            composed.push((def, attributes));
+        }
+        let apply = |this: &mut Self, from: ConfigId| -> Result<ConfigId, String> {
+            let mut current = from;
+            for (def, attributes) in &composed {
+                current = this
+                    .apply_transition(def, kind, &rule.label, current, attributes)
+                    .map_err(report)?[0]
+                    .1;
+            }
+            Ok(current)
+        };
+        let post = apply(self, config)?;
         if post == config {
             return Ok(None);
         }
-        let again = self
-            .apply_transition(&def, kind, &rule.label, post, &attributes)
-            .map_err(report)?[0]
-            .1;
+        let again = apply(self, post)?;
         Ok(Some(if again == post {
             ConfiguredTargetKey::new(rule.label.clone(), post)
         } else {
