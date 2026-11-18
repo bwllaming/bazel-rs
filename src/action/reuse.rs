@@ -82,13 +82,16 @@ pub(super) fn enabled(cache_root: &Path) -> bool {
         // snapshot-unrecorded: an execution switch; what an action sees is the same either way.
         std::env::var_os("BAZEL_RS_REUSE_EXECROOTS").is_some_and(|value| value == "0")
     });
-    !*OFF
-        && directory_mode().is_some()
-        && scopes()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(cache_root)
-            .is_some_and(|count| *count > 0)
+    !*OFF && directory_mode().is_some() && in_scope(cache_root)
+}
+
+/// Whether a scheduler is executing a graph on `cache_root`.
+fn in_scope(cache_root: &Path) -> bool {
+    scopes()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(cache_root)
+        .is_some_and(|count| *count > 0)
 }
 
 /// The mode of a directory this process creates (0777 without the umask,
@@ -222,6 +225,13 @@ pub(super) fn put(
         })
         .collect();
     let mut stashes = stashes().lock().unwrap_or_else(|e| e.into_inner());
+    // The scope again, under the stashes' lock: the last scope's end
+    // decrements its count before it takes this lock to remove the
+    // stashes, so a stash pushed here while the count is positive is one
+    // that end removes, and none is pushed after it.
+    if !in_scope(cache_root) {
+        return false;
+    }
     let list = stashes
         .entry((cache_root.to_path_buf(), mnemonic.to_owned()))
         .or_default();
@@ -468,4 +478,46 @@ fn reconcile_directory(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stash put while the cache's last scope ends is either refused or
+    /// removed by that end: none outlives the scope.
+    #[test]
+    fn no_stash_outlives_the_last_scope() {
+        let root = crate::test_temp::root().join(format!("reuse-race-{}", std::process::id()));
+        let _ = remove_directory(&root);
+        fs::create_dir_all(&root).unwrap();
+        let cache = root.join("cache");
+        for round in 0..200 {
+            let work = root.join(format!("work-{round}"));
+            fs::create_dir_all(work.join("execroot")).unwrap();
+            let scope = StashScope::enter(&cache);
+            let put = std::thread::scope(|threads| {
+                let putting = threads.spawn(|| put(&cache, "Race", "//p:t#0", &work, &[]));
+                drop(scope);
+                putting.join().unwrap()
+            });
+            assert!(
+                !stashes()
+                    .lock()
+                    .unwrap()
+                    .get(&(cache.clone(), "Race".to_owned()))
+                    .is_some_and(|list| !list.is_empty()),
+                "round {round}: a stash outlived its scope (put: {put})"
+            );
+            if put {
+                assert!(
+                    !work.exists(),
+                    "round {round}: the stashed root was not removed"
+                );
+            } else {
+                remove_directory(&work).unwrap();
+            }
+        }
+        let _ = remove_directory(&root);
+    }
 }

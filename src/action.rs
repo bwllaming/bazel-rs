@@ -4438,6 +4438,7 @@ fn tree_file_metadata(path: &Path) -> io::Result<(fs::Metadata, Option<Arc<TreeD
                         .ok()?;
                         Some(Arc::new(TreeDirectory {
                             fd,
+                            path: parent.to_path_buf(),
                             _permit: permit,
                         }))
                     })
@@ -4458,7 +4459,28 @@ fn tree_file_metadata(path: &Path) -> io::Result<(fs::Metadata, Option<Arc<TreeD
 /// A repository tree directory open during staging ([`tree_file_metadata`]).
 struct TreeDirectory {
     fd: std::os::fd::OwnedFd,
+    /// The path it was opened at.
+    path: PathBuf,
     _permit: crate::fd_budget::DirectoryPermit,
+}
+
+impl TreeDirectory {
+    /// Whether its path still names the directory it opened (device and
+    /// inode): a repository tree republished meanwhile (replaced as a
+    /// whole, crate::repository_store) is another directory at that path,
+    /// whose files the by-path checks inspect.
+    fn current(&self) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        let opened = fs::File::from(match rustix::io::dup(&self.fd) {
+            Ok(fd) => fd,
+            Err(_) => return false,
+        })
+        .metadata();
+        match (opened, fs::metadata(&self.path)) {
+            (Ok(opened), Ok(now)) => opened.dev() == now.dev() && opened.ino() == now.ino(),
+            _ => false,
+        }
+    }
 }
 
 /// `lstat` of the file named by `path`'s last component in `directory`.
@@ -5618,6 +5640,9 @@ fn check_staged_untimed(staged: &[StagedFile], execroot: &Path) -> Result<(), St
     };
     // (The inputs are staged in path order: one directory after another.)
     let mut last: Option<(PathBuf, Option<std::os::fd::OwnedFd>)> = None;
+    // Whether each tree directory opened at staging (by address) is still
+    // the directory at its path ([`TreeDirectory::current`]).
+    let mut current_directories: FxHashMap<usize, bool> = FxHashMap::default();
     let mut destination_state = |destination: &Path, inode: u64| -> Option<InodeState> {
         let metadata = match (&root, destination.parent(), destination.file_name()) {
             (Some(root), Some(parent), Some(name)) => {
@@ -5654,8 +5679,15 @@ fn check_staged_untimed(staged: &[StagedFile], execroot: &Path) -> Result<(), St
                 .map(|metadata| inode_state(&metadata))
                 .filter(|state| state.inode == file.state.inode)
         };
+        // A directory opened at staging still at its path (checked once per
+        // directory), else the file by its path.
+        let directory = file.tree_directory.as_ref().filter(|directory| {
+            *current_directories
+                .entry(Arc::as_ptr(directory) as usize)
+                .or_insert_with(|| directory.current())
+        });
         let changed = match file.tree_link {
-            Some(digest) => match match &file.tree_directory {
+            Some(digest) => match match directory {
                 Some(directory) => metadata_at(directory, &file.blob)
                     .ok()
                     .map(|metadata| inode_state(&metadata))
@@ -6737,6 +6769,115 @@ fn ensured_cache(cache_root: &Path) -> Option<Arc<CacheDirectories>> {
 
 /// Forget that `cache_root`'s directories exist (one of them was found
 /// missing): the next [`ensure_cache`] creates them again.
+/// The owner file of process `pid`'s work directories in `work`
+/// ([`claim_work`]).
+fn work_owner_file(work: &Path, pid: u32) -> PathBuf {
+    work.join(format!(".owner-{pid}"))
+}
+
+/// The process whose work directory `name` is (`{key}-{pid}-{n}`,
+/// [`fresh_work`], the key a SHA-256 in hex), or `None` for any other name.
+fn work_owner(name: &OsStr) -> Option<u32> {
+    let name = name.to_str()?;
+    let mut parts = name.split('-');
+    let (key, pid, n) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some()
+        || key.len() != 64
+        || !key.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || n.is_empty()
+        || !n.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    pid.parse().ok()
+}
+
+/// Claim this process's work directories in `work`: its owner file
+/// `.owner-<pid>`, exclusively locked (flock) for the rest of the process,
+/// so that another process can tell them from a dead one's even after the
+/// pid is reused ([`sweep_work`]). Taken (and held) once per directory; a
+/// removed owner file (a test removing a cache) is claimed again.
+fn claim_work(work: &Path) -> Result<(), String> {
+    static CLAIMED: Mutex<Option<HashMap<PathBuf, File>>> = Mutex::new(None);
+    let owner = work_owner_file(work, std::process::id());
+    let mut claimed = CLAIMED.lock().unwrap_or_else(|e| e.into_inner());
+    let claimed = claimed.get_or_insert_with(HashMap::new);
+    if claimed.contains_key(work) && owner.exists() {
+        return Ok(());
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&owner)
+        .map_err(|e| io_error("cannot create", &owner, e))?;
+    // Blocking: a sweeper holding a dead predecessor's lock of this pid's
+    // file finishes (removing that process's directories and the file)
+    // before this process creates any.
+    FileExt::lock_exclusive(&file).map_err(|e| io_error("cannot lock", &owner, e))?;
+    claimed.insert(work.to_path_buf(), file);
+    Ok(())
+}
+
+/// Remove the work directories in `work` of processes that are gone, and
+/// their owner files (best effort; an error leaves the entry). A process is
+/// gone when its owner file can be locked ([`claim_work`]: a live owner
+/// holds the lock until it exits, also a process that reused the pid); a
+/// work directory without an owner file (an older binary's) only when no
+/// process has its pid. This process's own are never touched.
+fn sweep_work(work: &Path) {
+    let own = std::process::id();
+    let Ok(entries) = fs::read_dir(work) else {
+        return;
+    };
+    let mut directories: BTreeMap<u32, Vec<PathBuf>> = BTreeMap::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let pid = match work_owner(&name) {
+            Some(pid) => Some(pid),
+            None => name
+                .to_str()
+                .and_then(|name| name.strip_prefix(".owner-"))
+                .and_then(|pid| pid.parse().ok()),
+        };
+        if let Some(pid) = pid.filter(|pid| *pid != own) {
+            let paths = directories.entry(pid).or_default();
+            if work_owner(&name).is_some() {
+                paths.push(entry.path());
+            }
+        }
+    }
+    for (pid, paths) in directories {
+        let owner = work_owner_file(work, pid);
+        match File::open(&owner) {
+            Ok(file) => {
+                if FileExt::try_lock_exclusive(&file).is_err() {
+                    continue;
+                }
+                let mut removed = true;
+                for path in &paths {
+                    removed &= remove_directory(path).is_ok();
+                }
+                // Unlinked while locked: a process reusing the pid that
+                // opened the old file waits for this lock, then holds a
+                // lock on an unlinked file (its directories are then kept
+                // as long as the pid runs, below).
+                if removed {
+                    let _ = fs::remove_file(&owner);
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if !Path::new(&format!("/proc/{pid}")).exists() {
+                    for path in &paths {
+                        let _ = remove_directory(path);
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+    }
+}
+
 fn forget_ensured_cache(cache_root: &Path) {
     ensured_caches()
         .lock()
@@ -6774,6 +6915,11 @@ fn ensure_cache(cache_root: &Path) -> Result<Arc<CacheDirectories>, String> {
     ] {
         ensure_directory(path)?;
     }
+    // This process's work directories are claimed before it creates any;
+    // those of processes that are gone go (a killed command's execution
+    // roots, stashed ones among them: docs/HARDLINK_STAGING.md).
+    claim_work(&directories.work)?;
+    sweep_work(&directories.work);
     let directories = Arc::new(directories);
     ensured_caches()
         .lock()
@@ -9049,6 +9195,97 @@ mod tests {
 
     include!("../tests/support/executable_script.rs");
 
+    /// sweep_work: a work directory whose owner file is not locked goes,
+    /// even while another process has the pid (reused); one without an
+    /// owner file (an older binary's) only once no process has the pid; this
+    /// process's own and other names are never touched.
+    #[test]
+    fn work_directories_of_gone_owners_are_swept() {
+        let fixture = Fixture::new();
+        let work = fixture.0.join("work");
+        fs::create_dir(&work).unwrap();
+        let key = "a".repeat(64);
+        let root = |pid: u32| {
+            let path = work.join(format!("{key}-{pid}-0"));
+            fs::create_dir_all(path.join("execroot/ro")).unwrap();
+            fs::set_permissions(path.join("execroot/ro"), fs::Permissions::from_mode(0o555))
+                .unwrap();
+            path
+        };
+        let mut reused = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        let mut older = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        // The pid of a dead owner, now another process's (not holding the
+        // owner file's lock).
+        let dead_owner = root(reused.id());
+        fs::write(work_owner_file(&work, reused.id()), b"").unwrap();
+        // An older binary's, its pid running.
+        let unclaimed = root(older.id());
+        let own = root(std::process::id());
+        let other = work.join("bazel-workers-1");
+        fs::create_dir(&other).unwrap();
+        sweep_work(&work);
+        assert!(!dead_owner.exists());
+        assert!(!work_owner_file(&work, reused.id()).exists());
+        assert!(unclaimed.exists() && own.exists() && other.exists());
+        older.kill().unwrap();
+        older.wait().unwrap();
+        reused.kill().unwrap();
+        reused.wait().unwrap();
+        sweep_work(&work);
+        assert!(!unclaimed.exists());
+        assert!(own.exists() && other.exists());
+        remove_directory(&own).unwrap();
+    }
+
+    /// A repository tree republished while an action ran (replaced as a
+    /// whole: another directory at the path) is checked by path after the
+    /// process, not through the directory staging opened: a changed file
+    /// there is a modified input.
+    #[test]
+    fn a_republished_tree_directory_is_checked_by_path() {
+        let fixture = Fixture::new();
+        let tree = fixture.0.join("tree");
+        fs::create_dir(&tree).unwrap();
+        let file = tree.join("f.h");
+        fs::write(&file, b"keyed\n").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
+        let staged = {
+            let _scope = EnsuredDirectories::enter();
+            let (metadata, directory) = tree_file_metadata(&file).unwrap();
+            assert!(directory.is_some());
+            vec![StagedFile {
+                destination: PathBuf::from("external/r/f.h"),
+                blob: file.clone(),
+                state: inode_state(&metadata),
+                tree_link: Some(digest(b"keyed\n")),
+                tree_directory: directory,
+            }]
+        };
+        let execroot = fixture.0.join("execroot");
+        fs::create_dir(&execroot).unwrap();
+        // Unchanged: through the open directory.
+        assert!(check_staged(&staged, &execroot).is_ok());
+        // Republished with other bytes: the old directory keeps the keyed
+        // file, the path names the new one.
+        fs::rename(&tree, fixture.0.join("old")).unwrap();
+        fs::create_dir(&tree).unwrap();
+        fs::write(&file, b"other\n").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
+        let error = check_staged(&staged, &execroot).unwrap_err();
+        assert!(error.contains("external/r/f.h was modified"), "{error}");
+        // Republished with the keyed bytes: unchanged.
+        fs::remove_file(&file).unwrap();
+        fs::write(&file, b"keyed\n").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
+        assert!(check_staged(&staged, &execroot).is_ok());
+    }
+
     /// Execution-root reuse (reuse, docs/HARDLINK_STAGING.md): actions of
     /// one mnemonic run one after another in one reused root, and each sees
     /// exactly its own inputs — not the previous action's inputs, outputs,
@@ -9125,8 +9362,18 @@ mod tests {
         assert!(reuse::COUNTS[0].load(Ordering::Relaxed) >= reused + 2);
         drop(_scope);
         // The scope's end removes the stashed roots.
-        let work: Vec<_> = fs::read_dir(cache.join("work")).unwrap().collect();
+        let work = work_directories(&cache.join("work"));
         assert!(work.is_empty(), "{work:?}");
+    }
+
+    /// The work directories in `work` (not the owner files, claim_work).
+    fn work_directories(work: &Path) -> Vec<PathBuf> {
+        fs::read_dir(work)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| !entry.file_name().to_string_lossy().starts_with(".owner-"))
+            .map(|entry| entry.path())
+            .collect()
     }
 
     struct Fixture(PathBuf);
@@ -9355,10 +9602,7 @@ mod tests {
         );
         assert!(!marker.exists());
         assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
-        assert_eq!(
-            fs::read_dir(fixture.cache().join("work")).unwrap().count(),
-            0
-        );
+        assert_eq!(work_directories(&fixture.cache().join("work")).len(), 0);
     }
 
     #[test]
@@ -10002,10 +10246,7 @@ mod tests {
         let result = execute(&fixture.cache(), &action).unwrap();
         assert_eq!(fs::read(&result.outputs[0]).unwrap(), b"artifact");
         assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
-        assert_eq!(
-            fs::read_dir(fixture.cache().join("work")).unwrap().count(),
-            0
-        );
+        assert_eq!(work_directories(&fixture.cache().join("work")).len(), 0);
 
         let failed_fixture = Fixture::new();
         action.command = format!("{logs}; printf partial > out/result; false");

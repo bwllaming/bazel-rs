@@ -574,7 +574,28 @@ The process sees the same paths, link texts, inodes and modes as in a fresh
 root; only the change times of kept links and directories differ, as in
 genuine's reused sandboxes. The stashes are removed when the scope ends.
 `BAZEL_RS_REUSE_EXECROOTS=0` stages every root fresh (unit test
-`reused_execution_roots_hold_exactly_each_actions_inputs`).
+`reused_execution_roots_hold_exactly_each_actions_inputs`). A stash put
+while the cache's last scope ends re-checks the scope under the stashes'
+lock, so the end removes it or it is refused (`no_stash_outlives_the_last_scope`).
+
+**Work directories of killed commands.** A command killed mid-build (or
+crashing) leaves its execution roots in `work/` — with reuse up to 64
+stashed ones per mnemonic, whose hardlinks keep store blobs alive past a
+cache collection. Each process claims its work directories before creating
+any: `work/.owner-<pid>`, exclusively `flock`ed until it exits. When a
+process first sets up a cache (`ensure_cache`) it removes the work
+directories `{key}-{pid}-{n}` of every other pid whose owner file it can
+lock (the owner is gone, even if another process has the pid now), then that
+owner file; a directory without an owner file (an older binary's) only when
+no process has its pid. A live command's roots are never removed: its lock
+is held (tests/work_sweep.rs; unit test
+`work_directories_of_gone_owners_are_swept`).
+
+**A republished tree after the process.** A repository tree republished
+while an action ran is another directory at the tree's path; the check after
+the process compares each directory staging opened (device and inode, once
+per directory) with its path and inspects the files of a replaced one by
+path (`a_republished_tree_directory_is_checked_by_path`).
 
 **Inspections through open directories.** On an overlay filesystem, path
 lookups of directories every job shares serialize: with 16 jobs an `lstat`
