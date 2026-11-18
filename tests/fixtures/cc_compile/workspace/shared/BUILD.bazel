@@ -1,0 +1,50 @@
+# B18: rules_cc's Starlark cc_shared_library and cc_binary dynamic_deps
+# (genuine 9.3.1 capture: ../../genuine_aquery_shared.txt).
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_shared_library")
+
+cc_library(
+    name = "base",
+    srcs = ["base.c"],
+    hdrs = ["base.h"],
+)
+
+cc_library(
+    name = "foo",
+    srcs = ["foo.c"],
+    hdrs = ["foo.h"],
+    deps = [":base"],
+)
+
+cc_library(
+    name = "bar",
+    srcs = ["bar.c"],
+    hdrs = ["bar.h"],
+    deps = [":base"],
+)
+
+# Exports :base too: bar_so links against it instead of linking :base again.
+cc_shared_library(
+    name = "foo_so",
+    exports_filter = [":base"],
+    deps = [":foo"],
+)
+
+cc_shared_library(
+    name = "bar_so",
+    dynamic_deps = [":foo_so"],
+    shared_lib_name = "libbarcustom.so",
+    deps = [":bar"],
+)
+
+cc_binary(
+    name = "main",
+    srcs = ["main.c"],
+    dynamic_deps = [
+        ":bar_so",
+        ":foo_so",
+    ],
+    deps = [
+        ":bar",
+        ":foo",
+    ],
+)

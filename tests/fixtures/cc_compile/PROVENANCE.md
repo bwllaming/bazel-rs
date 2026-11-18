@@ -16,3 +16,14 @@ paired receipt compares against genuine Bazel.
 No cgo target lives here: the go SDK is a host installation, not a fixture;
 the cgo paths stay covered by the paired capture script
 (artifacts/cc_compile-capture.py, receipt reference_receipt.json).
+
+`workspace/shared` (OSS corpus B18) is hand-written: three cc_library
+targets, two cc_shared_library targets (`exports_filter`, `dynamic_deps`
+between them, `shared_lib_name`) and a cc_binary with `dynamic_deps`.
+`genuine_aquery_shared.txt` is genuine Bazel 9.3.1's
+`aquery "mnemonic('CppLink|CppArchive|SolibSymlink|CppCompile', //shared:all)"`
+of the same package in a scratch module with `bazel_dep(rules_cc, 0.2.17)`
+from the BCR (host gcc, `--batch --ignore_all_rc_files`); the genuine
+binary prints `112`. Its `bazel-bin/shared` holds the same files as the
+native build (`_objs`, `lib{base,foo,bar}.{a,so}`, `libfoo_so.so`,
+`libbarcustom.so`, `main`, runfiles) apart from C1's `-0.params` files.

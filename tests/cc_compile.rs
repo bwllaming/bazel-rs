@@ -537,3 +537,53 @@ fn cc_import_of_windows_library_types_matches_genuine() {
         blocks(&expected)
     );
 }
+
+/// OSS corpus B18: rules_cc's Starlark `cc_shared_library` (graph structure
+/// aspect, `exports_filter`, `dynamic_deps` between shared libraries,
+/// `shared_lib_name`) and `cc_binary(dynamic_deps = ...)` analyse, link and
+/// run. genuine_aquery_shared.txt is genuine 9.3.1's
+/// `aquery "mnemonic('CppLink|CppArchive|SolibSymlink|CppCompile', //shared:all)"`
+/// of the same `shared` package over BCR rules_cc 0.2.17: every compile,
+/// archive, link and solib symlink action (keys and command lines) matches.
+#[test]
+fn cc_shared_library_and_dynamic_deps_match_genuine() {
+    if !Path::new("/usr/bin/gcc").exists() && !Path::new("/usr/bin/cc").exists() {
+        eprintln!("skipped: no host C compiler for cc_configure");
+        return;
+    }
+    let ws = Workspace::new();
+    let output = ws.aquery(
+        "cache",
+        &["mnemonic('CppLink|CppArchive|SolibSymlink|CppCompile', //shared:all)"],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let blocks = |text: &str| -> Vec<String> {
+        let mut blocks: Vec<String> = text
+            .split("\n\n")
+            .filter(|block| !block.trim().is_empty())
+            .map(|block| {
+                block
+                    .lines()
+                    .filter(|line| {
+                        !line.starts_with("  Execution platform: ")
+                            && !line.starts_with("# Configuration: ")
+                            && !line.starts_with("# Execution platform: ")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .collect();
+        blocks.sort();
+        blocks
+    };
+    let expected = fs::read_to_string(fixture().join("genuine_aquery_shared.txt")).unwrap();
+    assert_eq!(
+        blocks(&String::from_utf8_lossy(&output.stdout)),
+        blocks(&expected)
+    );
+    // The binary finds both shared libraries through its rpath and runs
+    // (genuine: `112`).
+    let run = ws.command("cache", "run", &["//shared:main"], &[]);
+    assert!(run.status.success(), "{}", stderr(&run));
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "112\n");
+}

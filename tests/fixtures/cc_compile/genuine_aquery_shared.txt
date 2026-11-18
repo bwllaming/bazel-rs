@@ -1,0 +1,450 @@
+action 'Compiling shared/bar.c'
+  Mnemonic: CppCompile
+  Target: //shared:bar
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 8c338eef8684ac25c8468fbafd0729029f3895e4e4e49aba500d82f3d2d09242
+  Inputs: [external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths, external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh, shared/bar.c, shared/bar.h, shared/base.h]
+  Outputs: [bazel-out/k8-fastbuild/bin/shared/_objs/bar/bar.pic.d, bazel-out/k8-fastbuild/bin/shared/_objs/bar/bar.pic.o]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /usr/bin/gcc \
+    -U_FORTIFY_SOURCE \
+    -fstack-protector \
+    -Wall \
+    -Wunused-but-set-parameter \
+    -Wno-free-nonheap-object \
+    -fno-omit-frame-pointer \
+    -MD \
+    -MF \
+    bazel-out/k8-fastbuild/bin/shared/_objs/bar/bar.pic.d \
+    '-frandom-seed=bazel-out/k8-fastbuild/bin/shared/_objs/bar/bar.pic.o' \
+    -fPIC \
+    -iquote \
+    . \
+    -iquote \
+    bazel-out/k8-fastbuild/bin \
+    -c \
+    shared/bar.c \
+    -o \
+    bazel-out/k8-fastbuild/bin/shared/_objs/bar/bar.pic.o \
+    -fno-canonical-system-headers \
+    -Wno-builtin-macro-redefined \
+    '-D__DATE__="redacted"' \
+    '-D__TIMESTAMP__="redacted"' \
+    '-D__TIME__="redacted"')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Linking shared/libbar.a'
+  Mnemonic: CppArchive
+  Target: //shared:bar
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 17b29b9519cb756ed57d57c99a30ece333a515a5c4d8b8f3e44e0f8666553612
+  Inputs: [bazel-out/k8-fastbuild/bin/shared/_objs/bar/bar.pic.o, external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths, external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/shared/libbar.a]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, PWD=/proc/self/cwd, ZERO_AR_DATE=1]
+  Command Line: (exec /usr/bin/ar \
+    rcsD \
+    bazel-out/k8-fastbuild/bin/shared/libbar.a \
+    bazel-out/k8-fastbuild/bin/shared/_objs/bar/bar.pic.o)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Linking shared/libbar.so'
+  Mnemonic: CppLink
+  Target: //shared:bar
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: c2911c9a8c578a0839011e9d34dfc37eb2ac8a25797e7c5a306e20ba4e071ed7
+  Inputs: [bazel-out/k8-fastbuild/bin/shared/_objs/bar/bar.pic.o, external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths, external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh, external/rules_cc+/cc/private/toolchain/build_interface_so, external/rules_cc+/cc/private/toolchain/link_dynamic_library.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/shared/libbar.so]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, PWD=/proc/self/cwd, ZERO_AR_DATE=1]
+  Command Line: (exec /usr/bin/gcc \
+    -shared \
+    -o \
+    bazel-out/k8-fastbuild/bin/shared/libbar.so \
+    -Wl,-S \
+    '-fuse-ld=gold' \
+    -B/usr/bin \
+    -Wl,-no-as-needed \
+    -Wl,-z,relro,-z,now \
+    -pass-exit-codes \
+    bazel-out/k8-fastbuild/bin/shared/_objs/bar/bar.pic.o \
+    -Wl,--push-state,-as-needed \
+    -lstdc++ \
+    -Wl,--pop-state \
+    -Wl,--push-state,-as-needed \
+    -lm \
+    -Wl,--pop-state)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'SolibSymlink _solib_k8/libshared_Slibbar.so'
+  Mnemonic: SolibSymlink
+  Target: //shared:bar
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 86052218b193ce409e2223eb68ff9491109ed86d25392c775dad8198fee2521e
+  Inputs: [bazel-out/k8-fastbuild/bin/shared/libbar.so]
+  Outputs: [bazel-out/k8-fastbuild/bin/_solib_k8/libshared_Slibbar.so]
+
+action 'SolibSymlink _solib_k8/_Ushared/libbarcustom.so'
+  Mnemonic: SolibSymlink
+  Target: //shared:bar_so
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: a6cad4b75618541b8520956798e9577e4ea44bbf8d2302f168006ba9db6ee6df
+  Inputs: [bazel-out/k8-fastbuild/bin/shared/libbarcustom.so]
+  Outputs: [bazel-out/k8-fastbuild/bin/_solib_k8/_Ushared/libbarcustom.so]
+
+action 'Linking shared/libbarcustom.so'
+  Mnemonic: CppLink
+  Target: //shared:bar_so
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 1c69b16dece91d8e24c16c55e7c0dd541d9dc7e77385d795e63cb46c6d9257b9
+  Inputs: [bazel-out/k8-fastbuild/bin/_solib_k8/_Ushared/libfoo_so.so, bazel-out/k8-fastbuild/bin/shared/_objs/bar/bar.pic.o, external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths, external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh, external/rules_cc+/cc/private/toolchain/build_interface_so, external/rules_cc+/cc/private/toolchain/link_dynamic_library.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/shared/libbarcustom.so]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, PWD=/proc/self/cwd, ZERO_AR_DATE=1]
+  Command Line: (exec /usr/bin/gcc \
+    -shared \
+    -o \
+    bazel-out/k8-fastbuild/bin/shared/libbarcustom.so \
+    -Xlinker \
+    -rpath \
+    -Xlinker \
+    '$ORIGIN/../_solib_k8/_Ushared' \
+    -Xlinker \
+    -rpath \
+    -Xlinker \
+    '$ORIGIN/libbarcustom.so.runfiles/_main/_solib_k8/_Ushared' \
+    -Xlinker \
+    -rpath \
+    -Xlinker \
+    '$ORIGIN/../../_solib_k8/_Ushared' \
+    -Lbazel-out/k8-fastbuild/bin/_solib_k8/_Ushared \
+    -Wl,-S \
+    '-fuse-ld=gold' \
+    -B/usr/bin \
+    -Wl,-no-as-needed \
+    -Wl,-z,relro,-z,now \
+    -pass-exit-codes \
+    bazel-out/k8-fastbuild/bin/shared/_objs/bar/bar.pic.o \
+    -lfoo_so \
+    -Wl,--push-state,-as-needed \
+    -lstdc++ \
+    -Wl,--pop-state \
+    -Wl,--push-state,-as-needed \
+    -lm \
+    -Wl,--pop-state)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Compiling shared/base.c'
+  Mnemonic: CppCompile
+  Target: //shared:base
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: dac636c9fe415e06d8a67c93aa4a6e4d21bfffbaf5710c151d792ea51d772392
+  Inputs: [external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths, external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh, shared/base.c, shared/base.h]
+  Outputs: [bazel-out/k8-fastbuild/bin/shared/_objs/base/base.pic.d, bazel-out/k8-fastbuild/bin/shared/_objs/base/base.pic.o]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /usr/bin/gcc \
+    -U_FORTIFY_SOURCE \
+    -fstack-protector \
+    -Wall \
+    -Wunused-but-set-parameter \
+    -Wno-free-nonheap-object \
+    -fno-omit-frame-pointer \
+    -MD \
+    -MF \
+    bazel-out/k8-fastbuild/bin/shared/_objs/base/base.pic.d \
+    '-frandom-seed=bazel-out/k8-fastbuild/bin/shared/_objs/base/base.pic.o' \
+    -fPIC \
+    -iquote \
+    . \
+    -iquote \
+    bazel-out/k8-fastbuild/bin \
+    -c \
+    shared/base.c \
+    -o \
+    bazel-out/k8-fastbuild/bin/shared/_objs/base/base.pic.o \
+    -fno-canonical-system-headers \
+    -Wno-builtin-macro-redefined \
+    '-D__DATE__="redacted"' \
+    '-D__TIMESTAMP__="redacted"' \
+    '-D__TIME__="redacted"')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Linking shared/libbase.a'
+  Mnemonic: CppArchive
+  Target: //shared:base
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 801905a00b594010b0b5a2151f096384d844fb76a0fdbbc1d66e8b66a3163452
+  Inputs: [bazel-out/k8-fastbuild/bin/shared/_objs/base/base.pic.o, external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths, external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/shared/libbase.a]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, PWD=/proc/self/cwd, ZERO_AR_DATE=1]
+  Command Line: (exec /usr/bin/ar \
+    rcsD \
+    bazel-out/k8-fastbuild/bin/shared/libbase.a \
+    bazel-out/k8-fastbuild/bin/shared/_objs/base/base.pic.o)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Linking shared/libbase.so'
+  Mnemonic: CppLink
+  Target: //shared:base
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 5c5783121848cdc8f92d7f8cb50aeb92698968f8ea197f5cbe7144b7494d2329
+  Inputs: [bazel-out/k8-fastbuild/bin/shared/_objs/base/base.pic.o, external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths, external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh, external/rules_cc+/cc/private/toolchain/build_interface_so, external/rules_cc+/cc/private/toolchain/link_dynamic_library.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/shared/libbase.so]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, PWD=/proc/self/cwd, ZERO_AR_DATE=1]
+  Command Line: (exec /usr/bin/gcc \
+    -shared \
+    -o \
+    bazel-out/k8-fastbuild/bin/shared/libbase.so \
+    -Wl,-S \
+    '-fuse-ld=gold' \
+    -B/usr/bin \
+    -Wl,-no-as-needed \
+    -Wl,-z,relro,-z,now \
+    -pass-exit-codes \
+    bazel-out/k8-fastbuild/bin/shared/_objs/base/base.pic.o \
+    -Wl,--push-state,-as-needed \
+    -lstdc++ \
+    -Wl,--pop-state \
+    -Wl,--push-state,-as-needed \
+    -lm \
+    -Wl,--pop-state)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'SolibSymlink _solib_k8/libshared_Slibbase.so'
+  Mnemonic: SolibSymlink
+  Target: //shared:base
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: f5bf292aae769803794f298ed4135d2371dd197110cf92f500546b4f834a81ba
+  Inputs: [bazel-out/k8-fastbuild/bin/shared/libbase.so]
+  Outputs: [bazel-out/k8-fastbuild/bin/_solib_k8/libshared_Slibbase.so]
+
+action 'Compiling shared/foo.c'
+  Mnemonic: CppCompile
+  Target: //shared:foo
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: df5b8b055f6eee72e811b45dc0794c9bb468e59d7c2ede983f3a3bc4843ca558
+  Inputs: [external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths, external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh, shared/base.h, shared/foo.c, shared/foo.h]
+  Outputs: [bazel-out/k8-fastbuild/bin/shared/_objs/foo/foo.pic.d, bazel-out/k8-fastbuild/bin/shared/_objs/foo/foo.pic.o]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /usr/bin/gcc \
+    -U_FORTIFY_SOURCE \
+    -fstack-protector \
+    -Wall \
+    -Wunused-but-set-parameter \
+    -Wno-free-nonheap-object \
+    -fno-omit-frame-pointer \
+    -MD \
+    -MF \
+    bazel-out/k8-fastbuild/bin/shared/_objs/foo/foo.pic.d \
+    '-frandom-seed=bazel-out/k8-fastbuild/bin/shared/_objs/foo/foo.pic.o' \
+    -fPIC \
+    -iquote \
+    . \
+    -iquote \
+    bazel-out/k8-fastbuild/bin \
+    -c \
+    shared/foo.c \
+    -o \
+    bazel-out/k8-fastbuild/bin/shared/_objs/foo/foo.pic.o \
+    -fno-canonical-system-headers \
+    -Wno-builtin-macro-redefined \
+    '-D__DATE__="redacted"' \
+    '-D__TIMESTAMP__="redacted"' \
+    '-D__TIME__="redacted"')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Linking shared/libfoo.a'
+  Mnemonic: CppArchive
+  Target: //shared:foo
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 22ab3014e7a9066ac793df050b681bf15594602785020b10a634ad6433b15465
+  Inputs: [bazel-out/k8-fastbuild/bin/shared/_objs/foo/foo.pic.o, external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths, external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/shared/libfoo.a]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, PWD=/proc/self/cwd, ZERO_AR_DATE=1]
+  Command Line: (exec /usr/bin/ar \
+    rcsD \
+    bazel-out/k8-fastbuild/bin/shared/libfoo.a \
+    bazel-out/k8-fastbuild/bin/shared/_objs/foo/foo.pic.o)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Linking shared/libfoo.so'
+  Mnemonic: CppLink
+  Target: //shared:foo
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 8b476fe2641ceb76e6ca5ea6bfac48fafa52bd0c8ad02d872119188db28c8127
+  Inputs: [bazel-out/k8-fastbuild/bin/shared/_objs/foo/foo.pic.o, external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths, external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh, external/rules_cc+/cc/private/toolchain/build_interface_so, external/rules_cc+/cc/private/toolchain/link_dynamic_library.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/shared/libfoo.so]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, PWD=/proc/self/cwd, ZERO_AR_DATE=1]
+  Command Line: (exec /usr/bin/gcc \
+    -shared \
+    -o \
+    bazel-out/k8-fastbuild/bin/shared/libfoo.so \
+    -Wl,-S \
+    '-fuse-ld=gold' \
+    -B/usr/bin \
+    -Wl,-no-as-needed \
+    -Wl,-z,relro,-z,now \
+    -pass-exit-codes \
+    bazel-out/k8-fastbuild/bin/shared/_objs/foo/foo.pic.o \
+    -Wl,--push-state,-as-needed \
+    -lstdc++ \
+    -Wl,--pop-state \
+    -Wl,--push-state,-as-needed \
+    -lm \
+    -Wl,--pop-state)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'SolibSymlink _solib_k8/libshared_Slibfoo.so'
+  Mnemonic: SolibSymlink
+  Target: //shared:foo
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: c9a5b6a0c6db9ee1f53907643a043a25ad0eb215f941cf05f09bad7abdf44115
+  Inputs: [bazel-out/k8-fastbuild/bin/shared/libfoo.so]
+  Outputs: [bazel-out/k8-fastbuild/bin/_solib_k8/libshared_Slibfoo.so]
+
+action 'SolibSymlink _solib_k8/_Ushared/libfoo_so.so'
+  Mnemonic: SolibSymlink
+  Target: //shared:foo_so
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 097f0e84b5df2a0a70c43a8866d838a6fc1489456b1ba1dca2524181c83c21f9
+  Inputs: [bazel-out/k8-fastbuild/bin/shared/libfoo_so.so]
+  Outputs: [bazel-out/k8-fastbuild/bin/_solib_k8/_Ushared/libfoo_so.so]
+
+action 'Linking shared/libfoo_so.so'
+  Mnemonic: CppLink
+  Target: //shared:foo_so
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 0c9047cf721a84db90397b115364b7956e514a78c73d950a7a02af4ab642b7d8
+  Inputs: [bazel-out/k8-fastbuild/bin/shared/_objs/base/base.pic.o, bazel-out/k8-fastbuild/bin/shared/_objs/foo/foo.pic.o, external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths, external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh, external/rules_cc+/cc/private/toolchain/build_interface_so, external/rules_cc+/cc/private/toolchain/link_dynamic_library.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/shared/libfoo_so.so]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, PWD=/proc/self/cwd, ZERO_AR_DATE=1]
+  Command Line: (exec /usr/bin/gcc \
+    -shared \
+    -o \
+    bazel-out/k8-fastbuild/bin/shared/libfoo_so.so \
+    -Wl,-S \
+    '-fuse-ld=gold' \
+    -B/usr/bin \
+    -Wl,-no-as-needed \
+    -Wl,-z,relro,-z,now \
+    -pass-exit-codes \
+    bazel-out/k8-fastbuild/bin/shared/_objs/foo/foo.pic.o \
+    -Wl,--start-lib \
+    bazel-out/k8-fastbuild/bin/shared/_objs/base/base.pic.o \
+    -Wl,--end-lib \
+    -Wl,--push-state,-as-needed \
+    -lstdc++ \
+    -Wl,--pop-state \
+    -Wl,--push-state,-as-needed \
+    -lm \
+    -Wl,--pop-state)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Compiling shared/main.c'
+  Mnemonic: CppCompile
+  Target: //shared:main
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 501ef64401609508e4983a21a82273bf9c1f4bb5f7fd54a6b1eda58e74fd961f
+  Inputs: [external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths, external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh, shared/bar.h, shared/base.h, shared/foo.h, shared/main.c]
+  Outputs: [bazel-out/k8-fastbuild/bin/shared/_objs/main/main.pic.d, bazel-out/k8-fastbuild/bin/shared/_objs/main/main.pic.o]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /usr/bin/gcc \
+    -U_FORTIFY_SOURCE \
+    -fstack-protector \
+    -Wall \
+    -Wunused-but-set-parameter \
+    -Wno-free-nonheap-object \
+    -fno-omit-frame-pointer \
+    -MD \
+    -MF \
+    bazel-out/k8-fastbuild/bin/shared/_objs/main/main.pic.d \
+    '-frandom-seed=bazel-out/k8-fastbuild/bin/shared/_objs/main/main.pic.o' \
+    -fPIC \
+    -iquote \
+    . \
+    -iquote \
+    bazel-out/k8-fastbuild/bin \
+    -iquote \
+    external/rules_cc+ \
+    -iquote \
+    bazel-out/k8-fastbuild/bin/external/rules_cc+ \
+    -iquote \
+    external/bazel_tools \
+    -iquote \
+    bazel-out/k8-fastbuild/bin/external/bazel_tools \
+    -c \
+    shared/main.c \
+    -o \
+    bazel-out/k8-fastbuild/bin/shared/_objs/main/main.pic.o \
+    -fno-canonical-system-headers \
+    -Wno-builtin-macro-redefined \
+    '-D__DATE__="redacted"' \
+    '-D__TIMESTAMP__="redacted"' \
+    '-D__TIME__="redacted"')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Linking shared/main'
+  Mnemonic: CppLink
+  Target: //shared:main
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 21c2e3431c625d4b85aa61988ab65679813f2e4728b7c29553615e95b5e9bf36
+  Inputs: [bazel-out/k8-fastbuild/bin/_solib_k8/_Ushared/libbarcustom.so, bazel-out/k8-fastbuild/bin/_solib_k8/_Ushared/libfoo_so.so, bazel-out/k8-fastbuild/bin/shared/_objs/main/main.pic.o, external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths, external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh, external/rules_cc+/cc/private/toolchain/build_interface_so, external/rules_cc+/cc/private/toolchain/link_dynamic_library.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/shared/main]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, PWD=/proc/self/cwd, ZERO_AR_DATE=1]
+  Command Line: (exec /usr/bin/gcc \
+    -o \
+    bazel-out/k8-fastbuild/bin/shared/main \
+    -Xlinker \
+    -rpath \
+    -Xlinker \
+    '$ORIGIN/../_solib_k8/_Ushared' \
+    -Xlinker \
+    -rpath \
+    -Xlinker \
+    '$ORIGIN/main.runfiles/_main/_solib_k8/_Ushared' \
+    -Lbazel-out/k8-fastbuild/bin/_solib_k8/_Ushared \
+    -Wl,-S \
+    '-fuse-ld=gold' \
+    -B/usr/bin \
+    -Wl,-no-as-needed \
+    -Wl,-z,relro,-z,now \
+    -pass-exit-codes \
+    bazel-out/k8-fastbuild/bin/shared/_objs/main/main.pic.o \
+    -lbarcustom \
+    -lfoo_so \
+    -Wl,--push-state,-as-needed \
+    -lstdc++ \
+    -Wl,--pop-state \
+    -Wl,--push-state,-as-needed \
+    -lm \
+    -Wl,--pop-state)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
