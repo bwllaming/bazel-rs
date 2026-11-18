@@ -169,21 +169,21 @@ sample.
 | rules_python-pip_parse | **OK**¹⁵ | 30.3–35.7 / 46.5–51.7 | 3.5 / 0.2 / 0.2 | 4.7 / 1.1 | 1625 / 614 | 56, 0, 0, 0 | PASSED:2 / PASSED:2 | (B2) |
 | rules-template | BOTH-FAIL¹ | 25.8 / 24.1 | 3.7 / 0.2 / 0.2 | 26.4 / 25.6 | 1405 / 423 | 446, 0, 0, 0 | FAILED:1 PASSED:1 / same | (B2) |
 | yalantinglibs | DIFF² | 12.2 / 7.5 | 3.1 / 0.2 / 0.1 | 61.5 (exit 1) / 52.1 (exit 1) | 638 / 213 | 126, 6, 0, 0 | same | (B2) |
-| buildtools | DIFF¹⁴ | 25.9 / 29.5 | 4.3 / 0.3 / 0.2 | 50.4 / 54.0 | 1974 / 1464 | 566, 0, 0, 1 | FAILED:2 PASSED:23 / same | B6 |
+| buildtools | BOTH-FAIL¹⁷ | 40.4 / 62.3 | 4.7 / — / 0.2 | 56.4 / 83.4 | 1990 / 1471 | 566, 0, 0, 0 | FAILED:2 PASSED:23 / same | |
 | bazel-gazelle | RS-FAIL¹⁶ | 49.8 / 40.2 | 4.4 / 0.3 / not rerun | 53.0–62.5 / 55.1–59.7 | 1647 / 1031 | 2545, 6, 0, 0 (before B13's fix) | FAILED:2 PASSED:194 / FAILED:2 PASSED:192 (before B13's fix) | (B13 fixed; not rerun) |
-| diff.bzl | DIFF¹⁵ | 22.3 / 14.5 | 3.5 / — / 0.2 | 11.8 / 10.9 | 1190 / 354 | 308, 0, 0, 1 | PASSED:6 / PASSED:6 | B6 |
-| rules_python-bzlmod | DIFF¹⁵ | 44.9 / 59.6 | 7.3 / — / 0.2 | 43.8 / 41.4 | 2022 / 2577 | 319, 0, 0, 1 | PASSED:31 / PASSED:31 | B34 |
-| with_cfg-examples | RS-FAIL¹⁰ | 35.3 / 43.9 (exit 1) | 4.2 / 0.3 / 3.3 (exit 1) | 8.7 / 8.6 (exit 1) | 1405 / 1739 | 188, 56, 0, 8 | PASSED:20 / PASSED:15 | B17, B18, B19 |
+| diff.bzl | **OK**¹⁷ | 29.4 / 43.5 | 3.6 / — / 0.2 | 13.0 / 16.0 | 812 / 374 | 308, 0, 0, 0 | PASSED:6 / PASSED:6 | |
+| rules_python-bzlmod | DIFF¹⁷ | 51.9 / 77.6 | 6.2 / — / 0.2 | 48.7 / 43.0 | 1936 / 2583 | 319, 0, 0, 1 | PASSED:31 / PASSED:31 | B34 |
+| with_cfg-examples | RS-FAIL¹⁷ | 34.1 / 77.2 (exit 1) | 4.6 / — / 3.9 (exit 1) | 9.8 / 13.4 (exit 1) | 1622 / 1817 | 194, 50, 0, 8 | PASSED:20 / PASSED:17 | B18, B19, B36 |
 | examples-rules | RS-FAIL | 12.3 / 8.3 (exit 1) | 2.9 / 0.1 / 1.2 (exit 1) | 3.6 / 1.7 (exit 1) | 673 / 250 | 99, 4, 0, 0 | PASSED:1 / PASSED:1 | B23 |
 | googletest | RS-FAIL | 25.4 / 14.7 (exit 1) | 3.2 / 0.2 / 1.5 (exit 1) | 32.0 / 1.1 (exit 1) | 1198 / 453 | 8, 521, 0, 0 | PASSED:44 / — | B1 |
 | re2 | RS-FAIL³ | 13.7 (exit 1) / 9.5 (exit 1) | 2.9 / 0.2 / 1.4 (both exit 1) | 15.3 (exit 1) / 6.6 (exit 1) | 1071 / 313 | 324, 761, 0, 0 | PASSED:21 / PASSED:1 | B1 |
 | highway | RS-FAIL | 11.9 / 7.6 (exit 1) | — | — | 736 / 234 | — | — | B1 |
-| bazel-skylib | DIFF¹⁵ | 28.3 / 20.5 | 3.3 / — / 0.1 | 48.5 / 58.1 | 1328 / 553 | 689, 0, 0, 9 | FAILED:4 PASSED:158 / FAILED:4 PASSED:158 | B6 |
-| junit5-starter | RS-FAIL | 25.3 / 4.2 (exit 1) | 4.0 / 0.2 / 0.3 (exit 1) | 7.7 / 0.3 (exit 1) | 1293 / 115 | 0, 128, 0, 0 | PASSED:1 / — | B3 |
+| bazel-skylib | BOTH-FAIL¹⁷ | 27.5 / 43.3 | 3.6 / — / 0.2 | 57.9 / 62.9 | 1327 / 558 | 689, 0, 0, 0 | FAILED:4 PASSED:158 / same | |
+| junit5-starter | DIFF¹⁷ | 29.5 / 46.7 | 3.8 / — / 0.1 | 8.7 / 6.1 | 1243 / 488 | 100, 28, 0, 0 | PASSED:1 / PASSED:1 | C2 |
 | rules_zig | RS-FAIL¹⁵ | 30.7 / 36.8 (exit 1) | 13.2 / — / 12.0 (exit 1) | 36.9 / 11.9 (exit 1) | 1909 / 2042 | 0, 1292, 0, 0 | PASSED:211 SKIPPED:4 / SKIPPED:4 | B13c |
 | capnproto | RS-FAIL⁴ | 17.1 / 11.3 (exit 1) | 3.3 / 0.1 / 1.5 (exit 1) | 22.6 (exit 1) / 7.5 (exit 1) | 1127 / 384 | 317, 1085, 0, 0 | both: FAILED TO BUILD:5 SKIPPED:14 | B11, B20, (B2) |
 | tink-cc-examples | RS-FAIL | 17.3 / 17.1 (exit 1) | — | — | 1127 / 490 | — | — | B11, B14 |
-| examples-java-maven | RS-FAIL¹⁵ | 35.5 / 26.9 (exit 1) | 3.5 / — / 1.1 (exit 1) | 8.0 / 1.1 (exit 1) | 1177 / 430 | 1, 134, 0, 0 | PASSED:2 / 0 | B31, B14 |
+| examples-java-maven | RS-FAIL¹⁷ | 36.4 / 64.0 (exit 1) | 3.5 / — / 1.3 (exit 1) | 7.9 / 1.5 (exit 1) | 1225 / 445 | 1, 134, 0, 0 | PASSED:2 / 0 | B31 |
 | rules_cc | RS-FAIL¹⁵ | 20.0 (exit 1) / 20.4 (exit 1) | 5.3 (exit 1) / — / 4.7 (exit 1) | 52.6 (exit 1) / 63.6 (exit 1) | 2635 / 1392 | 1348, 636, 0, 1 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:3 FAILED TO BUILD:2 PASSED:258 SKIPPED:2 | B32, B17, B18 |
 | examples-rust-deps-cargo | RS-FAIL | 44.0 / 0.3 (exit 1) | 2.9 / 0.2 / 0.3 (exit 1) | 28.8 / 0.3 (exit 1) | 1034 / 29 | 0, 103, 0, 0 | — | B9, (B2) |
 | protobuf | BOTH-FAIL¹⁵ | 49.3 (exit 1) / 79.0 (exit 1) | 7.0 (exit 1) / — / 18.1 (exit 1) | — | 2699 / 3315 | — | — | B33 |
@@ -290,17 +290,37 @@ Notes:
     snapshot (0.19–0.24 s, was 3.2–3.5 s). rules_python-pip_parse's cold
     run stays unsaved: its pip extension prints a warning
     (`extension-output`), which the next run does not print.
+17. Rerun 2026-11-18 on branch corpus-parent (main 0b26c20d plus B6, B17
+    and B14's fixes), phases `nobuild_cold,nobuild_warm,query,build,test`
+    (no genuine server phase), load 25-38 with other workers' runs (the
+    cold times include every fetch, P3/P4). B6 is fixed: a repo mapping
+    manifest's transitive packages now include those of the select() keys
+    and of an output file's generating rule (its exec tools), so every
+    `.repo_mapping` of diff.bzl, bazel-skylib and buildtools matches
+    (tests/fixtures/repo_mapping_closure). diff.bzl is **OK**; bazel-skylib
+    and buildtools match genuine in every compared output, label and test
+    status (their failing project tests fail identically). B17 is fixed
+    (docs/RULE_EXTENSION.md): with_cfg's `rule(parent=...)` rules load and
+    analyse, `query //...` matches (194 labels) and 17 of genuine's 20
+    tests pass; the three left are `//dynamic_deps` (B18), and the outputs
+    differ by B18's targets, B19's 8 solib hashes and B36. junit5-starter
+    (B3 fixed meanwhile) builds and passes its test; only C2's `_javac`
+    class directories differ. examples-java-maven: B14 is fixed (it was an
+    evaluator bug, below); only B31 remains. rules_python-bzlmod: B34 left
+    (cause below).
 
-**Summary.** 37 projects ran. On 10 of them bazel-rs matches genuine exactly:
+**Summary.** 37 projects ran. On 13 of them bazel-rs matches genuine exactly
+(10 before the corpus-parent rerun, footnote 17: diff.bzl, bazel-skylib
+and buildtools since B6's fix; bazel-skylib's and buildtools' own failing
+tests fail identically on both tools; junit5-starter differs only by C2):
 same exit codes, `query //...` labels, `bazel-bin` file lists, sampled
 SHA-256s and test results. abseil-cpp is the largest: 2,767 outputs and 252
 passing tests. Two more (rules-template, yalantinglibs; riegeli too since the
 corpus-runfiles rerun) fail the same way on
-both tools. Three are clean except for one bug each: bazel-gazelle (B13,
+both tools. Two are clean except for one bug each: bazel-gazelle (B13,
 fixed since; the corpus-perf rerun builds `//...` on both tools, its query
-and tests not rerun),
-buildtools (B15; since fixed, only B6's repo mapping manifest remains) and
-rules_python-bzlmod (B7). The rest are blocked by the
+and tests not rerun) and rules_python-bzlmod (B34, its zipapp's modes). The
+rest are blocked by the
 bugs below. Most block loading, analysis or module resolution, not
 execution: where both tools built, the outputs were identical except in
 with_cfg (B19).
@@ -317,9 +337,9 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B9 | 4 (rules_cc, protobuf, openroad, examples-rust-deps-cargo) | `archive_override` unsupported |
 | B1 | 3+ (googletest, re2, highway; every project that tests with googletest ≥ 1.15) | `config_setting(values = {"features": …})` |
 | B10 | 3 (rules_kotlin, riegeli, openroad) | `override_repo()` / `inject_repo()` unsupported in MODULE.bazel |
-| B6 | 4 (rules-template, diff.bzl, bazel-skylib, buildtools); not blocking | `_repo_mapping` manifest misses a repository |
+| B6 | fixed (corpus-parent; rules-template not rerun) | `_repo_mapping` manifest missed the repositories of select() keys and of an output file's generating rule |
 | B11 | 2 (tink-cc, capnproto); every boringssl user | `strip_prefix` with a trailing `/` rejected |
-| B14 | 3 (tink-cc, examples-java-maven, examples-frontend) | internal errors "has no recorded duplicate-label check" / "internal analysis order error" |
+| B14 | fixed for examples-java-maven (corpus-parent); tink-cc, examples-frontend not rerun | internal errors "has no recorded duplicate-label check" / "internal analysis order error" |
 | B4 | fixed (corpus-parity2) | `android_common` global undefined: now the `.bzl` toplevel; its two methods fail explicitly |
 | B13 | fixed (bazel-skylib, rules_zig, rules_cc; bazel-gazelle not rerun) | analysis tests: `analysis_test_transition`, `testing.analysis_test`, `Target.actions`, `AnalysisFailureInfo` (docs/ANALYSIS_TESTS.md) |
 | B13a | fixed (corpus-parity2) | transition on `//command_line_option:minimum_os_version` and `ctx.fragments.cpp.minimum_os_version()` |
@@ -331,7 +351,8 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B7 | fixed (corpus-parity2) | transition: "Starlark flag and its alias have different values: False and "false"" |
 | B5 | fixed (corpus-parity2) | `local_repository` → `rctx.symlink(path, ".")` rejected (now a copy plus a `watch_tree` input, docs/LOCAL_REPOSITORIES.md) |
 | B8 | 1 (examples-frontend) | declared output "crosses a package boundary" |
-| B17, B18, B19 | 1 (with_cfg; B18 also openroad) | `rule(parent=…)`; `cc_shared_library`; solib naming in transitioned configurations (B16, symbolic macro `inherit_attrs`, is fixed) |
+| B17 | fixed (corpus-parent) | `rule(parent=…)` rule extension (docs/RULE_EXTENSION.md) |
+| B18, B19 | 1 (with_cfg; B18 also openroad) | `cc_shared_library`; solib naming in transitioned configurations (B16, symbolic macro `inherit_attrs`, is fixed) |
 | B26 | fixed | depset elements holding functions that are not top-level defs (skylib `DirectoryInfo` in rules_cc `cc_args`; openroad) |
 | B29 | fixed (corpus-parity2) | "file '//cc/private/rules_impl:cc_test.bzl' cannot use private API": the private-API allowlist now treats the main repository as rules_cc when the root module is rules_cc |
 | B20 | 1 (capnproto) | `rule(output_to_genfiles=True)` |
@@ -345,7 +366,8 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B31 | 2 (examples-java-maven, rules_jvm_external-simple); every rules_android user | `config_common.config_feature_flag_transition` (rules_android `android_binary/rule.bzl:93`, at load time) is not implemented |
 | B32 | 1 (rules_cc's own tests) | Starlark transitions on unmodelled native options (`fdo_optimize`, `cs_fdo_profile`, `instrumentation_filter`, `experimental_cpp_modules`, `build_test_dwp`, `fission`, `custom_malloc`, `incompatible_remove_legacy_whole_archive`), `cc_internal.freeze` of mutable structs / unfrozen functions, `objc.target_should_alwayslink` with an `alwayslink` attribute, `Target.actions` read in an aspect |
 | B33 | 1 (protobuf) | analysis: `java_common.check_java_toolchain_is_declared_on_rule`, aspect providers (`does not provide …UpbMinitableCcInfo` / `JavaInfo` on proto_library targets), `Target.actions` in aspect tests, `cc_common.check_experimental_cc_shared_library` (B18) |
-| B34 | 1 (rules_python-bzlmod); not blocking | `external/other_module+/other_module/pkg/bin_zipapp.zip` differs from genuine's (zipapp contents) |
+| B34 | 1 (rules_python-bzlmod); not blocking | `external/other_module+/other_module/pkg/bin_zipapp.zip` differs from genuine's: rules_python's zipper stores each input's mode and relative symlinks as it finds them in the sandbox; native staging hardlinks read-only store blobs (docs/HARDLINK_STAGING.md) |
+| B36 | 1 (with_cfg); not blocking | genuine builds `cc_no_copt_binary/binary_/binary.runfiles_manifest` and `.repo_mapping` (the manual `cc_binary` behind with_cfg's frontend and transitioning alias, a no-op transition); bazel-rs does not (not investigated) |
 | B35 | 1 (rules_kotlin) | rules_testing `TestingAspectInfo provider missing` (8 analysis tests), `download_and_extract(rename_files=…)` unsupported (ksp repository), `Target.actions` in an aspect |
 | B27 | fixed (corpus-runfiles) | `depset` was not a BUILD-file global, and list-typed attributes did not accept depsets (`@openssl//:BUILD.bazel:508`, `select({...: depset([...])})`) |
 | B28 | fixed (corpus-runfiles) | `build //...` missed genuine's `.pic.o`/`.pic.d` of external C++ deps: the rule-returned `_hidden_top_level_INTERNAL_` group (rules_cc cc_library's transitive objects) was not built |
@@ -414,7 +436,16 @@ not materialized: strip_prefix must contain only normal path components".
 BCR boringssl 0.20261105.0 `source.json` has `"strip_prefix":
 "boringssl-0.20261105.0/"`. Likely fix: drop the trailing `/` first (trivial).
 
-**B14: internal errors after B11 / B4.** The messages: "internal error:
+**B14: internal errors after B11 / B4.** Fixed on branch corpus-parent for
+the "has no recorded duplicate-label check" form: with `--keep_going`, a
+requested target failing after the evaluator's last flush (a dependency
+whose package fails to load, after a select() key's flush) left the
+configured targets it planned after that flush unpublished, and the end of
+phase 1 pruned their node keys before the final publication; their phase 2
+then found no phase-1 record. The keys of unpublished configured targets
+are kept now (`tests/eval_keep_going.rs`
+`keep_going_failure_after_the_last_flush_plans_as_the_walk`). The
+"internal analysis order error" form (tink-cc) was not rerun. The messages: "internal error:
 @@protobuf+//bazel/flags/cc:cc_proto_library_header_suffixes has no recorded
 duplicate-label check" (×10), "internal analysis order error:
 @@bazel_tools//tools/def_parser:def_parser" (tink-cc) and "internal error:
@@ -422,7 +453,14 @@ duplicate-label check" (×10), "internal analysis order error:
 (java-maven). They only appear in the same run as a loading failure, so they
 are probably a cascade. Recheck after fixing B11 and B4.
 
-**B6: `_repo_mapping` manifest.** For rules-template
+**B6: `_repo_mapping` manifest.** Fixed on branch corpus-parent:
+RepoMappingManifestAction's transitive packages are the configured
+target's, which include its select() keys' (ConfigConditionsProducer shares
+the target's TransitiveDependencyState) and, for a dependency on an output
+file, the generating rule's closure (its exec tools). The missing lines
+were `bazelrc-preset.bzl+,bazel_tools,bazel_tools` (a select() key in
+`@bazelrc-preset.bzl`), and skylib's/buildtools' stardoc and genrule tool
+repositories. Genuine capture `tests/fixtures/repo_mapping_closure`. For rules-template
 `//tools:preset.update_update.sh`, genuine's `.repo_mapping` contains
 `bazelrc-preset.bzl+,bazel_tools,bazel_tools`, and bazel-rs omits that line.
 The missing repository holds a target in the runfiles graph that
@@ -470,7 +508,8 @@ and its `//react-router:build_smoke_test` passes. Genuine does not check
 
 - B16 (fixed on branch corpus-macros, docs/SYMBOLIC_MACROS.md): symbolic
   macro "macro inherit_attrs is unsupported" (`wrapper.bzl:31`).
-- B17: "rule(parent=...) rule extension is not supported" (`extend.bzl:10`).
+- B17 (fixed on branch corpus-parent, docs/RULE_EXTENSION.md): "rule(parent=...)
+  rule extension is not supported" (`extend.bzl:10`).
 - B18: `cc_shared_library` fails: "cc_common.check_experimental_cc_shared_library
   is not implemented".
 - B19: in transitioned configurations (`k8-fastbuild-ST-…`), solib names and
@@ -703,7 +742,7 @@ files hash identically before and after the scheduler change.
    helpers), then B9 and B10 (module resolution for rules_cc, protobuf,
    OpenROAD, rules_kotlin, rules_swift users). OpenROAD needs B9 (or B22)
    and B10.
-3. B15 (symlinked runfiles for tests) and B6 (`_repo_mapping` entries) are
-   silent behaviour differences; they deserve parity fixtures.
+3. B15 (symlinked runfiles for tests) and B6 (`_repo_mapping` entries) were
+   silent behaviour differences; both are fixed with parity fixtures.
 4. Rerun the corpus after each fix: `oss_corpus.py run --only <project>`,
    then drop the corresponding workaround edits from the JSON.
