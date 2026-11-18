@@ -543,6 +543,11 @@ impl Pass1 {
         std::mem::take(&mut self.canonical)
     }
 
+    /// The nodes [`Self::take_canonical`] would return now (not taken).
+    pub(crate) fn pending_canonical(&self) -> &[NodeId] {
+        &self.canonical
+    }
+
     /// `toolchain_implementations` so far.
     pub(crate) fn toolchain_implementations(&self) -> &BTreeMap<ConfiguredTargetKey, Label> {
         &self.out.toolchain_implementations

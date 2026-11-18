@@ -849,7 +849,10 @@ impl Coord<'_> {
             self.drop_leftover_observations();
             // The node keys (the graph's only copy since it was dropped):
             // only the flush points' chains are read again (a deferred
-            // segment's failure, `walk_failure`).
+            // segment's failure, `walk_failure`), and the configured
+            // targets not published yet (planned after the last flush, as
+            // when a `--keep_going` root failed there: the final
+            // publication reads their keys; B14 in docs/OSS_CORPUS.md).
             let chains: FxHashSet<NodeId> = lin
                 .segments
                 .iter()
@@ -860,6 +863,8 @@ impl Coord<'_> {
                         .and_then(|failure| failure.point.as_ref()),
                 )
                 .flat_map(|point| point.chain.iter().copied())
+                .chain(lin.unpublished.iter().copied())
+                .chain(lin.pass.pending_canonical().iter().copied())
                 .collect();
             // (The rest dropped on the planning dropper thread.)
             let keys = std::mem::take(&mut self.store.keys);

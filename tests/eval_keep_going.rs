@@ -183,6 +183,42 @@ chain(name = "shared_bad", deps = ["//q:private"], visibility = ["//visibility:p
 fails(name = "pf", visibility = ["//visibility:public"])
 "#;
 
+/// A package that fails to load (B14 in docs/OSS_CORPUS.md: examples-java-maven's
+/// `@maven` package loading a rules_android `.bzl` that fails).
+const LP_BUILD: &str = r#"load(":broken.bzl", "x")
+
+filegroup(name = "x", visibility = ["//visibility:public"])
+"#;
+
+/// A requested target whose `select()` key flushes phase 1, then depends on
+/// the failing package and on targets analyzed after it (planned after the
+/// last flush when the requested target fails).
+const KP_BUILD: &str = r#"load(":defs.bzl", "with_tool")
+
+config_setting(name = "cs", values = {"compilation_mode": "opt"})
+
+with_tool(name = "t", deps = select({":cs": ["//kq:lib"], "//conditions:default": []}) + ["//lp:x", "//kq:lib2"])
+"#;
+
+/// The implicit tool and the dependencies analyzed after the failing one,
+/// in a package of their own.
+const KQ_BUILD: &str = r#"load("//kp:defs.bzl", "leaf")
+
+leaf(name = "tool", deps = [":lib"], visibility = ["//visibility:public"])
+
+leaf(name = "lib", visibility = ["//visibility:public"])
+
+leaf(name = "lib2", visibility = ["//visibility:public"])
+"#;
+
+const KP_DEFS: &str = r#"def _impl(ctx):
+    return []
+
+with_tool = rule(_impl, attrs = {"deps": attr.label_list(), "_tool": attr.label(default = "//kq:tool")})
+
+leaf = rule(_impl, attrs = {"deps": attr.label_list()})
+"#;
+
 fn workspace() -> tempfile::TempDir {
     let temp = tempfile::tempdir_in(test_temp::root()).unwrap();
     let root = temp.path();
@@ -206,6 +242,11 @@ fn workspace() -> tempfile::TempDir {
         "q/BUILD",
         "load('//:defs.bzl', 'chain')\nchain(name = 'private')\n",
     );
+    write("lp/broken.bzl", "fail('intentional load failure')\n");
+    write("lp/BUILD", LP_BUILD);
+    write("kp/BUILD", KP_BUILD);
+    write("kp/defs.bzl", KP_DEFS);
+    write("kq/BUILD", KQ_BUILD);
     for directory in ["home", "tmp"] {
         fs::create_dir(root.join(directory)).unwrap();
     }
@@ -351,6 +392,22 @@ fn keep_going_plans_on_the_evaluator_as_the_walk() {
         stderr.contains("errors encountered while analyzing target '//:g'"),
         "{stderr}"
     );
+}
+
+/// B14 (docs/OSS_CORPUS.md): a requested target failing on a package that
+/// fails to load, after a flush, with dependencies planned after the last
+/// flush: their phase-1 values are published before their phase 2 (it
+/// was `internal error: //kq:lib has no recorded duplicate-label check`).
+#[test]
+fn keep_going_failure_after_the_last_flush_plans_as_the_walk() {
+    let ws = workspace();
+    for (threads, snapshot) in [(8, "off"), (1, "off"), (8, "on")] {
+        let args = ["build", "--nobuild", "-k", "//kp:all"];
+        let walk = same_as_walk(ws.path(), snapshot, threads, &args);
+        let stderr = stable(&walk);
+        assert!(!walk.status.success(), "{stderr}");
+        assert!(!stderr.contains("internal error"), "{stderr}");
+    }
 }
 
 const PLATFORM: [&str; 2] = ["--platforms=//:plat", "--host_platform=//:plat"];
