@@ -279,6 +279,21 @@ pub(crate) fn is_package(root: &Path, package: &str) -> Result<bool, String> {
     package_build_file(root, package).map(|_| true)
 }
 
+/// Whether `resolved` lies in a published tree of the repository store that
+/// holds the store tree `root`: Bazel reads a BUILD file through any symlink
+/// (PackageLookupFunction, FileValue), and a repository rule's
+/// `repository_ctx.symlink(Label("@other//:x.BUILD"), "BUILD.bazel")` links
+/// into the other repository's tree (sv-elab's `vendored-hashlib`, OpenROAD).
+/// A published tree is content-addressed and the BUILD file's READ records
+/// its bytes, like the store anchors of source links
+/// (crate::source_links::StoreTrees); stages and trash stay refused.
+fn in_sibling_store_tree(root: &Path, resolved: &Path) -> bool {
+    root.ancestors().skip(1).any(|store| {
+        crate::repository_store::store_tree_of(store, root).is_some_and(|tree| tree.root == root)
+            && crate::repository_store::published_tree(store, resolved).is_some()
+    })
+}
+
 fn find_build_file(root: &Path, directory: &Path) -> Result<Option<PathBuf>, String> {
     for name in ["BUILD.bazel", "BUILD"] {
         let path = directory.join(name);
@@ -287,7 +302,7 @@ fn find_build_file(root: &Path, directory: &Path) -> Result<Option<PathBuf>, Str
         }
         let resolved = observed_fs::canonicalize(&path)
             .map_err(|e| format!("cannot resolve build file {}: {e}", path.display()))?;
-        if !resolved.starts_with(root) {
+        if !resolved.starts_with(root) && !in_sibling_store_tree(root, &resolved) {
             return Err(format!(
                 "build file {} resolves outside workspace {}",
                 path.display(),
@@ -375,6 +390,48 @@ mod tests {
         fs::create_dir_all(temp.0.join("nested/WORKSPACE")).unwrap();
         assert_eq!(workspace_root(&temp.0.join("nested")).unwrap(), temp.0);
         assert!(workspace_root(&temp.0.join("missing")).is_err());
+    }
+
+    #[test]
+    fn a_build_file_may_link_into_another_published_store_tree() {
+        // sv-elab's `vendored-hashlib` (OpenROAD): a repository rule links
+        // its BUILD.bazel into the registry tree of the module defining it.
+        let temp = Temp::new();
+        let registry = format!("trees/{}", "a".repeat(64));
+        temp.file(&format!("{registry}/hashlib.BUILD.bazel"));
+        temp.file(&format!("trees/{}.json", "a".repeat(64)));
+        let direct = temp.0.join(format!("direct/trees/{}", "b".repeat(64)));
+        fs::create_dir_all(&direct).unwrap();
+        std::os::unix::fs::symlink(
+            temp.0.join(&registry).join("hashlib.BUILD.bazel"),
+            direct.join("BUILD.bazel"),
+        )
+        .unwrap();
+        assert_eq!(
+            package_build_file(&direct, "").unwrap(),
+            direct.join("BUILD.bazel")
+        );
+        // Unpublished (no manifest) and host targets stay refused.
+        let stage = temp.0.join(format!("trees/{}", "c".repeat(64)));
+        temp.file(&format!("trees/{}/x.BUILD", "c".repeat(64)));
+        let other = temp.0.join(format!("direct/trees/{}", "d".repeat(64)));
+        fs::create_dir_all(other.join("p")).unwrap();
+        std::os::unix::fs::symlink(stage.join("x.BUILD"), other.join("BUILD.bazel")).unwrap();
+        let host = temp.file("host/x.BUILD");
+        std::os::unix::fs::symlink(&host, other.join("p/BUILD.bazel")).unwrap();
+        for package in ["", "p"] {
+            let error = package_build_file(&other, package).unwrap_err();
+            assert!(error.contains("resolves outside workspace"), "{error}");
+        }
+        // A workspace that is no store tree keeps the check.
+        let workspace = temp.0.join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+        std::os::unix::fs::symlink(
+            temp.0.join(&registry).join("hashlib.BUILD.bazel"),
+            workspace.join("BUILD.bazel"),
+        )
+        .unwrap();
+        assert!(package_build_file(&workspace, "").is_err());
     }
 
     #[test]
