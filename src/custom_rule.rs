@@ -1702,6 +1702,23 @@ mod values {
             let mut converter = crate::native_rules::BuiltinConverter::new(&repositories, &package);
             for (key, value, origin) in &arguments {
                 let key = key.as_str();
+                // A keyword argument names the native attribute, so `$x`
+                // (`:x` when late-bound) sets the Starlark `_x`
+                // (AttributeProvider.getAttributeIndex over the native
+                // names; rules_android's `attrs_metadata` passes
+                // `$defined_local_resources`).
+                let private_key = key
+                    .strip_prefix('$')
+                    .map(|rest| (rest, false))
+                    .or_else(|| key.strip_prefix(':').map(|rest| (rest, true)))
+                    .map(|(rest, late_bound)| (format!("_{rest}"), late_bound))
+                    .filter(|(name, late_bound)| {
+                        self.schema
+                            .get(name)
+                            .is_some_and(|spec| spec.declaration.late_bound == *late_bound)
+                    })
+                    .map(|(name, _)| name);
+                let key = private_key.as_deref().unwrap_or(key);
                 match key {
                     "name" => {
                         name = Some(value.unpack_str().ok_or_else(|| {
@@ -1724,7 +1741,9 @@ mod values {
                         // `_x` to `$x` (StarlarkRuleClassFunctions.java:1855).
                         let spec = match self.schema.get(key) {
                             Some(spec)
-                                if !key.starts_with('_') || *origin == Origin::Initializer =>
+                                if !key.starts_with('_')
+                                    || private_key.is_some()
+                                    || *origin == Origin::Initializer =>
                             {
                                 spec
                             }
@@ -2355,9 +2374,11 @@ pub(crate) fn native_attribute_name(name: &str, late_bound: bool) -> String {
 }
 
 /// `//pkg:x: no such attribute 'K' in 'R' rule` suffix: SpellChecker over the
-/// documented attributes (AttributeProvider.java:220-235). Private (`$x`/`:x`)
-/// attributes, built-in or Starlark `_x`, are UNDOCUMENTED (Attribute.java:444-449)
-/// and never suggested. Built-in attributes come first in Bazel's order;
+/// documented attributes (AttributeProvider.java:220-235). Built-in private
+/// (`$x`/`:x`) attributes are UNDOCUMENTED (Attribute.java:444-449) and never
+/// suggested; a Starlark `_x` is built under its Starlark name, so it stays
+/// documented and is suggested by its native name (`$x`, `:x` when
+/// late-bound). Built-in attributes come first in Bazel's order;
 /// Starlark attributes follow in name order (the retained schema does not keep
 /// the `attrs` dict order, which only matters for equally distant candidates).
 fn unknown_attribute_hint(
@@ -2365,15 +2386,14 @@ fn unknown_attribute_hint(
     builtins: &crate::native_rules::StarlarkBuiltins,
     schema: &BTreeMap<String, AttrSpec>,
 ) -> String {
+    let starlark = schema
+        .iter()
+        .map(|(name, spec)| native_attribute_name(name, spec.declaration.late_bound))
+        .collect::<Vec<_>>();
     let candidates = builtins
         .candidates()
         .into_iter()
-        .chain(
-            schema
-                .keys()
-                .map(String::as_str)
-                .filter(|name| !name.starts_with('_')),
-        )
+        .chain(starlark.iter().map(String::as_str))
         .collect::<Vec<_>>();
     crate::native_rules::did_you_mean(key, &candidates)
 }

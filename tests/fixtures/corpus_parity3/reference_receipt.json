@@ -78,6 +78,47 @@
    ],
    "workspace": "predeclared"
   },
+  "private_attribute_native_names": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/privkw/libwith.txt": "True\n\"privkw\"\n\"default\"\n",
+    "k8-fastbuild/bin/privkw/libwithout.txt": "False\n\"privkw\"\n\"default\"\n",
+    "k8-fastbuild/bin/privkw/with_extra.txt": "True\n\"privkw\"\n\"default\"\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//privkw:all"
+   ],
+   "workspace": "workspace"
+  },
+  "private_attribute_starlark_name": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: <WS>/privkw_bad/BUILD.bazel:3:4: //privkw_bad:bad: no such attribute '_other' in 'lib' rule (did you mean '$other'?)",
+     "pattern": "no such attribute '_other'"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//privkw_bad:bad"
+   ],
+   "workspace": "workspace"
+  },
   "write_mnemonic_filter": {
    "command": "aquery",
    "exit": 0,

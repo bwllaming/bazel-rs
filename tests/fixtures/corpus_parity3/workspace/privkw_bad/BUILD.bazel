@@ -1,0 +1,6 @@
+load("//privkw:defs.bzl", "lib")
+
+lib(
+    name = "bad",
+    _other = "x",
+)

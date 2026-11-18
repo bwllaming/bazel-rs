@@ -39,6 +39,11 @@ CASES = {
         ['index.txt', 'build.txt', 'own.txt']),
     'predeclared_output_below_subpackage': (
         [], 'build', BUILD, ['//boundary:pre'], [r'subpackage'], [], 'predeclared'),
+    'private_attribute_native_names': (
+        [], 'build', BUILD, ['//privkw:all'], [],
+        ['libwith.txt', 'with_extra.txt', 'libwithout.txt']),
+    'private_attribute_starlark_name': (
+        [], 'build', BUILD, ['//privkw_bad:bad'], [r"no such attribute '_other'"], []),
 }
 
 TIME = re.compile(r'^\(\d\d:\d\d:\d\d\) ')

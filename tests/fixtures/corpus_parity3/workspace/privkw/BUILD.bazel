@@ -1,0 +1,8 @@
+load(":defs.bzl", "lib_macro")
+
+lib_macro(
+    name = "with",
+    resources = ["x"],
+)
+
+lib_macro(name = "without")

@@ -70,6 +70,17 @@ fn core(line: &str) -> &str {
     loop {
         let before = rest;
         rest = rest.strip_prefix("ERROR: ").unwrap_or(rest);
+        // A load-time event's `<WS>/pkg/BUILD.bazel:L:C: ` location: native
+        // prints the error with its Starlark traceback instead.
+        if rest.starts_with("<WS>/")
+            && let Some(at) = rest.find(": ")
+            && rest[..at]
+                .rsplitn(3, ':')
+                .take(2)
+                .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        {
+            rest = &rest[at + 2..];
+        }
         for prefix in ["Error in ", "Skipping '", "error loading package '"] {
             if let Some(tail) = rest.strip_prefix(prefix) {
                 let end = if prefix == "Error in " {
