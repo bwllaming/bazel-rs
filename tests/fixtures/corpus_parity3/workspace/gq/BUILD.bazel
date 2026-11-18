@@ -1,0 +1,14 @@
+load(":defs.bzl", "probe_rule")
+
+probe_rule(
+    name = "probe",
+    deps = [":leaf"],
+)
+
+probe_rule(name = "leaf")
+
+genquery(
+    name = "loadgraph",
+    expression = "buildfiles(deps(//gq:probe))",
+    scope = ["//gq:probe"],
+)

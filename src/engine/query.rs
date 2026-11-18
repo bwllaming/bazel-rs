@@ -820,7 +820,12 @@ impl Engine {
         let mut kept = Set::default();
         let mut warnings = Vec::new();
         for label in &result.items {
-            if closure.contains(label) {
+            // AbstractBlazeQueryEnvironment.validateScope filters the
+            // targets of target patterns; a FakeLoadTarget of
+            // `buildfiles`/`loadfiles` (a BUILD or `.bzl` file) is no
+            // pattern target and never checked (rules_kotlin's
+            // `genquery(expression = "buildfiles(deps(...))")`).
+            if closure.contains(label) || env.kind(label) == Kind::Load {
                 kept.insert(label.clone());
             } else if strict {
                 return Err(format!(

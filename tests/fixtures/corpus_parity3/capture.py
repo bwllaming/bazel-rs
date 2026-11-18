@@ -61,6 +61,7 @@ CASES = {
         ['direct_test.sh', 'alias_test.sh']),
     'aspect_view_per_attribute': (
         [], 'build', BUILD, ['//aliased:both_test'], [], ['both_test.sh']),
+    'genquery_buildfiles_in_scope': ([], 'build', BUILD, ['//gq:loadgraph'], [], ['loadgraph']),
 }
 
 TIME = re.compile(r'^\(\d\d:\d\d:\d\d\) ')
