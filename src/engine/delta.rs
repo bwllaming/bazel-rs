@@ -932,16 +932,33 @@ impl<'a> DeltaBuilder<'a> {
     /// T2: a memo value filled from reads that are stale now (a
     /// provisional result replaced at its merge) is dropped and filled
     /// again; `reads` of a value used are this build's reads too.
+    ///
+    /// A value whose reads this build holds already ([`Self::shared_reads`])
+    /// is not checked again: the merge checks every read the build holds
+    /// and rebuilds the entry at its turn if one is stale, as when this
+    /// check had found it stale. (Each PyCompile action of a pip package's
+    /// py_library uses the Python runtime's input run: ~1,600 reads checked
+    /// per action, 4.5 million for torch's 2,700 actions, when the runtime's
+    /// files merge after the package's delta is built.)
     fn memo_reads<K: std::hash::Hash + Eq + Clone, V>(
         &self,
         memo: &SingleFlight<K, V>,
         key: &K,
-        reads: impl Fn(&V) -> &[ProvisionalRead],
+        reads: impl Fn(&V) -> &Arc<[ProvisionalRead]>,
     ) {
         if let Some(value) = memo.peek(key)
             && !reads(&value).is_empty()
-            && check_reads(self.view.artifacts, reads(&value), self.view.reader, true)
-                == ReadsCheck::Stale
+            && !self
+                .shared_reads
+                .borrow()
+                .iter()
+                .any(|held| Arc::ptr_eq(held, reads(&value)))
+            && check_reads(
+                self.view.artifacts,
+                reads(&value).iter(),
+                self.view.reader,
+                true,
+            ) == ReadsCheck::Stale
         {
             memo.remove(key);
             provisional_bump(3);
