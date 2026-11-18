@@ -71,6 +71,7 @@ pub(in crate::engine) fn record(key: &ConfiguredTargetKey, delta: &TargetDelta) 
         uses: delta.uses.clone(),
         failed_output: delta.failed_output.clone(),
         reads: Vec::new(),
+        shared_reads: Vec::new(),
     };
     BENCH.with(|bench| {
         let mut bench = bench.borrow_mut();
@@ -187,6 +188,7 @@ fn copies(recorded: &[Recorded]) -> Vec<Recorded> {
                 uses: delta.uses.clone(),
                 failed_output: delta.failed_output.clone(),
                 reads: Vec::new(),
+                shared_reads: Vec::new(),
             },
         })
         .collect()

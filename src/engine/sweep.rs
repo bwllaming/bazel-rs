@@ -164,10 +164,10 @@ fn alias(aliases: &mut Aliases, from: &str, to: &str) -> bool {
 /// ([`delta::check_reads`] with every earlier entry merged): `Some` with
 /// the producer ids to rewrite when every read is the index's entry now or
 /// differs from it in its producer id only; `None` otherwise (built again).
-pub(super) fn read_aliases(
+pub(super) fn read_aliases<'r>(
     index: &ConcurrentArtifactIndex,
     canonical: &mut CanonicalReads,
-    reads: &[delta::ProvisionalRead],
+    reads: impl IntoIterator<Item = &'r delta::ProvisionalRead>,
     reader: u32,
 ) -> Option<Aliases> {
     let mut aliases = Aliases::default();
@@ -536,6 +536,7 @@ pub(super) fn rewrite(
         uses,
         failed_output,
         reads: _,
+        shared_reads: _,
     } = delta;
     let rewrite = Arc::new(Rewrite {
         aliases,
@@ -634,6 +635,7 @@ pub(super) fn rewrite(
         uses,
         failed_output,
         reads: Vec::new(),
+        shared_reads: Vec::new(),
     };
     if cfg!(debug_assertions) || verify() {
         check_rewritten(&rewritten, &rewrite);
@@ -731,13 +733,13 @@ pub(super) fn adopt(
     meets: bool,
 ) -> Result<(delta::TargetDelta, bool), Option<delta::TargetDelta>> {
     let started = std::time::Instant::now();
-    let Some(mut aliases) = (if delta.reads.is_empty() {
+    let Some(mut aliases) = (if delta.reads_nothing() {
         Some(Aliases::default())
     } else {
         read_aliases(
             &state.artifact_index.shared,
             &mut state.canonical_reads,
-            &delta.reads,
+            delta.all_reads(),
             reader,
         )
     }) else {
@@ -755,7 +757,7 @@ pub(super) fn adopt(
     };
     if aliases.is_empty() && localized.is_none() {
         let mut delta = delta;
-        delta.reads.clear();
+        delta.clear_reads();
         return Ok((delta, false));
     }
     stat_since(S_LOCALIZE_US, started);
@@ -1063,6 +1065,7 @@ mod tests {
             dependencies: Vec::new(),
             deferred: None,
             groups: Vec::new(),
+            groups_at: None,
         };
         let delta = delta::TargetDelta {
             ops: vec![
@@ -1085,6 +1088,7 @@ mod tests {
             uses: Vec::new(),
             failed_output: None,
             reads: Vec::new(),
+            shared_reads: Vec::new(),
         };
         let mut aliases = Aliases::default();
         let localized = localize(&producers, &delta, &mut aliases).expect("a replay");
@@ -1124,6 +1128,7 @@ mod tests {
             uses: Vec::new(),
             failed_output: None,
             reads: Vec::new(),
+            shared_reads: Vec::new(),
         };
         assert!(localize(&conflicting, &delta, &mut Aliases::default()).is_none());
     }

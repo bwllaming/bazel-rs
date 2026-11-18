@@ -318,6 +318,7 @@ fn status_placeholders() -> [crate::scheduler::PlannedAction; 2] {
         dependencies: Vec::new(),
         deferred: None,
         groups: Vec::new(),
+        groups_at: None,
     };
     [
         placeholder(crate::request::STABLE_STATUS_ID, STATUS_PATHS[0], false),

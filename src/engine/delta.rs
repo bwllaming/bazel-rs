@@ -365,9 +365,9 @@ pub(super) enum ReadsCheck {
 /// Check `reads` (of the delta of plan entry `reader`) against `index`.
 /// `merging`: at the reader's merge, every earlier entry merged (a read
 /// still provisional is then the canonical value, registered by no merge).
-pub(super) fn check_reads(
+pub(super) fn check_reads<'r>(
     index: &ConcurrentArtifactIndex,
-    reads: &[ProvisionalRead],
+    reads: impl IntoIterator<Item = &'r ProvisionalRead>,
     reader: u32,
     merging: bool,
 ) -> ReadsCheck {
@@ -491,6 +491,31 @@ pub(super) struct TargetDelta {
     /// T2: the index reads it depends on (a worker's build,
     /// [`ProvisionalRead`]).
     pub(super) reads: Vec<ProvisionalRead>,
+    /// T2: the reads of the memo values it used that other builds filled
+    /// (a shared input run's, a tool runfiles group's), each memo value's
+    /// list once, shared with the memo instead of copied into every delta
+    /// using it; [`TargetDelta::all_reads`] lists them with `reads`.
+    pub(super) shared_reads: Vec<Arc<[ProvisionalRead]>>,
+}
+
+impl TargetDelta {
+    /// Every index read it depends on: its own, then the memo values'.
+    pub(super) fn all_reads(&self) -> impl Iterator<Item = &ProvisionalRead> {
+        self.reads
+            .iter()
+            .chain(self.shared_reads.iter().flat_map(|reads| reads.iter()))
+    }
+
+    /// Whether it depends on no index read.
+    pub(super) fn reads_nothing(&self) -> bool {
+        self.reads.is_empty() && self.shared_reads.iter().all(|reads| reads.is_empty())
+    }
+
+    /// Forget its reads (checked).
+    pub(super) fn clear_reads(&mut self) {
+        self.reads.clear();
+        self.shared_reads.clear();
+    }
 }
 
 /// What a delta build reads of the engine and the planning state: shared
@@ -752,6 +777,9 @@ pub(super) struct DeltaBuilder<'a> {
     failed_output: Option<PathBuf>,
     /// T2: the index reads the build depends on (a worker's build only).
     reads: std::cell::RefCell<Vec<ProvisionalRead>>,
+    /// T2: the reads of memo values other builds filled, each list once
+    /// (by address; [`TargetDelta::shared_reads`]).
+    shared_reads: std::cell::RefCell<Vec<Arc<[ProvisionalRead]>>>,
     /// T2: the memo fills in progress, each with whether it resolved a
     /// File through this build's own registrations (unpublished, recording no
     /// read: such a value is not kept for other users, [`Self::unshared`]).
@@ -773,6 +801,7 @@ impl<'a> DeltaBuilder<'a> {
             spent: Vec::new(),
             failed_output: None,
             reads: Default::default(),
+            shared_reads: Default::default(),
             filling: Default::default(),
         }
     }
@@ -786,7 +815,19 @@ impl<'a> DeltaBuilder<'a> {
         drop_elsewhere(self.spent);
         // A File it looked up before registering it itself is its own.
         let mut reads = self.reads.into_inner();
-        reads.retain(|read| read.artifact.is_some() || !self.index.contains_key(&read.file));
+        let own_file =
+            |read: &ProvisionalRead| read.artifact.is_none() && self.index.contains_key(&read.file);
+        reads.retain(|read| !own_file(read));
+        // A memo value's reads stay shared unless one of them is of a File
+        // this build registered itself: then its others are copied.
+        let mut shared_reads = Vec::new();
+        for shared in self.shared_reads.into_inner() {
+            if self.index.is_empty() || !shared.iter().any(own_file) {
+                shared_reads.push(shared);
+            } else {
+                reads.extend(shared.iter().filter(|read| !own_file(read)).cloned());
+            }
+        }
         // The same entry read again (each use of a memo value adds its
         // fill's reads): its check at the merge is the same, once is enough.
         let mut seen = crate::fast_hash::FxHashSet::default();
@@ -805,6 +846,7 @@ impl<'a> DeltaBuilder<'a> {
             uses: self.uses,
             failed_output: self.failed_output,
             reads,
+            shared_reads,
         })
     }
 
@@ -883,8 +925,8 @@ impl<'a> DeltaBuilder<'a> {
     }
 
     /// The reads recorded since `mark` (a memo fill's own).
-    fn reads_since(&self, mark: usize) -> Box<[ProvisionalRead]> {
-        self.reads.borrow()[mark..].to_vec().into_boxed_slice()
+    fn reads_since(&self, mark: usize) -> Arc<[ProvisionalRead]> {
+        Arc::from(&self.reads.borrow()[mark..])
     }
 
     /// T2: a memo value filled from reads that are stale now (a
@@ -907,9 +949,12 @@ impl<'a> DeltaBuilder<'a> {
     }
 
     /// The reads of a memo value used (filled here or before).
-    fn note_memo_reads(&self, filled_here: bool, reads: &[ProvisionalRead]) {
+    fn note_memo_reads(&self, filled_here: bool, reads: &Arc<[ProvisionalRead]>) {
         if !filled_here && !reads.is_empty() && matches!(self.hooks, Hooks::Worker) {
-            self.reads.borrow_mut().extend(reads.iter().cloned());
+            let mut shared = self.shared_reads.borrow_mut();
+            if !shared.iter().any(|known| Arc::ptr_eq(known, reads)) {
+                shared.push(Arc::clone(reads));
+            }
         }
     }
 
@@ -1392,6 +1437,7 @@ impl<'a> DeltaBuilder<'a> {
                 dependencies: Vec::new(),
                 deferred: None,
                 groups: Vec::new(),
+                groups_at: None,
             }),
             None,
         ));

@@ -68,6 +68,8 @@ static STATS: [std::sync::atomic::AtomicU64; 4] = [
     std::sync::atomic::AtomicU64::new(0),
     std::sync::atomic::AtomicU64::new(0),
 ];
+/// The tape ops whose buffer room a linearization step keeps for the next.
+const TAPE_BUFFER_KEPT: usize = 1 << 16;
 const STAT_PASS1: usize = 0;
 const STAT_APPLY: usize = 1;
 const STAT_PUBLISH: usize = 2;
@@ -717,6 +719,10 @@ impl Coord<'_> {
             ops.append(&mut leftover);
             lin.ops = ops;
         } else if lin.ops.is_empty() {
+            // Its capacity reused, up to a bound: one large step (a whole
+            // cold analysis's tape, ~400 MB on OpenROAD while recording)
+            // must not stay allocated for the rest of the command.
+            ops.shrink_to(TAPE_BUFFER_KEPT);
             lin.ops = ops;
         }
         STATS[STAT_APPLY].fetch_add(

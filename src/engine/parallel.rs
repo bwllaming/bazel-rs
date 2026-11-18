@@ -4128,11 +4128,11 @@ impl Engine {
         // the canonical artifacts; a stale one is rebuilt at its turn.
         if let Some(delta::Built::Delta(built)) =
             worker.outcome.delta.as_ref().map(|worker| &worker.built)
-            && !built.reads.is_empty()
+            && !built.reads_nothing()
         {
             let check = delta::check_reads(
                 &state.artifact_index.shared,
-                &built.reads,
+                built.all_reads(),
                 u32::try_from(index).unwrap_or(u32::MAX - 1),
                 false,
             );

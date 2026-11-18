@@ -355,6 +355,7 @@ impl Local<'_> {
             dependencies: node.dependencies.clone(),
             deferred: node.deferred.clone(),
             groups: Vec::new(),
+            groups_at: node.groups_at,
         };
         own.action.id.clear();
         // The console's owner (its BUILD location) and progress message

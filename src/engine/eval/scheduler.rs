@@ -966,7 +966,10 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
     }
 
     /// Publish `value`: the waiters whose last dependency this was.
-    fn publish(&self, id: NodeId, value: NodeValue, events: Vec<Event>) -> Vec<NodeId> {
+    fn publish(&self, id: NodeId, value: NodeValue, mut events: Vec<Event>) -> Vec<NodeId> {
+        // Kept until pass 1 replays it: without the growth's spare room
+        // (a cold OpenROAD analysis holds tens of millions of events).
+        events.shrink_to_fit();
         let key = self.graph.key(id);
         let stops = !self.config.keep_going && self.bodies.stops_build(key, &value);
         let entry = self.graph.entry(id);

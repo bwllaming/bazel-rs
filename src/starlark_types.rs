@@ -1808,6 +1808,11 @@ impl FlatFiles {
         &self.files
     }
 
+    /// Whether `file` is one of the files.
+    pub(crate) fn contains(&self, file: &File) -> bool {
+        self.set.contains(file)
+    }
+
     /// Its blocks in action keys (`owned`: with the files' owners).
     pub(crate) fn key_blocks(&self, owned: bool) -> &crate::shared_actions::MemoBlocks {
         self.key_blocks[usize::from(owned)]

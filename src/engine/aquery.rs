@@ -423,6 +423,15 @@ impl Engine {
         configuration: usize,
         configurations: &[crate::aquery::Configuration],
     ) -> Vec<ActionRecord> {
+        // A shared run's groups (not runfiles trees) are inputs listed one
+        // by one, as the node lists them without sharing.
+        let flattened;
+        let node = if node.groups.iter().any(|group| !group.runfiles) {
+            flattened = node.flattened();
+            &flattened
+        } else {
+            node
+        };
         let action = &node.action;
         let meta: Meta = action.extra.aquery.as_deref().cloned().unwrap_or_default();
         let tool = configurations[configuration].is_tool;

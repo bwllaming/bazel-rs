@@ -91,7 +91,7 @@ pub const MAGIC: &[u8; 8] = b"BZRSPLN1";
 // 8: GROUPS and NODES sections carry a path table, paths as indices (MEM5).
 // 9: actions carry their console owner and raw progress message
 // (crate::action_console).
-pub const FORMAT: u32 = 9;
+pub const FORMAT: u32 = 10;
 /// Actions per NODES section (fixed: the encoding must not depend on the
 /// machine).
 pub const CHUNK: usize = 1024;
@@ -379,6 +379,7 @@ fn chunk_elements<'a>(
 struct GroupOut<'a> {
     #[serde(with = "path")]
     root: &'a Path,
+    runfiles: bool,
     #[serde(with = "path_pairs")]
     inputs: &'a [(SharedPath, SharedPath)],
     dependencies: &'a [Dependency],
@@ -390,8 +391,8 @@ struct GroupOut<'a> {
     constant_metadata: &'a [PathBuf],
     #[serde(with = "paths")]
     empty_files: &'a [PathBuf],
-    #[serde(with = "paths")]
-    sources: &'a [PathBuf],
+    #[serde(with = "shared_paths")]
+    sources: &'a [SharedPath],
 }
 
 impl<'a> GroupOut<'a> {
@@ -400,6 +401,7 @@ impl<'a> GroupOut<'a> {
         // compile error here until the encoding carries it.
         let InputGroup {
             root,
+            runfiles,
             inputs,
             dependencies,
             tree_inputs,
@@ -411,6 +413,7 @@ impl<'a> GroupOut<'a> {
         } = group;
         GroupOut {
             root,
+            runfiles: *runfiles,
             inputs,
             dependencies,
             tree_inputs,
@@ -426,6 +429,7 @@ impl<'a> GroupOut<'a> {
 struct GroupIn {
     #[serde(with = "path")]
     root: PathBuf,
+    runfiles: bool,
     #[serde(with = "path_pairs")]
     inputs: Vec<(SharedPath, SharedPath)>,
     dependencies: Vec<Dependency>,
@@ -437,8 +441,8 @@ struct GroupIn {
     constant_metadata: Vec<PathBuf>,
     #[serde(with = "paths")]
     empty_files: Vec<PathBuf>,
-    #[serde(with = "paths")]
-    sources: Vec<PathBuf>,
+    #[serde(with = "shared_paths")]
+    sources: Vec<SharedPath>,
 }
 
 impl GroupIn {
@@ -448,6 +452,7 @@ impl GroupIn {
     fn into_group(self) -> InputGroup {
         let GroupIn {
             root,
+            runfiles,
             inputs,
             dependencies,
             tree_inputs,
@@ -458,6 +463,7 @@ impl GroupIn {
         } = self;
         let mut group = InputGroup {
             root,
+            runfiles,
             inputs,
             dependencies,
             tree_inputs,
@@ -659,6 +665,18 @@ fn decode_chunk(chunk: &[u8], table: &[Arc<InputGroup>]) -> Result<Vec<PlannedAc
                     ));
                 }
                 node.groups.push(Arc::clone(group));
+            }
+            // Groups in the middle of the own inputs: within them, and only
+            // groups listable there (scheduler::PlannedAction::groups_at).
+            if let Some(at) = node.groups_at
+                && (at.inputs as usize > node.action.inputs.len()
+                    || at.dependencies as usize > node.dependencies.len()
+                    || !node.groups.iter().all(|group| group.listable_between()))
+            {
+                return Err(format!(
+                    "planned actions: action '{}' lists its shared input groups at {at:?}",
+                    node.action.id
+                ));
             }
             Ok(node)
         })
@@ -1284,6 +1302,25 @@ pub(crate) mod paths {
     }
 }
 
+/// `Vec<SharedPath>` as raw bytes.
+pub(crate) mod shared_paths {
+    use super::*;
+
+    pub(crate) fn serialize<S: Serializer>(
+        value: &[SharedPath],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(value.iter().map(|path| PathRef(path.as_path())))
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<SharedPath>, D::Error> {
+        Vec::<PathIn>::deserialize(deserializer)
+            .map(|value| value.into_iter().map(SharedPath::from_path_in).collect())
+    }
+}
+
 /// `BTreeSet<PathBuf>` as raw bytes (in set order).
 pub(crate) mod path_set {
     use super::*;
@@ -1871,6 +1908,7 @@ mod tests {
             }],
             deferred: None,
             groups: Vec::new(),
+            groups_at: None,
         };
         let nodes = vec![
             PlannedAction {
@@ -1878,6 +1916,7 @@ mod tests {
                 dependencies: Vec::new(),
                 deferred: Some(command_line(None)),
                 groups: Vec::new(),
+                groups_at: None,
             },
             transform(
                 "symlink",
@@ -1961,6 +2000,7 @@ mod tests {
                     extra_param_files: Vec::new(),
                 })),
                 groups: Vec::new(),
+                groups_at: None,
             },
         ];
         PlannedRequest {
@@ -2313,6 +2353,7 @@ mod tests {
             dependencies: Vec::new(),
             deferred: None,
             groups: Vec::new(),
+            groups_at: None,
         });
         request.nodes.push(PlannedAction {
             action: Action {
@@ -2341,6 +2382,7 @@ mod tests {
                 extra_param_files: Vec::new(),
             })),
             groups: Vec::new(),
+            groups_at: None,
         });
         let bytes = encode(&request).unwrap();
         let decoded = decode(&bytes).unwrap();
@@ -2423,6 +2465,7 @@ mod tests {
         };
         let mut group = InputGroup {
             root: root.into(),
+            runfiles: true,
             inputs: vec![
                 (
                     (raw(b"/ws/tools/\xffdata")).into(),
@@ -2443,9 +2486,9 @@ mod tests {
             constant_metadata: vec![below(b"_main/tools/\xffdata")],
             empty_files: vec![below(b"_main/tools/__init__.py")],
             sources: vec![
-                raw(b"/ws/tools/\xffdata"),
-                PathBuf::from(format!("/ws/tools/{tag}")),
-                PathBuf::from("/ws/unplanted"),
+                raw(b"/ws/tools/\xffdata").into(),
+                PathBuf::from(format!("/ws/tools/{tag}")).into(),
+                PathBuf::from("/ws/unplanted").into(),
             ],
             valid: false,
         };
@@ -2467,6 +2510,7 @@ mod tests {
             dependencies: Vec::new(),
             deferred: None,
             groups: groups.iter().map(|group| Arc::clone(group)).collect(),
+            groups_at: None,
         }
     }
 
@@ -2647,6 +2691,7 @@ mod tests {
             dependencies: Vec::new(),
             deferred: None,
             groups: Vec::new(),
+            groups_at: None,
         };
         let manifest = |id: &str, entries: crate::action::RunfilesEntries| {
             transform(id, Transform::RunfilesManifest { entries })

@@ -243,6 +243,10 @@ fn optional_file<'v>(
 /// headers and module-map inputs (CcCompilationContext.java:155-170, :477-483).
 struct CompilationContextInputs {
     headers: Vec<File>,
+    /// The memoized walk `headers` begins with (crate::starlark_types
+    /// FlatFiles): the transitive headers every compile of a target, and
+    /// of the targets above it, lists alike.
+    headers_memo: Option<Arc<crate::starlark_types::FlatFiles>>,
     non_code_inputs: Vec<File>,
     direct_module_maps: Vec<File>,
     module_map: Option<File>,
@@ -265,8 +269,14 @@ fn compilation_context_inputs<'v>(
                 .ok_or_else(|| failure(format!("{function}: _module_map has no file")))
         })
         .transpose()?;
+    let (headers, headers_memo) = match struct_field(info, "headers", heap) {
+        Some(value) => crate::starlark_types::file_list_with_memo(value)
+            .map_err(|error| failure(format!("{function}: headers: {error}")))?,
+        None => (Vec::new(), None),
+    };
     Ok(CompilationContextInputs {
-        headers: files_field(function, info, "headers", heap)?,
+        headers,
+        headers_memo,
         non_code_inputs: files_field(function, info, "_non_code_inputs", heap)?,
         direct_module_maps: files_field(function, info, "_direct_module_maps", heap)?,
         module_map,
@@ -1101,13 +1111,14 @@ fn create_cc_compile_action<'v>(
     // (Membership by a set beside the ordered list: a toolchain's
     // all_files of thousands scanned the list per file.)
     let mut listed: crate::fast_hash::FxHashSet<File> = inputs.iter().cloned().collect();
-    let mut push = |file: File| {
-        if listed.insert(file.clone()) {
-            inputs.push(file);
-        }
-    };
+    let push =
+        |inputs: &mut Vec<File>, listed: &mut crate::fast_hash::FxHashSet<File>, file: File| {
+            if listed.insert(file.clone()) {
+                inputs.push(file);
+            }
+        };
     for file in files_arg(8, "additional_compilation_inputs_set")? {
-        push(file);
+        push(&mut inputs, &mut listed, file);
     }
     // getBuiltinIncludeFiles over build_info_header_files (:348-370).
     let mut builtin_includes = files_field(F, toolchain_info, "_builtin_include_files", heap)?;
@@ -1117,33 +1128,69 @@ fn create_cc_compile_action<'v>(
         }
     }
     for file in builtin_includes {
-        push(file);
+        push(&mut inputs, &mut listed, file);
     }
+    // The declared headers' memoized walk, when listed in full (none of its
+    // files listed before): the action's shared run (below).
+    let headers_start = inputs.len();
+    let headers_memo = compilation
+        .headers_memo
+        .clone()
+        .filter(|memo| !inputs.iter().any(|file| memo.contains(file)));
     for file in compilation
         .headers
         .iter()
         .chain(&compilation.non_code_inputs)
         .chain(&compilation.direct_module_maps)
     {
-        push(file.clone());
+        push(&mut inputs, &mut listed, file.clone());
     }
     if let Some(map) = &compilation.module_map {
-        push(map.clone());
+        push(&mut inputs, &mut listed, map.clone());
     }
-    push(source.clone());
+    push(&mut inputs, &mut listed, source.clone());
     if let Some(grep) = struct_field(toolchain_info, "_grep_includes", heap)
         .map(|value| {
             unpack_file(value).map_err(|error| failure(format!("{F}: _grep_includes: {error}")))
         })
         .transpose()?
     {
-        push(grep);
+        push(&mut inputs, &mut listed, grep);
     }
-    for file in files_field(F, toolchain_info, "all_files", heap)? {
-        push(file);
+    // The toolchain's all_files, walked through the build's memo of large
+    // depsets: when its memoized walk is listed in full (none of its files
+    // listed before), the action's inputs carry it as a shared run
+    // (RegisteredAction::input_memo), resolved and checked once per build
+    // and held by every compile of the toolchain (crate::engine
+    // SharedInputs), like the one NestedSet Bazel's compiles share.
+    let (all_files, memo) = match struct_field(toolchain_info, "all_files", heap) {
+        Some(value) => crate::starlark_types::file_list_with_memo(value)
+            .map_err(|error| failure(format!("{F}: all_files: {error}")))?,
+        None => (Vec::new(), None),
+    };
+    let start = inputs.len();
+    let memo = memo.filter(|memo| {
+        all_files.len() >= memo.files().len() && !inputs.iter().any(|file| memo.contains(file))
+    });
+    for file in all_files {
+        push(&mut inputs, &mut listed, file);
     }
+    // One shared run per action: the larger walk.
+    let input_memo = match (headers_memo, memo) {
+        (Some(headers), Some(all)) if all.files().len() > headers.files().len() => {
+            Some((start, all))
+        }
+        (Some(headers), _) => Some((headers_start, headers)),
+        (None, all) => all.map(|memo| (start, memo)),
+    };
+    debug_assert!(
+        input_memo
+            .as_ref()
+            .is_none_or(|(start, memo)| inputs[*start..].starts_with(memo.files())),
+        "internal error: a compile's inputs do not hold the toolchain's memoized walk"
+    );
     for file in files_arg(18, "cache_key_inputs")? {
-        push(file);
+        push(&mut inputs, &mut listed, file);
     }
 
     // Outputs (setOutputs, :940-943).
@@ -1257,35 +1304,38 @@ fn create_cc_compile_action<'v>(
     };
     let primary_output = outputs.first().cloned();
     context
-        .register_action(crate::analysis_runtime::Registration {
-            outputs,
-            inputs,
-            command: String::new(),
-            write: None,
-            program: arguments.first().cloned(),
-            arguments: arguments[1..].to_vec(),
-            environment,
-            extra: crate::action::ActionExtra {
-                execution_info,
-                mnemonic: mnemonic.to_owned(),
-                // The configuration's inherited --action_env names
-                // (ActionEnvironment.getInheritedEnv).
-                inherited_environment: action_environment.inherited,
-                progress: Some(progress.into()),
-                ..Default::default()
+        .register_action_with_memo(
+            crate::analysis_runtime::Registration {
+                outputs,
+                inputs,
+                command: String::new(),
+                write: None,
+                program: arguments.first().cloned(),
+                arguments: arguments[1..].to_vec(),
+                environment,
+                extra: crate::action::ActionExtra {
+                    execution_info,
+                    mnemonic: mnemonic.to_owned(),
+                    // The configuration's inherited --action_env names
+                    // (ActionEnvironment.getInheritedEnv).
+                    inherited_environment: action_environment.inherited,
+                    progress: Some(progress.into()),
+                    ..Default::default()
+                },
+                shell_pad: false,
+                executable_file: false,
+                deferred: None,
+                exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
+                runfiles_trees: Vec::new(),
+                build_info: None,
+                // CppCompileActionBuilder.java:99: a C++ compile is not
+                // shareable (`shareable = True` fails above), so equal
+                // compiles of two owners conflict; only one target's
+                // duplicates are one action (Actions.canBeShared).
+                shareable: false,
             },
-            shell_pad: false,
-            executable_file: false,
-            deferred: None,
-            exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
-            runfiles_trees: Vec::new(),
-            build_info: None,
-            // CppCompileActionBuilder.java:99: a C++ compile is not
-            // shareable (`shareable = True` fails above), so equal
-            // compiles of two owners conflict; only one target's
-            // duplicates are one action (Actions.canBeShared).
-            shareable: false,
-        })
+            input_memo,
+        )
         .map_err(|error| failure(format!("cc_internal.{F}: {error}")))?;
     if let (Some(key), Some(output)) = (compute_key, primary_output) {
         let mut actions = context.actions.borrow_mut();

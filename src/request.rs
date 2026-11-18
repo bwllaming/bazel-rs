@@ -1537,6 +1537,7 @@ mod tests {
                 .collect(),
             deferred: None,
             groups: Vec::new(),
+            groups_at: None,
         }
     }
 
@@ -1753,6 +1754,7 @@ mod tests {
     fn tool_group(destination: &str, producer: &str) -> Arc<InputGroup> {
         Arc::new(InputGroup {
             root: PathBuf::from("bazel-out/tool.runfiles"),
+            runfiles: true,
             inputs: Vec::new(),
             dependencies: vec![Dependency {
                 action_id: producer.to_owned(),

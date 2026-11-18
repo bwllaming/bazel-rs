@@ -1184,12 +1184,11 @@ impl Coord<'_> {
             self.store.package_order.push(package.clone());
             self.store.packages.insert(package, result);
         }
-        self.store.transcripts.insert(
-            running.id,
-            Transcript {
-                events: running.events,
-            },
-        );
+        let mut events = running.events;
+        events.shrink_to_fit();
+        self.store
+            .transcripts
+            .insert(running.id, Transcript { events });
     }
 
     /// The attempt `running` stopped (`Missing`; its events were cut to

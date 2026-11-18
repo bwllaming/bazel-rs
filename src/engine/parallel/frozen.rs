@@ -1521,7 +1521,7 @@ pub(super) fn publish_starlark_results(
         &shared,
     );
     delta::provisional_bump(0);
-    if !built.reads.is_empty() {
+    if !built.reads_nothing() {
         delta::provisional_bump(2);
     }
     true
@@ -2176,6 +2176,7 @@ mod tests {
             uses: Vec::new(),
             failed_output: None,
             reads: Vec::new(),
+            shared_reads: Vec::new(),
         }
     }
 

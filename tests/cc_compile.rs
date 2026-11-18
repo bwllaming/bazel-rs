@@ -587,3 +587,109 @@ fn cc_shared_library_and_dynamic_deps_match_genuine() {
     assert!(run.status.success(), "{}", stderr(&run));
     assert_eq!(String::from_utf8_lossy(&run.stdout), "112\n");
 }
+
+/// P6/MEM (docs/OSS_CORPUS.md): a compile whose inputs list a large shared
+/// run of headers (a cc_library's transitive headers, a memoized depset
+/// walk of at least 128 files) holds it as one shared input group in the
+/// middle of its own inputs (PlannedAction::groups_at) instead of a copy.
+/// Every compile lists exactly the inputs it listed without sharing (the
+/// action dump: the headers, in order, before the source), the build runs
+/// and a warm rebuild is fully cached.
+#[test]
+fn compiles_hold_a_shared_header_run_in_the_middle_of_their_inputs() {
+    if !Path::new("/usr/bin/gcc").exists() && !Path::new("/usr/bin/cc").exists() {
+        eprintln!("skipped: no host C compiler for cc_configure");
+        return;
+    }
+    let ws = Workspace::new();
+    let package = ws.root.join("many");
+    fs::create_dir_all(&package).unwrap();
+    let headers: Vec<String> = (0..160).map(|index| format!("h{index:03}.h")).collect();
+    for header in &headers {
+        fs::write(package.join(header), format!("/* {header} */\n")).unwrap();
+    }
+    for source in ["a.c", "b.c", "c.c", "top1.c", "top2.c"] {
+        fs::write(
+            package.join(source),
+            format!(
+                "#include \"many/h000.h\"\nint f_{}(void) {{ return 1; }}\n",
+                &source[..source.len() - 2]
+            ),
+        )
+        .unwrap();
+    }
+    fs::write(
+        package.join("BUILD.bazel"),
+        format!(
+            "load(\"@rules_cc//cc:defs.bzl\", \"cc_library\")\n\
+             cc_library(name = \"base\", srcs = [\"a.c\", \"b.c\", \"c.c\"], hdrs = [{}])\n\
+             cc_library(name = \"top\", srcs = [\"top1.c\", \"top2.c\"], deps = [\":base\"])\n",
+            headers
+                .iter()
+                .map(|header| format!("\"{header}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    )
+    .unwrap();
+    let first = ws.build_with_env(
+        "cache",
+        &["//many:top"],
+        &[("BAZEL_RS_TIMING", "1"), ("BAZEL_RS_DUMP_ACTIONS", "1")],
+    );
+    let err = stderr(&first);
+    assert!(first.status.success(), "{err}");
+    let groups = err
+        .lines()
+        .find(|line| line.starts_with("PERF-GROUPS"))
+        .unwrap_or_else(|| panic!("{err}"));
+    let holders: usize = groups
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("holders="))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(holders >= 2, "{groups}");
+    // Each compile's dump lists every header, in order, then its source.
+    let mut compiles = 0;
+    for block in err.split("\nACTION ").skip(1) {
+        let listed: Vec<&str> = block
+            .lines()
+            .filter_map(|line| line.strip_prefix("  input "))
+            .filter_map(|line| line.split(" -> ").nth(1))
+            .collect();
+        let Some(source) = ["a.c", "b.c", "c.c", "top1.c", "top2.c"]
+            .iter()
+            .find(|source| listed.contains(&format!("many/{source}").as_str()))
+        else {
+            continue;
+        };
+        compiles += 1;
+        let positions: Vec<usize> = headers
+            .iter()
+            .map(|header| {
+                listed
+                    .iter()
+                    .position(|input| *input == format!("many/{header}"))
+                    .unwrap_or_else(|| panic!("{header} not listed: {listed:?}"))
+            })
+            .collect();
+        assert!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "{listed:?}"
+        );
+        let at = listed
+            .iter()
+            .position(|input| *input == format!("many/{source}"))
+            .unwrap();
+        assert!(positions.last().unwrap() < &at, "{listed:?}");
+    }
+    assert_eq!(compiles, 5, "{err}");
+    let warm = ws.build("cache", &["//many:top"]);
+    assert!(warm.status.success(), "{}", stderr(&warm));
+    assert!(
+        stderr(&warm).contains("0 actions executed"),
+        "{}",
+        stderr(&warm)
+    );
+}
