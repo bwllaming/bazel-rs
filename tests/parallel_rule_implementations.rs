@@ -1210,26 +1210,34 @@ fn known_outputs_decide_commits_ahead_within_a_package() {
     }
 }
 
-/// Plan B: the declared outputs' check (no subpackage or source symlink on
-/// an output's way) runs on the analysis worker after the implementation;
-/// a failing one is the sequential error at the target's turn.
+/// Plan B: the declared outputs' check (no source symlink on an output's
+/// way; a subpackage is fine for a declared file, B8) runs on the analysis
+/// worker after the implementation; a failing one is the sequential error
+/// at the target's turn.
 #[test]
 fn declared_outputs_checked_on_workers_fail_at_their_turn() {
     let ws = Workspace::new();
     library_workspace(&ws);
     ws.file("rules/known.bzl", KNOWN_DEFS);
     ws.file("q/sub/BUILD", "");
+    ws.file("elsewhere/data.txt", "");
+    std::os::unix::fs::symlink(ws.0.join("elsewhere"), ws.0.join("q/linked")).unwrap();
     ws.file(
         "q/BUILD",
         "load('//rules:known.bzl', 's')\n\
          s(name = 'ok', out = 'nested/ok.txt', deps = ['//p2:t7'], work = 3000)\n\
          s(name = 'cross', out = 'sub/f.txt', deps = ['//p3:t5'], work = 2000)\n\
-         s(name = 'above', out = 'above.txt', deps = [':ok', ':cross'])\n",
+         s(name = 'linked', out = 'linked/f.txt', deps = ['//p3:t5'], work = 2000)\n\
+         s(name = 'above', out = 'above.txt', deps = [':ok', ':cross', ':linked'])\n",
     );
     let reference = assert_like_sequential(&ws, &[], &["build", "--nobuild", "//..."]);
     let text = stderr(&reference);
     assert!(!reference.status.success(), "{text}");
-    assert!(text.contains("crosses a package boundary"), "{text}");
+    assert!(!text.contains("crosses a package boundary"), "{text}");
+    assert!(
+        text.contains("unsupported symlink source-tree parent"),
+        "{text}"
+    );
 }
 
 /// A rule of the allowlisted package `test` declaring a shareable artifact
@@ -1428,8 +1436,8 @@ fn a_target_requested_twice_lists_its_runfiles_once() {
 /// Plan B review item 6: what the declared outputs' check observes on an
 /// analysis worker (the source-tree probes, the ignored subdirectories'
 /// first fill or its replay) reaches the analysis snapshot: a snapshot a
-/// pipelined build records verifies, and a subpackage created later on an
-/// output's way invalidates it (the next build reports the boundary).
+/// pipelined build records verifies, and a source symlink created later on
+/// an output's way invalidates it (the next build reports it).
 #[test]
 fn outputs_checked_on_workers_are_observed_by_the_snapshot() {
     let ws = Workspace::new();
@@ -1449,11 +1457,15 @@ fn outputs_checked_on_workers_are_observed_by_the_snapshot() {
         &["build", "--loading_phase_threads=1", "--nobuild", "//..."],
     );
     assert!(verified.status.success(), "{}", stderr(&verified));
-    ws.file("q/nested/BUILD", "");
+    ws.file("elsewhere/data.txt", "");
+    std::os::unix::fs::symlink(ws.0.join("elsewhere"), ws.0.join("q/nested")).unwrap();
     let changed = ws.run_env(&[], &threads);
     let text = stderr(&changed);
     assert!(!changed.status.success(), "{text}");
-    assert!(text.contains("crosses a package boundary"), "{text}");
+    assert!(
+        text.contains("unsupported symlink source-tree parent"),
+        "{text}"
+    );
 }
 
 /// Plan B S0 counters (`BAZEL_RS_TIMING=1`): every planned entry is counted

@@ -2526,6 +2526,7 @@ fn validate_declared_outputs(
             &short_name.to_string_lossy(),
             ignored,
             directories.as_mut(),
+            false,
         )?;
     }
     Ok(())
@@ -2550,15 +2551,22 @@ fn validate_output_directory_in(
     out: &str,
     ignored: &IgnoredSubdirectories,
 ) -> Result<(), String> {
-    validate_output_directory_with(root, package, out, ignored, None)
+    validate_output_directory_with(root, package, out, ignored, None, true)
 }
 
+/// `subpackages`: whether a source subpackage on the way fails. A
+/// predeclared output is a target of its package, so it must not cross
+/// into a subpackage (PackageFunction's label-crossing check); a file a
+/// Starlark implementation declares (`declare_file`/`declare_directory`)
+/// is no target and Bazel does not check it (rules_js `js_run_binary(
+/// out_dirs = ["public/build"])` beside `public/BUILD.bazel`, B8).
 fn validate_output_directory_with(
     root: &Path,
     package: &PackageId,
     out: &str,
     ignored: &IgnoredSubdirectories,
     mut memo: Option<&mut DirectoryMemo>,
+    subpackages: bool,
 ) -> Result<(), String> {
     let mut directory = root.join(&package.package);
     let mut relative = package.package.clone();
@@ -2621,13 +2629,31 @@ fn validate_output_directory_with(
                 ));
             }
             DirectoryStep::Stop => break,
-            DirectoryStep::Subpackage => {
+            DirectoryStep::Subpackage if subpackages => {
+                // ContainingPackageLookupValue
+                // .getErrorMessageForLabelCrossingPackageBoundary (:63-97).
+                let label = Label {
+                    repository: package.repository.clone(),
+                    package: package.package.clone(),
+                    name: out.to_owned(),
+                };
+                let containing = if package.repository.is_empty() {
+                    relative.clone()
+                } else {
+                    format!("@@{}//{relative}", package.repository)
+                };
+                let prefix = if package.repository.is_empty() {
+                    "//"
+                } else {
+                    ""
+                };
+                let rest = format!("{}/{out}", package.package);
+                let rest = rest.strip_prefix(&format!("{relative}/")).unwrap_or(out);
                 return Err(format!(
-                    "output {out} crosses a package boundary at {}",
-                    directory.display()
+                    "Label '{label}' is invalid because '{containing}' is a subpackage; perhaps you meant to put the colon here: '{prefix}{containing}:{rest}'?"
                 ));
             }
-            DirectoryStep::Continue => {}
+            DirectoryStep::Subpackage | DirectoryStep::Continue => {}
         }
     }
     Ok(())
@@ -4648,7 +4674,8 @@ impl Engine {
         let ignored = self.ignored(&package.repository)?;
         for rule in rules.values() {
             for out in &rule.outs {
-                self.validate_output_directory(package, out, &ignored)?;
+                self.validate_output_directory(package, out, &ignored)
+                    .map_err(|error| located(rule.location.as_deref(), error))?;
                 let output = rule.label.with_name(out)?;
                 self.generated
                     .insert(output, (rule.label.clone(), out.clone()));
@@ -19404,7 +19431,8 @@ fn validate_package_outputs(
     for rule in rules.values() {
         for out in &rule.outs {
             let root = repositories.root(&package.repository)?;
-            validate_output_directory_in(root, package, out, &ignored)?;
+            validate_output_directory_in(root, package, out, &ignored)
+                .map_err(|error| located(rule.location.as_deref(), error))?;
             rule.label.with_name(out)?;
         }
     }

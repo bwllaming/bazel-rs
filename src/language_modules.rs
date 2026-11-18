@@ -104,6 +104,9 @@ pub(crate) enum Behavior {
     /// lambda wrapper (Style::Def binds `version` positionally or by name).
     DottedVersion,
     ToolchainType,
+    /// `config_common.config_feature_flag_transition(attribute)`
+    /// (crate::rule_declarations::FeatureFlagTransition).
+    FeatureFlagTransition,
     ExecGroup,
     ConfigurationField,
     TestEnvironment,
@@ -293,6 +296,9 @@ impl Namespace {
                 }))
             }
             (Namespace::ConfigCommon, "toolchain_type") => method(Behavior::ToolchainType),
+            (Namespace::ConfigCommon, "config_feature_flag_transition") => {
+                method(Behavior::FeatureFlagTransition)
+            }
             (Namespace::ConfigCommon, _) => method(Behavior::Unimplemented(Domain::Config)),
             (Namespace::CoverageCommon, "instrumented_files_info") => {
                 method(Behavior::InstrumentedFilesInfo)
@@ -1408,6 +1414,27 @@ fn call<'v>(
             crate::apple_xcode::dotted_version(bound[0].expect("required"), heap)
         }
         Behavior::ToolchainType => toolchain_type(args, eval),
+        Behavior::FeatureFlagTransition => {
+            // ConfigStarlarkCommonApi.java:41-51: one positional-only string.
+            let bound = bind(
+                "config_feature_flag_transition",
+                &[param("attribute", true, false, true)],
+                args,
+                heap,
+            )?;
+            let attribute = bound[0].expect("required");
+            let attribute = attribute.unpack_str().ok_or_else(|| {
+                type_error(
+                    "config_feature_flag_transition",
+                    "attribute",
+                    attribute,
+                    "string",
+                )
+            })?;
+            Ok(heap.alloc(crate::rule_declarations::FeatureFlagTransition {
+                attribute: attribute.to_owned(),
+            }))
+        }
         Behavior::ExecGroup => exec_group(args, eval),
         Behavior::ConfigurationField => configuration_field(args, eval),
         Behavior::InstrumentedFilesInfo => {
@@ -2425,8 +2452,8 @@ t = platform_common.ToolchainInfo(z = [1], a = "x", m = None)
                 "FeatureFlagInfo() got multiple values for argument 'value'",
             ),
             (
-                "config_common.config_feature_flag_transition('attr')",
-                "config_common.config_feature_flag_transition is not implemented in the native profile",
+                "config_common.config_feature_flag_transition(1)",
+                "in call to config_feature_flag_transition(), parameter 'attribute' got value of type 'int', want 'string'",
             ),
             (
                 "coverage_common.instrumented_files_info(None)",

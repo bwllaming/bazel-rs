@@ -103,7 +103,11 @@ impl ActionView {
         };
         let (mnemonic, argv, content, substitutions) = if let Some(write) = &action.write {
             (
-                "FileWrite".to_owned(),
+                if action.extra.mnemonic.is_empty() {
+                    "FileWrite".to_owned()
+                } else {
+                    action.extra.mnemonic.clone()
+                },
                 None,
                 Content::Text(native_string(&write.content)),
                 None,

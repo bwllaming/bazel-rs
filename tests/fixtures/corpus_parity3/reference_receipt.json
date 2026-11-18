@@ -1,0 +1,153 @@
+{
+ "bazel": "9.3.1",
+ "cases": {
+  "declared_outputs_below_subpackage": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/boundary/build.txt": "boundary/public/build/index.txt\nboundary/public/assets\n",
+    "k8-fastbuild/bin/boundary/public/build/index.txt": "index\n",
+    "k8-fastbuild/bin/boundary/public/own.txt": "own\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//boundary:build",
+    "//boundary/public:own"
+   ],
+   "workspace": "workspace"
+  },
+  "feature_flag_transition": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/ff/empty.txt": "transition\n<unknown object com.google.devtools.build.lib.rules.config.ConfigFeatureFlagTransitionFactory>\nTrue\nFalse\n[\"and_then\"]\n@@bazel_tools//tools/allowlists/config_feature_flag:config_feature_flag_setter\n@@bazel_tools//tools/allowlists/config_feature_flag:config_feature_flag\n{}\nbazel-out/k8-fastbuild/bin\n",
+    "k8-fastbuild/bin/ff/unset.txt": "transition\n<unknown object com.google.devtools.build.lib.rules.config.ConfigFeatureFlagTransitionFactory>\nTrue\nFalse\n[\"and_then\"]\n@@bazel_tools//tools/allowlists/config_feature_flag:config_feature_flag_setter\nNone\n{}\nbazel-out/k8-fastbuild/bin\n",
+    "k8-fastbuild/bin/ff/use.txt": "ff/unset.txt ff/empty.txt\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//ff:use",
+    "//ff:unset",
+    "//ff:empty"
+   ],
+   "workspace": "workspace"
+  },
+  "feature_flag_transition_query": {
+   "command": "query",
+   "exit": 0,
+   "flags": [],
+   "outputs": {},
+   "startup": [],
+   "stderr": [],
+   "stdout": "//ff:unset\n@bazel_tools//tools/allowlists/config_feature_flag:config_feature_flag_setter\n",
+   "targets": [
+    "deps(//ff:unset)"
+   ],
+   "workspace": "workspace"
+  },
+  "predeclared_output_below_subpackage": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: <WS>/boundary/BUILD.bazel:3:12: Label '//boundary:public/pre.txt' is invalid because 'boundary/public' is a subpackage; perhaps you meant to put the colon here: '//boundary/public:pre.txt'?",
+     "pattern": "subpackage"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//boundary:pre"
+   ],
+   "workspace": "predeclared"
+  },
+  "write_mnemonic_filter": {
+   "command": "aquery",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [],
+   "stdout": "action 'Writing script mnem/w.cppmap'\n  Mnemonic: CppModuleMap\n  Target: //mnem:w\n  Configuration: k8-fastbuild\n  Execution platform: //:p\n  ActionKey: 120eee4ac7ef51d122166461ec37defe6249827100d27eee418ca2e50aea596f\n  Inputs: []\n  Outputs: [bazel-out/k8-fastbuild/bin/mnem/w.cppmap]\n  IsExecutable: true\n\naction 'Writing file mnem/w.params'\n  Mnemonic: MyParams\n  Target: //mnem:w\n  Configuration: k8-fastbuild\n  Execution platform: //:p\n  ActionKey: dbcdf4cc8b9715f66cc80154ba510f9f29736011b5614d683b76b1a8016432b6\n  Inputs: []\n  Outputs: [bazel-out/k8-fastbuild/bin/mnem/w.params]\n\n",
+   "targets": [
+    "mnemonic(\"CppModuleMap|MyParams\", //mnem:w)"
+   ],
+   "workspace": "workspace"
+  },
+  "write_mnemonic_summary": {
+   "command": "aquery",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--output=summary"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [],
+   "stdout": "4 total actions.\n\nMnemonics:\n  CppModuleMap: 1\n  MyParams: 1\n  FileWrite: 2\n\nConfigurations:\n  k8-fastbuild: 4\n\nExecution Platforms:\n  //:p: 4\n",
+   "targets": [
+    "//mnem:w"
+   ],
+   "workspace": "workspace"
+  },
+  "write_mnemonic_text": {
+   "command": "aquery",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [],
+   "stdout": "action 'Writing script mnem/w.cppmap'\n  Mnemonic: CppModuleMap\n  Target: //mnem:w\n  Configuration: k8-fastbuild\n  Execution platform: //:p\n  ActionKey: 120eee4ac7ef51d122166461ec37defe6249827100d27eee418ca2e50aea596f\n  Inputs: []\n  Outputs: [bazel-out/k8-fastbuild/bin/mnem/w.cppmap]\n  IsExecutable: true\n\naction 'Writing file mnem/w.params'\n  Mnemonic: MyParams\n  Target: //mnem:w\n  Configuration: k8-fastbuild\n  Execution platform: //:p\n  ActionKey: dbcdf4cc8b9715f66cc80154ba510f9f29736011b5614d683b76b1a8016432b6\n  Inputs: []\n  Outputs: [bazel-out/k8-fastbuild/bin/mnem/w.params]\n\naction 'Writing file mnem/w.plain'\n  Mnemonic: FileWrite\n  Target: //mnem:w\n  Configuration: k8-fastbuild\n  Execution platform: //:p\n  ActionKey: 0a7ebe2b9f8f864b517ea536dbe745ff042eede0eeeaaff34a2dc08e5e25ba7e\n  Inputs: []\n  Outputs: [bazel-out/k8-fastbuild/bin/mnem/w.plain]\n  IsExecutable: false\n\naction 'Writing file mnem/w.none'\n  Mnemonic: FileWrite\n  Target: //mnem:w\n  Configuration: k8-fastbuild\n  Execution platform: //:p\n  ActionKey: 794a4c90fd1899579185445af61c17883ebdd0e2fb3de0395ba8b3c5a2470206\n  Inputs: []\n  Outputs: [bazel-out/k8-fastbuild/bin/mnem/w.none]\n  IsExecutable: false\n\n",
+   "targets": [
+    "//mnem:w"
+   ],
+   "workspace": "workspace"
+  },
+  "write_mnemonic_type": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "Error in write: in call to write(), parameter 'mnemonic' got value of type 'int', want 'string or NoneType'",
+     "pattern": "parameter 'mnemonic'"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//mnem:bad"
+   ],
+   "workspace": "workspace"
+  }
+ },
+ "elf_sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c"
+}

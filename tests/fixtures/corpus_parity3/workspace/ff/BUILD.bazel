@@ -1,0 +1,13 @@
+load(":defs.bzl", "flagged", "uses")
+
+flagged(name = "unset")
+
+flagged(
+    name = "empty",
+    feature_flags = {},
+)
+
+uses(
+    name = "use",
+    deps = [":unset", ":empty"],
+)

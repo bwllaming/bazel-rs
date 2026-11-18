@@ -731,7 +731,13 @@ pub(crate) fn prerequisite_errors(
     if target.is_package_group
         && !matches!(
             name,
-            "visibility" | "_allowlist_function_transition" | "_allowlist_extend_rule"
+            "visibility"
+                | "_allowlist_function_transition"
+                | "_allowlist_extend_rule"
+                // Allowlist.getAttributeFromAllowlistName's mandatory
+                // PackageSpecificationProvider (B31).
+                | crate::custom_rule::FEATURE_FLAG_ALLOWLIST_ATTRIBUTE
+                | crate::custom_rule::FEATURE_FLAG_SETTER_ALLOWLIST_ATTRIBUTE
         )
         && !spec.required_providers.iter().flatten().any(|provider| {
             provider

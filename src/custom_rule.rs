@@ -1936,6 +1936,17 @@ mod values {
                     )));
                 }
             }
+            // ConfigFeatureFlag.getAllowlistAttribute(env, attribute)'s
+            // computed default (:71-87).
+            if let Some(attribute) = &self.declaration.feature_flag_attribute
+                && explicit.contains(attribute)
+                && !explicit.contains(FEATURE_FLAG_ALLOWLIST_ATTRIBUTE)
+            {
+                attrs.insert(
+                    FEATURE_FLAG_ALLOWLIST_ATTRIBUTE.to_owned(),
+                    AttrValue::Label(Some(FEATURE_FLAG_ALLOWLIST_DEFAULT.to_owned())),
+                );
+            }
             builtin.tags = builtin.strings("tags");
             for ((key, parameters), function) in self.computed.iter().zip(&self.computed_functions)
             {
@@ -1997,8 +2008,22 @@ mod values {
                 eval,
             )
             .map_err(starlark::Error::new_other)?;
-            let (transition_gaps, toolchain_gaps, unanalyzed) =
+            let (mut transition_gaps, toolchain_gaps, unanalyzed) =
                 static_gaps(&self.declaration, &self.schema);
+            // ConfigFeatureFlagTransitionFactory.create (:128-135): an
+            // explicit attribute value sets the feature flag values below
+            // the target, which the native configuration does not model
+            // (docs/TEST_FLAGS.md); an absent or empty one is no transition.
+            if let Some(attribute) = &self.declaration.feature_flag_attribute
+                && (configurable.contains_key(attribute)
+                    || attrs
+                        .get(attribute)
+                        .is_some_and(|value| !AttrKind::is_empty_value(value)))
+            {
+                transition_gaps.push(format!(
+                    "config_common.config_feature_flag_transition({attribute:?}) with feature flag values in {attribute} (the native configuration has no feature flag values)"
+                ));
+            }
             let configurable_labels = configurable_labels(&self.schema, &configurable);
             crate::package::register_custom(
                 eval,
@@ -2096,6 +2121,10 @@ pub(crate) struct RuleDeclaration {
     pub exec_groups: Vec<crate::rule_declarations::DeclaredExecGroup>,
     pub exec_compatible_with: Vec<String>,
     pub cfg: crate::rule_declarations::Cfg,
+    /// `cfg = config_common.config_feature_flag_transition(attribute)`: the
+    /// attribute whose explicit value would set feature flags
+    /// (ConfigFeatureFlagTransitionFactory; `cfg` stays `Target`).
+    pub feature_flag_attribute: Option<String>,
     pub provides: Vec<ProviderRequirement>,
     pub implicit_outputs: ImplicitOutputs,
     /// `extendable=` as given: "True"/"False" or a canonical allowlist label.
@@ -5230,6 +5259,31 @@ fn define_rule<'v>(
         &environment,
         test,
     )?;
+    // ConfigFeatureFlagTransitionFactory.addToRuleFromStarlark (:47-63):
+    // the `config_feature_flag` allowlist (a computed default: the
+    // `@bazel_tools` package group when the attribute is explicitly
+    // specified, else None; set at instantiation) and the setter allowlist
+    // (ConfigFeatureFlag.java:56-106), both cfg = exec. Allowlist
+    // .getAttributeNameFromAllowlistName names them `$whitelist_...`.
+    let feature_flag_attribute = crate::rule_declarations::feature_flag_transition_attribute(cfg)
+        .or_else(|| parent.and_then(|parent| parent.declaration.feature_flag_attribute.clone()));
+    if feature_flag_attribute.is_some() {
+        for (name, default) in [
+            (FEATURE_FLAG_ALLOWLIST_ATTRIBUTE, None),
+            (
+                FEATURE_FLAG_SETTER_ALLOWLIST_ATTRIBUTE,
+                Some(FEATURE_FLAG_SETTER_ALLOWLIST_DEFAULT.to_owned()),
+            ),
+        ] {
+            let mut spec = descriptor(AttrKind::Label, None, false, false, false)?.0;
+            spec.declaration.explicit_default = default.is_some();
+            spec.default = AttrValue::Label(default);
+            spec.declaration.cfg = crate::rule_declarations::Cfg::Exec(None);
+            if schema.insert(name.to_owned(), spec).is_none() {
+                attr_order.push(name.to_owned());
+            }
+        }
+    }
     // Subrule attributes are lifted to the rule class as if declared there,
     // after its own attributes (StarlarkRuleFunction.export,
     // StarlarkRuleClassFunctions.java:1940-1964), and their toolchain types
@@ -5298,6 +5352,7 @@ fn define_rule<'v>(
         exec_groups,
         exec_compatible_with,
         cfg: rule_cfg,
+        feature_flag_attribute,
         provides,
         implicit_outputs,
         extendable,
@@ -5425,6 +5480,22 @@ fn override_attribute(
     }
     Ok(merged)
 }
+
+/// The Starlark names of `$whitelist_config_feature_flag` and
+/// `$whitelist_config_feature_flag_setter`
+/// (Allowlist.getAttributeFromAllowlistName, analysis/Allowlist.java:49-54,
+/// 140-144; rules/config/ConfigFeatureFlag.java:54-106).
+pub(crate) const FEATURE_FLAG_ALLOWLIST_ATTRIBUTE: &str = "_whitelist_config_feature_flag";
+pub(crate) const FEATURE_FLAG_SETTER_ALLOWLIST_ATTRIBUTE: &str =
+    "_whitelist_config_feature_flag_setter";
+
+/// `env.getToolsLabel(ALLOWLIST_LABEL)`.
+pub(crate) const FEATURE_FLAG_ALLOWLIST_DEFAULT: &str =
+    "@@bazel_tools//tools/allowlists/config_feature_flag:config_feature_flag";
+
+/// `env.getToolsLabel(SETTER_ALLOWLIST_LABEL)`.
+pub(crate) const FEATURE_FLAG_SETTER_ALLOWLIST_DEFAULT: &str =
+    "@@bazel_tools//tools/allowlists/config_feature_flag:config_feature_flag_setter";
 
 /// The Starlark name of FunctionSplitTransitionAllowlist.ATTRIBUTE_NAME
 /// (`$allowlist_function_transition`, packages/FunctionSplitTransitionAllowlist.java:20-25).

@@ -236,6 +236,52 @@ mod values {
         }
     }
 
+    /// `config_common.config_feature_flag_transition(attribute)`
+    /// (rules/config/ConfigFeatureFlagTransitionFactory.java): a rule
+    /// transition that sets exactly the feature flag values of the rule's
+    /// `attribute` (a `label_keyed_string_dict`) when it is explicitly
+    /// specified, else no transition (create, :128-135). rules_android's
+    /// top-level rules (`android_binary/rule.bzl:93`) use it.
+    #[derive(
+        Clone,
+        Debug,
+        PartialEq,
+        Eq,
+        ProvidesStaticType,
+        NoSerialize,
+        Allocative,
+        StarlarkPagablePanic,
+    )]
+    pub(crate) struct FeatureFlagTransition {
+        pub attribute: String,
+    }
+    starlark_simple_value!(FeatureFlagTransition);
+
+    impl fmt::Display for FeatureFlagTransition {
+        // StarlarkValue.repr default: the factory is not a StarlarkValue
+        // with its own repr.
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(
+                "<unknown object com.google.devtools.build.lib.rules.config.ConfigFeatureFlagTransitionFactory>",
+            )
+        }
+    }
+
+    // ConfigurationTransitionApi: @StarlarkBuiltin(name = "transition"); the
+    // factory compares by attribute name (equals, :148-152).
+    #[starlark_value(type = "transition")]
+    impl<'v> StarlarkValue<'v> for FeatureFlagTransition {
+        fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+            Ok(Self::from_value(other) == Some(self))
+        }
+        fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
+            and_then(name, heap, "transition")
+        }
+        fn dir_attr(&self) -> Vec<String> {
+            vec!["and_then".to_owned()]
+        }
+    }
+
     /// A Starlark-defined `transition()` (analysis/config/StarlarkDefinedConfigTransition.java).
     #[derive(
         Debug,
@@ -627,8 +673,9 @@ mod values {
     }
 }
 pub(crate) use values::{
-    Aspect, AspectGen, ExecTransition, FrozenAspect, NoOpTransition, OutputGroupInfoConstructor,
-    SelectorList, SelectorListGen, TestingProvider, Transition, TransitionGen,
+    Aspect, AspectGen, ExecTransition, FeatureFlagTransition, FrozenAspect, NoOpTransition,
+    OutputGroupInfoConstructor, SelectorList, SelectorListGen, TestingProvider, Transition,
+    TransitionGen,
 };
 
 /// Owned `aspect()` metadata (StarlarkRuleClassFunctions.java:1323-1520).
@@ -1131,6 +1178,13 @@ pub(crate) fn rule_cfg(value: Value<'_>) -> anyhow::Result<Cfg> {
     if value.is_none() {
         return Ok(Cfg::Target);
     }
+    // The feature flag transition is a rule transition whose flag values
+    // the native configuration does not model: no transition unless its
+    // attribute sets flags, which fails at analysis
+    // ([`feature_flag_transition_attribute`]).
+    if FeatureFlagTransition::from_value(value).is_some() {
+        return Ok(Cfg::Target);
+    }
     match transition_cfg(value) {
         Some(cfg @ (Cfg::Target | Cfg::NoConfig | Cfg::Starlark { .. })) => Ok(cfg),
         _ => bail!(
@@ -1158,6 +1212,12 @@ fn transition_cfg(value: Value<'_>) -> Option<Cfg> {
         analysis_test: t.analysis_test,
         id: t.id,
     })
+}
+
+/// The attribute of a `config_common.config_feature_flag_transition`
+/// rule transition.
+pub(crate) fn feature_flag_transition_attribute(value: Value<'_>) -> Option<String> {
+    FeatureFlagTransition::from_value(value).map(|transition| transition.attribute.clone())
 }
 
 /// Whether `value` is a Starlark `transition()` object (not an

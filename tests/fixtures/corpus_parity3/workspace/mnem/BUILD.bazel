@@ -1,0 +1,5 @@
+load(":defs.bzl", "bad", "writes")
+
+writes(name = "w")
+
+bad(name = "bad")

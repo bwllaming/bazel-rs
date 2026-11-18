@@ -1703,7 +1703,14 @@ fn action_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let context = action_receiver(this, eval, false)?;
-        let _ = mnemonic;
+        // getMnemonic(mnemonic, AbstractFileWriteAction.MNEMONIC) (:373):
+        // rules_cc's module maps are `CppModuleMap` writes. The default
+        // stays the empty mnemonic, which every reader shows as `FileWrite`.
+        let mnemonic = string_or_none(mnemonic, "write", "mnemonic")?;
+        let write_extra = || ActionExtra {
+            mnemonic: mnemonic.clone().unwrap_or_default(),
+            ..ActionExtra::default()
+        };
         // StarlarkActionFactory.write (:363-403): a dict or None. A string
         // write ignores it; an Args write passes it to
         // ParameterFileWriteAction, whose execution info is only
@@ -1728,20 +1735,26 @@ fn action_methods(builder: &mut MethodsBuilder) {
         );
         if let Some(text) = content.unpack_str() {
             // FileWriteAction writes Bazel's internal bytes (bazel_bytes.rs).
-            context.register(
-                vec![output],
-                Vec::new(),
-                String::new(),
-                Some(WriteAction {
+            context.register_action(Registration {
+                outputs: vec![output],
+                inputs: Vec::new(),
+                command: String::new(),
+                write: Some(WriteAction {
                     content: crate::bazel_bytes::internal_bytes(text).into_owned(),
                     executable: is_executable,
                 }),
-                None,
-                Vec::new(),
-                BTreeMap::new(),
-                false,
-                false,
-            )?;
+                program: None,
+                arguments: Vec::new(),
+                environment: BTreeMap::new(),
+                extra: write_extra(),
+                shell_pad: false,
+                executable_file: false,
+                deferred: None,
+                exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
+                runfiles_trees: Vec::new(),
+                build_info: None,
+                shareable: true,
+            })?;
             return Ok(NoneType);
         }
         // ParameterFileWriteAction (StarlarkActionFactory.write, :356-410):
@@ -1801,7 +1814,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
             environment: BTreeMap::new(),
             extra: ActionExtra {
                 aquery,
-                ..ActionExtra::default()
+                ..write_extra()
             },
             shell_pad: false,
             executable_file: false,

@@ -401,16 +401,14 @@ fn feature_flag_info_constructor_follows_java_binding() {
         &f.run("build", &["//:x"]),
         "cannot set .value field of FeatureFlagInfo value",
     );
-    // Transitions setting feature flags stay explicit.
+    // The feature flag transition loads (B31); a target whose attribute
+    // sets flag values fails analysis explicitly (tests/corpus_parity3.rs).
     f.file(
         "defs.bzl",
         "t = config_common.config_feature_flag_transition('flags')\n",
     );
     f.file("BUILD.bazel", "load(':defs.bzl', 't')\n");
-    rejected(
-        &f.run("query", &["//:all"]),
-        "config_common.config_feature_flag_transition is not implemented in the native profile",
-    );
+    ok(&f.run("query", &["//:all"]));
 }
 
 #[test]

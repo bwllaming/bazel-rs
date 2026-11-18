@@ -1,0 +1,6 @@
+load(":defs.bzl", "predeclared")
+
+predeclared(
+    name = "pre",
+    out = "public/pre.txt",
+)

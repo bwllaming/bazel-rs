@@ -198,9 +198,14 @@ needed during action planning ...`).
 
 ## Explicitly unsupported
 
-* Transitions that set feature flags: `config_common.config_feature_flag_transition`
-  (`config_common.config_feature_flag_transition is not implemented in the
-  native profile`), Android's `feature_flags`; Starlark 1:1 transitions
+* Transitions that set feature flags: a rule whose
+  `cfg = config_common.config_feature_flag_transition(attribute)` loads and
+  analyses like Bazel's while the attribute is absent or empty (no
+  transition; the `_whitelist_config_feature_flag[_setter]` allowlist
+  attributes as in ConfigFeatureFlagTransitionFactory, B31), but a target
+  whose attribute sets flag values fails analysis explicitly
+  (`config_common.config_feature_flag_transition("feature_flags") with
+  feature flag values in feature_flags ...`); Android's `feature_flags`; Starlark 1:1 transitions
   (N18c, docs/CONFIGURATION.md) write only Starlark build settings and the
   modelled native options, never feature flags.
 * `--enforce_transitive_configs_for_config_feature_flag` (an unsupported

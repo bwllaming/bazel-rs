@@ -4,9 +4,9 @@
 //! Pinned source: `/tmp/opencode/bazel-9.3-reference` (e89755b, Release 9.3.0).
 //! Paths below are relative to `src/main/java/com/google/devtools/build/lib/`.
 //! The native profile has no transition that sets feature flag values
-//! (`config_common.config_feature_flag_transition`, Android's
-//! `feature_flags`, `--enforce_transitive_configs_for_config_feature_flag`
-//! fail explicitly), so every `config_feature_flag` is in its
+//! (`config_common.config_feature_flag_transition` with flag values in its
+//! attribute, Android's `feature_flags`,
+//! `--enforce_transitive_configs_for_config_feature_flag` fail explicitly), so every `config_feature_flag` is in its
 //! FeatureFlagValue.DefaultValue state (rules/config/FeatureFlagValue.java).
 use allocative::Allocative;
 use anyhow::anyhow;

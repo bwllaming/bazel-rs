@@ -526,7 +526,11 @@ impl Engine {
         match (&action.write, &action.extra.transform) {
             (Some(write), _) => {
                 if let Some(param) = &meta.param_write {
-                    record.mnemonic = "FileWrite".into();
+                    record.mnemonic = if action.extra.mnemonic.is_empty() {
+                        "FileWrite".into()
+                    } else {
+                        action.extra.mnemonic.clone()
+                    };
                     record.param_file = Some(param.arguments.clone());
                     record.action_key = crate::aquery_key::action_key(
                         &KeyKind::ParamFileWrite {
