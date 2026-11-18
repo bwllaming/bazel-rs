@@ -5366,11 +5366,15 @@ r = rule(implementation=impl, attrs={
             )
             .unwrap_err();
             let key = argument.split('=').next().unwrap();
-            // Private ($x) attributes are UNDOCUMENTED: never suggested
-            // (Attribute.java:444-449).
+            // A Starlark `_x` is built under its Starlark name, so it is
+            // documented and suggested by its native name `$x` (genuine
+            // 9.3.1: `no such attribute '_other' in 'lib' rule (did you
+            // mean '$other'?)`, tests/fixtures/corpus_parity3).
+            let native = format!("${}", &key[1..]);
             assert!(
-                error.contains(&format!("//pkg:x: no such attribute '{key}' in 'r' rule"))
-                    && !error.contains("did you mean '$"),
+                error.contains(&format!(
+                    "//pkg:x: no such attribute '{key}' in 'r' rule (did you mean '{native}'?)"
+                )),
                 "{error}"
             );
         }
