@@ -779,6 +779,9 @@ struct SourceDirectory {
     directories: BTreeSet<PathBuf>,
     /// Dangling symlinks: relative path -> link text.
     dangling: BTreeMap<PathBuf, PathBuf>,
+    /// The directory read (never keyed): what a sandboxed spawn's
+    /// execution root links ([`stage_inputs_kept`]).
+    root: PathBuf,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -3246,6 +3249,7 @@ fn read_source_directory(root: &Path, cache: Option<&Path>) -> Result<SourceDire
         files: BTreeMap::new(),
         directories,
         dangling,
+        root: root.to_path_buf(),
     };
     for ((child, _, _, _), input) in files.into_iter().zip(inputs) {
         directory.files.insert(child, input?);
@@ -4337,7 +4341,9 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
     // Only actions with source directory inputs frame this block, so every
     // other key is unchanged.
     if !extra.source_directories.is_empty() {
-        frame(&mut hash, b"source-directories");
+        // `-linked`: since sandboxed spawns see a source directory through
+        // a symlink (B40), results staged before as real directories miss.
+        frame(&mut hash, b"source-directories-linked");
         frame_count(&mut hash, extra.source_directories.len());
         for name in &extra.source_directories {
             frame(&mut hash, name.as_os_str().as_bytes());
@@ -5498,20 +5504,27 @@ fn stage_inputs(
     inputs: &BTreeMap<PathBuf, Staged>,
     execroot: &Path,
 ) -> Result<Vec<StagedFile>, String> {
-    stage_inputs_kept(cas, root, inputs, execroot, None)
+    stage_inputs_kept(cas, root, inputs, execroot, None, false)
 }
 
 /// [`stage_inputs`] into a reused execution root holding `kept`
-/// (reuse::reconcile).
+/// (reuse::reconcile). `link_source_directories`: a sandboxed spawn's
+/// source directory input is a symlink to the directory, as genuine's
+/// sandboxes stage it (SandboxHelpers.processInputFiles,
+/// SymlinkedSandboxedSpawn; docs/SOURCE_DIRECTORIES.md "Staging"), so the
+/// spawn sees its links as they are (B40: bazel_lib's copy_to_directory
+/// does not descend a directory symlink); the directory is read again
+/// after the spawn ([`check_linked_source_directories`]).
 fn stage_inputs_kept(
     cas: &Path,
     root: &Path,
     inputs: &BTreeMap<PathBuf, Staged>,
     execroot: &Path,
     kept: Option<&reuse::Kept>,
+    link_source_directories: bool,
 ) -> Result<Vec<StagedFile>, String> {
     let clock = std::time::Instant::now();
-    let staged = stage_inputs_untimed(cas, root, inputs, execroot, kept);
+    let staged = stage_inputs_untimed(cas, root, inputs, execroot, kept, link_source_directories);
     STAGING[0].fetch_add(1, Ordering::Relaxed);
     STAGING[1].fetch_add(
         u64::try_from(clock.elapsed().as_micros()).unwrap_or(u64::MAX),
@@ -5526,6 +5539,7 @@ fn stage_inputs_untimed(
     inputs: &BTreeMap<PathBuf, Staged>,
     execroot: &Path,
     kept: Option<&reuse::Kept>,
+    link_source_directories: bool,
 ) -> Result<Vec<StagedFile>, String> {
     let _ensured = EnsuredDirectories::enter();
     let mut staged = Vec::new();
@@ -5563,6 +5577,14 @@ fn stage_inputs_untimed(
                         kept,
                     )?;
                 }
+            }
+            Staged::SourceDirectory(directory) if link_source_directories => {
+                let path = execroot.join(name);
+                if let Some(parent) = path.parent() {
+                    ensure_directory(parent)?;
+                }
+                std::os::unix::fs::symlink(&directory.root, &path)
+                    .map_err(|e| io_error("cannot create symbolic link", &path, e))?;
             }
             Staged::SourceDirectory(directory) => {
                 ensure_directory(&execroot.join(name))?;
@@ -5602,6 +5624,34 @@ fn stage_inputs_untimed(
         }
     }
     Ok(staged)
+}
+
+/// After a sandboxed spawn that saw its source directory inputs through
+/// symlinks ([`stage_inputs_kept`]): each must still hold what the key
+/// took, read again in full (not from the per-process memo), like a test's
+/// live sources (LiveInput::unchanged); a change while the spawn ran fails
+/// it, so no result is stored for content it did not see.
+fn check_linked_source_directories(
+    inputs: &BTreeMap<PathBuf, Staged>,
+    cache: Option<&Path>,
+) -> Result<(), String> {
+    for (name, input) in inputs {
+        let Staged::SourceDirectory(directory) = input else {
+            continue;
+        };
+        let unchanged = read_source_directory(&directory.root, cache).is_ok_and(|now| {
+            now.files == directory.files
+                && now.directories == directory.directories
+                && now.dangling == directory.dangling
+        });
+        if !unchanged {
+            return Err(format!(
+                "source directory {} changed while it was being staged",
+                name.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// After a process ran: every staged inode (reached through its execution
@@ -8419,7 +8469,21 @@ pub fn execute_with_remote(
     // A local process action's execution root is reused (reuse): a
     // stashed one of its mnemonic, reconciled with its inputs, replaces the
     // fresh one; it is stashed again when the action succeeds.
+    // Genuine's sandboxes link a source directory input (B40); its local
+    // execution shows the execution root's real directory, which the
+    // native staged directory stands for.
+    let link_source_directories = remote_hit.is_none()
+        && worker.is_none()
+        && !action.extra.source_directories.is_empty()
+        && matches!(
+            spawn_strategy,
+            Some((
+                crate::sandbox::Strategy::Sandboxed | crate::sandbox::Strategy::ProcessWrapper,
+                _
+            ))
+        );
     let reusable = process
+        && !link_source_directories
         && worker.is_none()
         && remote_hit.is_none()
         && java_strategy.is_none()
@@ -8456,7 +8520,14 @@ pub fn execute_with_remote(
         staging_part(PART_RECONCILE, &mut clock);
     }
     let staged = if process && (remote_hit.is_none() || hit_links) && java_strategy.is_none() {
-        stage_inputs_kept(cas, root, inputs, &execroot, kept.as_ref())?
+        stage_inputs_kept(
+            cas,
+            root,
+            inputs,
+            &execroot,
+            kept.as_ref(),
+            link_source_directories,
+        )?
     } else {
         Vec::new()
     };
@@ -8776,6 +8847,10 @@ pub fn execute_with_remote(
             return Err(message);
         }
         check_staged(&staged, &execroot).map_err(|e| format!("action '{}': {e}", action.id))?;
+        if link_source_directories {
+            check_linked_source_directories(inputs, Some(root))
+                .map_err(|e| format!("action '{}': {e}", action.id))?;
+        }
         if crate::exec_log::active() {
             log_spawn(
                 action,

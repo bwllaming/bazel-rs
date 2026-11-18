@@ -359,23 +359,10 @@
         "== pkg/dir\nroot: symlink\nf ./a.txt\nl ./dangling -> missing.txt\nd ./empty\nl ./link_a -> a.txt\nl ./link_sub -> sub\nd ./sub\nf ./sub/b.txt\nf ./x.sh\n"
        ]
       }
-     },
-     "native": {
-      "exit": 0,
-      "seconds": 0.356,
-      "stdout": "//pkg:view\tbazel-out/k8-fastbuild/bin/pkg/view.txt\n",
-      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
-      "outputs": {
-       "bazel-out/k8-fastbuild/bin/pkg/view.txt": [
-        "0o555",
-        "== pkg/dir\nroot: directory\nf ./a.txt\nl ./dangling -> missing.txt\nd ./empty\nf ./link_a\nd ./link_sub\nf ./link_sub/b.txt\nd ./sub\nf ./sub/b.txt\nf ./x.sh\n"
-       ]
-      }
      }
     }
    ],
-   "declared_divergence": "staging: native stages a source directory like a tree artifact input, a real directory of read-only hardlinked store files (docs/HARDLINK_STAGING.md), its links followed (a link to a file is that file, a link to a directory a directory) and only dangling links kept as symlinks; genuine's sandbox stages a symlink to the directory, which shows the links as they are. Contents, executable bits and names are equal (cases inputs, use_tool, test).",
-   "verdict": "DECLARED_DIVERGENCE"
+   "verdict": "MATCH"
   },
   "view_local": {
    "steps": [

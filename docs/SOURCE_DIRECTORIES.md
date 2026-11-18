@@ -124,18 +124,29 @@ the spawn).
   inside runs the consumers again; genuine keeps the stale result. A return
   to an earlier state is a native cache hit (native keys are content
   addressed; genuine re-runs), as for every native input.
-* **Staging (declared divergence `view`, `view_local`).** Like a tree
-  artifact input: a real directory with every file a read-only hardlink of
-  its content-addressed blob (`0444` plus its executable bits), every
-  directory created, links followed (a link to a file is that file, a link to
-  a directory a directory) and dangling links kept as symlinks with their
-  link text. Contents, executable bits and names are genuine's (`find -L`,
-  `ls -a`, cases `inputs`, `use_tool`, `test`); genuine's sandboxes show a
-  symlink to the directory with its links, its local execution the real
-  directory with its links. The staged bytes are the keyed ones (a file
-  changed after its read fails staging with `changed while it was being
-  staged`), and every staged inode is re-checked after the process, as for
-  any input.
+* **Staging.** A sandboxed spawn (`linux-sandbox`/`sandboxed`,
+  `processwrapper-sandbox`) sees the input as a symlink to the directory,
+  exactly genuine's sandboxes (case `view`, genuine-exact: `root: symlink`,
+  the links as they are). B40: bazel_lib's `copy_to_directory` does not
+  descend such a link, so OpenROAD's clang resource directory holds only
+  `lib/`, as genuine's. The spawn reads the live directory, so the
+  directory is read again in full after the spawn (not from the per-process
+  memo, like a test's live sources) and a change while it ran fails the
+  action (`source directory P changed while it was being staged`); such an
+  execution root is never stashed for reuse. Actions with
+  source directory inputs frame `source-directories-linked`, so results
+  staged the old way miss once. **Declared divergence (`view_local`):** a
+  standalone (`local`) spawn and a worker stage it like a tree artifact
+  input: a real directory with every file a read-only hardlink of its
+  content-addressed blob (`0444` plus its executable bits), every directory
+  created, links followed (a link to a file is that file, a link to a
+  directory a directory) and dangling links kept as symlinks with their
+  link text; genuine's local execution shows the execroot's real directory
+  with its links. Contents, executable bits and names are genuine's
+  (`find -L`, `ls -a`, cases `inputs`, `use_tool`, `test`). The staged
+  bytes are the keyed ones (a file changed after its read fails staging
+  with `changed while it was being staged`), and every staged inode is
+  re-checked after the process, as for any input.
 * **Traversal errors** are reported by the planner before anything executes,
   for executing builds only, with Bazel's texts (cases `err_*`): the package
   boundary of main-repository directories (`.bazelignore`d and invalid
