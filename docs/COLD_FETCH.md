@@ -61,7 +61,13 @@ repositories executed, the lockfile and every published tree are the same.
   released when the repository rule running there ends (a single shared
   entry was evicted by other workers' extractions on ~/code). The same tar
   entries and checks run over it. zig_config's second extraction:
-  4.1 s → 1.3–1.4 s.
+  4.1 s → 1.3–1.4 s. Since corpus-fetch a finished rule's stream is kept
+  for any thread (`archive::RETAINED`, the same key, at most 1 GiB of
+  decoded tar in all, the oldest evicted first): rules_rust's
+  `rust_host_tools` (the `crate` extension, on the coordinator) extracts
+  the `rustc`, `llvm-tools` and `rust-std` tar.xz a `stable_tools`
+  toolchain repository extracted on a fetch worker before, without
+  decoding them again.
 * **Registry files the lockfile names are fetched at once**
   (`RegistrySession::warm_known_files`, docs/REGISTRY_LOCKFILE.md): into
   the content-addressed cache only, nothing recorded or memoized, a

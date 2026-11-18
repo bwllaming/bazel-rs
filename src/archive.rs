@@ -223,21 +223,82 @@ fn slow_decoder(archive_type: &str) -> Option<&'static str> {
 static DECODED: std::sync::Mutex<Option<HashMap<std::thread::ThreadId, Decoded>>> =
     std::sync::Mutex::new(None);
 
-/// Drop this thread's kept decoded stream ([`DECODED`]): its repository
-/// rule finished.
+/// The decoded streams of finished repository rules, kept for another
+/// rule extracting the same archive (rules_rust's `rust_host_tools` and a
+/// `stable_tools` toolchain both extract the same `rustc`, `llvm-tools` and
+/// `rust-std` tar.xz, on different threads): content-addressed like
+/// [`DECODED`], the newest last, at most [`RETAINED_MAX_BYTES`] of decoded
+/// tar in all (the oldest go first). Only the decoding is shared; each
+/// extraction runs every entry and check of its own.
+static RETAINED: std::sync::Mutex<std::collections::VecDeque<Decoded>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+
+/// The decoded bytes [`RETAINED`] keeps at most (unnamed temporary files).
+const RETAINED_MAX_BYTES: u64 = if cfg!(test) { 64 << 20 } else { 1 << 30 };
+
+/// This thread's kept decoded stream ([`DECODED`]) moves to [`RETAINED`]:
+/// its repository rule finished.
 pub(crate) fn release_decoded() {
     let taken = DECODED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_mut()
         .and_then(|kept| kept.remove(&std::thread::current().id()));
-    drop(taken);
+    if let Some(decoded) = taken {
+        retain(decoded);
+    }
+}
+
+/// Keep `decoded` in [`RETAINED`] (replacing an entry of the same stream),
+/// evicting the oldest beyond the bound.
+fn retain(decoded: Decoded) {
+    retain_in(
+        &mut RETAINED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        decoded,
+        RETAINED_MAX_BYTES,
+    );
+}
+
+/// [`retain`] into `retained`, at most `max_bytes`.
+fn retain_in(retained: &mut std::collections::VecDeque<Decoded>, decoded: Decoded, max_bytes: u64) {
+    let size = decoded.size();
+    retained.retain(|kept| kept.kind != decoded.kind || kept.digest != decoded.digest);
+    if size > max_bytes {
+        return;
+    }
+    retained.push_back(decoded);
+    let mut total: u64 = retained.iter().map(Decoded::size).sum();
+    while total > max_bytes {
+        let Some(oldest) = retained.pop_front() else {
+            break;
+        };
+        total -= oldest.size();
+    }
+}
+
+/// The retained decoded stream of `kind` and `digest`, if any.
+fn retained(kind: &str, digest: &[u8; 32]) -> Option<std::sync::Arc<File>> {
+    RETAINED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|kept| kept.kind == kind && &kept.digest == digest)
+        .map(|kept| kept.tar.clone())
 }
 
 struct Decoded {
     kind: &'static str,
     digest: [u8; 32],
     tar: std::sync::Arc<File>,
+}
+
+impl Decoded {
+    /// The decoded tar's size (0 if its metadata cannot be read).
+    fn size(&self) -> u64 {
+        self.tar.metadata().map_or(0, |metadata| metadata.len())
+    }
 }
 
 /// [`extract_file`] of a large archive with a slow decoder ([`DECODED`]).
@@ -263,7 +324,8 @@ fn extract_slow_decoded(
         .as_ref()
         .and_then(|kept| kept.get(&thread))
         .filter(|decoded| decoded.kind == kind && decoded.digest == digest)
-        .map(|decoded| decoded.tar.clone());
+        .map(|decoded| decoded.tar.clone())
+        .or_else(|| retained(kind, &digest));
     if let Some(tar) = cached {
         return run(
             PositionalReader {
@@ -298,7 +360,7 @@ fn extract_slow_decoded(
         Some((&tee, &complete)),
     );
     if result.is_ok() && complete.load(std::sync::atomic::Ordering::Acquire) {
-        DECODED
+        let replaced = DECODED
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get_or_insert_with(HashMap::new)
@@ -310,6 +372,9 @@ fn extract_slow_decoded(
                     tar: std::sync::Arc::new(tee),
                 },
             );
+        if let Some(replaced) = replaced {
+            retain(replaced);
+        }
     }
     result
 }
@@ -3180,6 +3245,65 @@ mod tests {
                 b"#!/bin/sh\n"
             );
         }
+    }
+
+    /// A finished rule's decoded stream serves another thread's extraction
+    /// of the same archive (RETAINED) with the same result.
+    #[test]
+    fn another_rules_extraction_reuses_a_retained_decoded_stream() {
+        let tar = tar_fixture(&[
+            ("top/", b'5', 0o755, b""),
+            ("top/retained", b'0', 0o644, &[7u8; 200_000]),
+        ]);
+        let source = tempfile::tempdir().unwrap();
+        let bytes = xz(&tar);
+        let digest: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(&bytes).into();
+        let path = source.path().join("archive.tar.xz");
+        fs::write(&path, &bytes).unwrap();
+        let extract = |path: PathBuf| {
+            std::thread::spawn(move || {
+                let destination = tempfile::tempdir().unwrap();
+                extract_file(&path, "tar.xz", "top", destination.path(), "archive").unwrap();
+                let content = fs::read(destination.path().join("retained")).unwrap();
+                release_decoded();
+                content
+            })
+            .join()
+            .unwrap()
+        };
+        let first = extract(path.clone());
+        assert!(retained("xz", &digest).is_some());
+        assert_eq!(extract(path), first);
+        assert_eq!(first, vec![7u8; 200_000]);
+    }
+
+    /// RETAINED keeps at most its bound, the oldest stream going first.
+    #[test]
+    fn retained_decoded_streams_are_bounded() {
+        let entry = |byte: u8, size: u64| {
+            let file = tempfile::tempfile().unwrap();
+            file.set_len(size).unwrap();
+            Decoded {
+                kind: "zst",
+                digest: [byte; 32],
+                tar: std::sync::Arc::new(file),
+            }
+        };
+        let digests = |kept: &std::collections::VecDeque<Decoded>| {
+            kept.iter().map(|kept| kept.digest[0]).collect::<Vec<_>>()
+        };
+        let mut kept = std::collections::VecDeque::new();
+        retain_in(&mut kept, entry(1, 400), 1000);
+        retain_in(&mut kept, entry(2, 400), 1000);
+        assert_eq!(digests(&kept), [1, 2]);
+        // The same stream again: replaced, now the newest.
+        retain_in(&mut kept, entry(1, 400), 1000);
+        assert_eq!(digests(&kept), [2, 1]);
+        retain_in(&mut kept, entry(3, 400), 1000);
+        assert_eq!(digests(&kept), [1, 3]);
+        // Larger than the bound: not kept, nothing evicted for it.
+        retain_in(&mut kept, entry(4, 1001), 1000);
+        assert_eq!(digests(&kept), [1, 3]);
     }
 
     /// A repeated extraction of one slow-to-decode archive reads the kept
