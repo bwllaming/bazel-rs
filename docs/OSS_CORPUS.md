@@ -173,7 +173,7 @@ sample.
 | bazel-gazelle | RS-FAIL¹⁶ | 49.8 / 40.2 | 4.4 / 0.3 / not rerun | 53.0–62.5 / 55.1–59.7 | 1647 / 1031 | 2545, 6, 0, 0 (before B13's fix) | FAILED:2 PASSED:194 / FAILED:2 PASSED:192 (before B13's fix) | (B13 fixed; not rerun) |
 | diff.bzl | **OK**¹⁷ | 29.4 / 43.5 | 3.6 / — / 0.2 | 13.0 / 16.0 | 812 / 374 | 308, 0, 0, 0 | PASSED:6 / PASSED:6 | |
 | rules_python-bzlmod | DIFF¹⁷ | 51.9 / 77.6 | 6.2 / — / 0.2 | 48.7 / 43.0 | 1936 / 2583 | 319, 0, 0, 1 | PASSED:31 / PASSED:31 | B34 |
-| with_cfg-examples | RS-FAIL¹⁷ | 34.1 / 77.2 (exit 1) | 4.6 / — / 3.9 (exit 1) | 9.8 / 13.4 (exit 1) | 1622 / 1817 | 194, 50, 0, 8 | PASSED:20 / PASSED:17 | B18, B19, B36 |
+| with_cfg-examples | RS-FAIL¹⁰ ¹⁸ | 36.6 / 72.5 (exit 1) | 5.0 / — / 3.5 (exit 1) | 10.0 / 9.1 (exit 1) | 2061 / 1718 | 201, 43, 0, 0 | PASSED:20 / PASSED:18 | B43 |
 | examples-rules | RS-FAIL | 12.3 / 8.3 (exit 1) | 2.9 / 0.1 / 1.2 (exit 1) | 3.6 / 1.7 (exit 1) | 673 / 250 | 99, 4, 0, 0 | PASSED:1 / PASSED:1 | B23 |
 | googletest | RS-FAIL | 25.4 / 14.7 (exit 1) | 3.2 / 0.2 / 1.5 (exit 1) | 32.0 / 1.1 (exit 1) | 1198 / 453 | 8, 521, 0, 0 | PASSED:44 / — | B1 |
 | re2 | RS-FAIL³ | 13.7 (exit 1) / 9.5 (exit 1) | 2.9 / 0.2 / 1.4 (both exit 1) | 15.3 (exit 1) / 6.6 (exit 1) | 1071 / 313 | 324, 761, 0, 0 | PASSED:21 / PASSED:1 | B1 |
@@ -187,7 +187,7 @@ sample.
 | rules_cc | RS-FAIL¹⁵ | 20.0 (exit 1) / 20.4 (exit 1) | 5.3 (exit 1) / — / 4.7 (exit 1) | 52.6 (exit 1) / 63.6 (exit 1) | 2635 / 1392 | 1348, 636, 0, 1 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:3 FAILED TO BUILD:2 PASSED:258 SKIPPED:2 | B32, B17, B18 |
 | examples-rust-deps-cargo | RS-FAIL | 44.0 / 0.3 (exit 1) | 2.9 / 0.2 / 0.3 (exit 1) | 28.8 / 0.3 (exit 1) | 1034 / 29 | 0, 103, 0, 0 | — | B9, (B2) |
 | protobuf | BOTH-FAIL¹⁵ | 49.3 (exit 1) / 79.0 (exit 1) | 7.0 (exit 1) / — / 18.1 (exit 1) | — | 2699 / 3315 | — | — | B33 |
-| openroad | RS-FAIL¹¹ ¹⁶ | 87.6 / 143.5–153.0 (exit 1) | 8.4 / 0.8 / 15.4–17.4 (exit 1) | — | 3764 / 3980 | — | — | B18, B30 |
+| openroad | DIFF¹¹ ¹⁶ ¹⁸ | 89.6 / 242.5 | 8.9 / — / 1.8 | `//:openroad` 676–702 / 1536 | 3014 / 9169 | `//:openroad`: 15223, 3978, 301, 0 | — | B40, B41, P6 |
 | rules_kotlin | RS-FAIL¹⁵ | 36.9 / 35.7 (exit 1) | 4.7 / — / 7.4 (exit 1) | — | 2027 / 2165 | — | — | B35 |
 | riegeli | BOTH-FAIL⁶ | 30.2 (exit 1) / 31.0 (exit 1) | 4.1 / 0.2 / 3.7 (all exit 1) | 78.2 (exit 1) / 92.5 (exit 1) | 1427 / 794 | 2800, 0, 0, 0 | PASSED:2 / PASSED:2 | |
 | examples-frontend | DIFF⁷ | 89.7 (exit 1) / 129.3 (exit 1) | 60.6 / 110.6 / 100.7 (all exit 1) | 60.7 (exit 1) / 208.3 (exit 1) | 1350 / 1838 | 44827, 170986, 2, 0 | PASSED:14 / — | B8, B25, (B2) |
@@ -303,11 +303,37 @@ Notes:
     (docs/RULE_EXTENSION.md): with_cfg's `rule(parent=...)` rules load and
     analyse, `query //...` matches (194 labels) and 17 of genuine's 20
     tests pass; the three left are `//dynamic_deps` (B18), and the outputs
-    differ by B18's targets, B19's 8 solib hashes and B36. junit5-starter
+    differ by B18's targets, B19's 8 solib hashes and B43. junit5-starter
     (B3 fixed meanwhile) builds and passes its test; only C2's `_javac`
     class directories differ. examples-java-maven: B14 is fixed (it was an
     evaluator bug, below); only B31 remains. rules_python-bzlmod: B34 left
     (cause below).
+
+18. Rerun 2026-11-18 on branch corpus-ccshared (bazel-rs at its HEAD,
+    non-LTO release), phases `nobuild_cold,nobuild_warm,query` for
+    OpenROAD and all phases for with_cfg-examples. Fixed: B18
+    (`cc_shared_library`), B19 (transitioned solib names), B30, and the
+    next OpenROAD blockers B36–B39; with_cfg's
+    `//dynamic_deps:bin_test_from_symlinked_runfiles` needed B42.
+    OpenROAD: `build --nobuild //...` exits 0 on both tools (6,773
+    targets), `query //...` matches (7,079 labels). Genuine's cold run of
+    this rerun failed on a DNS error for `users.aalto.fi` (bliss), so its
+    cold time is the previous round's 89.6 s; the warm columns are the
+    second repeat (bazel-rs's first repeat: 58.2 s, genuine 20.5 s). The
+    full `build //...` exceeds the 20-minute cap, so `build //:openroad`
+    ran by hand after the nobuild phases (`--jobs=16`, both cold action
+    caches): genuine 676 s (load 15) and 702 s (load 37), bazel-rs 1,536 s
+    (load 20–48), the same 13,479/13,480 actions (7,642 sandboxed spawns).
+    The `openroad` binary (119 MB) and every other common `bazel-bin` file
+    are byte-identical (all 15,223 compared; the runfiles manifest differs
+    only by its absolute paths). Only genuine: `src/web/node_modules`
+    (B41); only bazel-rs: the clang `include/`/`share/` files of
+    `@llvm//toolchain:linux_x86_64_cc_toolchain_resource_directory` (B40).
+    with_cfg-examples: every hash matches (B19); the two missing tests and
+    the `args_location_expansion`/`sh` outputs are B17; the rest of the 43
+    only-genuine files are C2 (`_javac` class directories) and runfiles
+    trees of targets in the `_with_reset`/`cc_no_copt_binary` packages, as
+    in earlier runs.
 
 **Summary.** 37 projects ran. On 13 of them bazel-rs matches genuine exactly
 (10 before the corpus-parent rerun, footnote 17: diff.bzl, bazel-skylib
@@ -352,7 +378,7 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B5 | fixed (corpus-parity2) | `local_repository` → `rctx.symlink(path, ".")` rejected (now a copy plus a `watch_tree` input, docs/LOCAL_REPOSITORIES.md) |
 | B8 | 1 (examples-frontend) | declared output "crosses a package boundary" |
 | B17 | fixed (corpus-parent) | `rule(parent=…)` rule extension (docs/RULE_EXTENSION.md) |
-| B18, B19 | 1 (with_cfg; B18 also openroad) | `cc_shared_library`; solib naming in transitioned configurations (B16, symbolic macro `inherit_attrs`, is fixed) |
+| B18, B19 | fixed (corpus-ccshared) | `cc_shared_library` (`cc_common.check_experimental_cc_shared_library`); solib naming in transitioned configurations |
 | B26 | fixed | depset elements holding functions that are not top-level defs (skylib `DirectoryInfo` in rules_cc `cc_args`; openroad) |
 | B29 | fixed (corpus-parity2) | "file '//cc/private/rules_impl:cc_test.bzl' cannot use private API": the private-API allowlist now treats the main repository as rules_cc when the root module is rules_cc |
 | B20 | 1 (capnproto) | `rule(output_to_genfiles=True)` |
@@ -362,14 +388,21 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B12 | 1 (flatbuffers) | `@local_config_platform` unknown |
 | B24 | 1 (examples-configurations) | no PROJECT.scl project-file check |
 | B25 | 1 (examples-frontend) | "needs-repository: repository @@rules_diff+ is unfetched and this thread does not fetch" on a warm `test` |
-| B30 | 1 (openroad) | `provider in target` fails "Target membership requires an exported provider constructor" in with_cfg's `transitioning_alias.bzl:55` (toolchains_llvm's `*_with_cfg` glibc/libunwind/libcxxabi targets; one of with_cfg's forwarded builtin providers is not an exported constructor natively) |
+| B30 | fixed (corpus-ccshared) | `provider in target` fails "Target membership requires an exported provider constructor" in with_cfg's `transitioning_alias.bzl:55` (toolchains_llvm's `*_with_cfg` glibc/libunwind/libcxxabi targets; one of with_cfg's forwarded builtin providers is not an exported constructor natively: `apple_common.Objc`) |
 | B31 | 2 (examples-java-maven, rules_jvm_external-simple); every rules_android user | `config_common.config_feature_flag_transition` (rules_android `android_binary/rule.bzl:93`, at load time) is not implemented |
 | B32 | 1 (rules_cc's own tests) | Starlark transitions on unmodelled native options (`fdo_optimize`, `cs_fdo_profile`, `instrumentation_filter`, `experimental_cpp_modules`, `build_test_dwp`, `fission`, `custom_malloc`, `incompatible_remove_legacy_whole_archive`), `cc_internal.freeze` of mutable structs / unfrozen functions, `objc.target_should_alwayslink` with an `alwayslink` attribute, `Target.actions` read in an aspect |
 | B33 | 1 (protobuf) | analysis: `java_common.check_java_toolchain_is_declared_on_rule`, aspect providers (`does not provide …UpbMinitableCcInfo` / `JavaInfo` on proto_library targets), `Target.actions` in aspect tests, `cc_common.check_experimental_cc_shared_library` (B18) |
 | B34 | 1 (rules_python-bzlmod); not blocking | `external/other_module+/other_module/pkg/bin_zipapp.zip` differs from genuine's: rules_python's zipper stores each input's mode and relative symlinks as it finds them in the sandbox; native staging hardlinks read-only store blobs (docs/HARDLINK_STAGING.md) |
-| B36 | 1 (with_cfg); not blocking | genuine builds `cc_no_copt_binary/binary_/binary.runfiles_manifest` and `.repo_mapping` (the manual `cc_binary` behind with_cfg's frontend and transitioning alias, a no-op transition); bazel-rs does not (not investigated) |
+| B43 | 1 (with_cfg); not blocking | genuine builds `cc_no_copt_binary/binary_/binary.runfiles_manifest` and `.repo_mapping` (the manual `cc_binary` behind with_cfg's frontend and transitioning alias, a no-op transition); bazel-rs does not (not investigated) |
 | B35 | 1 (rules_kotlin) | rules_testing `TestingAspectInfo provider missing` (8 analysis tests), `download_and_extract(rename_files=…)` unsupported (ksp repository), `Target.actions` in an aspect |
 | B27 | fixed (corpus-runfiles) | `depset` was not a BUILD-file global, and list-typed attributes did not accept depsets (`@openssl//:BUILD.bazel:508`, `select({...: depset([...])})`) |
+| B36 | fixed (corpus-ccshared) | `ctx.actions.write(execution_requirements=…)` rejected (rules_cc_autoconf `ctx_actions_write.bzl`; 360 OpenROAD targets) |
+| B37 | fixed (corpus-ccshared) | a repository's BUILD file symlinked into another repository's tree: "build file … resolves outside workspace" (sv-elab's `vendored-hashlib`) |
+| B38 | fixed (corpus-ccshared) | `repository_ctx.delete()` of the repository directory itself (bazel_tools `git_repository`'s `git_worker.bzl`; sv-elab's `vendored-slang`) |
+| B39 | fixed (corpus-ccshared) | a tool hardlinking a repository file into its output (bazel_lib `copy_to_directory`): publication chmod'ed the shared tree file, then libcxx compiles failed "changed while it was being staged" |
+| B40 | 1 (openroad); outputs only | `copy_to_directory` over a source-directory input: native stages the directory as a real directory, genuine's sandbox as a symlink that the tool does not descend, so native's output tree has 301 more files |
+| B41 | 1 (openroad); outputs only | rules_js `node_modules` links in `bazel-bin` (`src/web/node_modules`, 3,978 files) do not resolve natively: a relative package link points into another action's cache entry |
+| B42 | fixed (corpus-ccshared) | a test's runfile of an `actions.symlink` output of a generated file was a copy at the link's exec path, so `$ORIGIN` of a with_cfg-forwarded `cc_binary` missed its `dynamic_deps` |
 | B28 | fixed (corpus-runfiles) | `build //...` missed genuine's `.pic.o`/`.pic.d` of external C++ deps: the rule-returned `_hidden_top_level_INTERNAL_` group (rules_cc cc_library's transitive objects) was not built |
 
 ### Details and minimal repros
@@ -510,14 +543,22 @@ and its `//react-router:build_smoke_test` passes. Genuine does not check
   macro "macro inherit_attrs is unsupported" (`wrapper.bzl:31`).
 - B17 (fixed on branch corpus-parent, docs/RULE_EXTENSION.md): "rule(parent=...)
   rule extension is not supported" (`extend.bzl:10`).
-- B18: `cc_shared_library` fails: "cc_common.check_experimental_cc_shared_library
-  is not implemented".
+- B18 (fixed on branch corpus-ccshared): `cc_shared_library` failed:
+  "cc_common.check_experimental_cc_shared_library is not implemented". It
+  now returns `--experimental_cc_shared_library` (default false), and
+  rules_cc's Starlark implementation runs on the existing
+  cc_common/cc_internal surface: the graph structure aspect,
+  `CcSharedLibraryInfo`, `exports_filter`, `dynamic_deps` between shared
+  libraries and on `cc_binary`, `shared_lib_name`. Genuine fixture:
+  tests/fixtures/cc_compile `shared` (aquery of every compile, archive,
+  link and SolibSymlink action; the binary runs).
 - B19: in transitioned configurations (`k8-fastbuild-ST-…`), solib names and
   rpaths differ. Genuine has `_solib_k8/libST-b44ef279653a_external_Srules_Ucc+…so`
   with rpath `$ORIGIN/../../../_solib_k8/`. bazel-rs has
   `_solib_k8/libST-b44ef279653a/bin_external_…so` with rpath `…/_solib_k8/libST-b44ef279653a`.
-  So the linked binaries differ (8 hash differences, `cc_define_test`,
-  `cc_asan_test`).
+  So the linked binaries differed (8 hash differences, `cc_define_test`,
+  `cc_asan_test`). Fixed on branch corpus-ccshared: the soname mangles the
+  configuration mnemonic, not the output root `bazel-out/<mnemonic>/bin`.
 
 **B26–B28 (rerun 2026-11-17).** B26 is the next OpenROAD analysis error
 after `inherit_attrs` (toolchains_llvm's `resource_directory` macro now
@@ -596,6 +637,19 @@ adding the execution platform touches every evaluator (walk, eval,
 parallel, prepare, linearize pass 1's `toolchain_implementations` claim and
 its whole-command stop), cquery and the snapshot codec. Not attempted on
 corpus-parity2.
+
+**B36–B42 (corpus-ccshared).** OpenROAD's analysis after B18/B30 hit B36
+(rules_cc_autoconf), B37 and B38 (sv-elab's repository rules); its
+`//:openroad` build hit B39. B40: bazel_lib's `copy_to_directory` walks
+its inputs; a source directory input is a symlink in genuine's sandbox
+(docs/SOURCE_DIRECTORIES.md "Staging", the declared divergence `view`), so
+the tool apparently copies nothing below it, while bazel-rs stages a real
+directory and the tool copies `include/` and `share/` of the prebuilt
+clang's resource directory. The compiles do not read that tree, so the
+binary is identical. B41: in the output tree, `node_modules/<pkg>` is an
+absolute link into the producing action's cache entry, where the package
+store's relative link does not resolve (the declared `bazel run`
+difference of docs/RUNFILES_TREES.md, here in `bazel-bin`).
 
 **B31–B35** are the next blockers the corpus-parity2 rerun found (details in
 the table above and footnote 15).
@@ -695,6 +749,16 @@ files hash identically before and after the scheduler change.
   dependent actions first (`Graph::ready_key`; Bazel's evaluator orders by
   depth likewise). The jobs stay busy to the end (16.0 per 5 s window from
   the first to the last but one).
+- **P6: OpenROAD `build //:openroad` is 2.2× genuine** (open; corpus-ccshared,
+  footnote 18): 1,536 s against 676–702 s for the same 13,480 actions and
+  7,642 sandboxed spawns, critical path 77 s against 55–59 s. Not profiled
+  yet; each C++ compile stages the hermetic LLVM toolchain's headers and
+  sysroot (thousands of inputs) by hardlink, where genuine's
+  processwrapper-sandbox makes symlinks.
+- **OpenROAD cold `--nobuild` after B18/B30** (corpus-ccshared): now that
+  analysis passes, 242.5 s against genuine's 89.6 s (peak RSS 9.2 GB
+  against 3.0 GB), the first repeat 58.2 s against 20.5 s, the second
+  1.8 s (snapshot hit) against 8.9 s.
 - **P4: OpenROAD cold `--nobuild` is still 1.6–1.7× genuine** (open). With
   the fixes above, ~145 s against 88 s. The process uses about one core
   (95 s user + 65 s sys over 145 s; genuine 246 + 54 s over 88 s). The
