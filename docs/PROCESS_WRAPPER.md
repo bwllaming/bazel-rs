@@ -83,7 +83,13 @@ PostgreSQL servers in one survey, /tmp/opencode/perf-research/TEST-SURVEY.md B1)
   Starts that must keep a held signal ignored (`Defaults::Client`/`Jvm`, and
   `spawn_lock::spawn` without defaults, which inherits) get a hook setting it
   back to SIG_IGN in the child. The supervisor starts with the defaults and
-  applies them to the command anyway.
+  applies them to the command anyway. The CLI holds them in `main` before
+  any thread exists (after the hidden supervisor/sandbox-worker
+  dispatches, whose processes start with the defaults), so every thread
+  inherits the block. A library process (the test harness) holds them at
+  its first start: threads that already run stay unblocked, and a held
+  signal delivered to one runs the no-op handler (`SA_RESTART`) instead of
+  being discarded — only possible if someone sends it.
 * The control channel is one end of a Unix socket pair, the supervisor's stdin.
   Supervisor to executor: `S<pid>` once the command runs (the executor registers
   the command's group with the memory watchdog), `E<errno>` when it cannot start

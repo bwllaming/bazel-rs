@@ -314,10 +314,21 @@ pub fn report_peak(cap_mb: Option<u64>) {
     }
 }
 
+/// The cap the watchdog enforces, in MB (0: none installed).
+static INSTALLED_CAP_MB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The installed memory cap in MB ([`install_ceiling`]), if any: budgets of
+/// other process-wide caches scale with it (crate::archive's retained
+/// decoded streams).
+pub fn installed_cap_mb() -> Option<u64> {
+    Some(INSTALLED_CAP_MB.load(Ordering::Relaxed)).filter(|&cap| cap > 0)
+}
+
 fn start_watchdog(cap_mb: u64) {
     if WATCHDOG_STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
+    INSTALLED_CAP_MB.store(cap_mb, Ordering::Relaxed);
     let cap_bytes = cap_mb.saturating_mul(1024 * 1024);
     let warn_at = cap_bytes / 4 * 3;
     std::thread::Builder::new()

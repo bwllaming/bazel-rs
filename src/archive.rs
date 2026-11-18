@@ -236,6 +236,38 @@ static RETAINED: std::sync::Mutex<std::collections::VecDeque<Decoded>> =
 /// The decoded bytes [`RETAINED`] keeps at most (unnamed temporary files).
 const RETAINED_MAX_BYTES: u64 = if cfg!(test) { 64 << 20 } else { 1 << 30 };
 
+/// The bound of [`RETAINED`] for streams kept in `file`'s file system.
+/// The streams are unnamed temporary files read with positional reads
+/// (never mapped), so they are not in this process's RSS and the memory
+/// watchdog (crate::memory_limit) does not see them; on disk they cost
+/// page cache only, which the kernel reclaims. On a tmpfs `TMPDIR` they
+/// are memory, though: then at most a sixteenth of the memory cap (and of
+/// 1 GiB's quarter). With a cap, never more than an eighth of it. The OS
+/// frees them when the process ends, also on a crash (no name to clean).
+fn retained_max_bytes(file: &File) -> u64 {
+    const TMPFS_MAGIC: u64 = 0x0102_1994;
+    let on_tmpfs = rustix::fs::fstatfs(file).is_ok_and(|stat| stat.f_type as u64 == TMPFS_MAGIC);
+    retained_bound(
+        on_tmpfs,
+        crate::memory_limit::installed_cap_mb(),
+        RETAINED_MAX_BYTES,
+    )
+}
+
+/// [`retained_max_bytes`] for a file system kind and a memory cap.
+fn retained_bound(on_tmpfs: bool, cap_mb: Option<u64>, max_bytes: u64) -> u64 {
+    let cap_bytes = cap_mb.map(|cap| cap.saturating_mul(1 << 20));
+    let mut bound = max_bytes;
+    if let Some(cap) = cap_bytes {
+        bound = bound.min(cap / 8);
+    }
+    if on_tmpfs {
+        bound = bound.min(max_bytes / 4);
+        bound = bound.min(cap_bytes.map_or(u64::MAX, |cap| cap / 16));
+    }
+    bound
+}
+
 /// This thread's kept decoded stream ([`DECODED`]) moves to [`RETAINED`]:
 /// its repository rule finished.
 pub(crate) fn release_decoded() {
@@ -252,12 +284,13 @@ pub(crate) fn release_decoded() {
 /// Keep `decoded` in [`RETAINED`] (replacing an entry of the same stream),
 /// evicting the oldest beyond the bound.
 fn retain(decoded: Decoded) {
+    let max_bytes = retained_max_bytes(&decoded.tar);
     retain_in(
         &mut RETAINED
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
         decoded,
-        RETAINED_MAX_BYTES,
+        max_bytes,
     );
 }
 
@@ -3275,6 +3308,18 @@ mod tests {
         assert!(retained("xz", &digest).is_some());
         assert_eq!(extract(path), first);
         assert_eq!(first, vec![7u8; 200_000]);
+    }
+
+    /// The retained bound follows the memory cap, smaller on a tmpfs.
+    #[test]
+    fn the_retained_bound_respects_the_memory_cap_and_tmpfs() {
+        let gib = 1u64 << 30;
+        assert_eq!(retained_bound(false, None, gib), gib);
+        assert_eq!(retained_bound(false, Some(16 << 10), gib), gib);
+        assert_eq!(retained_bound(false, Some(2 << 10), gib), 256 << 20);
+        assert_eq!(retained_bound(true, None, gib), 256 << 20);
+        assert_eq!(retained_bound(true, Some(16 << 10), gib), 256 << 20);
+        assert_eq!(retained_bound(true, Some(2 << 10), gib), 128 << 20);
     }
 
     /// RETAINED keeps at most its bound, the oldest stream going first.

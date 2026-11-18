@@ -67,7 +67,12 @@ repositories executed, the lockfile and every published tree are the same.
   `rust_host_tools` (the `crate` extension, on the coordinator) extracts
   the `rustc`, `llvm-tools` and `rust-std` tar.xz a `stable_tools`
   toolchain repository extracted on a fetch worker before, without
-  decoding them again.
+  decoding them again. The streams are unnamed temporary files in
+  `TMPDIR`, read with positional reads (never mapped: not in the RSS the
+  memory watchdog caps, page cache only on disk) and freed by the OS when
+  the process ends, crash included. With a memory cap at most an eighth
+  of it is kept; on a tmpfs `TMPDIR` (memory) at most 256 MiB and a
+  sixteenth of the cap (`archive::retained_max_bytes`).
 * **Registry files the lockfile names are fetched at once**
   (`RegistrySession::warm_known_files`, docs/REGISTRY_LOCKFILE.md): into
   the content-addressed cache only, nothing recorded or memoized, a
