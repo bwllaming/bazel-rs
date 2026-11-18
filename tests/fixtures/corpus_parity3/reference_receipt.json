@@ -2,6 +2,7 @@
  "bazel": "9.3.1",
  "cases": {
   "declared_outputs_below_subpackage": {
+   "bin_paths": {},
    "command": "build",
    "exit": 0,
    "flags": [
@@ -23,6 +24,7 @@
    "workspace": "workspace"
   },
   "feature_flag_transition": {
+   "bin_paths": {},
    "command": "build",
    "exit": 0,
    "flags": [
@@ -45,6 +47,7 @@
    "workspace": "workspace"
   },
   "feature_flag_transition_query": {
+   "bin_paths": {},
    "command": "query",
    "exit": 0,
    "flags": [],
@@ -58,6 +61,7 @@
    "workspace": "workspace"
   },
   "predeclared_output_below_subpackage": {
+   "bin_paths": {},
    "command": "build",
    "exit": 1,
    "flags": [
@@ -79,6 +83,7 @@
    "workspace": "predeclared"
   },
   "private_attribute_native_names": {
+   "bin_paths": {},
    "command": "build",
    "exit": 0,
    "flags": [
@@ -99,6 +104,7 @@
    "workspace": "workspace"
   },
   "private_attribute_starlark_name": {
+   "bin_paths": {},
    "command": "build",
    "exit": 1,
    "flags": [
@@ -119,7 +125,38 @@
    ],
    "workspace": "workspace"
   },
+  "relative_symlink_outputs_in_bazel_bin": {
+   "bin_paths": {
+    "links/app/dangling": [
+     "symlink",
+     "../nowhere/at/all"
+    ],
+    "links/app/node_modules/pkg": [
+     "symlink",
+     "../../store/node_modules/pkg"
+    ],
+    "links/app/node_modules/pkg/index.js": [
+     "file",
+     "pkg\n"
+    ]
+   },
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//links"
+   ],
+   "workspace": "workspace"
+  },
   "write_mnemonic_filter": {
+   "bin_paths": {},
    "command": "aquery",
    "exit": 0,
    "flags": [
@@ -136,6 +173,7 @@
    "workspace": "workspace"
   },
   "write_mnemonic_summary": {
+   "bin_paths": {},
    "command": "aquery",
    "exit": 0,
    "flags": [
@@ -153,6 +191,7 @@
    "workspace": "workspace"
   },
   "write_mnemonic_text": {
+   "bin_paths": {},
    "command": "aquery",
    "exit": 0,
    "flags": [
@@ -169,6 +208,7 @@
    "workspace": "workspace"
   },
   "write_mnemonic_type": {
+   "bin_paths": {},
    "command": "build",
    "exit": 1,
    "flags": [

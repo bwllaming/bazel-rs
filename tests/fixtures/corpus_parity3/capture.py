@@ -44,6 +44,10 @@ CASES = {
         ['libwith.txt', 'with_extra.txt', 'libwithout.txt']),
     'private_attribute_starlark_name': (
         [], 'build', BUILD, ['//privkw_bad:bad'], [r"no such attribute '_other'"], []),
+    'relative_symlink_outputs_in_bazel_bin': (
+        [], 'build', BUILD, ['//links'], [], [], 'workspace',
+        ['links/app/node_modules/pkg', 'links/app/node_modules/pkg/index.js',
+         'links/app/dangling']),
 }
 
 TIME = re.compile(r'^\(\d\d:\d\d:\d\d\) ')
@@ -60,6 +64,7 @@ def main():
     for index, (name, case) in enumerate(CASES.items()):
         startup, command, flags, targets, patterns, outputs = case[:6]
         source = case[6] if len(case) > 6 else 'workspace'
+        bin_paths = case[7] if len(case) > 7 else []
         root = os.path.join(scratch, str(index))
         workspace = os.path.join(root, 'ws')
         shutil.copytree(os.path.join(HERE, source), workspace)
@@ -84,7 +89,19 @@ def main():
                 if file in outputs:
                     path = os.path.join(top, file)
                     files[os.path.relpath(path, out)] = open(path).read()
+        # Paths below bazel-bin: a symlink's text, a file's content (through
+        # symlinks), or None when nothing resolves there.
+        tree = {}
+        for relative in bin_paths:
+            path = os.path.join(workspace, 'bazel-bin', relative)
+            if os.path.islink(path):
+                tree[relative] = ['symlink', os.readlink(path)]
+            elif os.path.isfile(path):
+                tree[relative] = ['file', open(path).read()]
+            else:
+                tree[relative] = None
         cases[name] = dict(workspace=source, startup=startup, command=command, flags=flags,
+                           bin_paths=tree,
                            targets=targets,
                            exit=result.returncode, stdout=result.stdout, stderr=matched,
                            outputs=files)

@@ -22,8 +22,11 @@
 //!   started through the tree is the tree path and its `.runfiles` sibling
 //!   resolves; a symlink is the fallback when the hardlink fails (another
 //!   filesystem, the inode's link limit);
-//! * a directory output (a tree artifact) and an output symlink are a
-//!   symlink to the published path;
+//! * a directory output (a tree artifact) and an output symlink with an
+//!   absolute text are a symlink to the published path; an output symlink
+//!   with a relative text (an unresolved symlink artifact, rules_js's
+//!   package links) is a symlink with the same text, which resolves at its
+//!   exec path like in Bazel's one output tree (B41);
 //! * a runfiles tree (`Transform::RunfilesTree`, whose only declared output
 //!   is `<exe>.runfiles/MANIFEST`) links the whole `<exe>.runfiles`
 //!   directory.
@@ -340,7 +343,7 @@ fn record_path(root: &Path) -> PathBuf {
 
 const RECORD_NAME: &str = ".bazel-rs-output-tree";
 const RECORD_MAGIC: &[u8; 8] = b"BZRSOTRE";
-const RECORD_VERSION: u32 = 1;
+const RECORD_VERSION: u32 = 2;
 /// Magic, version, the first 8 bytes of the body's blake3 hash.
 const RECORD_HEADER: usize = 8 + 4 + 8;
 
@@ -611,10 +614,22 @@ impl Tree {
             if fs::hard_link(source, &temporary).is_ok() {
                 return self.replace(&temporary, destination).map(|()| Some(file));
             }
-        } else if current
+        }
+        // A published symlink output with a relative text (an unresolved
+        // symlink artifact: rules_js's `node_modules/<pkg>` package links)
+        // keeps its text, as in Bazel's one output tree: it resolves at the
+        // same exec path here, where its target's own entry is (B41). A
+        // link into its cache entry would resolve there, beside nothing.
+        let text = if metadata.file_type().is_symlink() {
+            fs::read_link(source).ok().filter(|text| text.is_relative())
+        } else {
+            None
+        };
+        let wanted = text.as_deref().unwrap_or(source);
+        if current
             .as_ref()
             .is_some_and(|current| current.file_type().is_symlink())
-            && fs::read_link(destination).is_ok_and(|target| target == source)
+            && fs::read_link(destination).is_ok_and(|target| target == wanted)
         {
             self.published.unchanged += 1;
             return Ok(Some(EntryKind::Link));
@@ -622,7 +637,7 @@ impl Tree {
         // A directory, a symlink, or a file that cannot be hardlinked.
         let temporary = temporary(destination);
         let _ = fs::remove_file(&temporary);
-        std::os::unix::fs::symlink(source, &temporary)
+        std::os::unix::fs::symlink(wanted, &temporary)
             .map_err(|error| io("cannot link", &temporary, &error))?;
         self.replace(&temporary, destination)
             .map(|()| Some(EntryKind::Link))

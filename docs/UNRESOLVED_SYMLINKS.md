@@ -60,6 +60,12 @@ Analysis (`ctx.actions.declare_symlink`, `ctx.actions.symlink(target_path=...)`,
   `native-action-v9` JSON manifest, no new store) records the link text
   (`symlink`, hex) and Bazel's digest of it (`digest`). A cached entry is valid
   only while the published path is still a symlink with that text and digest.
+  The execution root's output tree (`bazel-bin`, crate::output_tree) holds a
+  relative symlink output as a symlink with its own text, not as a link
+  into its cache entry, so `bazel-bin/app/node_modules/pkg ->
+  ../../store/node_modules/pkg` resolves to the other action's output there,
+  as in genuine's output tree (B41, tests/corpus_parity3.rs); an absolute
+  one stays a link to the published path.
 - Inputs: `Staged::Symlink(text)` read with readlink (an input that is not a
   symlink fails), keyed by its text (`unresolved-symlink` frame); only actions
   with symlink inputs or outputs frame the extra `unresolved-symlinks` block, so

@@ -193,6 +193,42 @@ fn corpus_parity3_matches_genuine() {
         } else if stdout != case["stdout"].as_str().unwrap() {
             problems.push(format!("stdout {stdout:?}, genuine {}", case["stdout"]));
         }
+        // Paths below bazel-bin (the output tree): a symlink's text, a
+        // file's content through symlinks.
+        if let Some(paths) = case["bin_paths"].as_object()
+            && !paths.is_empty()
+        {
+            let info = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
+                .current_dir(&workspace)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", workspace.join("home"))
+                .env("TMPDIR", workspace.join("tmp"))
+                .args(["--ignore_all_rc_files", "--cache-dir=cache", "info"])
+                .args(strings(&case["flags"]))
+                .arg("bazel-bin")
+                .output()
+                .unwrap();
+            let bin = PathBuf::from(String::from_utf8_lossy(&info.stdout).trim());
+            for (relative, expected) in paths {
+                let path = bin.join(relative);
+                let actual = match fs::symlink_metadata(&path) {
+                    Ok(metadata) if metadata.file_type().is_symlink() => serde_json::json!([
+                        "symlink",
+                        fs::read_link(&path).unwrap().to_str().unwrap()
+                    ]),
+                    _ => match fs::read_to_string(&path) {
+                        Ok(content) => serde_json::json!(["file", content]),
+                        Err(_) => serde_json::Value::Null,
+                    },
+                };
+                if &actual != expected {
+                    problems.push(format!(
+                        "bazel-bin/{relative}: {actual}, genuine {expected}"
+                    ));
+                }
+            }
+        }
         if !problems.is_empty() {
             failures.push(format!("{name}: {}\n{stderr}", problems.join("; ")));
         }
