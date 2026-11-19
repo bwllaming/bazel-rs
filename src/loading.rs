@@ -971,6 +971,17 @@ fn warm_load_roots(repositories: &RepositorySet, labels: &[Label]) {
     }
 }
 
+/// The label text of a load statement: in a `.scl` file the magic
+/// `//:project_proto.scl` names bazel_tools' copy (BzlLoadFunction
+/// .getLoadLabels, :1090-1099; `.scl` has no `@repo` syntax).
+fn load_module_id<'a>(load: &starlark::syntax::AstLoad<'a>) -> &'a str {
+    if load.module_id == "//:project_proto.scl" && load.span.filename().ends_with(".scl") {
+        "@bazel_tools//src/main/protobuf/project:project_proto.scl"
+    } else {
+        load.module_id
+    }
+}
+
 fn dependencies(
     repositories: &RepositorySet,
     package: &PackageId,
@@ -979,13 +990,14 @@ fn dependencies(
     ast.loads()
         .into_iter()
         .map(|load| {
+            let module_id = load_module_id(&load);
             // BzlLoadFunction (getLoadLabels, then the load's package
             // lookup): an apparent repository the file's repository does not
             // see fails the load like a missing package (PackageLookupFunction,
             // RepositoryFetchFunction.java:149-153), e.g. Bazel 9's removed
             // `@local_config_platform`.
             if let Ok(deferred) =
-                repositories.parse_deferred(load.module_id, &package.repository, &package.package)
+                repositories.parse_deferred(module_id, &package.repository, &package.package)
                 && let Some(unresolvable) =
                     crate::label::unresolvable_repository(&deferred.repository)
             {
@@ -996,16 +1008,16 @@ fn dependencies(
                 ));
             }
             let label = repositories
-                .parse(load.module_id, &package.repository, &package.package)
+                .parse(module_id, &package.repository, &package.package)
                 .map_err(|e| {
-                    let context = if load.module_id.starts_with('@') {
+                    let context = if module_id.starts_with('@') {
                         "external repository load: "
                     } else {
                         ""
                     };
                     format!("{}: {context}{e}", load.span)
                 })?;
-            if !label.name.ends_with(".bzl") {
+            if !label.name.ends_with(".bzl") && !label.name.ends_with(".scl") {
                 return Err(format!(
                     "{}: load {label} requires a .bzl suffix",
                     load.span
@@ -2499,9 +2511,11 @@ impl<'a> Loader<'a> {
     ) -> Result<(), String> {
         let mut loads = Vec::new();
         for load in ast.loads() {
-            let label =
-                self.repositories
-                    .parse(load.module_id, &package.repository, &package.package)?;
+            let label = self.repositories.parse(
+                load_module_id(&load),
+                &package.repository,
+                &package.package,
+            )?;
             let visibility = self.visibilities.get(&label).ok_or_else(|| {
                 format!("internal loader error: module {label} was not evaluated")
             })?;
@@ -2517,9 +2531,11 @@ impl<'a> Loader<'a> {
     ) -> Result<HashMap<String, FrozenModule>, String> {
         let mut imports = HashMap::new();
         for load in ast.loads() {
-            let label =
-                self.repositories
-                    .parse(load.module_id, &package.repository, &package.package)?;
+            let label = self.repositories.parse(
+                load_module_id(&load),
+                &package.repository,
+                &package.package,
+            )?;
             let module = self.cache.get(&label).ok_or_else(|| {
                 format!("internal loader error: module {label} was not evaluated")
             })?;

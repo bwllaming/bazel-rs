@@ -11396,6 +11396,12 @@ impl Engine {
         labels: &[Label],
         checkpoint: Option<&mut root_checkpoint::Callback<'_>>,
     ) -> Result<root_checkpoint::Outcome<BuildPlan>, String> {
+        // PROJECT.scl files of the requested targets (crate::project_files).
+        if let Some(info) =
+            crate::project_files::check(self.repositories.root("")?, &self.repositories, labels)?
+        {
+            crate::ui::eprint_event(&format!("INFO: {info}"));
+        }
         self.inspected_targets = Arc::new(self.inspected_targets(labels));
         // BAZEL_RS_ANALYSIS / BAZEL_RS_EVAL_VERIFY (docs/EVALUATOR.md):
         // the walk below unless the evaluator is asked for.

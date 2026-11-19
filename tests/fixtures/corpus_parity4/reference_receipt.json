@@ -150,6 +150,75 @@
    ],
    "workspace": "workspace"
   },
+  "project_alias_outside_packages": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--nobuild"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: error loading project files: Label '//missing_dir/inner:PROJECT.scl' is invalid because 'missing_dir/inner' is not a package; perhaps you meant to put the colon here: '//:missing_dir/inner/PROJECT.scl'?",
+     "pattern": "error loading project files"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//alias:f"
+   ],
+   "workspace": "project"
+  },
+  "project_proto_schema": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--nobuild"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "INFO: Reading project settings from //proto:PROJECT.scl.",
+     "pattern": "Reading project settings"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//proto/sub:f"
+   ],
+   "workspace": "project"
+  },
+  "project_without_configurations": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--nobuild"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "INFO: Reading project settings from //plain:PROJECT.scl.",
+     "pattern": "Reading project settings"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//plain:f"
+   ],
+   "workspace": "project"
+  },
   "target_actions_argv_at_analysis": {
    "bin_paths": {},
    "command": "build",

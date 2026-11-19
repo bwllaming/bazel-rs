@@ -1,0 +1,4 @@
+# A legacy-schema project without configurations: nothing to apply.
+project = {
+    "active_directories": {"default": ["plain"]},
+}

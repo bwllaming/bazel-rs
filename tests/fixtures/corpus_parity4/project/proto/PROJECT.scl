@@ -1,0 +1,6 @@
+# The proto schema through the magic //:project_proto.scl, no buildable units.
+load("//:project_proto.scl", "project_pb2")
+
+project = project_pb2.Project.create(
+    project_directories = ["proto"],
+)

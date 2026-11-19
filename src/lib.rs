@@ -142,6 +142,7 @@ pub mod print_action;
 pub mod process_wrapper;
 pub mod profile;
 pub mod progress;
+pub(crate) mod project_files;
 mod proto_text;
 pub mod providers;
 mod py_regex;

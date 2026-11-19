@@ -1510,3 +1510,26 @@ inputs/outputs. Query records declarations without applying MODULE aliases.
   `--debug_select_always_succeed`, `--incompatible_disable_select_on`,
    platform mappings and every other build option. The configured-query subset
    and configuration dump are documented separately in [CQUERY.md](CQUERY.md).
+
+## PROJECT.scl project files (`src/project_files.rs`)
+
+With `--enforce_project_configs` (default true; native accepts only the
+default and rejects `--scl_config`), a building command looks up each
+requested main-repository target's innermost `PROJECT.scl` before the
+analysis (AnalysisPhaseRunner.evaluateProjectFiles, Project.getProjectFiles,
+ProjectFilesLookupFunction) and loads the files found (ProjectFunction,
+BzlLoadValue.keyForBuild; `.scl` files may be loaded and, in an `.scl` file,
+`//:project_proto.scl` names bazel_tools' copy). A file that fails to load,
+or a project alias (`project = {"actual": "//p:PROJECT.scl"}`) whose
+target fails — `Every .bzl file must have a corresponding package …`,
+`Label '…' is invalid because '…' is not a package …` — ends the command
+with genuine's `error loading project files: …` (exit 1; OSS corpus B24,
+examples-configurations). One canonical project prints `INFO: Reading
+project settings from //p:PROJECT.scl.`. A project that defines
+configurations (`buildable_units`, legacy `configs`) would have its default
+flags applied (FlagSetFunction): not modelled, the command fails explicitly.
+The lookups are observed reads. Not modelled: the `.scl` dialect's
+restrictions (an `.scl` file evaluates with the `.bzl` globals), project
+files of external-repository targets, and genuine's error choice when
+several project files fail at once (native reports the first in request
+order).

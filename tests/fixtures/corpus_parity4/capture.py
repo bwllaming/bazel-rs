@@ -44,6 +44,12 @@ CASES = {
     'cpp_options_on_the_command_line': (
         [], 'build', BUILD + ['--fission=dbg,fastbuild', '--dynamic_mode=fully', '--build_test_dwp',
                               '--nolegacy_whole_archive', '--noincompatible_remove_legacy_whole_archive'], ['//cppopts:leaf'], [], ['leaf.txt']),
+    'project_alias_outside_packages': (
+        [], 'build', BUILD + ['--nobuild'], ['//alias:f'], [r'error loading project files'], [], 'project'),
+    'project_without_configurations': (
+        [], 'build', BUILD + ['--nobuild'], ['//plain:f'], [r'Reading project settings'], [], 'project'),
+    'project_proto_schema': (
+        [], 'build', BUILD + ['--nobuild'], ['//proto/sub:f'], [r'Reading project settings'], [], 'project'),
     'macro_visibility_own_label': (
         [], 'build', BUILD, ['//vis/bad:not_delegated_inner'], [r'is not visible from'], []),
 }

@@ -1,0 +1,4 @@
+# B24: an alias to a project file outside every package.
+project = {
+    "actual": "//missing_dir/inner:PROJECT.scl",
+}
