@@ -4539,6 +4539,22 @@ where the walk makes it):
   of a group the coordinator has not prepared that adopted the group's
   speculative preparation is retried once its root is published there
   (`speculated_root_ready`).
+- **A speculation waits for a dependency instead of running again**
+  (`published_after_requested_speculation`, `published_after_speculation`,
+  `DEPENDENCY_WAIT` 10 s): a repository speculation (or an extension
+  evaluated ahead) whose probe of a direct or generated repository misses
+  requests it ahead, re-queues its blocked speculation and waits while it
+  is queued or runs, or while the coordinator evaluates that root; then it
+  takes the published root. Bazel's fetch blocks on a dependency the same
+  way (worker threads, no restart); aborting and running again ran a
+  rule's `execute()` calls twice (tests/repo_mapping_key.rs counts them).
+  A registry or built-in module root is not waited for: the rule's first
+  use (`bind_builtin_tools_slot`) blocks before any side effect, and the
+  lane materializes it (a wait there would hold the lane's blocker while
+  the sequential pass waits for it). All the requests ahead (evaluations,
+  chains, label attributes, dependency waits) are active only while the
+  evaluator's phase 1 runs on its pool (`RepositorySet::ahead_scope`); the
+  target pattern phase's speculations behave as before.
 - **Registered toolchains' repositories ahead**
   (`prepare_registrations_ahead`, from the RegToolchains body's
   `warm_toolchain_patterns`, once per pattern list): every pattern's

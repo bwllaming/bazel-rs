@@ -785,6 +785,16 @@ evaluator's pool waits for may be **evaluated** ahead:
   pool load that adopted the evaluation keeps the existing guard: the
   group prepared otherwise at its commit is the adoption-mismatch internal
   error naming `BAZEL_RS_ANALYSIS=walk` (fail closed).
+- **A failing evaluation** is kept too when the callback itself failed
+  (`extension_ctx::with_failed_inputs` returns what it had read: its
+  recorded inputs and label-attribute mappings) and no sentinel shaped
+  it: its commit runs the same check on those inputs and then fails the
+  group with the speculation's error after its held output, the
+  `EvaluatedTaint` dropped as the failing evaluation drops it. Dropping it
+  instead would let the coordinator's evaluation find the speculation's
+  downloads in the download cache and skip the mirror-fallback warnings it
+  prints (tests/parallel_download.rs
+  `a_failing_extension_shows_its_pending_downloads_warnings_first`).
 - **Residuals.** Unrecorded inputs (downloads, `execute()` results, the
   network, `module_ctx.os.environ`, which Bazel records neither) are read
   at the speculation's time, not the sequential one — the trust Bazel
