@@ -6576,21 +6576,38 @@ impl RepositorySet {
         } else {
             SPECULATION_WAIT
         };
-        let deadline = std::time::Instant::now() + wait;
-        loop {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            if self
-                .state
-                .speculation
-                .wait_running(canonical, left.min(DEPENDENCY_POLL))
-            {
-                break;
+        let started = std::time::Instant::now();
+        let deadline = started + wait;
+        let kind = if waits_for_dependencies() {
+            "running"
+        } else {
+            "unit"
+        };
+        // A speculation's worker parks while it waits: the pool runs others.
+        let finished = self.state.speculation.parked(|| {
+            loop {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if self
+                    .state
+                    .speculation
+                    .wait_running(canonical, left.min(DEPENDENCY_POLL))
+                {
+                    break true;
+                }
+                if left <= DEPENDENCY_POLL || crate::repository_speculation::cancelled() {
+                    break false;
+                }
             }
-            if left <= DEPENDENCY_POLL || crate::repository_speculation::cancelled() {
-                return None;
-            }
-        }
-        self.published_root(canonical)
+        });
+        let root = finished.then(|| self.published_root(canonical)).flatten();
+        crate::repository_speculation::note_dependency_wait(
+            kind,
+            canonical,
+            started.elapsed(),
+            !finished && std::time::Instant::now() >= deadline,
+            root.is_some(),
+        );
+        root
     }
 
     /// The root a speculation published for `canonical` (into the group's
@@ -6633,28 +6650,43 @@ impl RepositorySet {
             self.state.runtime_id
         ));
         self.state.speculation.requeue_blocked(canonical);
-        let deadline = std::time::Instant::now() + DEPENDENCY_WAIT;
-        // (A speculation in flight progresses without the coordinator.)
-        while self.state.speculation.in_flight(canonical)
-            && std::time::Instant::now() < deadline
-            && !crate::repository_speculation::cancelled()
-        {
-            let _ = self.state.speculation.wait_settled(
-                canonical,
-                deadline
-                    .saturating_duration_since(std::time::Instant::now())
-                    .min(DEPENDENCY_POLL),
-            );
-        }
-        // The coordinator evaluates it now: its root, once there.
-        while self.published_root(canonical).is_none()
-            && std::time::Instant::now() < deadline
-            && !dependency_wait_ends()
-            && self.root_slot_evaluating(canonical)
-        {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        self.published_root(canonical)
+        // The next free worker runs it (workers waiting for it would hold
+        // the pool while it sits behind the queue).
+        self.state.speculation.prioritize(canonical);
+        let started = std::time::Instant::now();
+        let deadline = started + DEPENDENCY_WAIT;
+        // A speculation's worker parks while it waits: the pool runs others.
+        let root = self.state.speculation.parked(|| {
+            // (A speculation in flight progresses without the coordinator.)
+            while self.state.speculation.in_flight(canonical)
+                && std::time::Instant::now() < deadline
+                && !crate::repository_speculation::cancelled()
+            {
+                let _ = self.state.speculation.wait_settled(
+                    canonical,
+                    deadline
+                        .saturating_duration_since(std::time::Instant::now())
+                        .min(DEPENDENCY_POLL),
+                );
+            }
+            // The coordinator evaluates it now: its root, once there.
+            while self.published_root(canonical).is_none()
+                && std::time::Instant::now() < deadline
+                && !dependency_wait_ends()
+                && self.root_slot_evaluating(canonical)
+            {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            self.published_root(canonical)
+        });
+        crate::repository_speculation::note_dependency_wait(
+            "requested",
+            canonical,
+            started.elapsed(),
+            std::time::Instant::now() >= deadline,
+            root.is_some(),
+        );
+        root
     }
 
     /// Whether the root slot of `canonical` (the coordinator's, or its

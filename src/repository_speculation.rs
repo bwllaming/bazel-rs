@@ -76,6 +76,8 @@ struct Current {
     /// are demanded now ([`speculative`]).
     demanded: Arc<AtomicBool>,
     output: Vec<u8>,
+    /// The pool whose worker runs it ([`Speculations::parked`]).
+    pool: *const Shared,
 }
 
 /// Whether this thread executes a speculation.
@@ -271,6 +273,60 @@ enum Entry {
     Taken,
 }
 
+/// `PERF-DEPWAIT` telemetry (BAZEL_RS_TIMING=1): the dependency waits of
+/// speculations (crate::repository), per kind: count, total wait, waits
+/// that ran into their deadline, waits that ended with a root.
+#[derive(Default)]
+struct DependencyWaits {
+    kinds: std::collections::BTreeMap<&'static str, (u64, u128, u64, u64)>,
+    names: HashMap<String, (u64, u128)>,
+}
+
+static DEPENDENCY_WAITS: Mutex<Option<DependencyWaits>> = Mutex::new(None);
+
+/// Note one dependency wait of a speculation (diagnostics only).
+pub(crate) fn note_dependency_wait(
+    kind: &'static str,
+    canonical: &str,
+    waited: std::time::Duration,
+    timed_out: bool,
+    served: bool,
+) {
+    if !crate::plan_timings::enabled() {
+        return;
+    }
+    let mut guard = lock(&DEPENDENCY_WAITS);
+    let waits = guard.get_or_insert_with(DependencyWaits::default);
+    let entry = waits.kinds.entry(kind).or_default();
+    entry.0 += 1;
+    entry.1 += waited.as_micros();
+    entry.2 += u64::from(timed_out);
+    entry.3 += u64::from(served);
+    let name = waits.names.entry(canonical.to_owned()).or_default();
+    name.0 += 1;
+    name.1 += waited.as_micros();
+}
+
+fn print_dependency_waits() {
+    let Some(waits) = lock(&DEPENDENCY_WAITS).take() else {
+        return;
+    };
+    for (kind, (count, micros, timed_out, served)) in &waits.kinds {
+        crate::snapshot::diag::line_fmt(format_args!(
+            "PERF-DEPWAIT kind={kind} count={count} wait={:.3}s timed_out={timed_out} served={served}",
+            *micros as f64 / 1e6
+        ));
+    }
+    let mut names: Vec<_> = waits.names.into_iter().collect();
+    names.sort_by_key(|(_, (_, micros))| std::cmp::Reverse(*micros));
+    for (name, (count, micros)) in names.into_iter().take(15) {
+        crate::snapshot::diag::line_fmt(format_args!(
+            "PERF-DEPWAIT name={name} count={count} wait={:.3}s",
+            micros as f64 / 1e6
+        ));
+    }
+}
+
 /// `PERF-FETCH` telemetry (BAZEL_RS_TIMING=1).
 #[derive(Default)]
 struct Counts {
@@ -299,6 +355,10 @@ struct State {
     queue: VecDeque<String>,
     entries: HashMap<String, Entry>,
     running: usize,
+    /// Workers whose speculation waits for a dependency
+    /// ([`Speculations::parked`]): not counted in `running`, each lets one
+    /// more worker run (at most `width` more).
+    parked: usize,
     next: u64,
     cancel: Arc<AtomicBool>,
     job: Option<Job>,
@@ -691,6 +751,7 @@ impl Speculations {
         }
         state.counts = Counts::default();
         drop(state);
+        print_dependency_waits();
         for withdraw in withdrawn {
             withdraw();
         }
@@ -699,6 +760,58 @@ impl Speculations {
     /// Start workers until every queued or running speculation has one (at
     /// most the width). A worker that cannot be spawned leaves its work to
     /// the coordinator.
+    /// Run `wait` (a speculation's wait for a dependency it needs) with
+    /// this thread's worker parked when it is one of this pool's: another
+    /// worker runs queued speculations meanwhile — the dependency itself,
+    /// if it is queued — so that waiting workers never hold the whole pool
+    /// (at most `width` workers park at once; beyond that the wait holds
+    /// its worker, bounded by its deadline).
+    pub(crate) fn parked<R>(&self, wait: impl FnOnce() -> R) -> R {
+        let pool = Arc::as_ptr(&self.shared);
+        let ours = CURRENT.with(|current| {
+            current
+                .borrow()
+                .as_ref()
+                .is_some_and(|current| std::ptr::eq(current.pool, pool))
+        });
+        let parked = ours && {
+            let mut state = lock(&self.shared.state);
+            if state.width > 0 && state.running > 0 && state.parked < state.width {
+                state.running -= 1;
+                state.parked += 1;
+                true
+            } else {
+                false
+            }
+        };
+        if parked {
+            self.grow();
+            self.shared.changed.notify_all();
+        }
+        let result = wait();
+        if parked {
+            let mut state = lock(&self.shared.state);
+            state.parked -= 1;
+            state.running += 1;
+        }
+        result
+    }
+
+    /// Move `canonical` to the front of the queue when it is queued: a
+    /// speculation waits for it as a dependency.
+    pub(crate) fn prioritize(&self, canonical: &str) {
+        let mut state = lock(&self.shared.state);
+        if !matches!(state.entries.get(canonical), Some(Entry::Queued { .. })) {
+            return;
+        }
+        if let Some(position) = state.queue.iter().position(|name| name == canonical)
+            && position > 0
+            && let Some(name) = state.queue.remove(position)
+        {
+            state.queue.push_front(name);
+        }
+    }
+
     fn grow(&self) {
         // Lock order: the worker list, then the state.
         let mut workers = lock(&self.shared.workers);
@@ -707,7 +820,7 @@ impl Speculations {
             if state.width == 0 {
                 return;
             }
-            (state.queue.len() + state.running).min(state.width)
+            (state.queue.len() + state.running).min(state.width) + state.parked
         };
         while workers.len() < wanted {
             let index = workers.len() as u64;
@@ -746,7 +859,9 @@ fn worker(shared: &Arc<Shared>, index: u64) {
                 if state.width == 0 {
                     return;
                 }
-                if let Some(canonical) = state.queue.pop_front() {
+                if state.running < state.width
+                    && let Some(canonical) = state.queue.pop_front()
+                {
                     let Some(Entry::Queued { attempts }) = state.entries.get(&canonical) else {
                         continue; // taken by the coordinator meanwhile
                     };
@@ -786,6 +901,7 @@ fn worker(shared: &Arc<Shared>, index: u64) {
                 cancel: cancel.clone(),
                 demanded,
                 output: Vec::new(),
+                pool: Arc::as_ptr(shared),
             });
         });
         let finished = crate::internal_error::recoverable_asserted(|| job(&canonical))
@@ -1035,6 +1151,56 @@ mod tests {
             assert!(waiter.join().unwrap());
         });
         assert!(!speculations.hides("r"));
+        speculations.stop();
+    }
+
+    /// A speculation waiting for a queued dependency parks its worker: on a
+    /// one-worker pool the dependency (moved to the queue's front) runs
+    /// meanwhile, before what was queued earlier, and the waiter sees it
+    /// settled long before its deadline; the pool's width holds again after.
+    #[test]
+    fn a_parked_wait_lets_its_queued_dependency_run_first() {
+        let speculations = Speculations::default();
+        let pool = Speculations {
+            shared: speculations.shared.clone(),
+        };
+        let order = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (done_tx, done_rx) = mpsc::channel::<Duration>();
+        let done_tx = Mutex::new(done_tx);
+        let job: Job = {
+            let order = order.clone();
+            Arc::new(move |name: &str| {
+                lock(&order).push(name.to_owned());
+                if name == "a" {
+                    pool.request("dep");
+                    pool.prioritize("dep");
+                    let started = std::time::Instant::now();
+                    let settled = pool.parked(|| {
+                        let _ = pool.wait_settled("dep", Duration::from_secs(60));
+                        !pool.in_flight("dep")
+                    });
+                    assert!(settled, "the dependency ran while its waiter was parked");
+                    lock(&done_tx).send(started.elapsed()).unwrap();
+                    let state = lock(&pool.shared.state);
+                    assert_eq!((state.parked, state.running), (0, 1));
+                }
+                Finished::Published
+            })
+        };
+        speculations.start(1, job, Arc::new(|| {}), 0);
+        speculations.request("a");
+        speculations.request("x");
+        speculations.request("y");
+        let waited = done_rx.recv_timeout(Duration::from_secs(60)).unwrap();
+        assert!(waited < Duration::from_secs(30));
+        for name in ["x", "y"] {
+            assert!(
+                speculations
+                    .wait_settled(name, Duration::from_secs(60))
+                    .is_none()
+            );
+        }
+        assert_eq!(&lock(&order)[..2], ["a", "dep"]);
         speculations.stop();
     }
 
