@@ -4493,6 +4493,16 @@ fn test_build_failure(
     // --notest_keep_going: a test that did not pass stopped the build; the
     // command fails with that test failure (TESTS_FAILED, exit 3; genuine
     // 9.3 capture tests/fixtures/cli_test_options).
+    // A loading failure before the analysis (PROJECT.scl files,
+    // AnalysisPhaseRunner.evaluateProjectFiles): no test summary.
+    if error.starts_with(bazel_rs::project_files::LOADING_FAILURE) {
+        eprintln!("ERROR: {error}");
+        eprintln!("ERROR: Build did NOT complete successfully");
+        eprintln!("ERROR: Couldn't start the build. Unable to run tests");
+        write_lockfile();
+        bazel_rs::digest_memo::finish();
+        exit(remote_or(1));
+    }
     let aborted = error == bazel_rs::test_runner::TEST_FAILED_ABORTING;
     if aborted {
         eprintln!("ERROR: {error}");

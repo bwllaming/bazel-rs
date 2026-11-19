@@ -173,6 +173,32 @@
    ],
    "workspace": "project"
   },
+  "project_alias_outside_packages_test": {
+   "bin_paths": {},
+   "command": "test",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: error loading project files: Label '//missing_dir/inner:PROJECT.scl' is invalid because 'missing_dir/inner' is not a package; perhaps you meant to put the colon here: '//:missing_dir/inner/PROJECT.scl'?",
+     "pattern": "error loading project files"
+    },
+    {
+     "line": "ERROR: Couldn't start the build. Unable to run tests",
+     "pattern": "Couldn't start the build"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//alias:f"
+   ],
+   "workspace": "project"
+  },
   "project_proto_schema": {
    "bin_paths": {},
    "command": "build",

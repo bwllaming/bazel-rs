@@ -29,6 +29,10 @@ use crate::repository::RepositorySet;
 
 const PROJECT_FILE_NAME: &str = "PROJECT.scl";
 
+/// The prefix of a project file loading failure: a LoadingFailedException
+/// before the analysis (no test runs, no test summary).
+pub const LOADING_FAILURE: &str = "error loading project files: ";
+
 /// The parent directory of a package path (`""` for a top-level one),
 /// `None` for the root.
 fn parent(package: &str) -> Option<&str> {
@@ -209,7 +213,7 @@ pub(crate) fn check(
     let mut canonical: Vec<(Label, bool)> = Vec::new();
     for project in &projects {
         let resolved = project_value(repositories, project, 0)
-            .map_err(|error| format!("error loading project files: {error}"))?;
+            .map_err(|error| format!("{LOADING_FAILURE}{error}"))?;
         if !canonical.iter().any(|(label, _)| *label == resolved.0) {
             canonical.push(resolved);
         }

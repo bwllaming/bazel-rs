@@ -46,6 +46,8 @@ CASES = {
                               '--nolegacy_whole_archive', '--noincompatible_remove_legacy_whole_archive'], ['//cppopts:leaf'], [], ['leaf.txt']),
     'project_alias_outside_packages': (
         [], 'build', BUILD + ['--nobuild'], ['//alias:f'], [r'error loading project files'], [], 'project'),
+    'project_alias_outside_packages_test': (
+        [], 'test', BUILD, ['//alias:f'], [r'error loading project files', r"Couldn't start the build"], [], 'project'),
     'project_without_configurations': (
         [], 'build', BUILD + ['--nobuild'], ['//plain:f'], [r'Reading project settings'], [], 'project'),
     'project_proto_schema': (
