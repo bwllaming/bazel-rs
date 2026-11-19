@@ -54,6 +54,12 @@ pub(crate) const MAX_WORKERS: usize = 32;
 /// The worker stack size (as the loading workers': Starlark evaluation).
 const WORKER_STACK: usize = 16 << 20;
 
+/// At most this many workers per worker of the width park in a dependency
+/// wait at once ([`Speculations::parked`]): a parked worker is a thread
+/// sleeping on a condition variable; hundreds of `go_repository` rules wait
+/// for `bazel_gazelle_go_repository_tools` on ~/code.
+const PARK_FACTOR: usize = 8;
+
 /// How often one repository is attempted (a blocked attempt is retried once
 /// its blocking demand is satisfied).
 const MAX_ATTEMPTS: u32 = 4;
@@ -357,7 +363,7 @@ struct State {
     running: usize,
     /// Workers whose speculation waits for a dependency
     /// ([`Speculations::parked`]): not counted in `running`, each lets one
-    /// more worker run (at most `width` more).
+    /// more worker run (at most `PARK_FACTOR * width` more).
     parked: usize,
     next: u64,
     cancel: Arc<AtomicBool>,
@@ -757,16 +763,16 @@ impl Speculations {
         }
     }
 
-    /// Start workers until every queued or running speculation has one (at
-    /// most the width). A worker that cannot be spawned leaves its work to
-    /// the coordinator.
     /// Run `wait` (a speculation's wait for a dependency it needs) with
     /// this thread's worker parked when it is one of this pool's: another
     /// worker runs queued speculations meanwhile — the dependency itself,
-    /// if it is queued — so that waiting workers never hold the whole pool
-    /// (at most `width` workers park at once; beyond that the wait holds
-    /// its worker, bounded by its deadline).
-    pub(crate) fn parked<R>(&self, wait: impl FnOnce() -> R) -> R {
+    /// if it is queued — so that waiting workers never hold the pool. At
+    /// most `PARK_FACTOR * width` workers park at once; a worker of this
+    /// pool that cannot park does not wait (`None`: its speculation blocks and is
+    /// retried once the dependency is there, as before dependency waits).
+    /// Other threads (a committed unit's probe, an extension evaluated
+    /// ahead on its own pool) wait as they are.
+    pub(crate) fn parked<R>(&self, wait: impl FnOnce() -> R) -> Option<R> {
         let pool = Arc::as_ptr(&self.shared);
         let ours = CURRENT.with(|current| {
             current
@@ -774,27 +780,33 @@ impl Speculations {
                 .as_ref()
                 .is_some_and(|current| std::ptr::eq(current.pool, pool))
         });
-        let parked = ours && {
+        if ours {
             let mut state = lock(&self.shared.state);
-            if state.width > 0 && state.running > 0 && state.parked < state.width {
-                state.running -= 1;
-                state.parked += 1;
-                true
-            } else {
-                false
+            if !(state.width > 0 && state.running > 0 && state.parked < state.width * PARK_FACTOR) {
+                return None;
             }
-        };
-        if parked {
+            state.running -= 1;
+            state.parked += 1;
+            drop(state);
             self.grow();
             self.shared.changed.notify_all();
         }
         let result = wait();
-        if parked {
+        if ours {
+            // Back within the width: the job resumes once a worker's slot is
+            // free (a dependency many waited for releases them all at once).
             let mut state = lock(&self.shared.state);
+            while state.width > 0 && state.running >= state.width {
+                state = self
+                    .shared
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
             state.parked -= 1;
             state.running += 1;
         }
-        result
+        Some(result)
     }
 
     /// Move `canonical` to the front of the queue when it is queued: a
@@ -812,6 +824,9 @@ impl Speculations {
         }
     }
 
+    /// Start workers until every queued or running speculation has one (at
+    /// most the width). A worker that cannot be spawned leaves its work to
+    /// the coordinator.
     fn grow(&self) {
         // Lock order: the worker list, then the state.
         let mut workers = lock(&self.shared.workers);
@@ -1176,9 +1191,13 @@ mod tests {
                     pool.prioritize("dep");
                     let started = std::time::Instant::now();
                     let settled = pool.parked(|| {
+                        // A parked worker (not running) cannot park again: it does not wait.
+                        assert_eq!(pool.parked(|| ()), None);
                         let _ = pool.wait_settled("dep", Duration::from_secs(60));
                         !pool.in_flight("dep")
                     });
+                    assert_eq!(settled, Some(true), "parked: the dependency ran meanwhile");
+                    let settled = true;
                     assert!(settled, "the dependency ran while its waiter was parked");
                     lock(&done_tx).send(started.elapsed()).unwrap();
                     let state = lock(&pool.shared.state);

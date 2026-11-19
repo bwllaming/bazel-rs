@@ -6583,8 +6583,9 @@ impl RepositorySet {
         } else {
             "unit"
         };
-        // A speculation's worker parks while it waits: the pool runs others.
-        let finished = self.state.speculation.parked(|| {
+        // A speculation's worker parks while it waits: the pool runs others
+        // (one that cannot park does not wait).
+        let Some(finished) = self.state.speculation.parked(|| {
             loop {
                 let left = deadline.saturating_duration_since(std::time::Instant::now());
                 if self
@@ -6598,7 +6599,16 @@ impl RepositorySet {
                     break false;
                 }
             }
-        });
+        }) else {
+            crate::repository_speculation::note_dependency_wait(
+                "skipped",
+                canonical,
+                std::time::Duration::ZERO,
+                false,
+                false,
+            );
+            return None;
+        };
         let root = finished.then(|| self.published_root(canonical)).flatten();
         crate::repository_speculation::note_dependency_wait(
             kind,
@@ -6655,8 +6665,9 @@ impl RepositorySet {
         self.state.speculation.prioritize(canonical);
         let started = std::time::Instant::now();
         let deadline = started + DEPENDENCY_WAIT;
-        // A speculation's worker parks while it waits: the pool runs others.
-        let root = self.state.speculation.parked(|| {
+        // A speculation's worker parks while it waits: the pool runs others
+        // (one that cannot park does not wait).
+        let Some(root) = self.state.speculation.parked(|| {
             // (A speculation in flight progresses without the coordinator.)
             while self.state.speculation.in_flight(canonical)
                 && std::time::Instant::now() < deadline
@@ -6678,7 +6689,16 @@ impl RepositorySet {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
             self.published_root(canonical)
-        });
+        }) else {
+            crate::repository_speculation::note_dependency_wait(
+                "skipped",
+                canonical,
+                std::time::Duration::ZERO,
+                false,
+                false,
+            );
+            return None;
+        };
         crate::repository_speculation::note_dependency_wait(
             "requested",
             canonical,
