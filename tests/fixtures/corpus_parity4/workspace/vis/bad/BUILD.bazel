@@ -1,0 +1,5 @@
+load("//vis/macro:defs.bzl", "fixed", "r")
+
+r(name = "private_dep")
+
+fixed(name = "not_delegated")

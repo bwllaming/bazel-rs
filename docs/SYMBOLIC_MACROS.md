@@ -88,7 +88,14 @@ package defaults. Their effective visibility includes the macro definition
 package. Dependency access uses the producer and consumer definition packages
 for macro-owned rules, not their physical BUILD packages. Thus a caller-package
 rule cannot gain access to a macro-private target solely by sharing its physical
-package. Generated outputs inherit their generating rule's ownership.
+package. Visibility delegation (CommonPrerequisiteValidator.isVisibleToConsumer):
+when the macro that declared the consumer was given the dependency's label
+(as written, an alias not followed) in one of its public dependency
+attributes, select() branch values included, the check moves to that
+macro's own declaration — its caller's macro definition package, or the
+BUILD package at top level — recursively (protobuf's `rust_proto_library`
+passing `deps` to `rust_cc_proto_library`). Finalizers' extra BUILD-package
+grant is not modelled. Generated outputs inherit their generating rule's ownership.
 
 Existence is checked separately from access. A macro-generated rule cannot create
 an implicit source target merely by referencing a physical file (a top-level

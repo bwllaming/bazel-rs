@@ -375,7 +375,6 @@ pub(crate) trait Phase1: Host {
             })
             .unwrap_or_default();
         let skip_testonly = forwards(&rule);
-        let requesting_package = rule_authority(&rule);
         // The configuration of each dependency edge
         // (DependencyResolutionHelpers.getExecutionPlatformLabel,
         // analysis/DependencyResolutionHelpers.java:223-253): the exec
@@ -684,7 +683,7 @@ pub(crate) trait Phase1: Host {
                             || self.visible(
                                 &dep.visibility,
                                 &rule_authority(&dep),
-                                Some(&requesting_package),
+                                Some(&consumer_location(&rule, &dependency)),
                             )?
                     }
                     Target::Source(_) => {
@@ -692,7 +691,7 @@ pub(crate) trait Phase1: Host {
                             || self.visible_source(
                                 &dependency,
                                 &dependency.package_id(),
-                                Some(&requesting_package),
+                                Some(&consumer_location(&rule, &dependency)),
                             )?
                     }
                 };
@@ -794,19 +793,39 @@ pub(crate) trait Phase1: Host {
         // AliasConfiguredTarget.getActual, rules/AliasConfiguredTarget.java:229-233):
         // the alias's own visibility is skipped and the message names the
         // config_setting without an alias description.
+        // Under DEFAULT_STANDARD (`--incompatible_config_setting_private_default_visibility`)
+        // the select() -> alias edge is checked like any prerequisite: the
+        // alias's own visibility, described with its chain; the alias ->
+        // config_setting edge is the alias's own (protobuf's skylib
+        // config_setting_group aliases of private config_settings).
+        let standard_policy = self
+            .repositories()
+            .config_setting_private_default_visibility();
         for (condition, _) in &ordered {
             let dependency = self.resolve_rule_src(&rule, condition)?;
-            let (_, actual) = self.alias_chain(config, &dependency);
-            if let Target::Rule(dep) = self.target(&actual)? {
-                // Formatted only for a reported error.
-                let description = || describe_with_aliases(&[], &actual, "target");
-                if !self.visible(
+            let (chain, actual) = self.alias_chain(config, &dependency);
+            let checked = if standard_policy {
+                &dependency
+            } else {
+                &actual
+            };
+            if let Target::Rule(dep) = self.target(checked)?
+                && !self.visible(
                     &dep.visibility,
                     &rule_authority(&dep),
-                    Some(&requesting_package),
-                )? {
-                    return Err(visibility_error(&rule, &description(), false, None));
-                }
+                    Some(&consumer_location(&rule, &dependency)),
+                )?
+            {
+                let description = if standard_policy {
+                    describe_with_aliases(&chain, &actual, "target")
+                } else {
+                    describe_with_aliases(&[], &actual, "target")
+                };
+                return Err(visibility_error(&rule, &description, false, None));
+            }
+            if let Target::Rule(_) = self.target(&actual)? {
+                // Formatted only for a reported error.
+                let description = || describe_with_aliases(&[], &actual, "target");
                 self.validate_prerequisite(&rule, config, &actual, &description, skip_testonly)?;
             }
         }
@@ -2612,7 +2631,6 @@ pub(crate) trait Phase1: Host {
             self.flush_pending(rule, &starlark_keys)?;
         }
         let shown = crate::rule_declarations::canonical_form(&rule.label);
-        let requesting_package = rule_authority(rule);
         let mut errors = Vec::new();
         let mut flags = Vec::new();
         let mut constraints = Vec::new();
@@ -2646,17 +2664,14 @@ pub(crate) trait Phase1: Host {
                     "in {attribute} attribute of config_setting rule {shown}: {error}"
                 ));
             }
+            let location = consumer_location(rule, &dependency);
             let visible = match self.target(&dependency)? {
-                Target::Rule(dep) | Target::Output(dep, _) => self.visible(
-                    &dep.visibility,
-                    &rule_authority(&dep),
-                    Some(&requesting_package),
-                )?,
-                Target::Source(_) => self.visible_source(
-                    &dependency,
-                    &dependency.package_id(),
-                    Some(&requesting_package),
-                )?,
+                Target::Rule(dep) | Target::Output(dep, _) => {
+                    self.visible(&dep.visibility, &rule_authority(&dep), Some(&location))?
+                }
+                Target::Source(_) => {
+                    self.visible_source(&dependency, &dependency.package_id(), Some(&location))?
+                }
             };
             // Formatted only for a reported error.
             let description = || describe_with_aliases(&chain, &actual, "target");
@@ -2747,7 +2762,6 @@ pub(crate) trait Phase1: Host {
     ) -> Result<(), String> {
         let shown = crate::rule_declarations::canonical_form(&rule.label);
         let class = rule.rule_class_name().to_owned();
-        let requesting_package = rule_authority(rule);
         let mut errors = Vec::new();
         for (attribute, labels) in attributes.iter().zip(resolved) {
             let prefix = crate::rule_errors::RuleEvents {
@@ -2773,17 +2787,14 @@ pub(crate) trait Phase1: Host {
                 if let Some(error) = type_error {
                     errors.push(format!("{prefix}{error}"));
                 }
+                let location = consumer_location(rule, dependency);
                 let visible = match self.target(dependency)? {
-                    Target::Rule(dep) | Target::Output(dep, _) => self.visible(
-                        &dep.visibility,
-                        &rule_authority(&dep),
-                        Some(&requesting_package),
-                    )?,
-                    Target::Source(_) => self.visible_source(
-                        dependency,
-                        &dependency.package_id(),
-                        Some(&requesting_package),
-                    )?,
+                    Target::Rule(dep) | Target::Output(dep, _) => {
+                        self.visible(&dep.visibility, &rule_authority(&dep), Some(&location))?
+                    }
+                    Target::Source(_) => {
+                        self.visible_source(dependency, &dependency.package_id(), Some(&location))?
+                    }
                 };
                 // Formatted only for a reported error.
                 let description = || describe_with_aliases(&chain, &actual, "target");

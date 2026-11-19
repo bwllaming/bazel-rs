@@ -1,0 +1,20 @@
+# B33: a skylib config_setting_group-style alias of private config_settings,
+# under --incompatible_config_setting_private_default_visibility.
+config_setting(
+    name = "local",
+    values = {"compilation_mode": "dbg"},
+)
+
+config_setting(
+    name = "release",
+    values = {"compilation_mode": "opt"},
+)
+
+alias(
+    name = "group",
+    actual = select({
+        ":release": ":release",
+        "//conditions:default": ":local",
+    }),
+    visibility = ["//vis/py:__pkg__"],
+)

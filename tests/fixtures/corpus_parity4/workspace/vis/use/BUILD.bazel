@@ -1,0 +1,10 @@
+load("//vis/macro:defs.bzl", "r", "wrap")
+
+package(default_visibility = ["//visibility:private"])
+
+r(name = "private_dep")
+
+wrap(
+    name = "delegated",
+    deps = [":private_dep"],
+)

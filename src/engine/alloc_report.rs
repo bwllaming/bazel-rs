@@ -1002,7 +1002,9 @@ impl Footprint for Rule {
 }
 fields!(MacroOwner {
     definition_package,
-    name
+    name,
+    attribute_labels,
+    parent
 });
 fields!(Generator {
     name,

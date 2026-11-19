@@ -1,6 +1,89 @@
 {
  "bazel": "9.3.1",
  "cases": {
+  "config_setting_alias_private_policy": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--incompatible_config_setting_private_default_visibility"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/vis/py/g.txt": "default\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//vis/py:g"
+   ],
+   "workspace": "workspace"
+  },
+  "config_setting_alias_private_policy_opt": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--incompatible_config_setting_private_default_visibility",
+    "-c",
+    "opt"
+   ],
+   "outputs": {
+    "k8-opt/bin/vis/py/g.txt": "group\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//vis/py:g"
+   ],
+   "workspace": "workspace"
+  },
+  "macro_visibility_delegation": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/vis/use/delegated_inner.txt": "@@//vis/use:private_dep\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//vis/use:delegated_inner"
+   ],
+   "workspace": "workspace"
+  },
+  "macro_visibility_own_label": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "target '//vis/bad:private_dep' is not visible from",
+     "pattern": "is not visible from"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//vis/bad:not_delegated_inner"
+   ],
+   "workspace": "workspace"
+  },
   "target_actions_argv_at_analysis": {
    "bin_paths": {},
    "command": "build",

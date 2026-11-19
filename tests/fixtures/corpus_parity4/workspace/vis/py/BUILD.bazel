@@ -1,0 +1,9 @@
+load("//vis/macro:defs.bzl", "r")
+
+r(
+    name = "g",
+    opts = select({
+        "//vis/dist:group": ["group"],
+        "//conditions:default": ["default"],
+    }),
+)

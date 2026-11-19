@@ -27,6 +27,16 @@ BUILD = ['--platforms=//:p', '--host_platform=//:p']
 CASES = {
     'target_actions_argv_at_analysis': (
         [], 'build', BUILD, ['//tactions:argv_test'], [], ['argv_test.sh']),
+    'config_setting_alias_private_policy': (
+        [], 'build', BUILD + ['--incompatible_config_setting_private_default_visibility'],
+        ['//vis/py:g'], [], ['g.txt']),
+    'config_setting_alias_private_policy_opt': (
+        [], 'build', BUILD + ['--incompatible_config_setting_private_default_visibility', '-c', 'opt'],
+        ['//vis/py:g'], [], ['g.txt']),
+    'macro_visibility_delegation': (
+        [], 'build', BUILD, ['//vis/use:delegated_inner'], [], ['delegated_inner.txt']),
+    'macro_visibility_own_label': (
+        [], 'build', BUILD, ['//vis/bad:not_delegated_inner'], [r'is not visible from'], []),
 }
 
 TIME = re.compile(r'^\(\d\d:\d\d:\d\d\) ')

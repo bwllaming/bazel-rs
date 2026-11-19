@@ -58,6 +58,13 @@ impl RuleKind {
 pub struct MacroOwner {
     pub definition_package: PackageId,
     pub name: String,
+    /// The labels of the macro instance's public dependency attributes
+    /// (MacroInstance.visitExplicitAttributeLabels, select() branches
+    /// included), for visibility delegation
+    /// (CommonPrerequisiteValidator.isVisibleToConsumer).
+    pub attribute_labels: Arc<BTreeSet<Label>>,
+    /// The macro that declared this macro instance (None at top level).
+    pub parent: Option<Arc<MacroOwner>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1130,6 +1137,7 @@ pub(crate) fn invoke_symbolic_macro<'v>(
     let mut deferred = Vec::new();
     let mut inputs = BTreeSet::new();
     let parent_package_is_none = context.active_macro.borrow().is_none();
+    let mut attribute_labels = BTreeSet::new();
     let mut values = Vec::with_capacity(attrs.len());
     for attr in attrs {
         let mut value = None;
@@ -1183,6 +1191,9 @@ pub(crate) fn invoke_symbolic_macro<'v>(
         if set && parent_package_is_none && attr.dependency() {
             collect_package_labels(value, &package, &mut inputs);
         }
+        if attr.dependency() && !attr.name.starts_with('_') {
+            collect_labels(value, &mut attribute_labels);
+        }
         values.push((attr.name.as_str(), value));
     }
     let Some(name) = name else {
@@ -1192,6 +1203,8 @@ pub(crate) fn invoke_symbolic_macro<'v>(
     let owner = MacroOwner {
         definition_package: definition.package_id(),
         name: name.to_owned(),
+        attribute_labels: Arc::new(attribute_labels),
+        parent: context.active_macro.borrow().clone().map(Arc::new),
     };
     // TargetRecorder.checkMacroName (packages/TargetRecorder.java:725-745).
     if context.declared_names.borrow().contains(name) {
@@ -1309,6 +1322,37 @@ pub(crate) fn invoke_symbolic_macro<'v>(
 /// The Labels of `package` in a converted macro attribute value (lists,
 /// dict keys and values, select branch values; MacroInstance.visitExplicitAttributeLabels,
 /// packages/MacroInstance.java:306-345).
+/// Every label in a macro attribute value (select() branches included).
+fn collect_labels(value: Value<'_>, out: &mut BTreeSet<Label>) {
+    if let Some((repository, pkg, name)) = crate::starlark_types::label_parts(value) {
+        out.insert(Label {
+            repository: repository.to_owned(),
+            package: pkg.to_owned(),
+            name: name.to_owned(),
+        });
+    } else if let Some(pieces) = crate::rule_declarations::select_pieces(value) {
+        for piece in pieces {
+            match piece {
+                crate::rule_declarations::SelectPiece::Plain(value) => collect_labels(value, out),
+                crate::rule_declarations::SelectPiece::Select { branches, .. } => {
+                    for (_, value) in branches {
+                        collect_labels(value, out);
+                    }
+                }
+            }
+        }
+    } else if let Some(items) = crate::custom_rule::sequence_ref(value) {
+        for item in items.iter() {
+            collect_labels(*item, out);
+        }
+    } else if let Some(dict) = starlark::values::dict::DictRef::from_value(value) {
+        for (key, value) in dict.iter() {
+            collect_labels(key, out);
+            collect_labels(value, out);
+        }
+    }
+}
+
 fn collect_package_labels(value: Value<'_>, package: &PackageId, out: &mut BTreeSet<Label>) {
     if let Some((repository, pkg, name)) = crate::starlark_types::label_parts(value) {
         if repository == package.repository && pkg == package.package {
@@ -4613,6 +4657,8 @@ def legacy():
                 package: "previous".into(),
             },
             name: "previous".into(),
+            attribute_labels: Arc::default(),
+            parent: None,
         };
         let slot = RefCell::new(Some(previous.clone()));
         {

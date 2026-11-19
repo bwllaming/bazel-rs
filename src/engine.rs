@@ -13536,6 +13536,22 @@ fn rule_authority(rule: &Rule) -> PackageId {
         .unwrap_or_else(|| rule.label.package_id())
 }
 
+/// CommonPrerequisiteValidator.isVisibleToConsumer (:244-288): the location
+/// `dependency` (as written, an alias not followed) must be visible to from
+/// `rule`. A symbolic macro that was given the label by its caller
+/// delegates the check to its caller (recursively); otherwise the declaring
+/// macro's definition package, or the rule's own package at top level.
+fn consumer_location(rule: &Rule, dependency: &Label) -> PackageId {
+    let mut owner = rule.macro_owner.as_ref();
+    while let Some(macro_owner) = owner {
+        if !macro_owner.attribute_labels.contains(dependency) {
+            return macro_owner.definition_package.clone();
+        }
+        owner = macro_owner.parent.as_deref();
+    }
+    rule.label.package_id()
+}
+
 fn check_macro_namespace(rule: &Rule, target: &Label) -> Result<(), String> {
     if let Some(owner) = &rule.macro_owner {
         let valid = target.name == owner.name
@@ -16856,6 +16872,8 @@ mod tests {
             macro_owner: owner.map(|(definition, name)| MacroOwner {
                 definition_package: test_label(definition).package_id(),
                 name: name.into(),
+                attribute_labels: Arc::default(),
+                parent: None,
             }),
             native: None,
             unanalyzed: Vec::new(),
@@ -17286,6 +17304,8 @@ mod tests {
         owned.macro_owner = Some(MacroOwner {
             definition_package: test_label("//defs:m.bzl").package_id(),
             name: "demo".into(),
+            attribute_labels: Arc::default(),
+            parent: None,
         });
         let mut engine = test_engine(
             PathBuf::new(),
@@ -17316,6 +17336,8 @@ mod tests {
         .macro_owner = Some(MacroOwner {
             definition_package: test_label("//defs:m.bzl").package_id(),
             name: "demo".into(),
+            attribute_labels: Arc::default(),
+            parent: None,
         });
         assert!(
             engine
@@ -18200,6 +18222,8 @@ m = macro(implementation=emit)
         .macro_owner = Some(MacroOwner {
             definition_package: test_label("//defs:m.bzl").package_id(),
             name: "demo".into(),
+            attribute_labels: Arc::default(),
+            parent: None,
         });
         let result = engine.build(&[label], &f.0.join("cache")).unwrap();
         assert_eq!(result.executed, 1);
