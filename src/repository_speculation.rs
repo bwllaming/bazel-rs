@@ -394,6 +394,31 @@ impl Speculations {
         self.shared.changed.notify_all();
     }
 
+    /// Whether the speculation of `canonical` is queued or runs (the
+    /// evaluator's serving pool holds a lane blocker waiting for it until
+    /// it is not: crate::engine::eval's `Bodies::lane_ready`).
+    pub(crate) fn in_flight(&self, canonical: &str) -> bool {
+        let state = lock(&self.shared.state);
+        state.width > 0
+            && matches!(
+                state.entries.get(canonical),
+                Some(Entry::Queued { .. } | Entry::Running(_))
+            )
+    }
+
+    /// Whether the speculation of `canonical` may still publish its root
+    /// into the demand slot: never requested, queued, running, or
+    /// published. Not when it holds an outcome only the coordinator commits
+    /// (it printed), failed, is blocked, or was taken.
+    pub(crate) fn may_publish(&self, canonical: &str) -> bool {
+        let state = lock(&self.shared.state);
+        state.width > 0
+            && matches!(
+                state.entries.get(canonical),
+                None | Some(Entry::Queued { .. } | Entry::Running(_) | Entry::Published)
+            )
+    }
+
     /// Wait (at most `timeout`) while the speculation of `canonical` is
     /// queued or runs; the sentinel it is blocked on, if it is.
     pub(crate) fn wait_settled(

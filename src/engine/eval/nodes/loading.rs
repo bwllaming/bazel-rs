@@ -206,6 +206,29 @@ const EXTENSION_BLOCKER: &str = "\u{2}extension:";
 /// speculative execution (crate::repository's `eval_local_blocker`).
 const LOCAL_BLOCKER: &str = "\u{2}local:";
 
+/// The lane's blocker of a pool load waiting for the repository
+/// speculation of a non-local direct or extension-generated repository
+/// (crate::repository's `eval_fetch_blocker`).
+const FETCH_BLOCKER: &str = "\u{2}fetch:";
+
+/// Whether the lane can take `blocker` without waiting for a speculation
+/// (crate::engine::eval's `Bodies::lane_ready`): the serving pool holds a
+/// blocker whose speculative preparation or execution is queued or runs
+/// until it is not, so that the lane's thread — the sequential pass's —
+/// never waits for one (the lane's waits then return at once).
+pub(crate) fn lane_ready(shared: &EvalShared, blocker: &str) -> bool {
+    if let Some(group) = blocker.strip_prefix(EXTENSION_BLOCKER) {
+        return !shared.repositories.extension_speculation_in_flight(group);
+    }
+    if let Some(canonical) = blocker
+        .strip_prefix(LOCAL_BLOCKER)
+        .or_else(|| blocker.strip_prefix(FETCH_BLOCKER))
+    {
+        return !shared.repositories.speculation_in_flight(canonical);
+    }
+    true
+}
+
 /// How long the lane waits for one blocker's speculative preparation (10
 /// s; `BAZEL_RS_EVAL_TEST_LANE_WAIT_SECS`, a hidden test hook: a loaded
 /// host's speculation may take longer, and a test counting what the lane
@@ -291,6 +314,12 @@ pub(crate) fn lane_fetch(shared: &EvalShared, blocker: &str) {
             lane_root(shared, root, blocker);
             shared.repositories.retry_speculations();
         }
+        return;
+    }
+    if let Some(canonical) = blocker.strip_prefix(FETCH_BLOCKER) {
+        // Its speculation settles (publishes, or leaves the load to the
+        // sequential pass); nothing is demanded here.
+        shared.repositories.wait_eval_fetch(canonical, deadline);
         return;
     }
     let Some(name) = blocker.split_once("repository @@").map(|(_, name)| name) else {
@@ -431,6 +460,17 @@ pub(crate) fn package_body(
                         repositories.request_eval_local(canonical);
                     }
                     let blocker = format!("{LOCAL_BLOCKER}{canonical}");
+                    lock(&shared.loading.pending_blockers)
+                        .entry(id.clone())
+                        .or_default()
+                        .push(blocker.clone());
+                    return Err(Missing::Repo(blocker));
+                }
+                // A non-local repository: its speculation may publish it.
+                if let Some(canonical) =
+                    sentinel.and_then(|error| repositories.eval_fetch_blocker(error))
+                {
+                    let blocker = format!("{FETCH_BLOCKER}{canonical}");
                     lock(&shared.loading.pending_blockers)
                         .entry(id.clone())
                         .or_default()

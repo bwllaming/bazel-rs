@@ -1015,6 +1015,10 @@ impl Bodies for Phase1Bodies<'_, '_> {
         }
     }
 
+    fn lane_ready(&self, name: &str) -> bool {
+        super::loading::lane_ready(self.shared, name)
+    }
+
     /// The coordinator thread is idle while the pool runs: pass 1 and the
     /// tape as far as the transcripts go (what the sequential pass's next
     /// attempt would apply first), unless another thread holds the

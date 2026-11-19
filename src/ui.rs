@@ -585,6 +585,13 @@ impl Drop for DeferredConsole {
     }
 }
 
+/// How many writes this thread's open [`DeferredConsole`] holds so far (0
+/// without one): a speculative module extension evaluation notes where its
+/// evaluation's writes begin and end (crate::repository).
+pub(crate) fn deferred_count() -> usize {
+    DEFERRED.with(|deferred| deferred.borrow().as_ref().map_or(0, Vec::len))
+}
+
 /// Write held console writes ([`DeferredConsole`]) in order.
 pub(crate) fn replay(writes: Vec<Deferred>) {
     for write in writes {

@@ -636,6 +636,10 @@ impl Host for EvalHost<'_, '_> {
             && super::loading::lane_ahead_enabled()
             && (self.pooled() || self.shared.loading.serving())
         {
+            // Their repositories (a `/...` pattern's too) prepared ahead.
+            self.shared
+                .repositories
+                .prepare_registrations_ahead(patterns);
             let keys: Vec<NodeKey> = self
                 .shared
                 .repositories

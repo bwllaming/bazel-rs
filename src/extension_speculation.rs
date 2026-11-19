@@ -92,8 +92,12 @@ pub(crate) enum Finished<O> {
     /// Aborted by the no-demand sentinel: retried once the demand it names
     /// is satisfied.
     Blocked(String),
-    /// Failed or ineligible: the coordinator prepares the group itself.
+    /// Failed: the coordinator prepares the group itself.
     Failed,
+    /// Not eligible as requested (a lockfile entry to reuse is needed, and
+    /// there is none): the coordinator prepares the group itself, unless
+    /// its evaluation ahead is requested ([`Pool::request_evaluated`]).
+    Ineligible,
 }
 
 /// Runs one speculation of a group id on a worker.
@@ -111,6 +115,8 @@ enum Entry<O> {
         attempts: u32,
     },
     Failed,
+    /// [`Finished::Ineligible`].
+    Ineligible,
     /// The coordinator demanded it: never speculated (again).
     Taken,
 }
@@ -123,6 +129,7 @@ struct Counts {
     done: u64,
     blocked: u64,
     failed: u64,
+    ineligible: u64,
     retried: u64,
     taken: u64,
     waited: u64,
@@ -232,6 +239,47 @@ impl<O: Send + 'static> Pool<O> {
         self.shared.changed.notify_all();
     }
 
+    /// Queue `id` once more when its last attempt was ineligible (or it
+    /// was never requested), or was blocked on what is `ready` now: the
+    /// evaluator's pool asks for its evaluation ahead (crate::repository's
+    /// `request_eval_group`), which the job now allows. A blocked one
+    /// waiting for what is not ready yet has its attempts reset.
+    pub(crate) fn request_evaluated(&self, id: &str, ready: &dyn Fn(&str) -> bool) {
+        {
+            let mut state = lock(&self.shared.state);
+            if state.width == 0 {
+                return;
+            }
+            match state.entries.get_mut(id) {
+                None | Some(Entry::Ineligible) => {}
+                // Blocked while it could not evaluate: its attempts count
+                // anew (retried once what it waits for is ready).
+                Some(Entry::Blocked { error, attempts }) => {
+                    if !ready(error) {
+                        *attempts = 0;
+                        return;
+                    }
+                }
+                Some(_) => return,
+            }
+            state.counts.requested += 1;
+            state
+                .entries
+                .insert(id.to_owned(), Entry::Queued { attempts: 0 });
+            state.queue.push_back(id.to_owned());
+        }
+        self.grow();
+        self.shared.changed.notify_all();
+    }
+
+    /// Whether the last attempt of `id` was ineligible.
+    pub(crate) fn ineligible(&self, id: &str) -> bool {
+        matches!(
+            lock(&self.shared.state).entries.get(id),
+            Some(Entry::Ineligible)
+        )
+    }
+
     /// The coordinator demands `id`: the outcome of its speculation
     /// (waiting while it runs), or `None` when the coordinator prepares the
     /// group itself. Either way it is never speculated again.
@@ -308,7 +356,7 @@ impl<O: Send + 'static> Pool<O> {
         loop {
             match state.entries.get(id) {
                 Some(Entry::Done(_)) => return Some(true),
-                Some(Entry::Failed | Entry::Taken) => return Some(false),
+                Some(Entry::Failed | Entry::Ineligible | Entry::Taken) => return Some(false),
                 Some(Entry::Running(_)) if state.width > 0 => {
                     let now = std::time::Instant::now();
                     if now >= deadline {
@@ -359,6 +407,16 @@ impl<O: Send + 'static> Pool<O> {
         }
         self.grow();
         self.shared.changed.notify_all();
+    }
+
+    /// Whether the speculation of `id` is queued or runs.
+    pub(crate) fn in_flight(&self, id: &str) -> bool {
+        let state = lock(&self.shared.state);
+        state.width > 0
+            && matches!(
+                state.entries.get(id),
+                Some(Entry::Queued { .. } | Entry::Running(_))
+            )
     }
 
     /// The sentinel the speculation of `id` is blocked on, if it is.
@@ -484,12 +542,13 @@ impl<O: Send + 'static> Pool<O> {
         if crate::plan_timings::enabled() && state.counts.requested > 0 {
             let counts = &state.counts;
             crate::snapshot::diag::line_fmt(format_args!(
-                "PERF-EXTENSION workers={workers} requested={} started={} done={} blocked={} failed={} retried={} taken={} discarded={} chained={} waited={} wait={:.3}s missed={} unused={unused}",
+                "PERF-EXTENSION workers={workers} requested={} started={} done={} blocked={} failed={} ineligible={} retried={} taken={} discarded={} chained={} waited={} wait={:.3}s missed={} unused={unused}",
                 counts.requested,
                 counts.started,
                 counts.done,
                 counts.blocked,
                 counts.failed,
+                counts.ineligible,
                 counts.retried,
                 counts.taken,
                 counts.discarded,
@@ -595,6 +654,10 @@ fn worker<O>(shared: &Arc<Shared<O>>, index: u64) {
                 Finished::Failed => {
                     state.counts.failed += 1;
                     Entry::Failed
+                }
+                Finished::Ineligible => {
+                    state.counts.ineligible += 1;
+                    Entry::Ineligible
                 }
             };
             // The coordinator never takes a running entry away (it waits).

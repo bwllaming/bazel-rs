@@ -105,6 +105,15 @@ pub(crate) trait Bodies: Sync {
     /// The coordinator thread has nothing to do while the pool runs
     /// (called between waits, no evaluator lock held).
     fn idle(&self) {}
+
+    /// Whether the lane can fetch the repository demand `name` now
+    /// without waiting (no evaluator lock held). Serving, a demand that
+    /// is not ready is held by the pool's coordinator until it is
+    /// ([`Evaluator::coordinate_serving`]), so that the lane's thread
+    /// never waits for work that finishes elsewhere (a speculation).
+    fn lane_ready(&self, _name: &str) -> bool {
+        true
+    }
 }
 
 /// [`Bodies`] over a [`NodeFn`] and the shared read view (no per-attempt
@@ -569,20 +578,40 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
     /// The serving pool's coordinator: coordinator-only nodes, outside
     /// starts; repository demands are queued for [`Self::lane_work`].
     fn coordinate_serving<'s>(&'s self, scope: &Scope<'s>) {
+        // Demands the lane cannot fetch without waiting yet
+        // ([`Bodies::lane_ready`]), in demand order: queued for the lane
+        // once they are.
+        let mut held: Vec<String> = Vec::new();
         loop {
+            if !held.is_empty() {
+                let mut ready = Vec::new();
+                held.retain(|name| {
+                    let now = self.bodies.lane_ready(name);
+                    if now {
+                        ready.push(name.clone());
+                    }
+                    !now
+                });
+                if !ready.is_empty() {
+                    self.lane_queue.lock().extend(ready);
+                }
+            }
             let mut coord = self.coord.lock();
-            while coord.nodes.is_empty() && coord.repos.is_empty() && coord.starts.is_empty() {
+            if coord.nodes.is_empty() && coord.repos.is_empty() && coord.starts.is_empty() {
                 if self.stop_serving.load(Ordering::SeqCst)
                     && self.outstanding.load(Ordering::Acquire) == 0
                 {
                     return;
                 }
-                coord = coord
-                    .wait_timeout(
-                        &self.coord_wake,
-                        std::time::Duration::from_millis(IDLE_MILLIS),
-                    )
-                    .0;
+                drop(
+                    coord
+                        .wait_timeout(
+                            &self.coord_wake,
+                            std::time::Duration::from_millis(IDLE_MILLIS),
+                        )
+                        .0,
+                );
+                continue;
             }
             if let Some(id) = coord.nodes.pop_front() {
                 drop(coord);
@@ -604,7 +633,15 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             }
             let repos = std::mem::take(&mut coord.repos);
             drop(coord);
-            self.lane_queue.lock().extend(repos);
+            let mut ready = Vec::new();
+            for name in repos {
+                if self.bodies.lane_ready(&name) {
+                    ready.push(name);
+                } else {
+                    held.push(name);
+                }
+            }
+            self.lane_queue.lock().extend(ready);
         }
     }
 
