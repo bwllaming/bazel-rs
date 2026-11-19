@@ -135,7 +135,7 @@ impl ActionView {
         } else {
             (
                 action.extra.mnemonic.clone(),
-                Some(starlark_argv(action)),
+                Some(starlark_argv(registered)),
                 Content::None,
                 None,
             )
@@ -162,16 +162,49 @@ impl ActionView {
 /// arguments the file holds (ParameterFile.writeParameterFile: one per
 /// line, shell-quoted in the `shell` format). A `flag_per_line` file's
 /// `--flag=value` lines stay single arguments.
-fn starlark_argv(action: &crate::action::Action) -> Vec<String> {
-    let argv = crate::action::arguments(action);
-    if action.extra.param_files.is_empty() {
+///
+/// A Java compilation (JavaCompileAction.getArguments, :697-700) is its
+/// whole command line, the flags and the classpath, without the parameter
+/// file JavaBuilder reads them from at execution. A command line deferred
+/// to execution (Args over tree artifacts) is expanded as genuine's
+/// analysis does without input metadata: directories stay their paths, or
+/// what map_each maps them to with a NoopExpander
+/// (StarlarkCustomCommandLine.java:577-595, crate::command_line::expand_groups).
+fn starlark_argv(registered: &RegisteredAction) -> Vec<String> {
+    let action = &registered.action;
+    let mut argv = crate::action::arguments(action);
+    if let Some(java) = &action.extra.java_compile {
+        argv.extend(java.flags.iter().cloned());
+        if !java.classpath.is_empty() {
+            argv.push("--classpath".to_owned());
+            argv.extend(
+                java.classpath
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned()),
+            );
+        }
+        return argv;
+    }
+    let mut param_files = std::borrow::Cow::Borrowed(&action.extra.param_files);
+    if let Some(deferred) = &registered.deferred
+        && let crate::scheduler::DeferredSpec::CommandLine { spec, .. } = &*deferred.0
+    {
+        // SpawnAction.getArguments without input metadata; an expansion
+        // error (a map_each failing on a directory) leaves the executable.
+        if let Ok((arguments, files)) = spec.expand(None) {
+            argv.extend(arguments);
+            param_files = std::borrow::Cow::Owned(files);
+        }
+    }
+    if param_files.is_empty() {
         return argv;
     }
     let mut expanded = Vec::with_capacity(argv.len());
     for argument in argv {
-        let file = action.extra.param_files.iter().find(|(path, _)| {
+        // `--flagfile=path`, `@path`, or the bare path (`use_param_file("%s")`).
+        let file = param_files.iter().find(|(path, _)| {
             let path = path.to_string_lossy();
-            argument.len() > path.len() && argument.ends_with(path.as_ref())
+            argument.ends_with(path.as_ref())
         });
         match file {
             Some((_, content)) => {

@@ -147,3 +147,120 @@ fn strict_java_deps_modes_match_genuine_aquery() {
     let flag = "--experimental_strict_java_deps=OFF";
     assert_parity(&ws.aquery(&["//pkg:all", flag]), &genuine("strict_off.txt"));
 }
+
+/// The argv of a Javac block of genuine's aquery text: the `Command Line:`
+/// lines, shell quoting undone.
+fn genuine_argv(text: &str, description: &str) -> Vec<String> {
+    let block = text
+        .split("\n\n")
+        .find(|block| block.starts_with(&format!("action '{description}")))
+        .unwrap_or_else(|| panic!("no block {description}"));
+    let mut argv = Vec::new();
+    let mut inside = false;
+    for line in block.lines() {
+        let line = if let Some(rest) = line.strip_prefix("  Command Line: (exec ") {
+            inside = true;
+            rest
+        } else if inside {
+            line.trim_start()
+        } else {
+            continue;
+        };
+        let (word, done) = match line.strip_suffix(" \\") {
+            Some(word) => (word, false),
+            None => (line.strip_suffix(')').unwrap(), true),
+        };
+        argv.push(
+            match word.strip_prefix('\'').and_then(|w| w.strip_suffix('\'')) {
+                Some(inner) => inner.replace("'\\''", "'"),
+                None => word.to_owned(),
+            },
+        );
+        if done {
+            break;
+        }
+    }
+    argv
+}
+
+/// `Target.actions` argv of a Java compilation is JavaCompileAction
+/// .getArguments (:697-700), the whole command line genuine's aquery prints
+/// (flags and classpath, no parameter file; B46, docs/ANALYSIS_TESTS.md).
+#[test]
+fn target_actions_argv_of_javac_is_the_aquery_command_line() {
+    let ws = Workspace::new();
+    fs::write(
+        ws.0.path().join("pkg/argv.bzl"),
+        r#"
+def _impl(ctx):
+    lines = [json.encode(a.argv) for a in ctx.attr.target.actions if a.mnemonic == "Javac"]
+    return [AnalysisTestResultInfo(success = True, message = "\n".join(lines))]
+
+def check(name, target):
+    testing.analysis_test(
+        name = name,
+        implementation = _impl,
+        attrs = {"target": attr.label()},
+        attr_values = {"target": target},
+    )
+"#,
+    )
+    .unwrap();
+    let build = ws.0.path().join("pkg/BUILD.bazel");
+    let mut text = fs::read_to_string(&build).unwrap();
+    text.insert_str(0, "load(':argv.bzl', 'check')\n");
+    text.push_str("check(name = 'c_test', target = ':c')\ncheck(name = 'b_test', target = ':b')\n");
+    fs::write(&build, text).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
+        .current_dir(ws.0.path())
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", ws.0.path().join("home"))
+        .env("TMPDIR", ws.0.path().join("tmp"))
+        .env("BAZEL_RS_RESULT_LINES", "1")
+        .args([
+            "--ignore_all_rc_files",
+            "--cache-dir=cache",
+            "build",
+            "--lockfile_mode=update",
+            "--repository_disable_download",
+            "--extra_toolchains=//:registered",
+            "--memory-limit=2048",
+            "//pkg:c_test",
+            "//pkg:b_test",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let genuine = fs::read_to_string(fixture().join("genuine/all.txt")).unwrap();
+    for (test, description) in [
+        ("c_test", "Building pkg/libc.jar"),
+        ("b_test", "Building pkg/libb.jar"),
+    ] {
+        // `label\tpath` result lines.
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let path = stdout
+            .lines()
+            .filter_map(|line| line.split_once('\t'))
+            .find(|(_, path)| path.ends_with(&format!("/{test}.sh")))
+            .map(|(_, path)| ws.0.path().join(path))
+            .unwrap_or_else(|| panic!("no {test}.sh in {stdout}"));
+        let script = fs::read_to_string(path).unwrap();
+        // `echo <message with every character backslash-escaped>`.
+        let line = script
+            .lines()
+            .find_map(|line| line.strip_prefix("echo "))
+            .unwrap();
+        let mut message = String::new();
+        let mut chars = line.chars();
+        while let Some(c) = chars.next() {
+            message.push(if c == '\\' { chars.next().unwrap() } else { c });
+        }
+        let native: Vec<String> = serde_json::from_str(&message).unwrap();
+        assert_eq!(native, genuine_argv(&genuine, description), "{test}");
+    }
+}

@@ -1,0 +1,11 @@
+load(":defs.bzl", "check", "subject")
+
+subject(
+    name = "subject",
+    tool = "tool.sh",
+)
+
+check(
+    name = "argv_test",
+    target = ":subject",
+)
