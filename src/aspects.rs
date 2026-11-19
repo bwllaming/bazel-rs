@@ -610,8 +610,15 @@ pub(crate) fn merge_providers(
     // InstrumentedFilesInfo (the base target's copy, if any, is
     // overwritten by the first aspect's).
     let mut instrumented_from_aspect = false;
+    // Target.actions: the aspects' actions in order, then the base
+    // target's (MergedConfiguredTarget.rawGetStarlarkProvider).
+    let mut aspect_actions: Vec<OwnedFrozenValue> = Vec::new();
     for (_, aspect_providers) in aspects {
         for (id, value) in aspect_providers {
+            if id == crate::target_actions::PROVIDER_ID {
+                aspect_actions.push(value.clone());
+                continue;
+            }
             if id == crate::output_group_info::PROVIDER_ID {
                 group_sets.push(
                     crate::output_group_info::groups(value.value())
@@ -673,6 +680,14 @@ pub(crate) fn merge_providers(
             providers.insert(id.clone(), value.clone());
         }
     }
+    if !aspect_actions.is_empty()
+        && let Some(base_actions) = providers.get(crate::target_actions::PROVIDER_ID)
+        && let Some(merged) = crate::target_actions::TargetActions::merged(
+            aspect_actions.iter().chain(std::iter::once(base_actions)),
+        )
+    {
+        providers.insert(crate::target_actions::PROVIDER_ID.to_owned(), merged);
+    }
     let groups = crate::output_group_info::merge_group_sets(&group_sets);
     Ok(MergedProviders {
         providers,
@@ -720,7 +735,7 @@ pub(crate) fn merged_dependency(
     let merged = merge_providers(&base.providers, &base.files, aspects)?;
     let mut provider_keys = base.provider_keys.clone();
     for id in aspects.iter().flat_map(|(_, providers)| providers.keys()) {
-        if !provider_keys.contains(id) {
+        if id != crate::target_actions::PROVIDER_ID && !provider_keys.contains(id) {
             provider_keys.push(id.clone());
         }
     }

@@ -103,6 +103,13 @@ direct attribute dependencies of the requested tests, which are kept.
 | `env` | the fixed environment |
 | `args` | always `None` (the `Args` objects are not kept) |
 
+A target merged with aspects (an aspect's `target` parameter merged with
+the aspects it requires, an attribute's aspect-applied dependency) answers
+the aspects' actions in application order, then its own
+(MergedConfiguredTarget.rawGetStarlarkProvider); an aspect application keeps
+its views when its base target is inspected (rules_testing's
+`make_testing_aspect(aspects = [...])` over protobuf's `java_proto_aspect`).
+
 Native rules do not keep their actions. Their targets answer an empty list,
 except `genrule`, `genquery` and `starlark_doc_extract`, which register
 actions: for those, `actions` is not a field. A failed target in a

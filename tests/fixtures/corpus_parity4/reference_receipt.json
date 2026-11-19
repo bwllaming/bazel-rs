@@ -121,6 +121,25 @@
     "//tactions:argv_test"
    ],
    "workspace": "workspace"
+  },
+  "target_actions_with_required_aspects": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/aspacts/merged_test.sh": "#!/bin/sh\necho \\[\\\"\\G\\e\\n\\P\\r\\o\\t\\o\\\"\\,\\ \\\"\\F\\i\\l\\e\\W\\r\\i\\t\\e\\\"\\]\nexit 0"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//aspacts:merged_test"
+   ],
+   "workspace": "workspace"
   }
  },
  "elf_sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c"

@@ -52,7 +52,7 @@ pub(crate) fn not_kept() -> starlark::values::OwnedFrozenValue {
 }
 
 /// What `Action` exposes of one registered action.
-#[derive(Debug, Allocative)]
+#[derive(Clone, Debug, Allocative)]
 pub(crate) struct ActionView {
     mnemonic: String,
     /// SpawnAction.getStarlarkArgv: the spawn's argv; `None` for writes and
@@ -67,7 +67,7 @@ pub(crate) struct ActionView {
     env: Vec<(String, String)>,
 }
 
-#[derive(Debug, Allocative)]
+#[derive(Clone, Debug, Allocative)]
 enum Content {
     None,
     /// FileWriteAction.getFileContents.
@@ -272,6 +272,36 @@ impl TargetActions {
             actions: actions.iter().map(ActionView::of).collect(),
             repositories: Some(repositories),
         }
+    }
+
+    /// The actions of a merged configured target: each value's actions in
+    /// order (the aspects', then the base target's). `None` when a value is
+    /// not kept actions (the base target's "not kept" marker).
+    pub(crate) fn merged<'a>(
+        values: impl Iterator<Item = &'a starlark::values::OwnedFrozenValue>,
+    ) -> Option<starlark::values::OwnedFrozenValue> {
+        use starlark::values::ValueLike as _;
+        let mut actions = Vec::new();
+        let mut repositories = None;
+        for value in values {
+            let kept = value.value().downcast_ref::<TargetActions>()?;
+            actions.extend(kept.actions.iter().cloned());
+            if repositories.is_none() {
+                repositories = kept.repositories.clone();
+            }
+        }
+        Some(starlark::environment::Module::with_temp_heap(|module| {
+            let value = module.heap().alloc(TargetActions {
+                actions: actions.into(),
+                repositories,
+            });
+            module.set("value", value);
+            module
+                .freeze()
+                .expect("freezing owned target actions cannot fail")
+                .get("value")
+                .expect("the frozen module has the value")
+        }))
     }
 
     /// No actions (a failed target of a configuration allowing analysis

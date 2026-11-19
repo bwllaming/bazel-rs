@@ -1,0 +1,8 @@
+load(":defs.bzl", "check", "lib")
+
+lib(name = "lib")
+
+check(
+    name = "merged_test",
+    target = ":lib",
+)

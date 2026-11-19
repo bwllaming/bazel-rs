@@ -126,6 +126,9 @@ pub(super) struct AspectCommit {
     /// The aspect's identity (the owner of its actions' errors).
     pub(super) aspect_identity: String,
     pub(super) action_execution: Vec<crate::exec_groups::ActionExecution>,
+    /// Keep the application's `Target.actions` views: the base target is
+    /// one an analysis test of the request inspects (crate::target_actions).
+    pub(super) retain_actions: bool,
 }
 
 impl AspectCommit {
@@ -133,7 +136,7 @@ impl AspectCommit {
         analysis::ConfiguredOutputs {
             allow_analysis_failures: false,
             evaluating_for_analysis_test: false,
-            retain_actions: false,
+            retain_actions: self.retain_actions,
             output_root: &self.output_root,
             action_owner: &self.action_owner,
             action_env: self.action_env.clone(),
@@ -1567,6 +1570,7 @@ fn plan_application<C: AspectCx>(
         base_rule,
         aspect_identity: aspect.identity.clone(),
         action_execution,
+        retain_actions: cx.engine().inspected_targets.contains(&base_key.label),
     };
     cx.analyze(&key, context, application, commit)
 }

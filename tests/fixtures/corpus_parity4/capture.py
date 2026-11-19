@@ -37,6 +37,8 @@ CASES = {
         [], 'build', BUILD, ['//vis/use:delegated_inner'], [], ['delegated_inner.txt']),
     'aspect_view_per_propagated_attribute': (
         [], 'build', BUILD, ['//aspview:t'], [], ['t.txt']),
+    'target_actions_with_required_aspects': (
+        [], 'build', BUILD, ['//aspacts:merged_test'], [], ['merged_test.sh']),
     'macro_visibility_own_label': (
         [], 'build', BUILD, ['//vis/bad:not_delegated_inner'], [r'is not visible from'], []),
 }

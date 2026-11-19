@@ -2328,6 +2328,22 @@ fn analyze_aspect_inner(
         let custom = crate::providers::returned_custom_providers(returned)?;
         let provider_keys = crate::providers::returned_provider_key_names(returned)?;
         crate::providers::check_freezable_payloads(custom.values().copied())?;
+        let mut custom = custom;
+        // Target.actions of the merged target (crate::target_actions,
+        // MergedConfiguredTarget.rawGetStarlarkProvider): the aspects'
+        // actions, kept like the base target's, only for a target an
+        // analysis test of the request inspects.
+        if target.retain_actions {
+            custom.insert(
+                crate::target_actions::PROVIDER_ID.to_owned(),
+                module
+                    .heap()
+                    .alloc(crate::target_actions::TargetActions::new(
+                        &context.actions.borrow(),
+                        application.repositories.clone(),
+                    )),
+            );
+        }
         let mut slots = Vec::new();
         for (identity, provider) in custom {
             let slot = format!("$provider:{}", slots.len());
