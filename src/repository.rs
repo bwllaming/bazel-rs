@@ -209,6 +209,7 @@ fn ahead_debug(message: impl FnOnce() -> String) {
         Some(value) if value == "1" => eprintln!("bazel-rs: ahead: {}", message()),
         Some(path) => {
             use std::io::Write as _;
+            // snapshot-unrecorded: a diagnostics log written, never read.
             if let Ok(mut file) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
