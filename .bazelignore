@@ -56,6 +56,7 @@ tests/fixtures/corpus_parity2/rules_cc_main
 tests/fixtures/corpus_parity2/workspace
 tests/fixtures/corpus_parity3/predeclared
 tests/fixtures/corpus_parity3/workspace
+tests/fixtures/corpus_parity4/project
 tests/fixtures/corpus_parity4/workspace
 tests/fixtures/coverage_command/workspace
 tests/fixtures/cpp_flag_options/workspace
