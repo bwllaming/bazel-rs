@@ -1219,3 +1219,109 @@ fn cold_evaluations_ahead_keep_the_walks_output_when_inputs_change_or_fail() {
         assert_eq!(reference.code, Some(0), "{}", reference.stderr);
     }
 }
+
+/// A root module without extension usages (the speculation pool serves
+/// only the evaluator's requests) whose dependency's extension `e` the
+/// coordinator and the pool both reach: the extension runs once per
+/// command (its `execute()` appends to a log), never beside the
+/// coordinator's preparation of the same group (they would share its
+/// working directory), and the output is the walk's at every thread count.
+#[test]
+fn an_extension_of_a_dependency_runs_once_without_root_usages() {
+    let fixture = Fixture(
+        tempfile::Builder::new()
+            .prefix("extension-speculation-noroot-")
+            .tempdir_in(crate::test_temp::root())
+            .unwrap(),
+    );
+    let log = fixture.path().join("runs.log");
+    let module = "module(name = 'depx', version = '1')\ne = use_extension('//:ext.bzl', 'e')\nuse_repo(e, 'depx_gen')\n";
+    let ext = format!(
+        r#"def _r(rctx):
+    rctx.file("BUILD.bazel", "filegroup(name = 'f', srcs = ['v.txt'], visibility = ['//visibility:public'])\n")
+    rctx.file("v.txt", "v\n")
+
+r = repository_rule(implementation = _r)
+
+def _e(mctx):
+    mctx.file("work.txt", "mine\n")
+    mctx.execute(["sh", "-c", "sleep 0.5; echo e >> {log}"])
+    if mctx.read("work.txt") != "mine\n":
+        fail("the working directory was shared")
+    print("e evaluated")
+    r(name = "depx_gen")
+
+e = module_extension(implementation = _e)
+"#,
+        log = log.display()
+    );
+    let bytes = archive(
+        "depx",
+        &[
+            ("MODULE.bazel", module),
+            (
+                "BUILD.bazel",
+                "filegroup(name = 't', srcs = ['@depx_gen//:f'], visibility = ['//visibility:public'])\n",
+            ),
+            ("ext.bzl", &ext),
+        ],
+    );
+    let path = fixture.path().join("depx-1.tar.gz");
+    fs::write(&path, &bytes).unwrap();
+    fixture.write("registry/modules/depx/1/MODULE.bazel", module);
+    let source = serde_json::json!({
+        "url": format!("file://{}", path.display()),
+        "integrity": format!(
+            "sha256-{}",
+            base64::engine::general_purpose::STANDARD.encode(Sha256::digest(&bytes))
+        ),
+        "strip_prefix": "depx-1",
+    });
+    fixture.write("registry/modules/depx/1/source.json", &source.to_string());
+    fixture.write(
+        "MODULE.bazel",
+        "module(name = 'main')\nbazel_dep(name = 'depx', version = '1')\n",
+    );
+    fixture.write("BUILD.bazel", "");
+    let mut all = Vec::new();
+    for i in 0..8 {
+        fixture.write(
+            &format!("p{i}/BUILD.bazel"),
+            "filegroup(name = 't', srcs = ['@depx//:t'], visibility = ['//visibility:public'])\n",
+        );
+        all.push(format!("'//p{i}:t'"));
+    }
+    fixture.write(
+        "all/BUILD.bazel",
+        &format!("filegroup(name = 'all', srcs = [{}])\n", all.join(", ")),
+    );
+    let runs = |log: &Path| {
+        let count = fs::read_to_string(log).unwrap_or_default().lines().count();
+        let _ = fs::remove_file(log);
+        count
+    };
+    let baseline = Baseline::cold();
+    let reference = compare_eval(&fixture, &baseline, "off", &["//all"]);
+    assert_eq!(reference.code, Some(0), "{}", reference.stderr);
+    assert!(
+        reference.stderr.contains("e evaluated"),
+        "{}",
+        reference.stderr
+    );
+    // One run per command (the walk and the seven evaluator builds).
+    assert_eq!(runs(&log), 8);
+    for jitter in ["0", "20", "50"] {
+        baseline.restore(&fixture);
+        let run = fixture.build(
+            8,
+            "off",
+            &[
+                ("BAZEL_RS_LOADING_JITTER", jitter),
+                ("BAZEL_RS_EVAL_JITTER", "200"),
+            ],
+            &["//all", "//p3:t"],
+        );
+        assert_eq!(run.code, Some(0), "{}", run.stderr);
+        assert_eq!(runs(&log), 1, "jitter {jitter}:\n{}", run.stderr);
+    }
+}

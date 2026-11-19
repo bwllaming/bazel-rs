@@ -4751,7 +4751,10 @@ impl RepositorySet {
         ) else {
             return Finished::Failed;
         };
-        if slot.ready().is_some() {
+        // Prepared, or being prepared by the coordinator (never two
+        // evaluations of one extension at once: they share its working
+        // directory).
+        if slot.ready().is_some() || slot.evaluating() {
             return Finished::Failed;
         }
         let sentinels = crate::repository_demand::sentinels_raised();

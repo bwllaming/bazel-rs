@@ -289,6 +289,9 @@ impl<O: Send + 'static> Pool<O> {
     pub(crate) fn take(&self, id: &str) -> Option<Box<O>> {
         let mut state = lock(&self.shared.state);
         if state.entries.is_empty() {
+            // Nothing requested yet: marked taken all the same, so that no
+            // later request runs it beside the coordinator's preparation.
+            state.entries.insert(id.to_owned(), Entry::Taken);
             return None;
         }
         let mut waited = None;
@@ -767,6 +770,31 @@ mod tests {
     }
 
     /// Stopping drops queued speculations and outcomes nobody took.
+    #[test]
+    fn a_group_taken_before_any_request_is_never_speculated() {
+        // The coordinator prepares the group while nothing was requested
+        // yet (a root module without extension usages): a later request,
+        // also one asking for its evaluation ahead, must not run it beside
+        // the coordinator's preparation.
+        let pool = Pool::<String>::default();
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = runs.clone();
+        pool.start(
+            2,
+            Arc::new(move |id: &str| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                Finished::Done(Box::new(id.to_owned()))
+            }),
+            0,
+        );
+        assert!(pool.take("g").is_none());
+        pool.request("g");
+        pool.request_evaluated("g", &|_| true);
+        pool.wait_idle();
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+        assert!(pool.take("g").is_none());
+    }
+
     #[test]
     fn stop_drops_queued_and_untaken() {
         let pool = Pool::<String>::default();
