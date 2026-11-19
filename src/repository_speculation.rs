@@ -121,6 +121,18 @@ pub(crate) fn speculative() -> bool {
         || crate::module_root_warm::active()
 }
 
+/// Whether the coordinator waits for the speculation running on this
+/// thread (it demanded the repository): a dependency wait of the
+/// speculation ends then (crate::repository).
+pub(crate) fn demanded_now() -> bool {
+    CURRENT.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .is_some_and(|current| current.demanded.load(Ordering::Relaxed))
+    })
+}
+
 /// The cancellation of the speculation running on this thread, if any.
 pub(crate) fn cancel_token() -> Option<Arc<AtomicBool>> {
     CURRENT.with(|current| {

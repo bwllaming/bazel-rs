@@ -1132,6 +1132,20 @@ const SPECULATION_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 /// reports) or a pool whose workers all wait end in the sentinel.
 const DEPENDENCY_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How often a dependency wait checks whether it should end
+/// ([`dependency_wait_ends`]).
+const DEPENDENCY_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// A speculation's wait for a root the coordinator evaluates ends early
+/// when the speculation was cancelled or the coordinator now waits for it
+/// (it demanded it, so it cannot also finish that root: the speculation
+/// blocks and the coordinator executes the rule).
+fn dependency_wait_ends() -> bool {
+    crate::repository_speculation::cancelled()
+        || crate::repository_speculation::demanded_now()
+        || (EVALUATING_AHEAD.with(std::cell::Cell::get) && crate::extension_speculation::demanded())
+}
+
 /// The error of a speculative extension preparation that is not
 /// eligible (never shown: the coordinator prepares the group itself).
 const INELIGIBLE: &str = "extension preparation not speculated";
@@ -6562,8 +6576,19 @@ impl RepositorySet {
         } else {
             SPECULATION_WAIT
         };
-        if !self.state.speculation.wait_running(canonical, wait) {
-            return None;
+        let deadline = std::time::Instant::now() + wait;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if self
+                .state
+                .speculation
+                .wait_running(canonical, left.min(DEPENDENCY_POLL))
+            {
+                break;
+            }
+            if left <= DEPENDENCY_POLL || crate::repository_speculation::cancelled() {
+                return None;
+            }
         }
         self.published_root(canonical)
     }
@@ -6609,14 +6634,22 @@ impl RepositorySet {
         ));
         self.state.speculation.requeue_blocked(canonical);
         let deadline = std::time::Instant::now() + DEPENDENCY_WAIT;
-        let _ = self
-            .state
-            .speculation
-            .wait_settled(canonical, DEPENDENCY_WAIT);
+        // (A speculation in flight progresses without the coordinator.)
+        while self.state.speculation.in_flight(canonical)
+            && std::time::Instant::now() < deadline
+            && !crate::repository_speculation::cancelled()
+        {
+            let _ = self.state.speculation.wait_settled(
+                canonical,
+                deadline
+                    .saturating_duration_since(std::time::Instant::now())
+                    .min(DEPENDENCY_POLL),
+            );
+        }
         // The coordinator evaluates it now: its root, once there.
         while self.published_root(canonical).is_none()
             && std::time::Instant::now() < deadline
-            && !crate::repository_speculation::cancelled()
+            && !dependency_wait_ends()
             && self.root_slot_evaluating(canonical)
         {
             std::thread::sleep(std::time::Duration::from_millis(5));
