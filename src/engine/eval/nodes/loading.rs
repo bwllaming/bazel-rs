@@ -226,6 +226,14 @@ pub(crate) fn lane_ready(shared: &EvalShared, blocker: &str) -> bool {
     {
         return !shared.repositories.speculation_in_flight(canonical);
     }
+    // A registry module's root the warmer publishes now: materialized
+    // here once it did (the lane takes the other demands meanwhile).
+    if let Some(root) = blocker
+        .strip_prefix(crate::repository_demand::NEEDS_REPOSITORY)
+        .and_then(|rest| rest.strip_prefix(": repository @@"))
+    {
+        return !shared.repositories.root_warming(root);
+    }
     true
 }
 

@@ -185,6 +185,15 @@ impl RootWarmer {
         lock(&self.state).width > 0
     }
 
+    /// Whether the root of `repository` is being warmed (queued or
+    /// running): the evaluator's lane takes a pool load's demand of it once
+    /// it is not, the tree published by then (crate::engine::eval's
+    /// `Bodies::lane_ready`).
+    pub(crate) fn warming(&self, repository: &str) -> bool {
+        let state = lock(&self.state);
+        state.width > 0 && matches!(state.roots.get(repository), Some(Root::Warming(_)))
+    }
+
     /// Nonblocking phase ownership, not a request to finish any work. Finished
     /// handles include worker finalizers after `running` was decremented.
     pub(crate) fn quiescent(&self) -> bool {

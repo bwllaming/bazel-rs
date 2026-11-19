@@ -1076,6 +1076,12 @@ const SPECULATION_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 /// eligible (never shown: the coordinator prepares the group itself).
 const INELIGIBLE: &str = "extension preparation not speculated";
 
+/// The error of a speculative extension preparation that evaluated the
+/// extension but whose result its commit could not record silently
+/// (cold-eval P4b; never shown, and never attempted again: the coordinator
+/// evaluates the extension itself).
+const NOT_KEPT: &str = "extension evaluation ahead not kept";
+
 /// What the commit of a speculative extension preparation checks again
 /// (crate::extension_speculation): the lockfile entry the preparation
 /// reused, with what forms its lock key.
@@ -3944,12 +3950,16 @@ impl RepositorySet {
             })
             .map(|(id, _)| id)
             .collect();
-        if ids.is_empty() {
+        // Without root usages the pool still serves the evaluator's
+        // evaluations ahead (cold-eval P4b).
+        if ids.is_empty() && !self.evaluated_ahead_possible() {
             return;
         }
         let this = self.clone();
         self.state.extension_speculation.start(
-            width.min(ids.len()),
+            // (Workers start only for queued work: evaluations ahead request
+            // groups beyond the root module's, cold-eval P4b.)
+            width,
             Arc::new(move |id: &str| this.extension_speculation_job(id)),
             crate::engine::loading_jitter_millis(),
         );
@@ -4332,10 +4342,20 @@ impl RepositorySet {
                 break;
             }
         }
-        if self
-            .speculation_slot(canonical)
-            .is_ok_and(|slot| slot.ready().is_some())
-        {
+        // (Looked up without preparing anything: this is the lane's thread,
+        // which may demand — a group prepared here would be prepared out of
+        // the walk's order.)
+        let published = self
+            .direct_runtime()
+            .ok()
+            .and_then(|runtime| runtime.root_slot(canonical))
+            .is_some_and(|slot| slot.ready().is_some())
+            || self.speculated_root_ready(&format!(
+                "{}: runtime {}:repository:{canonical} is unfetched",
+                crate::repository_demand::NEEDS_REPOSITORY,
+                self.state.runtime_id
+            ));
+        if published {
             EVAL_ADOPTIONS[3].fetch_add(1, Ordering::Relaxed);
         }
         blocked
@@ -4445,7 +4465,8 @@ impl RepositorySet {
                     .local
             }
         };
-        if local || self.speculation_slot(canonical).ok()?.evaluating() {
+        // (The slot looked up without preparing anything.)
+        if local || runtime.root_slot(canonical)?.evaluating() {
             return None;
         }
         // Requested by the load already (`fetch_blocked_ahead`).
@@ -4464,6 +4485,12 @@ impl RepositorySet {
             canonical,
             deadline.saturating_duration_since(std::time::Instant::now()),
         );
+    }
+
+    /// Whether the registry module root of `repository` is being warmed
+    /// (crate::module_root_warm).
+    pub(crate) fn root_warming(&self, repository: &str) -> bool {
+        self.state.root_warmer.warming(repository)
     }
 
     /// Whether the repository speculation of `canonical` is queued or runs
@@ -4709,11 +4736,9 @@ impl RepositorySet {
                     // A repository its evaluation reads: executed ahead
                     // (published, it is retried at once) — one of a group
                     // prepared speculatively with that preparation, as for
-                    // a pool load (`eval_local_blocker`).
-                    match self.eval_local_blocker(&error) {
-                        Some(canonical) => self.request_eval_local(canonical),
-                        None => self.speculate(&error),
-                    }
+                    // a pool load (`eval_local_blocker`) —, or a registry
+                    // module root warmed.
+                    self.request_blocker_ahead(&error);
                 }
                 ahead_debug(|| {
                     format!("extension speculation {id} (evaluable {evaluable}) blocked: {error}")
@@ -5103,7 +5128,12 @@ impl RepositorySet {
         let slot = match self.speculation_slot(canonical) {
             // The coordinator evaluates it now (a local rule it executes
             // itself unless it takes this speculation: never both).
-            Ok(slot) if adoption.is_some() && slot.evaluating() => return Finished::Failed,
+            Ok(slot) if adoption.is_some() && slot.evaluating() => {
+                ahead_debug(|| {
+                    format!("repository speculation {canonical}: the coordinator evaluates it")
+                });
+                return Finished::Failed;
+            }
             Ok(slot) if slot.ready().is_none() => slot,
             Ok(_) => return Finished::Failed,
             Err(error) if crate::repository_demand::is_needs_repository(&error) => {
@@ -5113,6 +5143,7 @@ impl RepositorySet {
                         adoption.is_some()
                     )
                 });
+                self.request_blocker_ahead(&error);
                 return Finished::Blocked(error);
             }
             Err(_) => return Finished::Failed,
@@ -5126,13 +5157,26 @@ impl RepositorySet {
         }
         let root = match result {
             Err(error) if crate::repository_demand::is_needs_repository(&error) => {
-                return if order_dependent {
-                    Finished::Failed
-                } else {
-                    Finished::Blocked(error)
-                };
+                ahead_debug(|| {
+                    format!(
+                        "repository speculation {canonical} (adopting {eval_requested}, order-dependent {order_dependent}) blocked: {error}"
+                    )
+                });
+                if order_dependent {
+                    return Finished::Failed;
+                }
+                self.request_blocker_ahead(&error);
+                self.request_label_attributes_ahead(canonical);
+                return Finished::Blocked(error);
             }
-            Err(_) => return Finished::Failed,
+            Err(error) => {
+                ahead_debug(|| {
+                    format!(
+                        "repository speculation {canonical} (adopting {eval_requested}) failed: {error}"
+                    )
+                });
+                return Finished::Failed;
+            }
             Ok(root) => root,
         };
         let output = crate::repository_speculation::take_output();
@@ -5159,6 +5203,112 @@ impl RepositorySet {
             obtained,
             withdraw,
         }))
+    }
+
+    /// A speculation (of a repository the build demands) is blocked on
+    /// `sentinel`: what it waits for is demanded too, so it is prepared
+    /// ahead as well (cold-eval P4a/P4b) — an extension group's
+    /// speculative preparation, a repository executed with the speculative
+    /// preparation of its group, or a repository's speculation. Scheduling
+    /// only (a registry module root is warmed; the lane or the sequential
+    /// pass materializes it).
+    fn request_blocker_ahead(&self, sentinel: &str) {
+        if let Some(id) = self.speculated_group_blocker(sentinel) {
+            self.request_eval_group(id);
+        } else if let Some(canonical) = self.eval_local_blocker(sentinel) {
+            self.request_eval_local(canonical);
+        } else {
+            // A repository's speculation, or a registry module root warmed.
+            self.fetch_blocked_ahead(sentinel);
+        }
+    }
+
+    /// The repositories the label attributes of the repository rule of
+    /// `canonical` name, prepared ahead ([`Self::request_blocker_ahead`];
+    /// registry module roots warmed): a speculation blocked on one of them
+    /// would otherwise find the next one only on its next attempt (Bazel
+    /// resolves every label attribute when a fetch starts,
+    /// StarlarkRepositoryContext.enforceLabelAttributes).
+    fn request_label_attributes_ahead(&self, canonical: &str) {
+        let Ok(runtime) = self.direct_runtime() else {
+            return;
+        };
+        let attributes = match runtime.catalog.repositories.get(canonical) {
+            Some(entry) => runtime
+                .groups
+                .get(&entry.group_id)
+                .and_then(DemandSlot::ready)
+                .and_then(|prepared| prepared.attributes.get(entry.declaration_index)),
+            None => {
+                let Some((prefix, name)) = canonical.rsplit_once('+') else {
+                    return;
+                };
+                let Some(id) = runtime.catalog.ordinary_routes.get(prefix) else {
+                    return;
+                };
+                runtime
+                    .ordinary
+                    .get(id)
+                    .and_then(DemandSlot::ready)
+                    .or_else(|| self.speculated_group(id))
+                    .and_then(|prepared| prepared.repositories.get(name))
+                    .map(|repository| &repository.attributes)
+            }
+        };
+        let Some(attributes) = attributes else {
+            return;
+        };
+        let mut repositories = BTreeSet::new();
+        let mut note = |text: &str| {
+            if let Ok(label) = Label::parse_canonical(text)
+                && !label.repository.is_empty()
+                && label.repository != canonical
+            {
+                repositories.insert(label.repository);
+            }
+        };
+        for value in attributes.values() {
+            match value {
+                AttrValue::Label(Some(text)) => note(text),
+                AttrValue::Labels(texts) => texts.iter().for_each(|text| note(text)),
+                AttrValue::LabelKeyedStringDict(entries) => {
+                    entries.iter().for_each(|(text, _)| note(text))
+                }
+                AttrValue::StringKeyedLabelDict(entries) => {
+                    entries.iter().for_each(|(_, text)| note(text))
+                }
+                AttrValue::LabelListDict(entries) => entries
+                    .iter()
+                    .flat_map(|(_, texts)| texts)
+                    .for_each(|text| note(text)),
+                _ => {}
+            }
+        }
+        let modules = self
+            .state
+            .resolved
+            .get()
+            .and_then(|graph| graph.as_ref().ok());
+        for repository in repositories {
+            if modules.is_some_and(|graph| graph.modules.contains_key(&repository)) {
+                if self.state.root_warmer.enabled() {
+                    self.state.root_warmer.request(
+                        self,
+                        ["BUILD.bazel", "BUILD"].map(|name| Label {
+                            repository: repository.clone(),
+                            package: String::new(),
+                            name: name.to_owned(),
+                        }),
+                    );
+                }
+                continue;
+            }
+            self.request_blocker_ahead(&format!(
+                "{}: runtime {}:repository:{repository} is unfetched",
+                crate::repository_demand::NEEDS_REPOSITORY,
+                self.state.runtime_id
+            ));
+        }
     }
 
     /// How to withdraw the publication at `root` a speculation of
@@ -5348,8 +5498,17 @@ impl RepositorySet {
                 }
             }
         }
+        // An evaluation ahead (cold-eval P4b): the registry module roots it
+        // read from warm trees count too — its commit demands them first,
+        // in first-use order, and keeps it only when they are those trees.
+        let mut materialized_roots = self.materialized_roots();
+        if EVALUATING_AHEAD.with(std::cell::Cell::get) {
+            let used = SPECULATIVE_ROOTS.with(|used| used.borrow().clone());
+            roots.extend(used.iter().cloned());
+            materialized_roots.extend(used);
+        }
         let speculative = self.friendly_in(roots, path);
-        let materialized = self.friendly_in(self.materialized_roots(), path);
+        let materialized = self.friendly_in(materialized_roots, path);
         if speculative != materialized || (speculative.is_none() && self.in_repository_store(path))
         {
             crate::repository_demand::note_order_dependent();
@@ -6626,12 +6785,15 @@ impl RepositorySet {
                 // the evaluator's pool asked for the evaluation ahead and
                 // its result can be recorded silently at the commit (a
                 // lockfile that writes; cold-eval P4b).
-                if speculated.is_some()
-                    && !(EVALUATE_AHEAD.with(std::cell::Cell::get)
-                        && !self.state.publication_proof
-                        && lock.as_ref().is_some_and(|lock| lock.mode.writes()))
-                {
-                    return Err(INELIGIBLE.to_owned());
+                if speculated.is_some() {
+                    if !EVALUATE_AHEAD.with(std::cell::Cell::get) {
+                        return Err(INELIGIBLE.to_owned());
+                    }
+                    if self.state.publication_proof
+                        || !lock.as_ref().is_some_and(|lock| lock.mode.writes())
+                    {
+                        return Err(NOT_KEPT.to_owned());
+                    }
                 }
                 if self.state.publication_proof {
                     return Err(
@@ -6879,7 +7041,7 @@ impl RepositorySet {
                             metadata.as_ref(),
                             specs.clone(),
                         )
-                        .ok_or_else(|| INELIGIBLE.to_owned())?;
+                        .ok_or_else(|| NOT_KEPT.to_owned())?;
                     evaluated_ahead = Some((
                         entry,
                         specs,
@@ -8226,10 +8388,17 @@ impl RepositorySet {
             || execution.inputs.bazel_unsupported.is_some()
             || self.state.options.registry_session.session().is_none()
         {
+            ahead_debug(|| {
+                format!(
+                    "{} not kept: unsupported input {:?}",
+                    lock.display_id, execution.inputs.bazel_unsupported
+                )
+            });
             return None;
         }
         let (recorded, invisible) = Self::extension_recorded_inputs(lock, execution, loaded);
         if !invisible.is_empty() || Self::evaluated_facts(metadata).is_err() {
+            ahead_debug(|| format!("{} not kept: invisible {invisible:?}", lock.display_id));
             return None;
         }
         Some(lx::entry_json(

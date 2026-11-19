@@ -580,8 +580,23 @@ impl Baseline {
         }
     }
 
+    /// No lockfile at all (a cold run: every extension evaluates).
+    fn cold() -> Self {
+        Self {
+            lockfile: String::new(),
+            hidden: None,
+        }
+    }
+
     fn restore(&self, fixture: &Fixture) {
-        fixture.write("MODULE.bazel.lock", &self.lockfile);
+        if self.lockfile.is_empty() {
+            let _ = fs::remove_file(fixture.path().join("MODULE.bazel.lock"));
+            if let Some(path) = fixture.hidden_lockfile_path() {
+                fs::remove_file(path).unwrap();
+            }
+        } else {
+            fixture.write("MODULE.bazel.lock", &self.lockfile);
+        }
         fixture.write("input.txt", "v0\n");
         if let Some((path, text)) = &self.hidden {
             fs::write(path, text).unwrap();
@@ -1118,4 +1133,89 @@ fn a_speculation_never_downloads_registry_archives() {
         "{:?}",
         server.paths.lock().unwrap()
     );
+}
+
+/// Without a lockfile no entry is reusable, and the evaluator's pool asks
+/// for the extensions its loads wait for to be evaluated ahead
+/// (docs/COLD_ANALYSIS.md "Module extensions evaluated ahead", cold-eval
+/// P4b): `gen` (it reads `input.txt` and prints), `user` (its definition
+/// loads `gen`'s repository) and the chained `x`/`y`/`z` are evaluated on
+/// the speculation workers and committed where the walk prepares them —
+/// the lockfile entry recorded and re-probed there — so stdout, stderr,
+/// both lockfiles and the snapshot recording are the walk's at every
+/// thread count, with evaluator jitter and restarts, and with the
+/// evaluation ahead switched off.
+#[test]
+fn cold_extensions_evaluated_ahead_change_nothing_the_build_shows() {
+    let fixture = Fixture::new();
+    let baseline = Baseline::cold();
+    for snapshot in ["off", "record"] {
+        for patterns in [&["//many:all"][..], &["//xz", "//many:all"][..]] {
+            let reference = compare_eval(&fixture, &baseline, snapshot, patterns);
+            assert_eq!(reference.code, Some(0), "{}", reference.stderr);
+            assert!(
+                reference.stderr.contains("gen evaluated with input v0")
+                    && reference.stderr.contains("user evaluated")
+                    && reference.stderr.contains("many/p9 sees lib(user)"),
+                "{}",
+                reference.stderr
+            );
+            baseline.restore(&fixture);
+            let off = fixture.build(
+                8,
+                snapshot,
+                &[("BAZEL_RS_EVAL_EXTENSIONS_AHEAD", "0")],
+                patterns,
+            );
+            assert_same(&reference, &off, &format!("{patterns:?} ahead off"));
+        }
+    }
+    // Evaluated ahead and committed (`gen` at least), none dropped.
+    baseline.restore(&fixture);
+    let run = fixture.build(
+        8,
+        "off",
+        &[("BAZEL_RS_EVAL_TEST_LANE_WAIT_SECS", "240")],
+        &["//many:all"],
+    );
+    assert!(counter(&run, "taken") >= 1, "{}", run.timing);
+    assert_eq!(counter(&run, "discarded"), 0, "{}", run.timing);
+    baseline.restore(&fixture);
+}
+
+/// Cold, the inputs an extension evaluated ahead read change before its
+/// commit (`touch` rewrites `input.txt` before the walk's demand of
+/// `gen`), an extension fails, a cached module prepares a group: the
+/// commit's check drops the evaluation ahead where the walk evaluates the
+/// extension anew (or fails), and every thread count shows the walk's
+/// output.
+#[test]
+fn cold_evaluations_ahead_keep_the_walks_output_when_inputs_change_or_fail() {
+    let fixture = Fixture::new();
+    let baseline = Baseline::cold();
+    let reference = compare_eval(&fixture, &baseline, "off", &["//dropped:all"]);
+    assert_eq!(reference.code, Some(0), "{}", reference.stderr);
+    let reference = compare_eval(&fixture, &baseline, "off", &["//touched:t"]);
+    assert_eq!(reference.code, Some(0), "{}", reference.stderr);
+    assert!(
+        reference.stderr.contains("gen evaluated with input v1")
+            && reference.stderr.contains("many/p0 sees data v1"),
+        "{}",
+        reference.stderr
+    );
+    let reference = compare_eval(&fixture, &baseline, "off", &["//dropped:all"]);
+    assert_eq!(reference.code, Some(0), "{}", reference.stderr);
+    let reference = compare_eval(&fixture, &baseline, "off", &["//failmany:all"]);
+    assert_ne!(reference.code, Some(0), "{}", reference.stderr);
+    assert!(
+        reference
+            .stderr
+            .contains("the fails extension fails on purpose"),
+        "{}",
+        reference.stderr
+    );
+    for snapshot in ["off", "record"] {
+        let reference = compare_eval(&fixture, &baseline, snapshot, &["//cached:all"]);
+        assert_eq!(reference.code, Some(0), "{}", reference.stderr);
+    }
 }
