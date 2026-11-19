@@ -424,10 +424,11 @@ impl Engine {
         configurations: &[crate::aquery::Configuration],
     ) -> Vec<ActionRecord> {
         // A shared run's groups (not runfiles trees) are inputs listed one
-        // by one, as the node lists them without sharing.
+        // by one, as the node lists them without sharing; a runfiles tree
+        // stays one input.
         let flattened;
         let node = if node.groups.iter().any(|group| !group.runfiles) {
-            flattened = node.flattened();
+            flattened = node.runs_listed();
             &flattened
         } else {
             node

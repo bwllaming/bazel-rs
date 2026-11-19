@@ -14318,18 +14318,23 @@ impl SourceInputs {
         if let Some(at) = self.own_at {
             // The groups between the own paths: one deduplication over the
             // listed order.
+            // The shared runs there, the runfiles trees after all
+            // (PlannedAction::groups_at).
             let own = self.own_where(planned, &|_| true);
             let at = at.min(own.len());
             let mut seen = crate::path_key::PathSet::default();
+            let sources = |runfiles: bool| {
+                self.groups
+                    .iter()
+                    .filter(move |group| group.runfiles == runfiles)
+                    .flat_map(|group| group.sources.iter().map(|path| path.as_path()))
+            };
             return own[..at]
                 .iter()
                 .copied()
-                .chain(
-                    self.groups
-                        .iter()
-                        .flat_map(|group| group.sources.iter().map(|path| path.as_path())),
-                )
+                .chain(sources(false))
                 .chain(own[at..].iter().copied())
+                .chain(sources(true))
                 .filter(|path| keep(path) && seen.insert(crate::path_key::PathKey(path)))
                 .collect();
         }
@@ -14944,6 +14949,17 @@ fn groups_at(
     }))
 }
 
+/// Whether planned actions hold a shared run of inputs as one group
+/// ([`lower_action`]); `BAZEL_RS_RUN_GROUPS=0` lists every run in full
+/// (the A/B check of the listings: the action dump is the same).
+fn run_groups() -> bool {
+    static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a representation switch; every action lists the same inputs either way.
+        std::env::var_os("BAZEL_RS_RUN_GROUPS").is_none_or(|value| value != "0")
+    });
+    *ON
+}
+
 /// The pure part of [`Engine::commit_action`] (P4, crate::engine::lowering):
 /// whether the action's tool runfiles groups stay shared — listing them
 /// could change nothing but the list (crate::scheduler::groups_apart): no
@@ -14967,24 +14983,32 @@ fn lower_action(
         shared,
     } = listing;
     // A shared run, held as a group when listing it changes nothing but
-    // the list: none of the action's own execution paths is one of the
-    // run's, and the listed action validates (checked against the run's
-    // namespace, SharedInputs::validate). The node holds the group at the
-    // run's place among its own inputs (PlannedAction::groups_at), not a
-    // copy of the run's entries; the scheduler validates it listed.
-    if groups.is_empty()
-        && let Some((start, run)) = &shared
-        && let Some(group) = run.group(&main_ignored)
-        && let Some(at) = groups_at(&own, *start, std::slice::from_ref(group), &main_ignored)
-        && run.disjoint(&own)
+    // the list: none of the action's own execution paths after the run is
+    // one of the run's, the ones before it at the run's paths are the same
+    // artifacts (planning drops the run's later occurrences: the group
+    // leaves them out, SharedInputs::group_beside), and the listed action
+    // validates (checked against the run's namespace,
+    // SharedInputs::validate). The node holds the group at the run's place
+    // among its own inputs (PlannedAction::groups_at), not a copy of the
+    // run's entries; the scheduler validates it listed. Beside a tool's
+    // runfiles trees (a PyCompile's precompiler) only when they stay shared
+    // as they would without the run's group (scheduler::groups_apart, the
+    // run apart from their roots); they stay after all of its own inputs.
+    if let Some((start, run)) = &shared
+        && run_groups()
+        && let Some(group) = run.group_beside(&own, *start, &main_ignored)
+        && let Some(at) = groups_at(&own, *start, std::slice::from_ref(&group), &main_ignored)
     {
         list_artifacts(&mut action, &own);
-        if run.validate(&action) {
+        let apart = groups.is_empty()
+            || (scheduler::groups_apart(&action, &groups) && run.apart_from(&groups));
+        if apart && run.validate(&action) {
             debug_assert!(
                 {
                     let mut full = action.clone();
                     list_artifacts(&mut full, &with_shared_inputs(&own, Some((*start, run))));
                     action::validate_structure(&full).is_ok()
+                        && (groups.is_empty() || scheduler::groups_apart(&full, &groups))
                 },
                 "internal error: the shared-run validation of {} differs from the full one",
                 action.id
@@ -14993,7 +15017,9 @@ fn lower_action(
             if let Some(environment) = environment {
                 let _ = client_environment.set(environment);
             }
-            let run_groups = vec![Arc::clone(group)];
+            let mut held = Vec::with_capacity(1 + groups.len());
+            held.push(group);
+            held.extend(groups);
             let id = action.id.clone();
             let (mut planned, mut sources) = plan_action_sources(
                 action,
@@ -15001,13 +15027,13 @@ fn lower_action(
                 &main_ignored,
                 &client_environment,
                 true,
-                run_groups.clone(),
+                held.clone(),
                 None,
             )?;
             if at.is_some() {
                 sources.own_at = Some(source_paths(&own[..*start]).len());
             }
-            planned.groups = run_groups;
+            planned.groups = held;
             planned.groups_at = at;
             planned.deferred = deferred;
             return Ok(lowering::Lowered::Node {
@@ -15251,6 +15277,9 @@ fn path_hash(bytes: &[u8]) -> u64 {
     crate::fast_hash::FxBuildHasher::default().hash_one(bytes)
 }
 
+/// A shared run's group, or none when it cannot be one ([`SharedInputs::group_beside`]).
+type RunGroup = Option<Arc<scheduler::InputGroup>>;
+
 /// The inputs many actions share, resolved once per build
 /// (crate::input_segment): the artifacts of a memoized depset walk's files
 /// ([`crate::starlark_types::FlatFiles`]), the namespace of their execution
@@ -15276,6 +15305,11 @@ struct SharedInputs {
     /// on first use with the main repository's ignored directories (by
     /// address: the build's one set).
     group: std::sync::OnceLock<(usize, Option<Arc<scheduler::InputGroup>>)>,
+    /// The run's groups without the entries an action's earlier own inputs
+    /// list first ([`SharedInputs::group_beside`]), by the main
+    /// repository's ignored directories (address) and the left-out
+    /// positions.
+    beside: std::sync::Mutex<HashMap<(usize, Vec<u32>), RunGroup>>,
 }
 
 impl SharedInputs {
@@ -15331,6 +15365,7 @@ impl SharedInputs {
             apart: Default::default(),
             reads: Arc::from(Vec::new()),
             group: std::sync::OnceLock::new(),
+            beside: Default::default(),
         })
     }
 
@@ -15373,11 +15408,72 @@ impl SharedInputs {
         group.valid.then(|| Arc::new(group))
     }
 
-    /// Whether none of `own`'s execution paths is one of the run's.
-    fn disjoint(&self, own: &[Artifact]) -> bool {
+    /// The run as a shared input group listed at `start` among an action's
+    /// own inputs `own` ([`SharedInputs::group`]), listed exactly as
+    /// planning lists the run there. When some own inputs before `start`
+    /// are at execution paths of the run — the same artifacts at the same
+    /// real paths (an interpreter that is both a PyCompile's executable and
+    /// a file of the runtime run it lists) — planning keeps their first
+    /// occurrences and drops the run's ([`Occurrence::SameReal`]), so the
+    /// group is the run without those entries (memoized by the left-out
+    /// positions). `None` when an own input after `start` is at one of the
+    /// run's paths, one before it is there as another artifact or at
+    /// another real path, or the run cannot be one group.
+    fn group_beside(
+        &self,
+        own: &[Artifact],
+        start: usize,
+        main_ignored: &Arc<IgnoredSubdirectories>,
+    ) -> Option<Arc<scheduler::InputGroup>> {
         use std::os::unix::ffi::OsStrExt;
-        own.iter()
-            .all(|artifact| self.first(artifact.exec.as_os_str().as_bytes()).is_none())
+        let start = start.min(own.len());
+        if own[start..]
+            .iter()
+            .any(|artifact| self.first(artifact.exec.as_os_str().as_bytes()).is_some())
+        {
+            return None;
+        }
+        let mut left_out = Vec::new();
+        for artifact in &own[..start] {
+            if let Some(index) = self.first(artifact.exec.as_os_str().as_bytes()) {
+                if later_occurrence(
+                    (input_identity(artifact), artifact.real.as_path()),
+                    &self.artifacts[index],
+                ) != Some(Occurrence::SameReal)
+                {
+                    return None;
+                }
+                left_out.push(u32::try_from(index).ok()?);
+            }
+        }
+        if left_out.is_empty() {
+            return self.group(main_ignored).cloned();
+        }
+        left_out.sort_unstable();
+        left_out.dedup();
+        let address = Arc::as_ptr(main_ignored) as usize;
+        let mut beside = self.beside.lock().unwrap_or_else(|e| e.into_inner());
+        beside
+            .entry((address, left_out))
+            .or_insert_with_key(|(_, left_out)| {
+                let occurrences = self.occurrences.as_ref()?;
+                if occurrences
+                    .iter()
+                    .any(|occurrence| *occurrence != Occurrence::Kept)
+                {
+                    return None;
+                }
+                let artifacts = self
+                    .artifacts
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| left_out.binary_search(&(*index as u32)).is_err())
+                    .map(|(_, artifact)| artifact.clone())
+                    .collect();
+                let group = input_group(Path::new(""), false, artifacts, Vec::new(), main_ignored);
+                group.valid.then(|| Arc::new(group))
+            })
+            .clone()
     }
 
     /// The index of the run's first input at execution path `exec`.

@@ -93,7 +93,10 @@ pub const MAGIC: &[u8; 8] = b"BZRSPLN1";
 // (crate::action_console).
 // 10: a node's `groups_at` and a group's `runfiles` flag (shared runs of
 // inputs in the middle of an action's own, docs/PLANNED_REQUEST.md).
-pub const FORMAT: u32 = 10;
+// 11: a node's `groups_at` places its shared runs only; its runfiles trees
+// stay after all of its own inputs (a PyCompile's Python runtime run beside
+// its precompiler's runfiles tree).
+pub const FORMAT: u32 = 11;
 /// Actions per NODES section (fixed: the encoding must not depend on the
 /// machine).
 pub const CHUNK: usize = 1024;
@@ -672,12 +675,16 @@ fn decode_chunk(chunk: &[u8], table: &[Arc<InputGroup>]) -> Result<Vec<PlannedAc
                 }
                 node.groups.push(Arc::clone(group));
             }
-            // Groups in the middle of the own inputs: within them, and only
-            // groups listable there (scheduler::PlannedAction::groups_at).
+            // Shared runs in the middle of the own inputs: within them, and
+            // only groups listable there; runfiles trees stay after all
+            // (scheduler::PlannedAction::groups_at).
             if let Some(at) = node.groups_at
                 && (at.inputs as usize > node.action.inputs.len()
                     || at.dependencies as usize > node.dependencies.len()
-                    || !node.groups.iter().all(|group| group.listable_between()))
+                    || !node
+                        .groups
+                        .iter()
+                        .all(|group| group.runfiles || group.listable_between()))
             {
                 return Err(format!(
                     "planned actions: action '{}' lists its shared input groups at {at:?}",
@@ -2581,6 +2588,95 @@ mod tests {
             decoded.nodes[..request.nodes.len() - 3]
                 .iter()
                 .all(|node| node.groups.is_empty())
+        );
+    }
+
+    /// Formats 10 and 11: a node holding a shared run (not a runfiles tree)
+    /// in the middle of its own inputs beside a tool's runfiles tree
+    /// round-trips with its `groups_at` and lists exactly what it listed;
+    /// a decoded node whose run there holds a tree input is an error.
+    #[test]
+    fn a_shared_run_beside_a_runfiles_tree_round_trips() {
+        let tool = input_group("tool.runfiles", "a");
+        let run = Arc::new(InputGroup {
+            root: PathBuf::new(),
+            runfiles: false,
+            inputs: vec![
+                (
+                    PathBuf::from("/rt/lib/a.py").into(),
+                    PathBuf::from("rt/lib/a.py").into(),
+                ),
+                (
+                    PathBuf::from("/rt/lib/b.py").into(),
+                    PathBuf::from("rt/lib/b.py").into(),
+                ),
+            ],
+            dependencies: vec![Dependency {
+                action_id: "//pkg:gen".into(),
+                output_index: 0,
+                destination: PathBuf::from("rt/gen.py").into(),
+            }],
+            tree_inputs: Vec::new(),
+            symlink_inputs: Vec::new(),
+            constant_metadata: Vec::new(),
+            empty_files: Vec::new(),
+            sources: vec![
+                PathBuf::from("/rt/lib/a.py").into(),
+                PathBuf::from("/rt/lib/b.py").into(),
+            ],
+            valid: true,
+        });
+        let mut node = holder(0, &[&run, &tool]);
+        node.action.inputs = vec![
+            (
+                PathBuf::from("/rt/bin/py").into(),
+                PathBuf::from("rt/bin/py").into(),
+            ),
+            (
+                PathBuf::from("/ws/pkg/src.py").into(),
+                PathBuf::from("pkg/src.py").into(),
+            ),
+        ];
+        node.groups_at = Some(crate::scheduler::GroupsAt {
+            inputs: 1,
+            dependencies: 0,
+        });
+        let mut nodes = sample().nodes;
+        nodes.push(node);
+        let request = with_nodes(nodes);
+        let bytes = encode(&request).unwrap();
+        let decoded = decode(&bytes).unwrap();
+        assert!(encodes_to(&decoded, &bytes).unwrap());
+        let (planned, held) = (request.nodes.last().unwrap(), decoded.nodes.last().unwrap());
+        assert_eq!(held.groups_at, planned.groups_at);
+        assert_eq!(
+            postcard::to_stdvec(&planned.flattened()).unwrap(),
+            postcard::to_stdvec(&held.flattened()).unwrap()
+        );
+        let listed: Vec<String> = held
+            .inputs()
+            .map(|(_, destination)| destination.display().to_string())
+            .collect();
+        assert_eq!(
+            listed[..4],
+            ["rt/bin/py", "rt/lib/a.py", "rt/lib/b.py", "pkg/src.py"]
+        );
+        assert!(
+            listed[4..]
+                .iter()
+                .all(|path| path.starts_with("tool.runfiles/"))
+        );
+        // A run in the middle must be listable there.
+        let mut bad = (*run).clone();
+        bad.tree_inputs = vec![PathBuf::from("rt/lib/a.py")];
+        let mut nodes = sample().nodes;
+        let mut node = request.nodes.last().unwrap().clone();
+        node.groups = vec![Arc::new(bad), Arc::clone(&tool)];
+        nodes.push(node);
+        let error = decode(&encode(&with_nodes(nodes)).unwrap()).unwrap_err();
+        assert!(
+            error.contains("lists its shared input groups at"),
+            "{error}"
         );
     }
 

@@ -144,6 +144,17 @@ generated inputs; `None`: after all of them, as for a tool's runfiles tree). Eve
 `groups_at` lies beyond its own lists, or whose groups there hold tree, symlink or constant-metadata inputs or
 empty files, is an error. Decoding recomputes the groups' `valid` flags on several threads.
 
+**Shared runs beside runfiles trees (format 11, analysis-memory, docs/MEMORY.md "Snapshot misses").**
+`groups_at` places a node's shared runs (`runfiles: false`) only; its tools' runfiles trees (`runfiles: true`)
+stay after all of its own inputs. A PyCompile (rules_python's `actions_run`: the runtime's interpreter as the
+executable, `inputs = depset([src], transitive = [runtime files])`, the precompiler as a tool) holds the runtime
+run as one group beside the precompiler's tree. The run also holds the interpreter the action lists first;
+planning drops the run's later occurrence (same artifact, same real path), so the group is the run without it
+(`SharedInputs::group_beside`, memoized by the left-out positions). Only when the trees stay shared as they
+would without the run's group (`groups_apart`, the run apart from their roots). Format-10 encodings mean the
+same under format 11 (a format-10 node never mixed runs and trees). `BAZEL_RS_RUN_GROUPS=0` lists every run in
+full (the A/B check: the action dump and aquery are identical).
+
 **Path tables (format 8, MEM5, docs/MEMORY.md).** A GROUPS or NODES section is its path table (the distinct
 path byte strings, first-seen order) followed by its content, in which every path is its index. Runfiles names
 are indices into the same table, and a runfiles entry list is written once per section by content; later

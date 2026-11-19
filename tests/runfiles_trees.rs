@@ -630,6 +630,183 @@ fn actions_sharing_a_tool_list_its_runfiles_tree() {
     );
 }
 
+/// analysis-memory (docs/MEMORY.md): a PyCompile-like action — a runtime's
+/// interpreter as the executable, `inputs = depset([src], transitive =
+/// [runtime files])` (a memoized walk of at least 128 files that holds the
+/// interpreter again) and a tool's runfiles tree — holds the runtime run as
+/// one shared group beside the tool's tree (format 11): the group leaves
+/// out the interpreter the action lists first. Every action lists exactly
+/// what it lists with the run listed in full (`BAZEL_RS_RUN_GROUPS=0`), the
+/// actions run, and aquery prints the same.
+const RUN_DEFS: &str = r##"def _tool(ctx):
+    exe = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.write(exe, "#!/bin/sh\n(cd $0.runfiles && find . \\( -type f -o -type l \\) | LC_ALL=C sort) > $1\n", is_executable = True)
+    return [DefaultInfo(executable = exe, runfiles = ctx.runfiles(files = ctx.files.data))]
+
+tool = rule(_tool, executable = True, attrs = {"data": attr.label_list(allow_files = True)})
+
+def _compile(ctx):
+    tool = ctx.attr.tool[DefaultInfo].files_to_run
+    runtime = ctx.attr.runtime[DefaultInfo].files
+    outs = []
+    for src in ctx.files.srcs:
+        out = ctx.actions.declare_file(src.basename + ".out")
+        ctx.actions.run(
+            executable = ctx.file.interpreter,
+            arguments = [tool.executable.path, out.path, src.path],
+            inputs = depset([src], transitive = [runtime]),
+            tools = [tool],
+            outputs = [out],
+            mnemonic = "PyCompile",
+        )
+        outs.append(out)
+    return [DefaultInfo(files = depset(outs))]
+
+compile = rule(_compile, attrs = {
+    "srcs": attr.label_list(allow_files = True),
+    "runtime": attr.label(),
+    "interpreter": attr.label(allow_single_file = True),
+    "tool": attr.label(executable = True, cfg = "target"),
+})
+"##;
+
+#[test]
+fn a_runtime_run_is_one_group_beside_a_tool_runfiles_tree() {
+    let ws = Workspace::new();
+    let package = "shared_run";
+    ws.file(&format!("{package}/defs.bzl"), RUN_DEFS, 0o644);
+    let runtime: Vec<String> = (0..140)
+        .map(|index| format!("rt/f{index:03}.txt"))
+        .collect();
+    for file in &runtime {
+        ws.file(&format!("{package}/{file}"), "runtime\n", 0o644);
+    }
+    ws.file(
+        &format!("{package}/rt/interp"),
+        "#!/bin/sh\ntest -f shared_run/rt/f139.txt && test -f \"$3\" && exec \"$1\" \"$2\"\n",
+        0o755,
+    );
+    ws.file(&format!("{package}/d.txt"), "tool-data\n", 0o644);
+    for src in ["a.py", "b.py", "c.py"] {
+        ws.file(&format!("{package}/{src}"), "pass\n", 0o644);
+    }
+    ws.file(
+        &format!("{package}/BUILD.bazel"),
+        &format!(
+            "load(\":defs.bzl\", \"compile\", \"tool\")\n\
+             filegroup(name = \"runtime\", srcs = [\"rt/interp\", {}])\n\
+             tool(name = \"tool\", data = [\"d.txt\"])\n\
+             compile(name = \"c\", srcs = [\"a.py\", \"b.py\", \"c.py\"], runtime = \":runtime\", interpreter = \"rt/interp\", tool = \":tool\")\n",
+            runtime
+                .iter()
+                .map(|file| format!("\"{file}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        0o644,
+    );
+    let target = format!("//{package}:c");
+    // (The analysis snapshot off: each run plans; the second one's actions
+    // are cache hits of the first's.)
+    let build = |groups: &str| {
+        let output = ws
+            .command(&["build", &target], "")
+            .env("BAZEL_RS_DUMP_ACTIONS", "1")
+            .env("BAZEL_RS_TIMING", "1")
+            .env("BAZEL_RS_SNAPSHOT", "off")
+            .env("BAZEL_RS_RUN_GROUPS", groups)
+            .output()
+            .unwrap();
+        success(&output);
+        stderr(&output)
+    };
+    let shared = build("1");
+    let listed = build("0");
+    let groups = |text: &str| -> String {
+        text.lines()
+            .find(|line| line.starts_with("PERF-GROUPS"))
+            .unwrap_or_else(|| panic!("{text}"))
+            .to_owned()
+    };
+    let refs = |line: &str, field: &str| -> usize {
+        line.split_whitespace()
+            .find_map(|part| part.strip_prefix(field))
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    // The compiles after the first (whose walk fills the memo) hold the
+    // run's group beside the tool's tree.
+    let (with, without) = (groups(&shared), groups(&listed));
+    assert_eq!(refs(&with, "holders="), 3, "{with}");
+    assert!(refs(&with, "refs=") >= 5, "{with}");
+    assert_eq!(
+        (refs(&without, "holders="), refs(&without, "refs=")),
+        (3, 3),
+        "{without}"
+    );
+    // The action dump (every listed input in order) is the same.
+    let dump = |text: &str| -> String {
+        text.lines()
+            .skip_while(|line| !line.starts_with("ACTION "))
+            .take_while(|line| line.starts_with("ACTION ") || line.starts_with("  "))
+            .map(|line| format!("{line}\n"))
+            .collect()
+    };
+    assert_eq!(dump(&shared), dump(&listed));
+    // The interpreter first (once), the runtime, the source, the tool, its tree.
+    let block: Vec<String> = dump(&shared)
+        .split("ACTION ")
+        .find(|block| block.starts_with(&format!("{target}#0")))
+        .unwrap()
+        .lines()
+        .filter_map(|line| line.strip_prefix("  input "))
+        .map(|line| line.split(" -> ").nth(1).unwrap().to_owned())
+        .collect();
+    assert_eq!(block[0], format!("{package}/rt/interp"));
+    assert_eq!(block[1], format!("{package}/rt/f000.txt"));
+    assert_eq!(block[140], format!("{package}/rt/f139.txt"));
+    assert_eq!(block[141], format!("{package}/a.py"));
+    assert_eq!(
+        block
+            .iter()
+            .filter(|input| input.ends_with("rt/interp"))
+            .count(),
+        1,
+        "{block:?}"
+    );
+    assert!(
+        block
+            .last()
+            .unwrap()
+            .ends_with("tool.runfiles/_main/shared_run/d.txt"),
+        "{block:?}"
+    );
+    // The actions ran: each listed its tool's tree.
+    let out = single(
+        &ws,
+        &format!("bazel-out/k8-fastbuild/bin/{package}/a.py.out"),
+    );
+    assert_eq!(
+        fs::read_to_string(out).unwrap(),
+        "./_main/shared_run/d.txt\n./_main/shared_run/tool\n./_repo_mapping\n"
+    );
+    // aquery prints the same with and without the group.
+    let aquery = |groups: &str| {
+        let output = ws
+            .command(&["aquery", &target, "--output=text"], "")
+            .env("BAZEL_RS_SNAPSHOT", "off")
+            .env("BAZEL_RS_RUN_GROUPS", groups)
+            .output()
+            .unwrap();
+        success(&output);
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let text = aquery("1");
+    assert_eq!(text, aquery("0"));
+    assert!(text.contains("tool.runfiles"), "{text}");
+}
+
 /// PA-1 follow-up B6: an aspect's actions stage their tools' runfiles trees
 /// and complete deferred command lines like a rule's (the aspect commit
 /// used to drop both: the tool found no `$0.runfiles`, the deferred command

@@ -190,18 +190,49 @@ pub struct PlannedAction {
     #[serde(skip)]
     pub groups: Vec<Arc<InputGroup>>,
     /// Where the groups are listed among the action's own inputs: `None`
-    /// after all of them (a tool's runfiles trees), else after the first
-    /// [`GroupsAt::inputs`] own source inputs and the first
+    /// after all of them (a tool's runfiles trees), else the shared runs
+    /// (the groups that are not runfiles trees, [`InputGroup::runfiles`])
+    /// after the first [`GroupsAt::inputs`] own source inputs and the first
     /// [`GroupsAt::dependencies`] own generated inputs (a shared run in the
     /// middle of a C++ compile's inputs: the headers of its compilation
-    /// context). Groups listed in the middle have no tree, symlink or
-    /// constant-metadata inputs and no empty files
-    /// ([`InputGroup::listable_between`]).
+    /// context; the Python runtime in a PyCompile's), and the runfiles
+    /// trees still after all of them (format 11). Groups listed in the
+    /// middle have no tree, symlink or constant-metadata inputs and no
+    /// empty files ([`InputGroup::listable_between`]).
     pub groups_at: Option<GroupsAt>,
 }
 
 /// A source input: (path, destination).
 type SourceInput = (SharedPath, SharedPath);
+
+/// Which of a node's groups a listing takes ([`PlannedAction::split_groups`]).
+#[derive(Clone, Copy)]
+enum Which {
+    All,
+    None,
+    /// The shared runs (not runfiles trees).
+    Runs,
+    /// The runfiles trees.
+    Trees,
+}
+
+/// A node's groups listed at one place ([`PlannedAction::groups_at`]).
+struct GroupsBetween<'a> {
+    groups: &'a [Arc<InputGroup>],
+    which: Which,
+}
+
+impl<'a> GroupsBetween<'a> {
+    fn iter(&self) -> impl Iterator<Item = &'a Arc<InputGroup>> + use<'a> {
+        let which = self.which;
+        self.groups.iter().filter(move |group| match which {
+            Which::All => true,
+            Which::None => false,
+            Which::Runs => !group.runfiles,
+            Which::Trees => group.runfiles,
+        })
+    }
+}
 
 /// [`PlannedAction::groups_at`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -414,28 +445,97 @@ impl PlannedAction {
         }
     }
 
+    /// The groups listed between the own inputs and the ones listed after
+    /// all of them ([`PlannedAction::groups_at`]).
+    fn split_groups(&self) -> (GroupsBetween<'_>, GroupsBetween<'_>) {
+        let groups = &self.groups;
+        match self.groups_at {
+            // All of them after the own inputs (which `own_inputs` lists
+            // entirely before them).
+            None => (
+                GroupsBetween {
+                    groups,
+                    which: Which::All,
+                },
+                GroupsBetween {
+                    groups,
+                    which: Which::None,
+                },
+            ),
+            Some(_) => (
+                GroupsBetween {
+                    groups,
+                    which: Which::Runs,
+                },
+                GroupsBetween {
+                    groups,
+                    which: Which::Trees,
+                },
+            ),
+        }
+    }
+
     /// The node's source inputs: its action's, each group's at
     /// [`PlannedAction::groups_at`] (after its own by default).
     pub fn inputs(&self) -> impl Iterator<Item = &(SharedPath, SharedPath)> {
         let (before, after) = self.own_inputs();
+        let (between, last) = self.split_groups();
         before
             .iter()
-            .chain(self.groups.iter().flat_map(|group| group.inputs.iter()))
+            .chain(between.iter().flat_map(|group| group.inputs.iter()))
             .chain(after)
+            .chain(last.iter().flat_map(|group| group.inputs.iter()))
     }
 
     /// The node's generated inputs: its own, each group's at
     /// [`PlannedAction::groups_at`] (after its own by default).
     pub fn all_dependencies(&self) -> impl Iterator<Item = &Dependency> {
         let (before, after) = self.own_dependencies();
+        let (between, last) = self.split_groups();
         before
             .iter()
-            .chain(
-                self.groups
-                    .iter()
-                    .flat_map(|group| group.dependencies.iter()),
-            )
+            .chain(between.iter().flat_map(|group| group.dependencies.iter()))
             .chain(after)
+            .chain(last.iter().flat_map(|group| group.dependencies.iter()))
+    }
+
+    /// The node with its shared runs listed in its action and dependencies
+    /// and its runfiles trees still shared (after all of its own inputs,
+    /// [`PlannedAction::groups_at`]): what aquery reports, a runfiles tree
+    /// being one input of its own there.
+    pub fn runs_listed(&self) -> PlannedAction {
+        let (runs, trees): (Vec<_>, Vec<_>) = self
+            .groups
+            .iter()
+            .cloned()
+            .partition(|group| !group.runfiles);
+        if runs.is_empty() {
+            return self.clone();
+        }
+        let mut node = PlannedAction {
+            action: self.action.clone(),
+            dependencies: Vec::new(),
+            deferred: self.deferred.clone(),
+            groups: runs,
+            groups_at: self.groups_at,
+        };
+        node.dependencies = {
+            let (before, after) = self.own_dependencies();
+            before
+                .iter()
+                .chain(
+                    node.groups
+                        .iter()
+                        .flat_map(|group| group.dependencies.iter()),
+                )
+                .chain(after)
+                .cloned()
+                .collect()
+        };
+        let runs = std::mem::take(&mut node.groups);
+        list_groups(&mut node.action, &runs, node.groups_at.take());
+        node.groups = trees;
+        node
     }
 
     /// The node with every group listed in its action and dependencies:
@@ -475,14 +575,18 @@ impl PlannedAction {
 /// first `at.inputs` of its own, [`PlannedAction::groups_at`]).
 fn list_groups(action: &mut Action, groups: &[Arc<InputGroup>], at: Option<GroupsAt>) {
     if let Some(at) = at {
+        // The shared runs at the position, the runfiles trees after all.
         let position = (at.inputs as usize).min(action.inputs.len());
         action.inputs.splice(
             position..position,
-            groups.iter().flat_map(|group| group.inputs.iter().cloned()),
+            groups
+                .iter()
+                .filter(|group| !group.runfiles)
+                .flat_map(|group| group.inputs.iter().cloned()),
         );
     }
     for group in groups {
-        if at.is_none() {
+        if at.is_none() || group.runfiles {
             action.inputs.extend(group.inputs.iter().cloned());
         }
         action
@@ -2220,6 +2324,145 @@ mod tests {
             ));
         }
         action::validate_structure(&synthetic)
+    }
+
+    /// Format 11: a node holding a shared run (not a runfiles tree) in the
+    /// middle of its own inputs and a tool's runfiles tree lists the run at
+    /// `groups_at` and the tree after all of its own inputs — in every
+    /// listing (inputs, generated inputs, the flattened node, the dispatch's
+    /// `list_groups`) — and aquery's form lists the run alone.
+    #[test]
+    fn shared_runs_list_in_the_middle_and_runfiles_trees_after_all() {
+        let source = Path::new("/nonexistent/source");
+        let tool = group(
+            "tool.runfiles",
+            &[(source, "tool.runfiles/_main/a")],
+            &[("tree_gen", "tool.runfiles/_main/gen")],
+            &["tool.runfiles/_main/__init__.py"],
+        );
+        let run = {
+            let mut run = (*group(
+                "",
+                &[(source, "rt/bin/python3x"), (source, "rt/lib/os.py")],
+                &[("run_gen", "rt/lib/gen.py")],
+                &[],
+            ))
+            .clone();
+            run.runfiles = false;
+            Arc::new(run)
+        };
+        let mut holder = node("pyc");
+        holder.action.inputs = vec![
+            (source.into(), "rt/bin/python3".into()),
+            (source.into(), "pkg/src.py".into()),
+            (source.into(), "tools/precompiler.py".into()),
+        ];
+        holder.dependencies = vec![
+            dependency("exe_gen", 0, "bin/exe"),
+            dependency("own_gen", 0, "bin/own"),
+        ];
+        holder.groups = vec![run.clone(), tool.clone()];
+        holder.groups_at = Some(GroupsAt {
+            inputs: 1,
+            dependencies: 1,
+        });
+        let inputs: Vec<String> = holder
+            .inputs()
+            .map(|(_, destination)| destination.display().to_string())
+            .collect();
+        assert_eq!(
+            inputs,
+            [
+                "rt/bin/python3",
+                "rt/bin/python3x",
+                "rt/lib/os.py",
+                "pkg/src.py",
+                "tools/precompiler.py",
+                "tool.runfiles/_main/a"
+            ]
+        );
+        let generated: Vec<String> = holder
+            .all_dependencies()
+            .map(|dependency| dependency.destination.display().to_string())
+            .collect();
+        assert_eq!(
+            generated,
+            [
+                "bin/exe",
+                "rt/lib/gen.py",
+                "bin/own",
+                "tool.runfiles/_main/gen"
+            ]
+        );
+        let flattened = holder.flattened();
+        assert!(flattened.groups.is_empty() && flattened.groups_at.is_none());
+        assert_eq!(
+            flattened
+                .action
+                .inputs
+                .iter()
+                .map(|(_, destination)| destination.display().to_string())
+                .collect::<Vec<_>>(),
+            inputs
+        );
+        assert_eq!(
+            flattened
+                .dependencies
+                .iter()
+                .map(|dependency| dependency.destination.display().to_string())
+                .collect::<Vec<_>>(),
+            generated
+        );
+        assert_eq!(
+            flattened.action.extra.param_files,
+            vec![(PathBuf::from("tool.runfiles/_main/__init__.py"), Vec::new())]
+        );
+        // aquery's form: the run listed at its place, the tree still held.
+        let aquery = holder.runs_listed();
+        assert!(aquery.groups_at.is_none());
+        assert_eq!(aquery.groups.len(), 1);
+        assert!(Arc::ptr_eq(&aquery.groups[0], &tool));
+        assert_eq!(
+            aquery
+                .action
+                .inputs
+                .iter()
+                .map(|(_, destination)| destination.display().to_string())
+                .collect::<Vec<_>>(),
+            inputs[..5]
+        );
+        assert_eq!(
+            aquery
+                .dependencies
+                .iter()
+                .map(|dependency| dependency.destination.display().to_string())
+                .collect::<Vec<_>>(),
+            generated[..3]
+        );
+        assert_eq!(
+            aquery.inputs().count() + aquery.all_dependencies().count(),
+            inputs.len() + generated.len()
+        );
+        // The validation lists it (the run's root is every path) like the
+        // flattened node.
+        assert_eq!(validate_node(&holder), listed_validation(&holder));
+        // Without `groups_at`: every group after all of the own inputs.
+        let mut after = holder.clone();
+        after.groups_at = None;
+        assert_eq!(
+            after
+                .inputs()
+                .map(|(_, destination)| destination.display().to_string())
+                .collect::<Vec<_>>(),
+            [
+                "rt/bin/python3",
+                "pkg/src.py",
+                "tools/precompiler.py",
+                "rt/bin/python3x",
+                "rt/lib/os.py",
+                "tool.runfiles/_main/a"
+            ]
+        );
     }
 
     #[test]
