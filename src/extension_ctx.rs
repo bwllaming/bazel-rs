@@ -1203,6 +1203,31 @@ fn working_directory(repositories: &RepositorySet, unique_name: &str) -> anyhow:
         .join(unique_name))
 }
 
+/// What a failed callback had read ([`with_failed_inputs`]).
+pub(crate) struct FailedExecution {
+    pub(crate) inputs: crate::repository_ctx::ExecutionInputs,
+    pub(crate) tag_repo_mappings: Vec<crate::loading::RecordedRepoMapping>,
+}
+
+thread_local! {
+    /// [`with_failed_inputs`] is active on this thread.
+    static KEEP_FAILED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAILED: std::cell::RefCell<Option<FailedExecution>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `work` (an [`execute`]); when its callback failed, what the callback
+/// had read — its recorded inputs and label-attribute mappings — as an
+/// evaluation's would be recorded (a module extension evaluated ahead of
+/// its sequential position, cold-eval: its failure is kept only while
+/// those inputs are current).
+pub(crate) fn with_failed_inputs<R>(work: impl FnOnce() -> R) -> (R, Option<FailedExecution>) {
+    let previous = KEEP_FAILED.with(|keep| keep.replace(true));
+    let result = work();
+    KEEP_FAILED.with(|keep| keep.set(previous));
+    (result, FAILED.with(std::cell::RefCell::take))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn execute(
     repositories: Arc<RepositorySet>,
@@ -1248,7 +1273,7 @@ pub fn execute(
                 .borrow_mut()
                 .observe(context.repositories.environment(), name)?;
         }
-        let (frozen, metadata) = Module::with_temp_heap(|module| -> anyhow::Result<_> {
+        let evaluated = Module::with_temp_heap(|module| -> anyhow::Result<_> {
             let heap = module.heap();
             let ctx = heap.alloc(ModuleCtxGen {
                 modules: heap.access_owned_frozen_value(&projected),
@@ -1305,7 +1330,26 @@ pub fn execute(
                 ))))
                 .map_err(|error| anyhow!("cannot freeze module extension callback: {error:?}"))?;
             Ok((frozen, metadata))
-        })?;
+        });
+        let (frozen, metadata) = match evaluated {
+            Ok(evaluated) => evaluated,
+            Err(error) => {
+                // An evaluation ahead keeps what the failed callback read
+                // (crate::repository: its commit checks it is current).
+                if KEEP_FAILED.with(std::cell::Cell::get) {
+                    let Context { base, .. } = context;
+                    if let Ok(inputs) = base.finish() {
+                        FAILED.with(|failed| {
+                            *failed.borrow_mut() = Some(FailedExecution {
+                                inputs,
+                                tag_repo_mappings: tag_repo_mappings.into_inner(),
+                            })
+                        });
+                    }
+                }
+                return Err(error);
+            }
+        };
         let Context { calls, base, .. } = context;
         let repositories = calls.finish(&frozen).map_err(anyhow::Error::msg)?;
         let inputs = base.finish()?;

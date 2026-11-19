@@ -394,6 +394,33 @@ impl Speculations {
         self.shared.changed.notify_all();
     }
 
+    /// Queue the speculation of `canonical` again when it is blocked (with
+    /// attempts left): a speculation waiting for it as a dependency asks,
+    /// what blocked it may be there now (or it may now use a group's
+    /// speculative preparation: crate::repository's `request_eval_local`).
+    pub(crate) fn requeue_blocked(&self, canonical: &str) {
+        {
+            let mut state = lock(&self.shared.state);
+            if state.width == 0 {
+                return;
+            }
+            let Some(Entry::Blocked { attempts, .. }) = state.entries.get(canonical) else {
+                return;
+            };
+            if *attempts >= MAX_ATTEMPTS {
+                return;
+            }
+            let attempts = *attempts;
+            state.counts.retried += 1;
+            state
+                .entries
+                .insert(canonical.to_owned(), Entry::Queued { attempts });
+            state.queue.push_back(canonical.to_owned());
+        }
+        self.grow();
+        self.shared.changed.notify_all();
+    }
+
     /// Whether the speculation of `canonical` is queued or runs (the
     /// evaluator's serving pool holds a lane blocker waiting for it until
     /// it is not: crate::engine::eval's `Bodies::lane_ready`).

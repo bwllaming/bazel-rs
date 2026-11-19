@@ -197,14 +197,26 @@ pub(crate) const EVAL_GROUP_KEY: &str = "\u{1}prepare:ordinary:";
 
 /// `BAZEL_RS_EVAL_AHEAD_DEBUG`: what the evaluator's pool and the
 /// speculations ahead of the sequential pass decide (cold-eval P4a/P4b), on
-/// stderr.
+/// stderr (`1`) or appended to the file it names.
 fn ahead_debug(message: impl FnOnce() -> String) {
-    static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    // `1`: stderr; anything else: a file the lines are appended to.
+    static ON: std::sync::LazyLock<Option<std::ffi::OsString>> = std::sync::LazyLock::new(|| {
         // snapshot-unrecorded: a diagnostics switch; it changes nothing the build computes.
-        std::env::var_os("BAZEL_RS_EVAL_AHEAD_DEBUG").is_some()
+        std::env::var_os("BAZEL_RS_EVAL_AHEAD_DEBUG")
     });
-    if *ON {
-        eprintln!("bazel-rs: ahead: {}", message());
+    match ON.as_deref() {
+        None => {}
+        Some(value) if value == "1" => eprintln!("bazel-rs: ahead: {}", message()),
+        Some(path) => {
+            use std::io::Write as _;
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = writeln!(file, "bazel-rs: ahead: {}", message());
+            }
+        }
     }
 }
 
@@ -546,6 +558,9 @@ struct RepositoryState {
     ahead_after_group: std::sync::Mutex<BTreeMap<String, BTreeSet<String>>>,
     /// The registration pattern lists prepared ahead already (hashes).
     ahead_registrations: std::sync::Mutex<BTreeSet<u64>>,
+    /// The evaluator's phase 1 runs on its pool: what speculations wait
+    /// for is prepared ahead ([`RepositorySet::ahead_scope`]).
+    ahead: std::sync::atomic::AtomicBool,
     /// The groups the evaluator's pool used speculatively (their
     /// preparation must be that very one), and whether there are any.
     eval_used_groups: std::sync::Mutex<BTreeSet<String>>,
@@ -774,6 +789,22 @@ fn speculation_order_check() -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// [`RepositorySet::ahead_scope`]'s guard.
+pub(crate) struct AheadScope<'a>(&'a RepositorySet, bool);
+
+impl Drop for AheadScope<'_> {
+    fn drop(&mut self) {
+        self.0.state.ahead.store(self.1, Ordering::SeqCst);
+    }
+}
+
+/// Whether this thread runs a repository speculation or evaluates a module
+/// extension ahead: a dependency it finds unfetched is waited for a little
+/// ([`RepositorySet::published_after_requested_speculation`]).
+fn waits_for_dependencies() -> bool {
+    crate::repository_speculation::active() || EVALUATING_AHEAD.with(std::cell::Cell::get)
 }
 
 /// The canonical repository a no-demand sentinel (crate::repository_demand::
@@ -1072,6 +1103,15 @@ struct PreparedOrdinary {
 /// once the root is published, or inline at its slot.
 const SPECULATION_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// How long a repository speculation (or an extension evaluated ahead)
+/// waits for the speculation of a repository it needs that is queued or
+/// runs ([`RepositorySet::published_after_requested_speculation`]): long
+/// enough for a dependency's fetch on a loaded host, so that the rule does
+/// not run again from the start (its `execute()` calls twice); bounded, as
+/// two speculations waiting for each other (a cycle the sequential engine
+/// reports) or a pool whose workers all wait end in the sentinel.
+const DEPENDENCY_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The error of a speculative extension preparation that is not
 /// eligible (never shown: the coordinator prepares the group itself).
 const INELIGIBLE: &str = "extension preparation not speculated";
@@ -1118,6 +1158,11 @@ struct EvaluatedAhead {
     network: std::sync::Mutex<Option<Arc<crate::observed_fs::NetworkSink>>>,
     /// Whether the evaluation itself printed.
     printed: bool,
+    /// The evaluation failed with this error (`execution` holds what it
+    /// read; nothing was generated): the commit fails the group with it.
+    failure: Option<String>,
+    /// A failed evaluation's definition (there is no preparation).
+    loaded: Option<loading::LoadedDefinition>,
 }
 
 thread_local! {
@@ -1131,13 +1176,18 @@ thread_local! {
     /// as a repository speculation forms it
     /// ([`RepositorySet::speculative_friendly_repository`]).
     static EVALUATING_AHEAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The evaluation ahead on this thread failed: what its commit checks
+    /// (`compute_ordinary`, for `extension_speculation_job`).
+    static FAILED_AHEAD: std::cell::RefCell<Option<SpeculatedLock>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// A finished speculative extension preparation, for the coordinator's
 /// commit ([`RepositorySet::commit_extension_speculation`]).
 #[derive(Debug)]
 struct ExtensionOutcome {
-    prepared: Arc<PreparedOrdinary>,
+    /// `None`: an evaluation ahead that failed (`lock.evaluated.failure`).
+    prepared: Option<Arc<PreparedOrdinary>>,
     /// The speculative preparations of other groups it used, in first-use
     /// order ([`RepositorySet::adopt_speculated_group`]).
     adopted: Adopted,
@@ -1536,6 +1586,7 @@ impl RepositorySet {
                 eval_evaluable: Default::default(),
                 ahead_after_group: Default::default(),
                 ahead_registrations: Default::default(),
+                ahead: std::sync::atomic::AtomicBool::new(false),
                 eval_used_groups: Default::default(),
                 eval_group_flight: Default::default(),
                 eval_used: Default::default(),
@@ -4385,6 +4436,20 @@ impl RepositorySet {
         }
     }
 
+    /// While the returned guard lives, the evaluator's phase 1 runs on its
+    /// pool, and what its loads and speculations wait for is prepared ahead
+    /// (cold-eval: extensions evaluated ahead, chained requests, dependency
+    /// waits). Before it (the target pattern phase) and after, speculations
+    /// behave as before.
+    pub(crate) fn ahead_scope(&self) -> AheadScope<'_> {
+        let previous = self.state.ahead.swap(true, Ordering::SeqCst);
+        AheadScope(self, previous)
+    }
+
+    fn ahead(&self) -> bool {
+        self.state.ahead.load(Ordering::Relaxed)
+    }
+
     /// Whether a speculative extension preparation may evaluate the
     /// extension ahead of its sequential position when no lockfile entry is
     /// reusable (cold-eval P4b): its result is recorded at the commit, so
@@ -4411,7 +4476,7 @@ impl RepositorySet {
     /// ([`Self::evaluated_ahead_possible`]); when they are not, nothing
     /// changes.
     fn request_evaluated_group(&self, id: &str) -> bool {
-        if !self.evaluated_ahead_possible() {
+        if !self.evaluated_ahead_possible() || !self.ahead() {
             return false;
         }
         lock_ignoring_poison(&self.state.eval_evaluable).insert(id.to_owned());
@@ -4706,6 +4771,7 @@ impl RepositorySet {
         let _ahead = Ahead(EVALUATE_AHEAD.with(|ahead| ahead.replace(evaluable)));
         SPECULATIVE_ROOTS.with(|roots| roots.borrow_mut().clear());
         ADOPTED.with(|adopted| *adopted.borrow_mut() = (Vec::new(), false));
+        FAILED_AHEAD.with(|failed| failed.borrow_mut().take());
         let console = crate::ui::DeferredConsole::start();
         let unit = UnitRoots::record();
         let mut lock = None;
@@ -4753,11 +4819,33 @@ impl RepositorySet {
                 return Finished::Ineligible;
             }
             Err(error) => {
+                let failed = FAILED_AHEAD.with(|failed| failed.borrow_mut().take());
                 ahead_debug(|| {
                     format!(
-                        "extension speculation {id} (evaluable {evaluable}) failed (order-dependent {order_dependent}): {error}"
+                        "extension speculation {id} (evaluable {evaluable}) failed (order-dependent {order_dependent}, kept {}): {error}",
+                        failed.is_some()
                     )
                 });
+                // The evaluation's own failure, kept for its commit unless a
+                // sentinel some lookup swallowed may have caused it or it
+                // wrote before using another group.
+                if let (Some(lock), false, false, true) = (
+                    failed,
+                    order_dependent,
+                    wrote_before,
+                    crate::repository_demand::sentinels_raised() == sentinels,
+                ) {
+                    return Finished::Done(Box::new(ExtensionOutcome {
+                        prepared: None,
+                        adopted,
+                        lock,
+                        output,
+                        observations,
+                        obtained,
+                        registry_roots,
+                        definitions,
+                    }));
+                }
                 return Finished::Failed;
             }
             Ok(prepared) => prepared,
@@ -4796,7 +4884,7 @@ impl RepositorySet {
         self.retry_extension_speculations();
         self.request_after_group(id);
         Finished::Done(Box::new(ExtensionOutcome {
-            prepared,
+            prepared: Some(prepared),
             adopted,
             lock,
             output,
@@ -4822,7 +4910,7 @@ impl RepositorySet {
         &self,
         group: &repository_catalog::OrdinaryGroup,
         outcome: ExtensionOutcome,
-    ) -> Option<Arc<PreparedOrdinary>> {
+    ) -> Option<Result<Arc<PreparedOrdinary>, String>> {
         let ExtensionOutcome {
             prepared,
             adopted,
@@ -4862,6 +4950,7 @@ impl RepositorySet {
                 definitions,
             );
         }
+        let prepared = prepared?;
         let console = crate::ui::DeferredConsole::start();
         let checked = self
             .extension_lock(
@@ -4893,7 +4982,7 @@ impl RepositorySet {
         self.note_committed_roots(&obtained);
         crate::loading::commit_speculative_definitions(self, definitions);
         crate::ui::replay(output);
-        Some(prepared)
+        Some(Ok(prepared))
     }
 
     /// The sequential engine's lockfile check where it prepares `group`,
@@ -4962,14 +5051,19 @@ impl RepositorySet {
         group: &repository_catalog::OrdinaryGroup,
         speculated: &SpeculatedLock,
         evaluated: &EvaluatedAhead,
-        prepared: Arc<PreparedOrdinary>,
+        prepared: Option<Arc<PreparedOrdinary>>,
         output: Vec<crate::ui::Deferred>,
         observations: Option<Arc<crate::observed_fs::Captured>>,
         obtained: Vec<String>,
         definitions: crate::loading::SpeculativeDefinitions,
-    ) -> Option<Arc<PreparedOrdinary>> {
+    ) -> Option<Result<Arc<PreparedOrdinary>, String>> {
+        let loaded = match (&prepared, &evaluated.loaded) {
+            (Some(prepared), _) => &prepared.loaded,
+            (None, Some(loaded)) => loaded,
+            (None, None) => return None,
+        };
         let console = crate::ui::DeferredConsole::start();
-        let checked = self.evaluated_commit_check(group, speculated, evaluated, &prepared.loaded);
+        let checked = self.evaluated_commit_check(group, speculated, evaluated, loaded);
         let check_output = console.finish();
         ahead_debug(|| {
             format!(
@@ -4981,6 +5075,22 @@ impl RepositorySet {
             )
         });
         let lock = checked.filter(|_| check_output.is_empty())?;
+        // A failed evaluation: what the sequential engine's fails with, its
+        // taint as its failure leaves it (not re-probed).
+        if let Some(failure) = &evaluated.failure {
+            drop(EvaluatedTaint {
+                detail: Some(evaluated.detail.clone()),
+                network: lock_ignoring_poison(&evaluated.network).take(),
+                prints: crate::ui::prints_on_this_thread(),
+                printed: evaluated.printed,
+            });
+            crate::observed_fs::replay_some(observations.as_ref());
+            self.note_committed_roots(&obtained);
+            crate::loading::commit_speculative_definitions(self, definitions);
+            crate::ui::replay(output);
+            return Some(Err(failure.clone()));
+        }
+        let prepared = prepared?;
         let recorded = self
             .record_extension_lock(
                 &lock,
@@ -5017,7 +5127,7 @@ impl RepositorySet {
         self.note_committed_roots(&obtained);
         crate::loading::commit_speculative_definitions(self, definitions);
         crate::ui::replay(output);
-        Some(prepared)
+        Some(Ok(prepared))
     }
 
     /// The root of the registry module `repository`, not materialized yet,
@@ -5214,6 +5324,9 @@ impl RepositorySet {
     /// only (a registry module root is warmed; the lane or the sequential
     /// pass materializes it).
     fn request_blocker_ahead(&self, sentinel: &str) {
+        if !self.ahead() {
+            return;
+        }
         if let Some(id) = self.speculated_group_blocker(sentinel) {
             self.request_eval_group(id);
         } else if let Some(canonical) = self.eval_local_blocker(sentinel) {
@@ -5231,6 +5344,9 @@ impl RepositorySet {
     /// resolves every label attribute when a fetch starts,
     /// StarlarkRepositoryContext.enforceLabelAttributes).
     fn request_label_attributes_ahead(&self, canonical: &str) {
+        if !self.ahead() {
+            return;
+        }
         let Ok(runtime) = self.direct_runtime() else {
             return;
         };
@@ -6340,6 +6456,9 @@ impl RepositorySet {
             return Ok(self.published_after_speculation(canonical));
         }
         let reused = self.try_reuse_direct_unhidden(canonical, entry)?;
+        if reused.is_none() && waits_for_dependencies() {
+            return Ok(self.published_after_requested_speculation(canonical));
+        }
         Ok(reused.filter(|_| !self.state.speculation.hides(canonical)))
     }
 
@@ -6351,16 +6470,25 @@ impl RepositorySet {
     /// serves the root it published, if it published one (a speculation
     /// that printed stays the coordinator's). `None` otherwise: a miss.
     fn published_after_speculation(&self, canonical: &str) -> Option<PathBuf> {
-        if !crate::repository_demand::committed_unit_active() {
+        if !crate::repository_demand::committed_unit_active() && !waits_for_dependencies() {
             return None;
         }
-        if !self
-            .state
-            .speculation
-            .wait_running(canonical, SPECULATION_WAIT)
-        {
+        // (A speculation waits as for a dependency it requests.)
+        let wait = if waits_for_dependencies() {
+            DEPENDENCY_WAIT
+        } else {
+            SPECULATION_WAIT
+        };
+        if !self.state.speculation.wait_running(canonical, wait) {
             return None;
         }
+        self.published_root(canonical)
+    }
+
+    /// The root a speculation published for `canonical` (into the group's
+    /// speculative preparation when only that exists and this thread may
+    /// use it), if any.
+    fn published_root(&self, canonical: &str) -> Option<PathBuf> {
         let runtime = self.direct_runtime().ok()?;
         let slot = match runtime.roots.get(canonical) {
             Some(slot) => slot,
@@ -6377,6 +6505,58 @@ impl RepositorySet {
             }
         };
         slot.ready().cloned()
+    }
+
+    /// A repository speculation, or an extension evaluated ahead, probes
+    /// `canonical` and finds nothing to reuse: instead of aborting at once
+    /// (and running again, with whatever it did before, once `canonical`
+    /// is there — a rule's `execute()` twice), it requests `canonical`
+    /// ahead ([`Self::request_blocker_ahead`]) and waits
+    /// ([`DEPENDENCY_WAIT`]) while that speculation is queued or runs, as
+    /// Bazel's fetch blocks on a dependency it needs; then the root it
+    /// published, if any (the probe misses otherwise: the sentinel).
+    fn published_after_requested_speculation(&self, canonical: &str) -> Option<PathBuf> {
+        if !self.ahead() {
+            return None;
+        }
+        self.request_blocker_ahead(&format!(
+            "{}: runtime {}:repository:{canonical} is unfetched",
+            crate::repository_demand::NEEDS_REPOSITORY,
+            self.state.runtime_id
+        ));
+        self.state.speculation.requeue_blocked(canonical);
+        let deadline = std::time::Instant::now() + DEPENDENCY_WAIT;
+        let _ = self
+            .state
+            .speculation
+            .wait_settled(canonical, DEPENDENCY_WAIT);
+        // The coordinator evaluates it now: its root, once there.
+        while self.published_root(canonical).is_none()
+            && std::time::Instant::now() < deadline
+            && !crate::repository_speculation::cancelled()
+            && self.root_slot_evaluating(canonical)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        self.published_root(canonical)
+    }
+
+    /// Whether the root slot of `canonical` (the coordinator's, or its
+    /// group's speculative preparation's) is being evaluated.
+    fn root_slot_evaluating(&self, canonical: &str) -> bool {
+        let Ok(runtime) = self.direct_runtime() else {
+            return false;
+        };
+        if let Some(slot) = runtime.root_slot(canonical) {
+            return slot.evaluating();
+        }
+        canonical
+            .rsplit_once('+')
+            .and_then(|(prefix, name)| {
+                let id = runtime.catalog.ordinary_routes.get(prefix)?;
+                self.speculated_group(id)?.repositories.get(name)
+            })
+            .is_some_and(|repository| repository.root.evaluating())
     }
 
     fn try_reuse_direct_unhidden(
@@ -6686,8 +6866,8 @@ impl RepositorySet {
                     self.state
                         .extension_speculation
                         .note_commit(committed.is_some(), chained);
-                    if let Some(prepared) = committed {
-                        return Ok(prepared);
+                    if let Some(committed) = committed {
+                        return committed;
                     }
                 }
                 self.compute_ordinary(id, runtime, group, None)
@@ -6841,19 +7021,74 @@ impl RepositorySet {
                 // re-probe —, never as a running repository rule's (an
                 // extension evaluated while one executes:
                 // crate::observed_fs::NetworkSink).
-                let mut execution = crate::observed_fs::with_network_sink(network, || {
-                    crate::extension_ctx::execute(
-                        Arc::new(self.clone()),
-                        &definition,
-                        &loaded.functions,
-                        &group.label,
-                        &group.symbol,
-                        &group.prefix,
-                        &group.participants,
-                        group.root_has_non_dev_dependency,
-                        facts,
-                    )
-                })?;
+                let (executed, failed) = crate::extension_ctx::with_failed_inputs(|| {
+                    crate::observed_fs::with_network_sink(network, || {
+                        crate::extension_ctx::execute(
+                            Arc::new(self.clone()),
+                            &definition,
+                            &loaded.functions,
+                            &group.label,
+                            &group.symbol,
+                            &group.prefix,
+                            &group.participants,
+                            group.root_has_non_dev_dependency,
+                            facts,
+                        )
+                    })
+                });
+                let mut execution = match executed {
+                    Ok(execution) => execution,
+                    Err(error) => {
+                        // An evaluation ahead that failed: kept for its
+                        // commit, which fails the group where the sequential
+                        // engine evaluates it, while what it read is
+                        // current (a demand it could not make is a block).
+                        if let (Some(held), Some(failed), Some(lock)) =
+                            (held_taint.take(), failed, lock.as_ref())
+                            && speculated.is_some()
+                            && !crate::repository_demand::is_needs_repository(&error)
+                        {
+                            let execution = crate::extension_ctx::ExtensionExecution {
+                                repositories: Vec::new(),
+                                modules: Vec::new(),
+                                inputs: failed.inputs,
+                                metadata: None,
+                                tag_repo_mappings: failed.tag_repo_mappings,
+                            };
+                            if let Some(entry) = self.evaluated_lock_entry(
+                                lock,
+                                &execution,
+                                &loaded,
+                                None,
+                                Vec::new(),
+                            ) {
+                                let (detail, network, start) = held;
+                                let printed = crate::ui::deferred_count() > start;
+                                let factors = lock.factors.clone();
+                                FAILED_AHEAD.with(|failed| {
+                                    *failed.borrow_mut() = Some(SpeculatedLock {
+                                        definition,
+                                        factors,
+                                        entry,
+                                        evaluated: Some(Arc::new(EvaluatedAhead {
+                                            lock: lock.clone(),
+                                            execution,
+                                            specs: Vec::new(),
+                                            generated_order: Vec::new(),
+                                            explicit_attributes: BTreeMap::new(),
+                                            detail,
+                                            network: std::sync::Mutex::new(network),
+                                            printed,
+                                            failure: Some(error.clone()),
+                                            loaded: Some(loaded),
+                                        })),
+                                    })
+                                });
+                            }
+                        }
+                        return Err(error);
+                    }
+                };
                 drop(tainted);
                 let recorded = std::mem::take(&mut execution.repositories);
                 (recorded, execution.metadata.clone(), Some(execution))
@@ -7251,6 +7486,8 @@ impl RepositorySet {
                         detail,
                         network: std::sync::Mutex::new(network),
                         printed: end > start,
+                        failure: None,
+                        loaded: None,
                     };
                     *speculated = Some(SpeculatedLock {
                         definition,
@@ -7329,6 +7566,9 @@ impl RepositorySet {
             return Ok(self.published_after_speculation(canonical));
         }
         let reused = self.try_reuse_ordinary_unhidden(canonical)?;
+        if reused.is_none() && waits_for_dependencies() {
+            return Ok(self.published_after_requested_speculation(canonical));
+        }
         Ok(reused.filter(|_| !self.state.speculation.hides(canonical)))
     }
 

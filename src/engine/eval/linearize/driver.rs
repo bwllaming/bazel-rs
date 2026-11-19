@@ -2243,6 +2243,11 @@ impl Engine {
             let pooled_at = std::time::Instant::now();
             let _ = POOL_START.set(pooled_at);
             let serve = evaluator.pooled() && *SERVE;
+            // What the pool's loads and the speculations wait for is
+            // prepared ahead while it runs (cold-eval).
+            let _ahead = evaluator
+                .pooled()
+                .then(|| shared.repositories.ahead_scope());
             let pool_roots = if evaluator.pooled() {
                 let roots = warm_up(&evaluator, &shared, labels, top, target_platform.clone());
                 evaluator.set_inline(true);
