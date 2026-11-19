@@ -158,7 +158,7 @@ sample.
 
 | project | verdict | cold nobuild g / rs (s) | warm nobuild g-batch / g-server / rs (s) | build g / rs (s) | peak RSS cold g / rs (MB) | outputs (common, only g, only rs, hash diff) | tests g / rs | blocking bugs |
 |---|---|---|---|---|---|---|---|---|
-| abseil-cpp | **OK**¹⁵ ¹⁹ | 14.8 / 12.0 (rerun: 16.1–17.5 / 16.7–44.6) | 3.3 / 0.2 / 0.2 | 97.7 / 76.3 | 1131 / 453 | 2767, 0, 0, 0 | PASSED:252 / PASSED:252 | (B2) |
+| abseil-cpp | **OK**¹⁵ ¹⁹ ²² | 13.1–13.8 / 10.5–12.6 (cold-eval²²; main 12.6–13.2; download cache pre-filled: 8.4–9.1, main 9.7–9.9; before: 14.8 / 12.0, rerun 16.1–17.5 / 16.7–44.6) | 3.3 / 0.2 / 0.2 | 97.7 / 76.3 | 1131 / 453 | 2767, 0, 0, 0 | PASSED:252 / PASSED:252 | (B2) |
 | limdor-cpp | **OK** | 11.0 / 6.7 | 2.8 / 0.1 / 0.1 | 7.3 / 0.7 | 704 / 217 | 18, 0, 0, 0 | PASSED:1 / PASSED:1 | |
 | limdor-rust | **OK** | 29.0 / 20.5 | 2.8 / 0.1 / 0.2 | 4.7 / 1.9 | 807 / 426 | 91, 0, 0, 0 | PASSED:1 / PASSED:1 | |
 | examples-bzlmod-01 | **OK** | 11.5 / 6.7 | 3.0 / 0.1 / 0.1 | 5.4 / 2.6 | 641 / 217 | 187, 0, 0, 0 | — | |
@@ -166,7 +166,7 @@ sample.
 | examples-cpp-tutorial | **OK** | 10.8 / 6.7 | 2.8 / 0.2 / 0.1 | 3.6 / 0.7 | 755 / 203 | 13, 0, 0, 0 | — | |
 | examples-rust-ffi | **OK** | 27.0 / 17.4 | 2.9 / 0.2 / 0.1 | 4.0 / 1.6 | 788 / 373 | 57, 0, 0, 0 | — | (B2) |
 | rules_go-basic_gazelle | **OK** | 27.5 / 23.9 | 5.9 / 0.2 / 0.2 | 42.6 / 32.0 | 1281 / 490 | 117, 0, 0, 0 | PASSED:1 / PASSED:1 | |
-| rules_python-pip_parse | **OK**¹⁵ ¹⁹ | 30.3–35.7 / 46.5–51.7 (rerun: 34.9–37.8 / 38.7–61.0) | 3.5 / 0.2 / 0.2 | 4.7 / 1.1 | 1625 / 614 | 56, 0, 0, 0 | PASSED:2 / PASSED:2 | (B2) |
+| rules_python-pip_parse | **OK**¹⁵ ¹⁹ ²² | 28.0–33.4 / 29.6–30.5 (cold-eval²²; main 34.3–36.2; download cache pre-filled: 21.7–22.6, main 26.0–26.5; before: 30.3–35.7 / 46.5–51.7, rerun 34.9–37.8 / 38.7–61.0) | 3.5 / 0.2 / 0.2 | 4.7 / 1.1 | 1625 / 614 | 56, 0, 0, 0 | PASSED:2 / PASSED:2 | (B2) |
 | rules-template | BOTH-FAIL¹ | 25.8 / 24.1 | 3.7 / 0.2 / 0.2 | 26.4 / 25.6 | 1405 / 423 | 446, 0, 0, 0 | FAILED:1 PASSED:1 / same | (B2) |
 | yalantinglibs | DIFF² | 12.2 / 7.5 | 3.1 / 0.2 / 0.1 | 61.5 (exit 1) / 52.1 (exit 1) | 638 / 213 | 126, 6, 0, 0 | same | (B2) |
 | buildtools | BOTH-FAIL¹⁷ | 40.4 / 62.3 | 4.7 / — / 0.2 | 56.4 / 83.4 | 1990 / 1471 | 566, 0, 0, 0 | FAILED:2 PASSED:23 / same | |
@@ -187,7 +187,7 @@ sample.
 | rules_cc | RS-FAIL¹⁵ | 20.0 (exit 1) / 20.4 (exit 1) | 5.3 (exit 1) / — / 4.7 (exit 1) | 52.6 (exit 1) / 63.6 (exit 1) | 2635 / 1392 | 1348, 636, 0, 1 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:3 FAILED TO BUILD:2 PASSED:258 SKIPPED:2 | B32, B17, B18 |
 | examples-rust-deps-cargo | RS-FAIL | 44.0 / 0.3 (exit 1) | 2.9 / 0.2 / 0.3 (exit 1) | 28.8 / 0.3 (exit 1) | 1034 / 29 | 0, 103, 0, 0 | — | B9, (B2) |
 | protobuf | BOTH-FAIL¹⁵ | 49.3 (exit 1) / 79.0 (exit 1) | 7.0 (exit 1) / — / 18.1 (exit 1) | — | 2699 / 3315 | — | — | B33 |
-| openroad | OK²¹ (nobuild, query) | 89.6 / 87.2–96.4 (openroad-perf²⁰; corpus-parity3²¹ at load 52–91: 78.0 / 178.1) | 8.9 / — / 1.2–1.3 (corpus-parity3: 10.4 / — / 1.4) | `//:openroad` 676–702, 693.5 / 773.9 (was 1536) | 3014 / 6957–6983 (was 9169) | `//:openroad` before corpus-parity3: 15223, 3978, 301, 0; the B40/B41 targets now match²¹ | — | (C1) |
+| openroad | OK²¹ ²² (nobuild, query) | 69.9–76.3 / 109.9–110.7 (one 198.8: a mirror's connect timeout) (cold-eval²²; main 139.4–173.2; download cache pre-filled: 67.1–67.4, main 86.3–87.0 — openroad-perf's 87.2–96.4²⁰ were such runs; corpus-parity3²¹ at load 52–91: 78.0 / 178.1) | 8.9 / — / 1.2–1.3 (corpus-parity3: 10.4 / — / 1.4) | `//:openroad` 676–702, 693.5 / 773.9 (was 1536) | 3014 / 6957–6983 (was 9169) | `//:openroad` before corpus-parity3: 15223, 3978, 301, 0; the B40/B41 targets now match²¹ | — | (C1) |
 | rules_kotlin | RS-FAIL¹⁵ ²¹ | 36.4 / 37.5 (exit 1) | 4.6 / — / 6.7 (exit 1) | — | 2169 / 2066 | — | — | B46 |
 | riegeli | BOTH-FAIL⁶ | 30.2 (exit 1) / 31.0 (exit 1) | 4.1 / 0.2 / 3.7 (all exit 1) | 78.2 (exit 1) / 92.5 (exit 1) | 1427 / 794 | 2800, 0, 0, 0 | PASSED:2 / PASSED:2 | |
 | examples-frontend | DIFF⁷ ²¹ | 87.8 (exit 1) / 128.8 (exit 1) | 64.5 / — / 96.5 (all exit 1) | 60.5 (exit 1) / 135.9 (exit 1) | 1524 / 1933 | 215801, 12, 2, 0 | PASSED:14 / PASSED:14 | C3, (B2) |
@@ -386,6 +386,24 @@ Notes:
     `bazel-bin/src/web` holds genuine's 7,387 files (B41) and the resource
     directory genuine's 2 (B40). The full `//:openroad` build was not
     rerun.
+
+22. Rerun 2026-11-18/19 on branch cold-eval (main 97611a75 plus its
+    commits; non-LTO builds), phase `nobuild_cold` only, by hand with the
+    harness's flags and isolation, three rounds each, main and the branch
+    alternating: fully cold (every download from the public mirrors, with
+    genuine `--batch` in the same rounds; load 7–19) and with the download
+    cache pre-filled (the repository cache's `downloads` seeded from an
+    earlier run, everything else fresh; load 6–19). Exit codes, stdout,
+    stderr (without timings and progress) and `MODULE.bazel.lock` match
+    main's in every round (one fully cold OpenROAD round of the branch
+    printed a `m4-1.4.18.tar.xz` mirror's connect-timeout warning, the
+    network's); abseil-cpp's and pip_parse's action dumps
+    (2,313 and 88 actions) and snapshot recordings (6,307 and 39,523
+    observation, environment and taint records, `BAZEL_RS_SNAPSHOT=record`)
+    are identical. Peak RSS (`plan.end` high-water mark, pre-filled cache):
+    OpenROAD 7.17 GB against 7.15 GB, abseil-cpp 566 MB against 514 MB,
+    pip_parse 808 MB against 654 MB (`stable_tools` and `rust_host_tools`
+    now extract the same rust archives side by side).
 
 **Summary.** 37 projects ran. On 14 of them bazel-rs matches genuine exactly
 (10 before the corpus-parent rerun, footnote 17: diff.bzl, bazel-skylib
@@ -748,7 +766,10 @@ These are indicative only, because the host was shared (load 15–60).
   17.4 against 27.0). It is slower on rules_python pip_parse (46–52 against
   30–36 s; P3 below), on OpenROAD (144–153 against 88 s; P4) and was on
   bazel-gazelle (39.9 against 32.6; 40.2 against 49.8 in the corpus-perf
-  rerun). It is even on buildtools.
+  rerun). It is even on buildtools. Since cold-eval (note 22), fully
+  cold: abseil 10.5–12.6 s against 13.1–13.8, pip_parse 29.6–30.5 against
+  28.0–33.4, OpenROAD 110–111 against 70–76 (67 s with the download
+  cache pre-filled; P7).
 - **Warm `build --nobuild`:** bazel-rs, with its analysis snapshot, takes
   0.1–0.2 s, like a warm genuine server (0.1–0.4 s) and 15–30× faster than
   genuine `--batch` (2.8–5.9 s). Since corpus-perf the command that wrote
@@ -932,27 +953,19 @@ command started.
   Single long downloads remain too (`m4-1.4.18.tar.xz` 33 s,
   kepler-formal's `boost_headers` 11–23 s, `abc+` 15 s during the
   configuration phase).
-- **P4a (next design item): pool loads that need a direct or
-  extension-generated repository wait for the sequential pass.** Such a
-  load parks (`INLINE`); its repository speculation starts, but every
-  configured target behind it waits until the sequential pass reaches it
-  in the requested targets' order, so later repositories are discovered
-  only then (`//:_openroad.so`, the first requested target, took 105 s;
-  `openssl+` was first demanded at +119 s, `capnp-cpp+` at +170 s, each a
-  lone 4–7 s root). Direction: let the parked load adopt the finished
-  speculation on the pool (as local-rule blockers already do,
-  docs/EVALUATOR.md "The lane resolves what such a load waits for"),
-  committed where the tape replays the load, with the recorded-input
-  order checks the sequential pass applies.
-- **P4b (next design item): module extensions never run ahead on a cold
-  run.** An extension speculation is eligible only with a reusable
-  lockfile entry (docs/COLD_ANALYSIS.md), so every extension evaluates on
-  the sequential pass, one after another: pip_parse's `crate` extension
-  waits for rules_rust's `stable_tools` (15–17 s). Direction: evaluate
-  extensions ahead of the sequential order and commit them
-  deterministically (console output, lockfile entries and recorded
-  inputs at the sequential position), as Bazel's Skyframe evaluates
-  them in parallel.
+- **P4a (largely fixed on cold-eval, below): pool loads that need a
+  direct or extension-generated repository wait for the sequential
+  pass.** Such a load parked (`INLINE`); its repository speculation
+  started, but every configured target behind it waited until the
+  sequential pass reached it in the requested targets' order, so later
+  repositories were discovered only then (`//:_openroad.so`, the first
+  requested target, took 105 s; `openssl+` was first demanded at +119 s,
+  `capnp-cpp+` at +170 s, each a lone 4–7 s root).
+- **P4b (fixed on cold-eval, below): module extensions never run ahead on
+  a cold run.** An extension speculation was eligible only with a
+  reusable lockfile entry (docs/COLD_ANALYSIS.md), so every extension
+  evaluated on the sequential pass, one after another: pip_parse's
+  `crate` extension waited for rules_rust's `stable_tools` (15–17 s).
 - **Decoding shared between rules** (docs/COLD_FETCH.md). A finished
   rule's decoded tar stream is kept for any thread, by decoder and
   archive SHA-256, at most 1 GiB in all (`archive::RETAINED`):
@@ -977,6 +990,76 @@ command started.
   were: the library suite from a background job takes 18.6–25.2 s instead
   of 107–120 s. tests/signal_dispositions.rs (genuine's receipt) passes
   unchanged.
+
+### Findings and fixes (branch cold-eval)
+
+Non-LTO release builds of main (97611a75) and the branch, alternating,
+three rounds, the harness's flags and isolation (note 22); fully cold with
+genuine 9.3.1 `--batch` in the same rounds, and with the download cache
+pre-filled (no network noise; genuine not run so). The load average is
+the 1-minute value when each command started.
+
+| | load | genuine | main | cold-eval |
+|---|---|---|---|---|
+| OpenROAD cold `--nobuild`, download cache pre-filled | 6–17 | | 87.0 / 87.0 / 86.3 s | 67.1 / 67.3 / 67.4 s |
+| rules_python-pip_parse, the same | 8–16 | | 26.5 / 26.0 / 26.3 s | 21.7 / 22.6 / 22.0 s |
+| abseil-cpp, the same | 8–13 | | 9.7 / 9.8 / 9.9 s | 8.4 / 9.1 / 9.0 s |
+| OpenROAD cold `--nobuild`, fully cold | 7–19 | 76.3 / 72.0 / 69.9 s | 173.2 / 139.4 / 146.2 s | 198.8 (mirror timeout) / 110.7 / 109.9 s |
+| rules_python-pip_parse, fully cold | 10–16 | 33.4 / 31.8 / 28.0 s | 36.2 / 34.3 / 35.9 s | 30.4 / 30.5 / 29.6 s |
+| abseil-cpp, fully cold | 10–17 | 13.5 / 13.1 / 13.8 s | 12.8 / 12.6 / 13.2 s | 12.6 / 10.5 / 10.9 s |
+
+An earlier build of the branch (before its last two fixes) at load 13–39
+measured the same picture: pre-filled OpenROAD 68.4–69.0 s against main's
+86.9–95.7, fully cold 112.0–124.6 against 164.2–190.7 (genuine 69.9–75.0,
+once 192.9).
+
+OpenROAD's phase 1 (plan start to the evaluator's end, pre-filled cache)
+went from 51.7 s to 32.1 s; the "87–96 s" of openroad-perf (note 20)
+were runs with the download cache pre-filled too, the fully cold runs take
+139–191 s on main.
+
+- **Extensions evaluated ahead (P4b)** (docs/COLD_ANALYSIS.md "Module
+  extensions evaluated ahead"). A group the evaluator's pool waits for —
+  a parked load's, the registered toolchains', what a speculation is
+  blocked on — is evaluated on the speculation workers with no lockfile
+  entry to reuse, its output, observations, roots, definitions and taint
+  held back, and committed where the sequential engine prepares the group
+  after that engine's own lockfile check: the same lockfile state, still
+  nothing reusable, and the evaluation's entry current (its digests and
+  every recorded input unchanged, the condition for the next command's
+  reuse); then the entry is recorded and re-probed there. pip_parse:
+  `crate` and `rust_host_tools` are evaluated ahead (the chain was
+  stable_tools → crate → rust_host_tools); OpenROAD: 34 groups committed
+  from evaluations ahead (llvm, pycross, kepler-formal's deps, rules_java's
+  toolchains, …); abseil-cpp: `go_sdk`.
+- **Repositories ahead (P4a)** (docs/EVALUATOR.md "cold-eval"). A pool
+  load waits for a repository's speculation instead of the sequential pass
+  (the published root serves its reuse-only probe, counting where the tape
+  replays the load); what a speculation is blocked on — and every
+  repository its rule's label attributes name — is requested too; the
+  registered toolchains' repositories (also `/...` patterns') are prepared
+  ahead; the lane holds a demand whose speculation or module-root warm-up
+  is still running instead of waiting for it on the sequential pass's
+  thread.
+- **A latent ordering bug fixed.** The lane prepared a speculatively used
+  extension group through a statistics lookup (`wait_eval_local`'s
+  `speculation_slot`) when it ran, not where the walk prepares the group;
+  an input a local rule rewrote in between was missed. Found by the new
+  cold-run test; reachable before with `BAZEL_RS_SNAPSHOT=off`.
+- **What remains (P7, fully cold OpenROAD 110–125 s against genuine's
+  70–76 s).** With the cache pre-filled the run is 67–69 s; the rest is
+  the network on the discovery chain: module resolution (12.2 s cold),
+  the target pattern phase's `pip` extension (10 s on the coordinator,
+  for `//docs`), `llvm-project` (7.4 s download, then 8.1 s of extraction
+  on the sequential pass — every analysis waits for the registered
+  toolchains), the `pycross` toolchains extension (8 s on the sequential
+  pass: its `rules_pycross_internal` chain exhausts the speculation's
+  four attempts), then CPython 3.13 (12.4 s transfer while other
+  downloads share the bandwidth), `boost_1_89_0.tar.gz` (14.6 s) and
+  `m4` (8.9 s), each discovered only once the analysis reaches it.
+  Directions: demanded transfers ahead of speculative ones on the
+  critical path, more speculation attempts for chains whose blockers are
+  all requested, the pattern phase's extensions ahead.
 
 ## Recommendations
 
