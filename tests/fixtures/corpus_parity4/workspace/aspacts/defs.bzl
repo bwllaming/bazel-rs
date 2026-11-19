@@ -32,3 +32,24 @@ def check(name, target):
         attrs = {"target": attr.label(aspects = [seen])},
         attr_values = {"target": target},
     )
+
+# A rule under test handing its dependency's actions on (protobuf's
+# rust_proto_library_unit_test `attach_upb_aspect`).
+ActionsInfo = provider(fields = ["actions"])
+
+def _attach_impl(ctx):
+    return [ActionsInfo(actions = ctx.attr.dep.actions)]
+
+attach = rule(implementation = _attach_impl, attrs = {"dep": attr.label(aspects = [gen])})
+
+def _check_attached_impl(ctx):
+    mnemonics = [a.mnemonic for a in ctx.attr.target[ActionsInfo].actions]
+    return [AnalysisTestResultInfo(success = True, message = repr(mnemonics))]
+
+def check_attached(name, target):
+    testing.analysis_test(
+        name = name,
+        implementation = _check_attached_impl,
+        attrs = {"target": attr.label()},
+        attr_values = {"target": target},
+    )

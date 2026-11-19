@@ -131,13 +131,15 @@
     "--host_platform=//:p"
    ],
    "outputs": {
+    "k8-fastbuild/bin/aspacts/attached_test.sh": "#!/bin/sh\necho \\[\\\"\\G\\e\\n\\P\\r\\o\\t\\o\\\"\\,\\ \\\"\\F\\i\\l\\e\\W\\r\\i\\t\\e\\\"\\]\nexit 0",
     "k8-fastbuild/bin/aspacts/merged_test.sh": "#!/bin/sh\necho \\[\\\"\\G\\e\\n\\P\\r\\o\\t\\o\\\"\\,\\ \\\"\\F\\i\\l\\e\\W\\r\\i\\t\\e\\\"\\]\nexit 0"
    },
    "startup": [],
    "stderr": [],
    "stdout": "",
    "targets": [
-    "//aspacts:merged_test"
+    "//aspacts:merged_test",
+    "//aspacts:attached_test"
    ],
    "workspace": "workspace"
   }

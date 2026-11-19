@@ -1,8 +1,18 @@
-load(":defs.bzl", "check", "lib")
+load(":defs.bzl", "attach", "check", "check_attached", "lib")
 
 lib(name = "lib")
 
 check(
     name = "merged_test",
     target = ":lib",
+)
+
+attach(
+    name = "attached",
+    dep = ":lib",
+)
+
+check_attached(
+    name = "attached_test",
+    target = ":attached",
 )

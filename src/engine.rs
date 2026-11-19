@@ -11316,6 +11316,49 @@ impl Engine {
                 }
             }
             inspected.extend(custom.declaration.configurable_labels.iter().cloned());
+            // A Starlark rule under test in the test's own package (always
+            // loaded) may hand its dependencies' actions on (protobuf's
+            // `attach_upb_aspect` returns `ctx.attr.dep.actions` in a
+            // provider): its attribute labels are inspected too.
+            for under_test in custom
+                .declaration
+                .configurable_labels
+                .iter()
+                .cloned()
+                .chain(
+                    rule.srcs
+                        .iter()
+                        .filter_map(|text| self.resolve_rule_src(rule, text).ok()),
+                )
+                .filter(|dependency| dependency.package_id() == label.package_id())
+                .collect::<Vec<_>>()
+            {
+                let Some(dependency) = self
+                    .packages
+                    .get(&under_test.package_id())
+                    .and_then(|package| package.get(&under_test))
+                else {
+                    continue;
+                };
+                let Some(dependency_custom) = dependency.custom.as_ref() else {
+                    continue;
+                };
+                if dependency_custom.declaration.analysis_test {
+                    continue;
+                }
+                for text in &dependency.srcs {
+                    if let Ok(label) = self.resolve_rule_src(dependency, text) {
+                        inspected.insert(label);
+                    }
+                }
+                inspected.extend(
+                    dependency_custom
+                        .declaration
+                        .configurable_labels
+                        .iter()
+                        .cloned(),
+                );
+            }
         }
         // An attribute naming an `alias` hands the test (and its aspects:
         // rules_testing's testing_aspect reads `target.actions`) the alias's
