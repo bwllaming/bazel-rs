@@ -257,6 +257,27 @@ pub(crate) fn attribute_dependency_key(label: &str, name: &str, spec: &AttrSpec)
     }
 }
 
+/// The dependency `label` of attribute `name` in `dependencies`: the
+/// attribute's own aspect-applied view when it has one
+/// ([`aspect_dependency_key`]: an attribute declaring aspects, or in an
+/// aspect application an attribute the path's aspects propagate over,
+/// while another attribute naming the same target sees it without them),
+/// else the edge's key.
+pub(crate) fn lookup_dependency<'a>(
+    dependencies: &'a BTreeMap<String, DependencyTarget>,
+    label: &str,
+    name: &str,
+    spec: &AttrSpec,
+) -> Option<&'a DependencyTarget> {
+    let key = attribute_dependency_key(label, name, spec);
+    if !spec.declaration.aspects.is_empty() || starlark_transition(spec) {
+        return dependencies.get(&key);
+    }
+    dependencies
+        .get(&aspect_dependency_key(&key, name))
+        .or_else(|| dependencies.get(&key))
+}
+
 /// The key of a dependency through attribute `attribute`, which applies
 /// aspects (`attr.label(aspects = [...])`): that attribute's view of the
 /// target carries the aspects' providers, another attribute naming the same
@@ -452,8 +473,7 @@ fn attribute_prerequisites<'a>(
             _ => continue,
         };
         for label in labels {
-            let Some(target) = dependencies.get(&attribute_dependency_key(label, name, spec))
-            else {
+            let Some(target) = lookup_dependency(dependencies, label, name, spec) else {
                 continue;
             };
             collect(target);
@@ -506,11 +526,7 @@ fn test_coverage(
     // `$collect_cc_coverage` (a Starlark `_collect_cc_coverage`).
     if let Some(spec) = invocation.schema.get("_collect_cc_coverage")
         && let Some(AttrValue::Label(Some(label))) = invocation.attrs.get("_collect_cc_coverage")
-        && let Some(target) = dependencies.get(&attribute_dependency_key(
-            label,
-            "_collect_cc_coverage",
-            spec,
-        ))
+        && let Some(target) = lookup_dependency(dependencies, label, "_collect_cc_coverage", spec)
         && let Some(file) = target.files.first()
     {
         coverage.inputs.push(file.clone());
@@ -602,7 +618,7 @@ fn item_file(item: &crate::starlark_types::Item) -> Option<File> {
 
 /// Whether `spec`'s `cfg` is a Starlark transition (an
 /// analysis_test_transition included).
-fn starlark_transition(spec: &AttrSpec) -> bool {
+pub(crate) fn starlark_transition(spec: &AttrSpec) -> bool {
     matches!(
         spec.declaration.cfg,
         crate::rule_declarations::Cfg::Starlark { .. }
@@ -810,8 +826,7 @@ fn dependency<'a>(
     prefix: &str,
     consumer: Consumer<'_>,
 ) -> anyhow::Result<&'a DependencyTarget> {
-    let target = dependencies
-        .get(&attribute_dependency_key(label, name, spec))
+    let target = lookup_dependency(dependencies, label, name, spec)
         .ok_or_else(|| anyhow!("attribute {name}: dependency {label} was not resolved"))?;
     checked_dependency(label, name, spec, target, prefix, consumer)
 }
@@ -1216,7 +1231,7 @@ fn attribute_locations(
         return;
     }
     for label in labels {
-        let Some(target) = dependencies.get(&attribute_dependency_key(label, name, spec)) else {
+        let Some(target) = lookup_dependency(dependencies, label, name, spec) else {
             continue;
         };
         let files = match target.runfiles.files_to_run(&target.files).executable() {
@@ -1357,8 +1372,7 @@ fn collected_runfiles(
                 labels
                     .iter()
                     .map(|label| {
-                        let target = dependencies
-                            .get(&attribute_dependency_key(label, name, spec))
+                        let target = lookup_dependency(dependencies, label, name, spec)
                             .ok_or_else(|| {
                                 anyhow!("attribute {name}: dependency {label} was not resolved")
                             })?;

@@ -1209,10 +1209,16 @@ fn plan_application<C: AspectCx>(
                 .or_default()
                 .push(map_key.clone());
             // `ctx.rule.attr` of an attribute declaring aspects reads its own
-            // key (analysis::attribute_dependency_key); the propagating
-            // aspects decide the view here either way.
+            // key (analysis::attribute_dependency_key), as does one the
+            // path's aspects propagate over (analysis::lookup_dependency):
+            // another attribute naming the same target without them
+            // (`attr_aspects = ["deps"]` over a proto_library naming one
+            // target in `deps` and `exports`) sees the plain view.
+            let own_view = !propagating.is_empty()
+                || spec.is_some_and(|spec| !spec.declaration.aspects.is_empty());
             let aspect_key = spec
-                .filter(|spec| !spec.declaration.aspects.is_empty())
+                .filter(|_| own_view)
+                .filter(|spec| !analysis::starlark_transition(spec))
                 .filter(|_| !matches!(&edge.cfg, EdgeCfg::NoConfig))
                 .filter(|_| {
                     !base_rule.custom.as_ref().is_some_and(|custom| {
@@ -1224,7 +1230,11 @@ fn plan_application<C: AspectCx>(
             if let Some(aspect_key) = aspect_key {
                 dependencies.insert(aspect_key, view.clone());
             }
-            dependencies.insert(map_key, view);
+            if propagating.is_empty() {
+                dependencies.insert(map_key, view);
+            } else {
+                dependencies.entry(map_key).or_insert(view);
+            }
         }
     }
     // `ctx.rule.toolchains` (AspectFunction.getBaseTargetToolchainContexts,

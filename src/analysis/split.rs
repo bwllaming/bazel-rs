@@ -197,10 +197,13 @@ pub(super) fn split_attr<'v>(
         } else {
             let mut targets = Vec::new();
             for label in dependency_labels(attribute) {
-                let key = attribute_dependency_key(label, name, spec);
-                let target = dependencies
-                    .get(&key)
-                    .ok_or_else(|| anyhow!("split dependency {key} was not resolved"))?;
+                let target =
+                    super::lookup_dependency(dependencies, label, name, spec).ok_or_else(|| {
+                        anyhow!(
+                            "split dependency {} was not resolved",
+                            attribute_dependency_key(label, name, spec)
+                        )
+                    })?;
                 targets.push((label.to_owned(), target));
             }
             if !targets.is_empty() {

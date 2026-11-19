@@ -1553,32 +1553,34 @@ fn declared_name(context: &Context, filename: &str, sibling: Value<'_>) -> anyho
         return Ok(filename.to_owned());
     }
     let sibling = unpack_file(sibling)?;
-    // Any File may anchor the declaration (StarlarkActionFactory.declareFile
-    // :142-163 has no "known File" gate, nor has the native profile since
-    // W1b); the result must stay in the current package, checked natively
-    // through the sibling's owner below.
-    let owner = Label::parse_canonical(&sibling.owner).map_err(anyhow::Error::msg)?;
-    ensure!(
-        owner.package_id() == context.label.package_id(),
-        "sibling must be in the current package"
-    );
+    // StarlarkActionFactory.declareFile (:142-163): the sibling's
+    // output-directory-relative path with its name replaced (any File, of
+    // any package), which must lie below the rule's package directory.
     let exec = if sibling.is_source {
-        std::path::Path::new(&sibling.path)
+        sibling.path.as_str()
     } else {
         // Relative to the sibling's own configuration root.
         crate::label::split_generated_root(&sibling.path)
-            .map(|(_, relative)| std::path::Path::new(relative))
+            .map(|(_, relative)| relative)
             .ok_or_else(|| anyhow!("invalid generated sibling execution path"))?
     };
-    let relative = exec
-        .strip_prefix(context.label.package_exec_path())
-        .map_err(|_| anyhow!("sibling is outside the current package"))?;
-    Ok(relative
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new(""))
-        .join(filename)
-        .to_string_lossy()
-        .into_owned())
+    let parent = exec.rsplit_once('/').map_or("", |(parent, _)| parent);
+    let fragment = crate::ignored::normalize_path_fragment(&if parent.is_empty() {
+        filename.to_owned()
+    } else {
+        format!("{parent}/{filename}")
+    });
+    let package = context.label.package_exec_path();
+    let relative = std::path::Path::new(&fragment)
+        .strip_prefix(&package)
+        .map_err(|_| {
+            anyhow!(
+                "the output artifact '{fragment}' is not under package directory '{}' for target '{}'",
+                package.display(),
+                context.label
+            )
+        })?;
+    Ok(relative.to_string_lossy().into_owned())
 }
 
 /// The root-relative path of a shareable artifact: PathFragment.create's

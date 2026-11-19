@@ -1,0 +1,14 @@
+load(":defs.bzl", "r", "top")
+
+r(name = "leaf")
+
+r(
+    name = "mid",
+    exports = [":leaf"],
+    deps = ["//aspview:leaf"],
+)
+
+top(
+    name = "t",
+    dep = ":mid",
+)

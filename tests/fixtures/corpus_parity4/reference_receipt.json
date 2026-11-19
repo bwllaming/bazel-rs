@@ -1,6 +1,25 @@
 {
  "bazel": "9.3.1",
  "cases": {
+  "aspect_view_per_propagated_attribute": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/aspview/t.txt": "2 [False]\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//aspview:t"
+   ],
+   "workspace": "workspace"
+  },
   "config_setting_alias_private_policy": {
    "bin_paths": {},
    "command": "build",
