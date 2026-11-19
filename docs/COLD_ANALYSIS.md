@@ -607,7 +607,7 @@ coordinator configures and loads. A speculation is the coordinator's own
 preparation (`compute_ordinary`, the former closure of
 `evaluate_ordinary_group`) run in no-demand + reuse-only mode, and only
 when the group's lockfile entry is reusable — the extension itself never
-runs ahead. Everything the preparation would make visible is held back:
+runs ahead (until cold-eval: "Module extensions evaluated ahead" below). Everything the preparation would make visible is held back:
 
 | effect | held as | committed by |
 |---|---|---|
@@ -704,6 +704,112 @@ speculating evaluations without a reusable entry (the evaluated path's
 re-probe and taints); the `@aspect_rules_js+` waves holding
 `//src/website3` behind the `//src/ts/...` units (~0.35 s of X); `//src/ts`
 itself (0.83 s on one thread).
+
+## Module extensions evaluated ahead (branch `cold-eval`, docs/OSS_CORPUS.md P4b)
+
+Before this, a speculation was eligible only with a reusable lockfile
+entry, so on a cold run (no `MODULE.bazel.lock`, or an outdated entry)
+every extension evaluated on the coordinator when the sequential pass
+reached its group, one after another (pip_parse's `crate` behind rules_rust's
+`stable_tools`; OpenROAD's `llvm`, `pycross`, `kepler-formal` groups, each
+gating the discovery of the repositories they generate). Now a group the
+evaluator's pool waits for may be **evaluated** ahead:
+
+- **Which groups.** Only groups something certainly needs ask for it
+  (`RepositorySet::request_eval_group` → `request_evaluated_group`,
+  `eval_evaluable`): a pool package load parked on the group (its
+  `\u{2}extension:` lane blocker, `eval_group_blocker`, now also when the
+  last attempt was ineligible), the pool's adoption attempt
+  (`eval_adopt_group`), a repository of the registered toolchains' patterns
+  (`prepare_registrations_ahead`: the expansion demands every pattern's
+  repository), and what an eligible speculation is itself blocked on
+  (`request_blocker_ahead`, chained). The startup batch (the root module's
+  groups) stays reuse-only. `Finished::Ineligible` keeps such a group
+  requestable again; `Pool::request_evaluated` re-queues it (and resets
+  the attempts of one blocked while it could not evaluate).
+- **When.** Only with a lockfile that writes (`update`/`refresh`; not in a
+  publication proof or `mod tidy`'s eval-only mode;
+  `BAZEL_RS_EVAL_EXTENSIONS_AHEAD=0` switches it off,
+  `evaluated_ahead_possible`). An evaluation whose result the commit
+  could not record silently — the record would print the
+  invalid-entry warning, fail (`bazel_unsupported`, facts) or write
+  nothing — is `NOT_KEPT` (failed, never attempted again).
+- **How.** `compute_ordinary` runs the evaluation path in the speculation's
+  no-demand + reuse-only mode (the `EVALUATE_AHEAD` thread flag): its
+  output is held in the speculation's `DeferredConsole` (where the
+  evaluation's own writes begin and end is noted: `printed`), its
+  observations in the detached capture, its obtained roots in `UnitRoots`,
+  its definition `.bzl` entries in the speculative overlay. No taint is
+  emitted on the worker: the `EvaluatedTaint`'s detail and network sink
+  travel in the outcome (`EvaluatedAhead`), so an outcome nobody takes
+  shows nothing. The lockfile entry the result records is computed but not
+  recorded (`evaluated_lock_entry`). A recorded-input key is formed as a
+  repository speculation forms it (`EVALUATING_AHEAD` →
+  `speculative_friendly_repository`: a key that could depend on a root
+  counting only later is an order-dependent decision, and the evaluation
+  is not kept); the registry module roots it read from warm trees count
+  for those keys, because its commit demands them first and keeps it only
+  when they are the very trees. Downloads are speculative (they yield to
+  demanded transfers) and, with `execute()` subprocesses, cancelled when
+  the pool stops.
+- **Commit (soundness).** The coordinator takes the outcome where the
+  sequential engine prepares the group — the group slot's evaluation, at
+  its first sequential demand, or where the tape replays a pool load that
+  adopted it — and, after the existing checks (the registry roots it read
+  are those trees, the groups it used are those preparations), runs the
+  sequential engine's own lockfile check silently
+  (`evaluated_commit_check`): the lockfile state for the group
+  (`extension_lock`: mode, id, factors, `.bzl` transitive digest, usages
+  digest, facts, hidden facts, the locked entry, the static environment)
+  is the one the evaluation saw and still has no reusable entry — so the
+  sequential engine would evaluate the extension at this point too — and
+  the entry the evaluation records is current: its digests are the lock's
+  and none of its recorded inputs (files, directory listings, environment
+  variables, repository mappings: `lockfile_extensions::outdated_input`
+  through the recording facade) changed. That is the condition under
+  which Bazel (and the next command) reuse that entry instead of
+  evaluating (SingleExtensionEvalFunction.tryGettingValueFromLockFile);
+  here it is applied between two points of one invocation. Then the
+  result counts exactly as the coordinator's evaluation would: the entry
+  is recorded (`record_extension_lock` with the evaluation; the very entry
+  computed ahead, else the coordinator evaluates and records again), the
+  `EvaluatedTaint` re-probe runs as after an evaluation (provisional
+  taint, `extension-output` when the evaluation printed, the network
+  taints settled or recorded), then the held observations, obtained roots,
+  definition entries and console output, in that order (the evaluation's
+  writes, then the fixup warning — the sequential order; the record and the
+  re-probe print nothing). Any difference drops the outcome and the
+  coordinator evaluates the extension itself; what the check did is what
+  that evaluation does first, or an over-approximation of it (idempotent
+  root demands, a set of observations), as for the reuse path above. A
+  pool load that adopted the evaluation keeps the existing guard: the
+  group prepared otherwise at its commit is the adoption-mismatch internal
+  error naming `BAZEL_RS_ANALYSIS=walk` (fail closed).
+- **Residuals.** Unrecorded inputs (downloads, `execute()` results, the
+  network, `module_ctx.os.environ`, which Bazel records neither) are read
+  at the speculation's time, not the sequential one — the trust Bazel
+  places in a lockfile entry across commands, here across seconds of one
+  command, as non-local repository rules speculated since
+  parallel-fetch. An `execute()` with effects outside the working
+  directory runs earlier than the sequential engine would run it (Bazel's
+  own evaluation order is unspecified). As for every warm-reuse probe, the
+  files the recorded inputs name must not change during the invocation
+  after the pool used the evaluation (a local rule rewriting one in phase
+  1 is the internal error above). A speculation dropped at the commit costs
+  a second evaluation (and its downloads).
+
+Evidence: tests/extension_speculation.rs
+`cold_extensions_evaluated_ahead_change_nothing_the_build_shows` and
+`cold_evaluations_ahead_keep_the_walks_output_when_inputs_change_or_fail`
+(no lockfile: `gen` printing and reading `input.txt`, `user` loading
+`gen`'s repository, the chained `x`/`y`/`z`, an input rewritten by a local
+rule before the commit, a failing extension, a cached module) — the walk
+at one thread against `BAZEL_RS_ANALYSIS=eval` at 1/2/8/32 threads, with
+evaluator jitter and restarts and with the evaluation ahead off: exit,
+stdout, stderr, both lockfiles and the snapshot recording identical.
+On the corpus (docs/OSS_CORPUS.md "Findings and fixes (branch cold-eval)"):
+stdout, stderr, `MODULE.bazel.lock`, the snapshot recording's
+observations and the action dumps identical to main's.
 
 ## What remains
 

@@ -4256,9 +4256,10 @@ impl RepositorySet {
 
     /// The repository whose root the no-demand sentinel `sentinel` of an
     /// evaluator's pool load names, when repository speculation may
-    /// execute it ahead for the load (not while local executions are
-    /// captured for replay): a local rule, or a repository of a group the
-    /// pool uses speculatively. The pool's lane has it speculated
+    /// execute it ahead for the load: a local rule (not while local
+    /// executions are captured for replay), or a repository of a group the
+    /// pool uses speculatively (a non-local one also while they are:
+    /// nothing of it is replayed; cold-eval). The pool's lane has it speculated
     /// ([`Self::wait_eval_local`]) and the load runs again. Its execution
     /// publishes the root only when it printed nothing (else the
     /// sequential pass commits it at its demand, as any speculation's); a

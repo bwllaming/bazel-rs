@@ -22,8 +22,11 @@
 //! - the lockfile: its entry is only read; consulting the hidden lockfile
 //!   and recording the result are the commit's.
 //!
-//! A speculation is eligible only when its lockfile entry is reusable (the
-//! extension itself never runs ahead). The coordinator takes the outcome
+//! A speculation is eligible only when its lockfile entry is reusable,
+//! unless the evaluator's pool asked for the group's evaluation ahead
+//! ([`Pool::request_evaluated`]; docs/COLD_ANALYSIS.md "Module extensions
+//! evaluated ahead": the commit then records the result after the
+//! sequential engine's lockfile check). The coordinator takes the outcome
 //! where the sequential engine prepares the group — the group's demand slot
 //! evaluation — demands the registry roots it used there, re-checks the
 //! lockfile entry against the inputs as they are now, and then replays what

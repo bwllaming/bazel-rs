@@ -304,6 +304,11 @@ linearized position. A repository whose recorded-input keys would depend
 on the order of demands is an internal error naming
 `BAZEL_RS_ANALYSIS=walk`.
 
+On a cold run the pool runs ahead of the sequential pass on speculations
+it waits for (section "cold-eval" at the end): extensions evaluated ahead,
+repositories executed ahead, the lane's blockers held until their
+speculation settled.
+
 ### Determinism: pass 1 and pass 2 (worker C)
 
 Bodies record what the walk's order decides as transcript **events**
@@ -4491,4 +4496,81 @@ the pool ends ~1.7 s after the snapshot-off pool), the deferred walk
 workers (2.6 s against 1.4; 8 workers −0.6 s when the margin allows: the
 recorder's and the tracker's residency), the linearizer's remaining
 tracker work (~0.7 s), the save (plan encoding ~0.8 s, INPUTS ~1 s).
+
+## cold-eval: the pool ahead of the sequential pass on a cold run (P4a/P4b)
+
+Branch `cold-eval` (main 97611a75). docs/OSS_CORPUS.md P4a/P4b: on a cold
+OpenROAD `build --nobuild //...` the process sat at ~0 cores for most of
+phase 1, every discovery waiting for the sequential pass: a pool load
+needing an extension group left to it (`INLINE`: no lockfile entry, so no
+speculation), or a direct/generated repository whose speculation started
+but whose load waited for the requested target's sequential evaluation;
+the registered toolchains' `/...` patterns expanded one repository after
+another; the lane materialized module roots one at a time on the
+sequential pass's thread. What changed (all scheduling; every commit stays
+where the walk makes it):
+
+- **Extensions evaluated ahead** (docs/COLD_ANALYSIS.md "Module
+  extensions evaluated ahead"): a group a pool load waits for is
+  evaluated on the speculation workers and committed at its sequential
+  position after the sequential engine's own lockfile check; the pool
+  adopts the finished evaluation as it adopted reusable ones
+  (`eval_adopt_group`, `eval_adoption_check` with the evaluated check).
+- **Repositories ahead** (`\u{2}fetch:` blocker,
+  `RepositorySet::eval_fetch_blocker`): a pool load blocked on a non-local
+  direct or generated repository whose group is prepared waits for that
+  repository's speculation instead of the sequential pass, while it may
+  still publish (not when it printed, failed or is blocked); a published
+  root serves the load's reuse-only probe as any speculation's and counts
+  where the tape replays the load (unchanged rules). A non-local
+  repository of a group the pool uses speculatively is executed with that
+  preparation as local-rule blockers are (`eval_local_blocker`), now also
+  while local executions are captured for replay (nothing of a non-local
+  rule is replayed; local rules still never run ahead then).
+- **What a speculation is blocked on is prepared ahead too**
+  (`request_blocker_ahead`): another group's evaluation, a repository's
+  speculation (with its group's speculative preparation when the group is
+  only speculated), a registry module root warmed; a blocked repository
+  speculation also requests every repository its rule's label attributes
+  name (Bazel resolves them all when a fetch starts,
+  StarlarkRepositoryContext.enforceLabelAttributes), so a chain such as
+  pycross_internal → python_3_12_host → its wheel repositories is fetched
+  side by side instead of one per attempt. A speculation of a repository
+  of a group the coordinator has not prepared that adopted the group's
+  speculative preparation is retried once its root is published there
+  (`speculated_root_ready`).
+- **Registered toolchains' repositories ahead**
+  (`prepare_registrations_ahead`, from the RegToolchains body's
+  `warm_toolchain_patterns`, once per pattern list): every pattern's
+  repository — a `/...` pattern's too, which the expansion demands for its
+  directory walk — is requested: its group evaluated ahead and the
+  repository executed with that preparation, or its speculation. The
+  `@r//...` patterns now name `@r//` (they parsed as `@r/` before, here and
+  in `warm_registrations`).
+- **The lane never waits for a speculation** (`Bodies::lane_ready`,
+  `nodes::loading::lane_ready`): the serving pool's coordinator holds a
+  lane blocker whose extension speculation, repository speculation or
+  module-root warm-up is queued or runs, and queues it for the lane once
+  it is not (polled each idle tick); the lane's waits then return at once,
+  and the sequential pass's thread fetches the other demands meanwhile.
+  What a lane fetch writes and observes stays keyed by its blocker, so the
+  output is the same whenever the lane takes it. A node waiting on a held
+  blocker is waited for by the sequential pass as for any lane blocker
+  (its speculation finishes; the 300 s stall bound is unchanged). Rounds
+  (not serving) fetch as before.
+- **A latent ordering bug fixed**: the lane's statistics lookup in
+  `wait_eval_local` (and now `eval_fetch_blocker`) took the repository's
+  slot through `speculation_slot`, which prepares the group — on the
+  lane's thread, which may demand — so a group the pool used speculatively
+  was prepared (committed) when the lane ran, not where the walk prepares
+  it: an input a local rule rewrote in between was missed (found by
+  `cold_evaluations_ahead_keep_the_walks_output_when_inputs_change_or_fail`,
+  `//dropped:all`). Both now look the slot up without preparing anything.
+
+Diagnostics: `BAZEL_RS_EVAL_AHEAD_DEBUG=1` names each speculation ahead
+(evaluable or not, blocked on what, published, kept or not, the commits'
+checks); `PERF-EXTENSION` counts `ineligible`; the timeline spans of an
+evaluable extension speculation say `(may evaluate)`.
+
+Measured: docs/OSS_CORPUS.md "Findings and fixes (branch cold-eval)".
 
