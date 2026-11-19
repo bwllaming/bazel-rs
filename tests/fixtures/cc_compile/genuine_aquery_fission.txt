@@ -1,0 +1,40 @@
+action 'Compiling cdep/prebuilt.c'
+  Mnemonic: CppCompile
+  Target: //cdep:built
+  Configuration: k8-dbg
+  Execution platform: @platforms//host:host
+  ActionKey: 87d6573a085ffa14d1f41758d31b1d8f59e8c6ea9148f3cfecc9333b53614065
+  Inputs: [cdep/prebuilt.c, cdep/prebuilt.h, external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths, external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh]
+  Outputs: [bazel-out/k8-dbg/bin/cdep/_objs/built/prebuilt.pic.d, bazel-out/k8-dbg/bin/cdep/_objs/built/prebuilt.pic.dwo, bazel-out/k8-dbg/bin/cdep/_objs/built/prebuilt.pic.o]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /usr/bin/gcc \
+    -U_FORTIFY_SOURCE \
+    -fstack-protector \
+    -Wall \
+    -Wunused-but-set-parameter \
+    -Wno-free-nonheap-object \
+    -fno-omit-frame-pointer \
+    -g \
+    -MD \
+    -MF \
+    bazel-out/k8-dbg/bin/cdep/_objs/built/prebuilt.pic.d \
+    '-frandom-seed=bazel-out/k8-dbg/bin/cdep/_objs/built/prebuilt.pic.o' \
+    -fPIC \
+    -gsplit-dwarf \
+    -g \
+    -iquote \
+    . \
+    -iquote \
+    bazel-out/k8-dbg/bin \
+    -c \
+    cdep/prebuilt.c \
+    -o \
+    bazel-out/k8-dbg/bin/cdep/_objs/built/prebuilt.pic.o \
+    -fno-canonical-system-headers \
+    -Wno-builtin-macro-redefined \
+    '-D__DATE__="redacted"' \
+    '-D__TIMESTAMP__="redacted"' \
+    '-D__TIME__="redacted"')
+# Configuration: 88531bb061349194fdd18148774712840d51c954b405e4d6619c98255d5587a2
+# Execution platform: @@platforms//host:host
+

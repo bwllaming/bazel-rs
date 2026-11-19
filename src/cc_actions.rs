@@ -630,16 +630,31 @@ pub(crate) fn call<'v>(
                 .ok_or_else(|| type_error(method, "output_name", output_value, "string"))?;
             let object = unpack_file(bound[2].expect("required"))
                 .map_err(|error| failure(format!("cc_internal.{method}: {error}")))?;
-            let parent = object
-                .short_path
+            // The object's root-relative directory, declared below the
+            // rule's package (the context declares package-relative names).
+            let root_relative = crate::label::split_generated_root(&object.path)
+                .map(|(_, relative)| relative)
+                .unwrap_or(object.path.as_str());
+            let parent = root_relative
                 .rsplit_once('/')
                 .map(|(parent, _)| parent)
                 .unwrap_or("");
-            let path = if parent.is_empty() {
+            let full = if parent.is_empty() {
                 output_name.to_owned()
             } else {
                 format!("{parent}/{output_name}")
             };
+            let package = context.label.package_exec_path();
+            let path = std::path::Path::new(&full)
+                .strip_prefix(&package)
+                .map_err(|_| {
+                    failure(format!(
+                        "cc_internal.{method}: {full} is not below the package directory {} (not implemented in the native profile)",
+                        package.display()
+                    ))
+                })?
+                .to_string_lossy()
+                .into_owned();
             let file = context
                 .declare(&path)
                 .map_err(|error| failure(format!("cc_internal.{method}: {error}")))?;

@@ -37,3 +37,10 @@ of the same package in a scratch module with `bazel_dep(rules_cc, 0.2.17)`
 and `bazel_dep(platforms, 1.1.0)` from the BCR (`--batch
 --ignore_all_rc_files`): compiles stage `compiler_files` (`as_files` for
 the `assemble` `.s` source), the archive `ar_files`.
+
+`genuine_aquery_fission.txt` (OSS corpus B32) is genuine Bazel 9.3.1's
+`aquery --fission=yes -c dbg "mnemonic(CppCompile, //cdep:built)"` of the
+`cdep` package in a scratch module with `bazel_dep(rules_cc, 0.2.17)` and
+`bazel_dep(platforms, 1.1.0)` from the BCR (`--batch`, no rc files): the
+compile's `.pic.dwo` output beside its object (CcStarlarkInternal
+.declareOtherOutputFile) and the `per_object_debug_info` flags.

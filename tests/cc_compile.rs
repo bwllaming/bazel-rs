@@ -736,3 +736,44 @@ fn compiles_hold_a_shared_header_run_in_the_middle_of_their_inputs() {
         stderr(&warm)
     );
 }
+
+/// OSS corpus B32: `--fission=yes` in `dbg` makes rules_cc's compile
+/// declare the `.dwo` beside its object (CcStarlarkInternal
+/// .declareOtherOutputFile, the object's root-relative directory) and pass
+/// the `per_object_debug_info` flags. genuine_aquery_fission.txt is genuine
+/// 9.3.1's `aquery --fission=yes -c dbg "mnemonic(CppCompile,
+/// //cdep:built)"` (PROVENANCE.md).
+#[test]
+fn fission_compiles_match_genuine() {
+    let ws = Workspace::new();
+    let output = ws.aquery(
+        "cache",
+        &[
+            "--fission=yes",
+            "-c",
+            "dbg",
+            "mnemonic(CppCompile, //cdep:built)",
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let blocks = |text: &str| -> Vec<String> {
+        let mut blocks: Vec<String> = text
+            .split("\n\n")
+            .filter(|block| !block.trim().is_empty())
+            .map(|block| {
+                block
+                    .lines()
+                    .filter(|line| !line.starts_with("# Configuration: "))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .collect();
+        blocks.sort();
+        blocks
+    };
+    let expected = fs::read_to_string(fixture().join("genuine_aquery_fission.txt")).unwrap();
+    assert_eq!(
+        blocks(&String::from_utf8_lossy(&output.stdout)),
+        blocks(&expected)
+    );
+}
