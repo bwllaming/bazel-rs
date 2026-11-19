@@ -131,8 +131,13 @@ fn generic_native_input<'v>(
     Ok(match (option.option.kind, value) {
         (_, None | Some(OptionValue::Null)) => Value::new_none(),
         (OptionKind::Bool, Some(OptionValue::Bool(flag))) => heap.alloc(flag),
-        (OptionKind::Enum { type_name, .. }, Some(OptionValue::Enum(value))) => {
-            OptionEnum { type_name, value }.alloc(heap)
+        // DynamicMode is no Starlark value (Starlark.fromJava rejects it):
+        // reading it is not modelled.
+        (OptionKind::Enum { type_name, .. }, Some(OptionValue::Enum(_))) => {
+            return Err(anyhow!(
+                "reading //command_line_option:{} (a {type_name} value) in a transition is not implemented in the native profile",
+                option.option.name
+            ));
         }
         // List<CompilationMode>: each mode as a CompilationMode value.
         (OptionKind::CompilationModeSet, Some(OptionValue::String(text))) => {
