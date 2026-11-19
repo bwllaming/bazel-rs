@@ -75,7 +75,10 @@ attribute of a requested `rule(analysis_test = True)` target names
 is an `alias` with a non-configurable `actual` in a package loaded by then
 (chains followed; rules_kotlin's analysis tests name
 `//kotlin/compiler:btapi_runtime`, an alias of `@btapi_impl//:runtime`,
-B35). The engine decides that set from the
+B35), and the attribute labels of a Starlark rule (not an analysis test)
+that such an attribute names in the test's own package (a rule under test
+handing `ctx.attr.dep.actions` on in a provider, protobuf's
+`attach_upb_aspect`, B33). The engine decides that set from the
 requested labels and their packages before the analysis
 (`Engine::inspected_targets`), so it never depends on the analysis order.
 A snapshot holds no providers, and an incremental re-analysis requests
