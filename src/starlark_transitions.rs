@@ -93,7 +93,130 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     // CppOptions.minimumOsVersion: a nullable String
     // (`ctx.fragments.cpp.minimum_os_version()`; skylib's unittest tests).
     "minimum_os_version",
+    // The table-driven CppOptions rules_cc's own tests transition on
+    // ([`GENERIC_VALUE_OPTIONS`], B32).
+    "dynamic_mode",
+    "fission",
+    "build_test_dwp",
+    "legacy_whole_archive",
+    "incompatible_remove_legacy_whole_archive",
 ];
+
+/// Table-driven options (crate::configuration::VALUE_OPTIONS) read and
+/// written through their kind, with the Java field each boolean names in
+/// its null-value error (FieldOptionDefinition.setValue).
+const GENERIC_VALUE_OPTIONS: &[(&str, &str)] = &[
+    ("dynamic_mode", "rules.cpp.CppOptions.dynamicMode"),
+    ("fission", "rules.cpp.CppOptions.fissionModes"),
+    ("build_test_dwp", "rules.cpp.CppOptions.buildTestDwp"),
+    (
+        "legacy_whole_archive",
+        "rules.cpp.CppOptions.legacyWholeArchive",
+    ),
+    (
+        "incompatible_remove_legacy_whole_archive",
+        "rules.cpp.CppOptions.removeLegacyWholeArchive",
+    ),
+];
+
+/// [`native_input`] of a [`GENERIC_VALUE_OPTIONS`] entry
+/// (Starlark.fromJava of the field value).
+fn generic_native_input<'v>(
+    native: &NativeOptions,
+    option: &'static crate::configuration::ValueOption,
+    heap: Heap<'v>,
+) -> anyhow::Result<Value<'v>> {
+    use crate::configuration::OptionKind;
+    let value = native.raw_value(option.option.name);
+    Ok(match (option.option.kind, value) {
+        (_, None | Some(OptionValue::Null)) => Value::new_none(),
+        (OptionKind::Bool, Some(OptionValue::Bool(flag))) => heap.alloc(flag),
+        (OptionKind::Enum { type_name, .. }, Some(OptionValue::Enum(value))) => {
+            OptionEnum { type_name, value }.alloc(heap)
+        }
+        // List<CompilationMode>: each mode as a CompilationMode value.
+        (OptionKind::CompilationModeSet, Some(OptionValue::String(text))) => {
+            let modes = text
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .split(", ")
+                .filter(|mode| !mode.is_empty())
+                .filter_map(|mode| {
+                    ["fastbuild", "dbg", "opt"]
+                        .into_iter()
+                        .find(|known| *known == mode)
+                })
+                .map(|mode| {
+                    OptionEnum {
+                        type_name: "CompilationMode",
+                        value: mode,
+                    }
+                    .alloc(heap)
+                })
+                .collect::<Vec<_>>();
+            heap.alloc(modes)
+        }
+        (_, Some(OptionValue::Label(label))) => {
+            crate::starlark_types::alloc_label(heap, &label.to_string())?
+        }
+        (_, Some(other)) => {
+            return Err(anyhow!(
+                "internal error: unexpected value {other} of native option {}",
+                option.option.name
+            ));
+        }
+    })
+}
+
+/// [`convert_native`] of a [`GENERIC_VALUE_OPTIONS`] entry: a value of the
+/// field's type is stored as is, a string goes through the converter
+/// (FunctionTransitionUtil.applyTransition, :640-760).
+fn convert_generic(
+    native: &mut NativeOptions,
+    option: &'static crate::configuration::ValueOption,
+    field: &str,
+    raw: &Raw,
+    package_label: &dyn Fn(&str) -> Result<Label, String>,
+) -> Result<(), String> {
+    use crate::configuration::OptionKind;
+    let name = option.option.name;
+    let invalid = || format!("Invalid value type for option '{name}'");
+    let parsing = |message: String| format!("OptionsParsingError for option '{name}': {message}");
+    let value = match (&raw.kind, option.option.kind) {
+        (RawKind::None, OptionKind::Bool) => {
+            return Err(format!(
+                "IllegalArgumentError for option '{name}': Can not set boolean field com.google.devtools.build.lib.{field} to null value"
+            ));
+        }
+        // A null enum or list field reads as its default.
+        (RawKind::None, _) => option.default_value(),
+        (RawKind::Bool(flag), OptionKind::Bool) => OptionValue::Bool(*flag),
+        (RawKind::Enum(_, value), OptionKind::Enum { values, .. }) if values.contains(value) => {
+            OptionValue::Enum(value)
+        }
+        (RawKind::String(text), _) => {
+            crate::configuration::convert(&option.option, text, package_label).map_err(parsing)?
+        }
+        // A List-typed field without allowMultiple (`--fission`): an empty
+        // list is the empty list, else the elements joined with "," go
+        // through the converter (FunctionTransitionUtil.java:683-709).
+        (RawKind::List(items), OptionKind::CompilationModeSet) if items.is_empty() => {
+            OptionValue::String("[]".to_owned())
+        }
+        (RawKind::List(items), OptionKind::CompilationModeSet) => {
+            let joined = items
+                .iter()
+                .map(|item| item.element_text(true))
+                .collect::<Vec<_>>()
+                .join(",");
+            crate::configuration::convert(&option.option, &joined, package_label)
+                .map_err(parsing)?
+        }
+        _ => return Err(invalid()),
+    };
+    native.set_value(option, value);
+    Ok(())
+}
 
 /// Native options a transition may only read: `define` (Bazel forbids
 /// writing it, FunctionTransitionUtil.java:420-426).
@@ -964,6 +1087,13 @@ pub(crate) fn native_input<'v>(
             Some(OptionValue::String(text)) => heap.alloc(text.as_str()),
             _ => Value::new_none(),
         },
+        other if GENERIC_VALUE_OPTIONS.iter().any(|(name, _)| *name == other) => {
+            generic_native_input(
+                native,
+                crate::configuration::value_option(other).expect("a value option"),
+                heap,
+            )?
+        }
         other => {
             return Err(anyhow!(
                 "internal error: unmodelled native transition input {other}"
@@ -1771,6 +1901,18 @@ fn convert_native(
     raw: &Raw,
     package_label: &dyn Fn(&str) -> Result<Label, String>,
 ) -> Result<(), String> {
+    if let Some((_, field)) = GENERIC_VALUE_OPTIONS
+        .iter()
+        .find(|(option, _)| *option == name)
+    {
+        return convert_generic(
+            native,
+            crate::configuration::value_option(name).expect("a value option"),
+            field,
+            raw,
+            package_label,
+        );
+    }
     let option = crate::configuration::option(name);
     let list_typed = matches!(
         name,

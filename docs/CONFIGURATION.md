@@ -960,6 +960,22 @@ there, while `--features`/`--host_features` are accepted and ignored):
   `--@io_bazel_rules_go//go/config:race`).
 - `--dynamic_mode` (off/default/fully, a table-driven value option, not
   propagated to exec): `ctx.fragments.cpp.dynamic_mode()`.
+- `--fission` (FissionOptionConverter: `yes`, `no` or a comma-separated
+  set of compilation modes, held as the List<CompilationMode>'s Java
+  `toString`, e.g. `[dbg, fastbuild]`; not propagated to exec):
+  `ctx.fragments.cpp.fission_active_for_current_compilation_mode()`.
+  A transition may set it to a string or a list (joined with `,` and
+  converted, FunctionTransitionUtil.java:683-709).
+- `--build_test_dwp`, `--legacy_whole_archive` (neither propagated to
+  exec) and `--incompatible_remove_legacy_whole_archive` (propagated):
+  `ctx.fragments.cpp.build_test_dwp()`, `legacy_whole_archive()`,
+  `incompatible_remove_legacy_whole_archive()`. rules_cc's own tests set
+  these and `--dynamic_mode` through transitions (OSS corpus B32; capture
+  tests/fixtures/corpus_parity4 `cpp_options_*`). The FDO options
+  (`--fdo_optimize`, `--fdo_profile`, `--cs_fdo_profile`, ...),
+  `--custom_malloc` (a late-bound dependency) and
+  `--instrumentation_filter` stay unmodelled: a transition on them fails
+  explicitly.
 - `--javacopt`/`--host_javacopt`: `ctx.fragments.java.default_javac_flags`
   (tokenized) and `default_javac_flags_depset` (one ShellUtils-escaped
   string; JavaHelper.detokenizeJavaOptions); the exec transition sets

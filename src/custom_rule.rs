@@ -534,6 +534,16 @@ pub struct CppConfigurationView {
     pub per_file_copts: Vec<String>,
     /// CppOptions.minimumOsVersion (`--minimum_os_version`), `None` for null.
     pub minimum_os_version: Option<String>,
+    /// CppConfiguration.fissionIsActiveForCurrentCompilationMode: the
+    /// compilation mode is one of `--fission`'s.
+    pub fission_active: bool,
+    /// CppOptions.buildTestDwp (`--build_test_dwp`).
+    pub build_test_dwp: bool,
+    /// CppOptions.legacyWholeArchive (`--legacy_whole_archive`).
+    pub legacy_whole_archive: bool,
+    /// CppOptions.removeLegacyWholeArchive
+    /// (`--incompatible_remove_legacy_whole_archive`).
+    pub remove_legacy_whole_archive: bool,
 }
 
 impl Default for CppConfigurationView {
@@ -550,6 +560,10 @@ impl Default for CppConfigurationView {
             dynamic_mode: "DEFAULT",
             per_file_copts: Vec::new(),
             minimum_os_version: None,
+            fission_active: false,
+            build_test_dwp: false,
+            legacy_whole_archive: true,
+            remove_legacy_whole_archive: true,
         }
     }
 }
@@ -574,6 +588,21 @@ impl CppConfigurationView {
                 Some(crate::configuration::OptionValue::String(text)) => Some(text),
                 _ => None,
             },
+            fission_active: match native.raw_value("fission") {
+                Some(crate::configuration::OptionValue::String(modes)) => modes
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .split(", ")
+                    .any(|mode| mode == native.compilation_mode),
+                _ => false,
+            },
+            build_test_dwp: native.raw_value("build_test_dwp")
+                == Some(crate::configuration::OptionValue::Bool(true)),
+            legacy_whole_archive: native.raw_value("legacy_whole_archive")
+                != Some(crate::configuration::OptionValue::Bool(false)),
+            remove_legacy_whole_archive: native
+                .raw_value("incompatible_remove_legacy_whole_archive")
+                != Some(crate::configuration::OptionValue::Bool(false)),
         }
     }
 

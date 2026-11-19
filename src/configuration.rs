@@ -60,6 +60,11 @@ pub enum OptionKind {
     /// TriState constant (`YES`, `NO`, `AUTO`: its `toString`); boolean
     /// option syntax (OptionDefinition.usesBooleanValueSyntax, :160-166).
     TriState,
+    /// CppOptions.FissionOptionConverter (rules/cpp/CppOptions.java:39-58):
+    /// `yes` (every compilation mode), `no` (none) or a comma-separated set
+    /// of compilation modes, stored as the List<CompilationMode>'s Java
+    /// `toString` (`[fastbuild, dbg, opt]`, its hash and identity form).
+    CompilationModeSet,
 }
 
 impl OptionKind {
@@ -839,6 +844,82 @@ pub const VALUE_OPTIONS: &[ValueOption] = &[
         command_line: true,
         exec: ExecValue::Default,
         exec_source: "builtin_exec_platforms.bzl:350-385 (not propagated)",
+    }, // CppOptions.fissionModes (`--fission`, FissionOptionConverter): read by
+    // `ctx.fragments.cpp.fission_active_for_current_compilation_mode()`
+    // (CppConfiguration.java:438-440); rules_cc's own tests transition on
+    // it (B32). Not propagated to the exec configuration.
+    ValueOption {
+        option: OptionDef {
+            name: "fission",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::CompilationModeSet,
+            default: "no",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:179-193",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
+    // CppOptions.buildTestDwp (`--build_test_dwp`): read by
+    // `ctx.fragments.cpp.build_test_dwp()` (CppConfiguration.java:443-451).
+    ValueOption {
+        option: OptionDef {
+            name: "build_test_dwp",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "false",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:195-203",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
+    // CppOptions.legacyWholeArchive (`--legacy_whole_archive`, deprecated):
+    // read by `ctx.fragments.cpp.legacy_whole_archive()`
+    // (CppConfiguration.java:478-482).
+    ValueOption {
+        option: OptionDef {
+            name: "legacy_whole_archive",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "true",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:322-335",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
+    // CppOptions.removeLegacyWholeArchive
+    // (`--incompatible_remove_legacy_whole_archive`): read by
+    // `ctx.fragments.cpp.incompatible_remove_legacy_whole_archive()`
+    // (CppConfiguration.java:484-488); propagated to the exec configuration.
+    ValueOption {
+        option: OptionDef {
+            name: "incompatible_remove_legacy_whole_archive",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "true",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:790-799",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:309",
     },
 ];
 
@@ -1147,6 +1228,32 @@ pub fn convert(
         OptionKind::DottedVersion => validate_dotted_version(input)
             .map(|()| OptionValue::DottedVersion(Some(input.to_owned()))),
         OptionKind::OptionsLabel => label(input).map(OptionValue::Label),
+        OptionKind::CompilationModeSet => {
+            let modes: Vec<&'static str> = match input {
+                "yes" => COMPILATION_MODES.to_vec(),
+                "no" => Vec::new(),
+                _ => {
+                    let mut modes: Vec<&'static str> = Vec::new();
+                    for mode in input.split(',') {
+                        let mode = COMPILATION_MODES
+                            .iter()
+                            .copied()
+                            .find(|value| value.eq_ignore_ascii_case(mode))
+                            .ok_or_else(|| {
+                                format!(
+                                    "Not a valid compilation mode: '{mode}' (should be {})",
+                                    join_english_list(COMPILATION_MODES).to_ascii_lowercase()
+                                )
+                            })?;
+                        if !modes.contains(&mode) {
+                            modes.push(mode);
+                        }
+                    }
+                    modes
+                }
+            };
+            Ok(OptionValue::String(format!("[{}]", modes.join(", "))))
+        }
         OptionKind::AutoCpu => Ok(OptionValue::String(if input.is_empty() {
             host_cpu().to_owned()
         } else {
@@ -3656,7 +3763,11 @@ mod tests {
                 "minimum_os_version",
                 "incompatible_enable_apple_toolchain_resolution",
                 "incompatible_exclude_starlark_flags_from_exec_config",
-                "explicit_java_test_deps"
+                "explicit_java_test_deps",
+                "fission",
+                "build_test_dwp",
+                "legacy_whole_archive",
+                "incompatible_remove_legacy_whole_archive"
             ]
         );
         let defaults = NativeOptions::default();

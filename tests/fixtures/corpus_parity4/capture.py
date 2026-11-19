@@ -39,6 +39,11 @@ CASES = {
         [], 'build', BUILD, ['//aspview:t'], [], ['t.txt']),
     'target_actions_with_required_aspects': (
         [], 'build', BUILD, ['//aspacts:merged_test', '//aspacts:attached_test'], [], ['merged_test.sh', 'attached_test.sh']),
+    'cpp_options_in_transitions': (
+        [], 'build', BUILD, ['//cppopts:all_set', '//cppopts:some_set', '//cppopts:leaf'], [], ['leaf.txt']),
+    'cpp_options_on_the_command_line': (
+        [], 'build', BUILD + ['--fission=dbg,fastbuild', '--dynamic_mode=fully', '--build_test_dwp',
+                              '--nolegacy_whole_archive', '--noincompatible_remove_legacy_whole_archive'], ['//cppopts:leaf'], [], ['leaf.txt']),
     'macro_visibility_own_label': (
         [], 'build', BUILD, ['//vis/bad:not_delegated_inner'], [r'is not visible from'], []),
 }

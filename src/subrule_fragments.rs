@@ -412,14 +412,14 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
         receiver(this)?;
         Ok(false)
     }
-    /// CppConfiguration.java:443-451; --build_test_dwp default false.
+    /// CppConfiguration.java:443-451; --build_test_dwp.
     fn build_test_dwp<'v>(
         this: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<bool> {
-        receiver(this).map_err(starlark::Error::new_other)?;
+        let cpp = receiver(this).map_err(starlark::Error::new_other)?;
         private_api(eval)?;
-        Ok(false)
+        Ok(cpp.view.build_test_dwp)
     }
     /// CppConfiguration.java:326-330.
     fn compilation_mode<'v>(
@@ -536,14 +536,14 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
         private_api(eval)?;
         Ok(NoneType)
     }
-    /// CppConfiguration.java:438-440, 939-944; --fission default no.
+    /// CppConfiguration.java:438-440, 939-944; --fission.
     fn fission_active_for_current_compilation_mode<'v>(
         this: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<bool> {
-        receiver(this).map_err(starlark::Error::new_other)?;
+        let cpp = receiver(this).map_err(starlark::Error::new_other)?;
         private_api(eval)?;
-        Ok(false)
+        Ok(cpp.view.fission_active)
     }
     /// CppConfiguration.java:459-461, 908-912.
     fn force_pic<'v>(this: Value<'v>, eval: &mut Evaluator<'v, '_, '_>) -> starlark::Result<bool> {
@@ -578,14 +578,14 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
         private_api(eval)?;
         Ok(false)
     }
-    /// CppConfiguration.java:484-488; default true.
+    /// CppConfiguration.java:484-488; --incompatible_remove_legacy_whole_archive.
     fn incompatible_remove_legacy_whole_archive<'v>(
         this: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<bool> {
-        receiver(this).map_err(starlark::Error::new_other)?;
+        let cpp = receiver(this).map_err(starlark::Error::new_other)?;
         private_api(eval)?;
-        Ok(true)
+        Ok(cpp.view.remove_legacy_whole_archive)
     }
     /// CppConfiguration.java:790-794; default true.
     fn incompatible_use_specific_tool_files<'v>(
@@ -605,14 +605,14 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
         private_api(eval)?;
         Ok(true)
     }
-    /// CppConfiguration.java:478-482; --legacy_whole_archive default true.
+    /// CppConfiguration.java:478-482; --legacy_whole_archive.
     fn legacy_whole_archive<'v>(
         this: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<bool> {
-        receiver(this).map_err(starlark::Error::new_other)?;
+        let cpp = receiver(this).map_err(starlark::Error::new_other)?;
         private_api(eval)?;
-        Ok(true)
+        Ok(cpp.view.legacy_whole_archive)
     }
     /// CppConfiguration.java:174-178, 295, 547-549; --linkopt.
     #[starlark(attribute)]

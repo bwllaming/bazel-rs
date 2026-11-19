@@ -1,0 +1,62 @@
+load(":defs.bzl", "leaf", "top")
+
+config_setting(
+    name = "fission_yes",
+    values = {"fission": "yes"},
+)
+
+config_setting(
+    name = "fission_dbg",
+    values = {"fission": "dbg,fastbuild"},
+)
+
+config_setting(
+    name = "fully",
+    values = {"dynamic_mode": "fully"},
+)
+
+config_setting(
+    name = "dwp",
+    values = {"build_test_dwp": "true"},
+)
+
+config_setting(
+    name = "no_legacy",
+    values = {"legacy_whole_archive": "false"},
+)
+
+leaf(
+    name = "leaf",
+    flags = select({
+        ":fission_yes": ["fission=yes"],
+        ":fission_dbg": ["fission=dbg,fastbuild"],
+        "//conditions:default": ["fission=no"],
+    }) + select({
+        ":fully": ["fully"],
+        "//conditions:default": [],
+    }) + select({
+        ":dwp": ["dwp"],
+        "//conditions:default": [],
+    }) + select({
+        ":no_legacy": ["no_legacy"],
+        "//conditions:default": [],
+    }),
+)
+
+top(
+    name = "all_set",
+    dep = ":leaf",
+    dwp = True,
+    dynamic_mode = "fully",
+    fission = ["yes"],
+    legacy = False,
+)
+
+top(
+    name = "some_set",
+    dep = ":leaf",
+    dwp = False,
+    dynamic_mode = "default",
+    fission = ["fastbuild", "dbg"],
+    legacy = True,
+)

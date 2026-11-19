@@ -62,6 +62,53 @@
    ],
    "workspace": "workspace"
   },
+  "cpp_options_in_transitions": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild-ST-460241fba36e/bin/cppopts/leaf.txt": "bazel-out/k8-fastbuild-ST-460241fba36e/bin/cppopts/leaf.txt [\"fission=yes\", \"fully\", \"dwp\", \"no_legacy\"]\n",
+    "k8-fastbuild-ST-52086a3626c8/bin/cppopts/leaf.txt": "bazel-out/k8-fastbuild-ST-52086a3626c8/bin/cppopts/leaf.txt [\"fission=no\"]\n",
+    "k8-fastbuild/bin/cppopts/leaf.txt": "bazel-out/k8-fastbuild/bin/cppopts/leaf.txt [\"fission=no\"]\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//cppopts:all_set",
+    "//cppopts:some_set",
+    "//cppopts:leaf"
+   ],
+   "workspace": "workspace"
+  },
+  "cpp_options_on_the_command_line": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--fission=dbg,fastbuild",
+    "--dynamic_mode=fully",
+    "--build_test_dwp",
+    "--nolegacy_whole_archive",
+    "--noincompatible_remove_legacy_whole_archive"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/cppopts/leaf.txt": "bazel-out/k8-fastbuild/bin/cppopts/leaf.txt [\"fission=dbg,fastbuild\", \"fully\", \"dwp\", \"no_legacy\"]\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//cppopts:leaf"
+   ],
+   "workspace": "workspace"
+  },
   "macro_visibility_delegation": {
    "bin_paths": {},
    "command": "build",
