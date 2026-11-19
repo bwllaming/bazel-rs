@@ -900,10 +900,11 @@ fn the_pool_does_not_use_an_extension_whose_input_changed() {
 /// preparation (its lockfile entry was still reusable then): the files a
 /// repository's or an extension's recorded inputs name must not change
 /// during the invocation (as for every warm-reuse probe), and the
-/// commit's check is the safety net — an internal error naming
-/// `BAZEL_RS_ANALYSIS=walk`, never a different result.
+/// commit's check is the safety net — the command fails naming the input
+/// that changed (a concurrent edit; rerunning reads it anew), never a
+/// different result.
 #[test]
-fn an_input_rewritten_in_phase_one_after_the_pools_use_is_an_internal_error() {
+fn an_input_rewritten_in_phase_one_after_the_pools_use_fails_the_command() {
     let fixture = Fixture::new();
     let baseline = Baseline::new(&fixture);
     baseline.restore(&fixture);
@@ -935,12 +936,13 @@ fn an_input_rewritten_in_phase_one_after_the_pools_use_is_an_internal_error() {
             &[("BAZEL_RS_ANALYSIS", "eval")],
             &["//rewrite:all"],
         );
+        // Fails closed, naming the input that changed.
         assert!(
             eval.code != Some(0)
-                && eval
-                    .stderr
-                    .contains("internal error: BAZEL_RS_ANALYSIS=eval: the module extension group")
-                && eval.stderr.contains("rerun with BAZEL_RS_ANALYSIS=walk"),
+                && eval.stderr.contains(
+                    "a recorded input of the module extension @@extmod+//:ext.bzl%gen (file info or contents of @@//input.txt changed) changed during the command after the analysis had used the extension's result; rerun the command"
+                )
+                && !eval.stderr.contains("internal error"),
             "{threads} threads:\n{}",
             eval.stderr
         );

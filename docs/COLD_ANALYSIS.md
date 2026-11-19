@@ -795,6 +795,21 @@ evaluator's pool waits for may be **evaluated** ahead:
   downloads in the download cache and skip the mirror-fallback warnings it
   prints (tests/parallel_download.rs
   `a_failing_extension_shows_its_pending_downloads_warnings_first`).
+- **Download warnings of uncommitted attempts** (src/download_warnings.rs).
+  A speculation (a repository's or an evaluation ahead) whose output is not
+  committed — retried after a block, failed, not kept, dropped at its
+  commit — may have stored a checksummed blob after a failed mirror; the
+  next download of that blob is a cache hit that would print nothing. Its
+  `WARNING: Download from … failed` lines are kept by cache key and
+  written at the next cache hit of the key (and held again there, should
+  that be another uncommitted attempt), where the sequential engine's
+  download prints them (`a_failed_mirrors_warning_survives_a_retried_evaluation_ahead`).
+- **Never two evaluations of one extension at once.** A group the
+  coordinator takes before anything requested it is marked taken
+  (`Pool::take` returned without a marker when the pool held no entry, so
+  a later request ran it beside the coordinator's preparation — both in
+  `<cache>/modextwd/<name>`), and a job never runs while the coordinator
+  evaluates the group's slot.
 - **Residuals.** Unrecorded inputs (downloads, `execute()` results, the
   network, `module_ctx.os.environ`, which Bazel records neither) are read
   at the speculation's time, not the sequential one — the trust Bazel
@@ -804,8 +819,14 @@ evaluator's pool waits for may be **evaluated** ahead:
   directory runs earlier than the sequential engine would run it (Bazel's
   own evaluation order is unspecified). As for every warm-reuse probe, the
   files the recorded inputs name must not change during the invocation
-  after the pool used the evaluation (a local rule rewriting one in phase
-  1 is the internal error above). A speculation dropped at the commit costs
+  after the pool used the evaluation: a local rule rewriting one in phase
+  1, or a concurrent edit of the workspace (an editor, a `git checkout`)
+  while the command runs — on a cold run now, timing-dependent — fails
+  the command closed with "a recorded input of the module extension X (the
+  input) changed during the command after the analysis had used the
+  extension's result; rerun the command" (`note_drop_reason`; it was the
+  adoption-mismatch internal error). Rerunning evaluates with the new
+  contents. A speculation dropped at the commit costs
   a second evaluation (and its downloads).
 
 Evidence: tests/extension_speculation.rs

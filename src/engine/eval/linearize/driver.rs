@@ -527,9 +527,7 @@ impl Coord<'_> {
             self.store.rerun_mismatch.get_or_insert(mismatch);
         }
         if let Some(mismatch) = self.store.rerun_mismatch.clone() {
-            return Err(format!(
-                "internal error: BAZEL_RS_ANALYSIS=eval: {mismatch}; rerun with BAZEL_RS_ANALYSIS=walk"
-            ));
+            return Err(mismatch_error(&mismatch));
         }
         with_running(|stack| {
             let view = View {
@@ -733,9 +731,7 @@ impl Coord<'_> {
         // the pool used speculatively, prepared otherwise).
         if let Some(mismatch) = super::super::nodes::bodies::rerun_mismatch() {
             self.store.rerun_mismatch.get_or_insert(mismatch.clone());
-            return Err(format!(
-                "internal error: BAZEL_RS_ANALYSIS=eval: {mismatch}; rerun with BAZEL_RS_ANALYSIS=walk"
-            ));
+            return Err(mismatch_error(&mismatch));
         }
         match stopped {
             // The walk stops at pass 1's stop: the flushes before it ran.
@@ -1278,11 +1274,10 @@ impl Coord<'_> {
         if let Some(mismatch) = super::super::nodes::bodies::rerun_mismatch() {
             self.store.rerun_mismatch.get_or_insert(mismatch);
         }
-        self.store.rerun_mismatch.clone().map(|mismatch| {
-            format!(
-                "internal error: BAZEL_RS_ANALYSIS=eval: {mismatch}; rerun with BAZEL_RS_ANALYSIS=walk"
-            )
-        })
+        self.store
+            .rerun_mismatch
+            .clone()
+            .map(|mismatch| mismatch_error(&mismatch))
     }
 
     /// A package the evaluation loaded commits into the engine here
@@ -3491,6 +3486,18 @@ fn drive(
     }
     bodies.coord().begin_segment(SegmentKind::RootsDone);
     Ok(None)
+}
+
+/// The error of a recorded mismatch: an internal error, unless a recorded
+/// input changed during the command (crate::repository's
+/// `EVAL_INPUT_CHANGED`: its own message).
+fn mismatch_error(mismatch: &str) -> String {
+    match mismatch.strip_prefix(crate::repository::EVAL_INPUT_CHANGED) {
+        Some(message) => message.to_owned(),
+        None => format!(
+            "internal error: BAZEL_RS_ANALYSIS=eval: {mismatch}; rerun with BAZEL_RS_ANALYSIS=walk"
+        ),
+    }
 }
 
 /// Engine::analyze_requested's report of an aborted analysis, for a

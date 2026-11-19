@@ -353,6 +353,10 @@ static EVAL_ADOPTION_MISMATCH: std::sync::Mutex<Option<String>> = std::sync::Mut
 
 /// Note an internal error of the evaluator's use of speculative
 /// preparations (the first one is kept).
+/// The prefix of an [`EVAL_ADOPTION_MISMATCH`] that is no internal error:
+/// a recorded input changed during the command (the rest is the message).
+pub(crate) const EVAL_INPUT_CHANGED: &str = "\u{3}input changed:";
+
 pub(crate) fn note_eval_adoption_mismatch(text: impl FnOnce() -> String) {
     lock_ignoring_poison(&EVAL_ADOPTION_MISMATCH).get_or_insert_with(text);
 }
@@ -559,6 +563,9 @@ struct RepositoryState {
     ahead_after_group: std::sync::Mutex<BTreeMap<String, BTreeSet<String>>>,
     /// The registration pattern lists prepared ahead already (hashes).
     ahead_registrations: std::sync::Mutex<BTreeSet<u64>>,
+    /// Why a group's speculative preparation was dropped at its commit (a
+    /// recorded input changed), by group id ([`RepositorySet::note_drop_reason`]).
+    drop_reasons: std::sync::Mutex<BTreeMap<String, String>>,
     /// The evaluator's phase 1 runs on its pool: what speculations wait
     /// for is prepared ahead ([`RepositorySet::ahead_scope`]).
     ahead: std::sync::atomic::AtomicBool,
@@ -1602,6 +1609,7 @@ impl RepositorySet {
                 eval_evaluable: Default::default(),
                 ahead_after_group: Default::default(),
                 ahead_registrations: Default::default(),
+                drop_reasons: Default::default(),
                 ahead: std::sync::atomic::AtomicBool::new(false),
                 eval_used_groups: Default::default(),
                 eval_group_flight: Default::default(),
@@ -4249,9 +4257,9 @@ impl RepositorySet {
             flight.dropped.insert(id.to_owned());
             if flight.inflight.get(id).is_some_and(|count| *count > 0) {
                 note_eval_adoption_mismatch(|| {
-                    format!(
+                    self.eval_mismatch_message(id, format!(
                         "the module extension group {id} was prepared otherwise while a pool load was using its speculative preparation"
-                    )
+                    ))
                 });
             }
             match used {
@@ -4267,6 +4275,46 @@ impl RepositorySet {
         self.state.build_bzl.evict_repositories(&repositories);
         lock_ignoring_poison(&self.state.ignored)
             .retain(|repository, _| !repositories.contains(repository));
+    }
+
+    /// The speculative preparation of the group `id` (its lockfile entry
+    /// `entry`) was dropped at its commit: the recorded input that changed
+    /// since, if one did — the message of a pool's use of it that can no
+    /// longer stand ([`Self::check_eval_group`]). Looked at without
+    /// demanding or observing anything.
+    fn note_drop_reason(
+        &self,
+        id: &str,
+        group: &repository_catalog::OrdinaryGroup,
+        entry: &crate::lockfile::Json,
+    ) {
+        use crate::lockfile::Json;
+        use crate::lockfile_extensions as lx;
+        let inputs = match lx::member(entry, "recordedInputs") {
+            Some(Json::Array(inputs)) => inputs.clone(),
+            _ => return,
+        };
+        let reason = crate::observed_fs::discard(|| {
+            let _guard = crate::repository_demand::no_demand();
+            lx::outdated_input(&inputs, &LockInputProbe(self))
+        });
+        if let Some(reason) = reason {
+            lock_ignoring_poison(&self.state.drop_reasons).insert(
+                id.to_owned(),
+                format!("{}%{} ({reason})", group.label, group.symbol),
+            );
+        }
+    }
+
+    /// The fail-closed message of a pool's use of the group `id` whose
+    /// speculative preparation could not stand at its commit.
+    fn eval_mismatch_message(&self, id: &str, internal: String) -> String {
+        match lock_ignoring_poison(&self.state.drop_reasons).get(id) {
+            Some(reason) => format!(
+                "{EVAL_INPUT_CHANGED}a recorded input of the module extension {reason} changed during the command after the analysis had used the extension's result; rerun the command"
+            ),
+            None => internal,
+        }
     }
 
     /// The group `id`, which an evaluator's pool load used speculatively,
@@ -4300,9 +4348,9 @@ impl RepositorySet {
         });
         if !same {
             note_eval_adoption_mismatch(|| {
-                format!(
+                self.eval_mismatch_message(id, format!(
                     "the module extension group {id} the pool loaded with its speculative preparation was prepared otherwise where the walk prepares it"
-                )
+                ))
             });
         }
     }
@@ -6898,11 +6946,13 @@ impl RepositorySet {
                 if let Some(mut outcome) = self.state.extension_speculation.take(id) {
                     let chained = !outcome.adopted.is_empty();
                     let warnings = std::mem::take(&mut outcome.warnings);
+                    let entry = outcome.lock.entry.clone();
                     let committed = self.commit_extension_speculation(group, *outcome);
                     if committed.is_none() {
                         // Dropped: the coordinator's evaluation hits the
                         // blobs it downloaded, and prints their warnings.
                         warnings.release();
+                        self.note_drop_reason(id, group, &entry);
                     }
                     self.state
                         .extension_speculation

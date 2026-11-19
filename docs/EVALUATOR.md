@@ -1511,8 +1511,11 @@ sharded `Ct1Done` at once. The coordinator (any thread taking
 inputs name must not change during the invocation before the group's
 commit — as for every warm-reuse probe (`sequential_roots`). A local rule
 whose `execute()` rewrites such a file in phase 1, after the pool's use
-and before the walk's first demand of the group, is the internal error
-(`an_input_rewritten_in_phase_one_after_the_pools_use_is_an_internal_error`);
+and before the walk's first demand of the group, fails the command (since
+cold-eval, naming the recorded input that changed: "a recorded input of
+the module extension … changed during the command after the analysis had
+used the extension's result; rerun the command"; before, an internal
+error; `an_input_rewritten_in_phase_one_after_the_pools_use_fails_the_command`);
 a rewrite before phase 1 (the target pattern phase) fails the use check
 and changes nothing.
 
