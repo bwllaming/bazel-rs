@@ -180,21 +180,21 @@ sample.
 | highway | RS-FAIL | 11.9 / 7.6 (exit 1) | — | — | 736 / 234 | — | — | B1 |
 | bazel-skylib | BOTH-FAIL¹⁷ | 27.5 / 43.3 | 3.6 / — / 0.2 | 57.9 / 62.9 | 1327 / 558 | 689, 0, 0, 0 | FAILED:4 PASSED:158 / same | |
 | junit5-starter | DIFF¹⁷ ²¹ | 25.9 / 21.4 | 3.4 / — / 0.1 | 7.6 / 5.4 | 1239 / 481 | 100, 28, 0, 0 | PASSED:1 / PASSED:1 | C2 |
-| rules_zig | RS-FAIL¹⁵ | 30.7 / 36.8 (exit 1) | 13.2 / — / 12.0 (exit 1) | 36.9 / 11.9 (exit 1) | 1909 / 2042 | 0, 1292, 0, 0 | PASSED:211 SKIPPED:4 / SKIPPED:4 | B13c |
+| rules_zig | RS-FAIL¹⁵ ²³ | 36.0 / 37.7 (exit 1) | 17.2 / — / 12.5 (exit 1) | 39.5 / 12.1 (exit 1) | 2233 / 1956 | 0, 1292, 0, 0 | PASSED:211 SKIPPED:4 / SKIPPED:4 | B13c |
 | capnproto | RS-FAIL⁴ | 17.1 / 11.3 (exit 1) | 3.3 / 0.1 / 1.5 (exit 1) | 22.6 (exit 1) / 7.5 (exit 1) | 1127 / 384 | 317, 1085, 0, 0 | both: FAILED TO BUILD:5 SKIPPED:14 | B11, B20, (B2) |
 | tink-cc-examples | RS-FAIL | 17.3 / 17.1 (exit 1) | — | — | 1127 / 490 | — | — | B11, B14 |
 | examples-java-maven | DIFF²¹ | 33.0 / 25.4 | 3.3 / — / 0.1 | 7.0 / 5.5 | 1137 / 479 | 133, 2, 0, 0 | PASSED:2 / PASSED:2 | C2 |
-| rules_cc | RS-FAIL¹⁵ | 20.0 (exit 1) / 20.4 (exit 1) | 5.3 (exit 1) / — / 4.7 (exit 1) | 52.6 (exit 1) / 63.6 (exit 1) | 2635 / 1392 | 1348, 636, 0, 1 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:3 FAILED TO BUILD:2 PASSED:258 SKIPPED:2 | B32, B17, B18 |
+| rules_cc | RS-FAIL¹⁵ ²³ | 23.7 (exit 1) / 21.4 (exit 1) | 7.8 (exit 1) / — / 5.9 (exit 1) | 52.9 (exit 1) / 53.6 (exit 1) | 2634 / 1647 | 1559, 425, 0, 1 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:5 FAILED TO BUILD:2 PASSED:317 SKIPPED:2 | B32 |
 | examples-rust-deps-cargo | RS-FAIL | 44.0 / 0.3 (exit 1) | 2.9 / 0.2 / 0.3 (exit 1) | 28.8 / 0.3 (exit 1) | 1034 / 29 | 0, 103, 0, 0 | — | B9, (B2) |
-| protobuf | BOTH-FAIL¹⁵ | 49.3 (exit 1) / 79.0 (exit 1) | 7.0 (exit 1) / — / 18.1 (exit 1) | — | 2699 / 3315 | — | — | B33 |
+| protobuf | BOTH-FAIL¹⁵ ²³ | 44.6 (exit 1) / 62.3 (exit 1) | 7.3 (exit 1) / — / 16.2 (exit 1) | — | 2075 / 3566 | — | — | B33 (2 targets left) |
 | openroad | OK²¹ ²² (nobuild, query) | 69.9–76.3 / 109.9–110.7 (one 198.8: a mirror's connect timeout) (cold-eval²²; main 139.4–173.2; download cache pre-filled: 67.1–67.4, main 86.3–87.0 — openroad-perf's 87.2–96.4²⁰ were such runs; corpus-parity3²¹ at load 52–91: 78.0 / 178.1) | 8.9 / — / 1.2–1.3 (corpus-parity3: 10.4 / — / 1.4) | `//:openroad` 676–702, 693.5 / 773.9 (was 1536) | 3014 / 6957–6983 (was 9169) | `//:openroad` before corpus-parity3: 15223, 3978, 301, 0; the B40/B41 targets now match²¹ | — | (C1) |
-| rules_kotlin | RS-FAIL¹⁵ ²¹ | 36.4 / 37.5 (exit 1) | 4.6 / — / 6.7 (exit 1) | — | 2169 / 2066 | — | — | B46 |
+| rules_kotlin | **OK**²¹ ²³ (nobuild, query) | 38.0 / 42.6 | 6.9 / — / 0.2 | — | 2334 / 2109 | — | — | |
 | riegeli | BOTH-FAIL⁶ | 30.2 (exit 1) / 31.0 (exit 1) | 4.1 / 0.2 / 3.7 (all exit 1) | 78.2 (exit 1) / 92.5 (exit 1) | 1427 / 794 | 2800, 0, 0, 0 | PASSED:2 / PASSED:2 | |
 | examples-frontend | DIFF⁷ ²¹ | 87.8 (exit 1) / 128.8 (exit 1) | 64.5 / — / 96.5 (all exit 1) | 60.5 (exit 1) / 135.9 (exit 1) | 1524 / 1933 | 215801, 12, 2, 0 | PASSED:14 / PASSED:14 | C3, (B2) |
 | rules_jvm_external-simple | BOTH-FAIL¹⁵ ²¹ | 55.8 (exit 1) / 30.4 (exit 1) | 3.7 (exit 1) / — / 1.6 (exit 1) | 3.9 (exit 1) / 1.5 (exit 1) | 1726 / 607 | 0, 0, 0, 0 | — | B47 |
 | flatbuffers | BOTH-FAIL⁸ | 21.7 (exit 1) / 8.2 (exit 1) | — | — | 864 / 184 | — | — | B12 |
 | examples-java-tutorial | DIFF | 18.7 (exit 1) / 15.1 (exit 1) | 3.2 / 0.2 / 1.6 (both exit 1) | 5.9 (exit 1) / 4.2 (exit 1) | 881 / 266 | 11, 2, 0, 0 | — | C2 |
-| examples-configurations | DIFF⁹ | 9.1 (exit 1) / 7.2 (exit 1) | 1.8 / 0.1 / 0.8 (both exit 1) | 2.0 (exit 1) / 0.8 (exit 1) | 460 / 225 | 0, 0, 16, 0 | — | B24 |
+| examples-configurations | BOTH-FAIL⁹ ²³ | 10.0 (exit 1) / 5.4 (exit 1) | 2.2 / — / 0.2 (both exit 1) | 2.2 (exit 1) / 0.2 (exit 1) | 406 / 129 | 0, 0, 0, 0 | — (both: no test runs) | |
 
 Notes:
 
@@ -224,7 +224,7 @@ Notes:
    with extra errors.
 9. Genuine aborts on `alias/project_main:PROJECT.scl` ("Every .bzl file must
    have a corresponding package"). bazel-rs does not run that project-file
-   check, analyses on and fails later.
+   check, analyses on and fails later (fixed on corpus-parity4, B24).
 10. Rerun 2026-11-17 (branch corpus-macros): B3 and B16 are fixed, so the
     `inherit_attrs` wrappers (`wrapper.bzl:31`) load and expand. The two
     test failures (`//opt_filegroup:slow_app_integration_test` and its
@@ -405,7 +405,22 @@ Notes:
     pip_parse 808 MB against 654 MB (`stable_tools` and `rust_host_tools`
     now extract the same rust archives side by side).
 
-**Summary.** 37 projects ran. On 14 of them bazel-rs matches genuine exactly
+23. Rerun 2026-11-19 on branch corpus-parity4 (main 0d2e0367 = 0.4.32 plus
+    its commits; non-LTO), phases `nobuild_cold,nobuild_warm,query,build,
+    test` for examples-configurations, rules_cc and rules_zig,
+    `nobuild_cold,nobuild_warm,query` for rules_kotlin and protobuf (load
+    17–25). Fixed: B46 (rules_kotlin: `build --nobuild //...` exits 0 on
+    both tools, `query //...` matches, 1,319 labels), B24
+    (examples-configurations: both tools abort on genuine's `error loading
+    project files: Every .bzl file must have a corresponding package, but
+    '//alias/project_main:PROJECT.scl' does not have one…`, `test` included;
+    `query` matches, 54 labels), most of B33 (protobuf: 28 of its 30
+    analysis errors gone; `query` matches, 3,411 labels; genuine still
+    fails on rules_ruby) and part of B32 (rules_cc: 317 passing tests, was
+    258; genuine 453). rules_zig: unchanged, B13c (not attempted, design
+    below).
+
+**Summary.** 37 projects ran. On 15 of them bazel-rs matches genuine exactly (rules_kotlin since corpus-parity4, footnote 23, its build and tests not compared)
 (10 before the corpus-parent rerun, footnote 17: diff.bzl, bazel-skylib
 and buildtools since B6's fix; bazel-skylib's and buildtools' own failing
 tests fail identically on both tools; junit5-starter and, since
@@ -414,8 +429,8 @@ phases and outputs match too, its full build not rerun, footnote 21):
 same exit codes, `query //...` labels, `bazel-bin` file lists, sampled
 SHA-256s and test results. abseil-cpp is the largest: 2,767 outputs and 252
 passing tests. Two more (rules-template, yalantinglibs; riegeli too since the
-corpus-runfiles rerun) fail the same way on
-both tools. Two are clean except for one bug each: bazel-gazelle (B13,
+corpus-runfiles rerun, and examples-configurations since corpus-parity4)
+fail the same way on both tools. Two are clean except for one bug each: bazel-gazelle (B13,
 fixed since; the corpus-perf rerun builds `//...` on both tools, its query
 and tests not rerun) and rules_python-bzlmod (B34, its zipapp's modes). The
 rest are blocked by the
@@ -442,7 +457,7 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B13 | fixed (bazel-skylib, rules_zig, rules_cc; bazel-gazelle not rerun) | analysis tests: `analysis_test_transition`, `testing.analysis_test`, `Target.actions`, `AnalysisFailureInfo` (docs/ANALYSIS_TESTS.md) |
 | B13a | fixed (corpus-parity2) | transition on `//command_line_option:minimum_os_version` and `ctx.fragments.cpp.minimum_os_version()` |
 | B13b | fixed (corpus-parity2) | `srcs = ["."]` (the package directory as a source label): "unsafe source label //tests/directory:." |
-| B13c | 1 (rules_zig) | one toolchain implementation for two execution platforms in one configuration (ConfiguredTargetKey.executionPlatformLabel), a fatal error (open: needs the execution platform in the configured-target key, see below) |
+| B13c | 1 (rules_zig) | one toolchain implementation for two execution platforms in one configuration (ConfiguredTargetKey.executionPlatformLabel), a fatal error (open: needs the execution platform in the configured-target key; design refined on corpus-parity4, below) |
 | B13d | fixed (= B29) | rules_cc's own `cc_test.bzl`/`cc_binary.bzl` "cannot use private API" |
 | B13e | fixed (corpus-parity2) | `cc_import` of `mylib.dll`/`mylib.lib` on Linux: "does not match expected filetype" |
 | B15 | fixed (corpus-runfiles) | test runfiles were hardlinks, not symlinks |
@@ -458,12 +473,12 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B22 | 1 (openroad) | `git_override` of a repository with submodule gitlinks |
 | B23 | 1 (examples-rules) | predeclared `attr.output` given as `":name"` |
 | B12 | 1 (flatbuffers) | `@local_config_platform` unknown |
-| B24 | 1 (examples-configurations) | no PROJECT.scl project-file check |
+| B24 | fixed (corpus-parity4) | PROJECT.scl project files: looked up and loaded before the analysis, genuine's `error loading project files` (docs/CONFIGURATION.md "PROJECT.scl project files"); a project with configurations fails explicitly |
 | B25 | fixed (502d3267; not reproduced in corpus-parity3) | "needs-repository: repository @@rules_diff+ is unfetched and this thread does not fetch" on a warm `test` (a worker's sentinel answer cached by the ignored-subdirectories memo) |
 | B30 | fixed (corpus-ccshared) | `provider in target` fails "Target membership requires an exported provider constructor" in with_cfg's `transitioning_alias.bzl:55` (toolchains_llvm's `*_with_cfg` glibc/libunwind/libcxxabi targets; one of with_cfg's forwarded builtin providers is not an exported constructor natively: `apple_common.Objc`) |
 | B31 | fixed (corpus-parity3) | `config_common.config_feature_flag_transition`: loads; no transition unless the attribute sets flag values, which fails explicitly (docs/TEST_FLAGS.md) |
-| B32 | 1 (rules_cc's own tests) | Starlark transitions on unmodelled native options (`fdo_optimize`, `cs_fdo_profile`, `instrumentation_filter`, `experimental_cpp_modules`, `build_test_dwp`, `fission`, `custom_malloc`, `incompatible_remove_legacy_whole_archive`), `cc_internal.freeze` of mutable structs / unfrozen functions, `objc.target_should_alwayslink` with an `alwayslink` attribute, `Target.actions` read in an aspect |
-| B33 | 1 (protobuf) | analysis: `java_common.check_java_toolchain_is_declared_on_rule` (implemented on corpus-parity3, protobuf not rerun), aspect providers (`does not provide …UpbMinitableCcInfo` / `JavaInfo` on proto_library targets), `Target.actions` in aspect tests, `cc_common.check_experimental_cc_shared_library` (B18) |
+| B32 | 1 (rules_cc's own tests) | Starlark transitions on unmodelled native options. Fixed on corpus-parity4: `--fission`, `--build_test_dwp`, `--legacy_whole_archive`, `--incompatible_remove_legacy_whole_archive` are configuration options and `--dynamic_mode` is transitionable (docs/CONFIGURATION.md); a fission compile's `.dwo` is declared where genuine declares it. Left: the FDO and Propeller options (`fdo_optimize`, `fdo_profile`, `fdo_instrument`, `cs_fdo_profile`, `xbinary_fdo`, `propeller_optimize*`, `memprof_profile`), `custom_malloc` (a late-bound dependency per configuration), `instrumentation_filter`, `experimental_cpp_modules`, `save_temps`, `grte_top`, `start_end_lib`, `ltoindexopt`/`ltobackendopt`/`per_file_ltobackendopt`; `cc_internal.freeze` of mutable structs / unfrozen functions (38 targets, the thin-LTO and linkstamp tests); `objc.target_should_alwayslink` with an `alwayslink` attribute; Windows artifact name patterns (`*_def_file_*_dll_pattern`) |
+| B33 | 1 (protobuf); 2 targets left | protobuf analysis. Fixed on corpus-parity4: symbolic-macro visibility delegation and alias select() keys under `--incompatible_config_setting_private_default_visibility` (5 visibility errors), `declare_file(sibling=)` from another package, per-attribute aspect views of aspects propagating over one attribute (`UpbMinitableCcInfo`/`JavaInfo` on proto_library targets), `Target.actions` of targets merged with aspects and of a rule under test's dependencies, `--dynamic_mode` transitions (rules_fuzzing). Left: transitions on `instrumentation_filter` (`generated_sources_not_coverage_instrumented`; native's filter is per command, not per configuration) and `experimental_output_paths=strip` (`test_compile_path_mapping`; path mapping) |
 | B34 | 1 (rules_python-bzlmod); not blocking | `external/other_module+/other_module/pkg/bin_zipapp.zip` differs from genuine's: rules_python's zipper stores each input's mode and relative symlinks as it finds them in the sandbox; native staging hardlinks read-only store blobs (docs/HARDLINK_STAGING.md) |
 | B43 | 1 (with_cfg); not blocking | genuine builds `cc_no_copt_binary/binary_/binary.runfiles_manifest` and `.repo_mapping` (the manual `cc_binary` behind with_cfg's frontend and transitioning alias, a no-op transition); bazel-rs does not (not investigated) |
 | B35 | fixed (corpus-parity3) | rules_kotlin: `download_and_extract(rename_files=…)`, `Target.actions` through an alias, TestingAspectInfo (per-attribute aspect views), `check_java_toolchain_is_declared_on_rule`, mutable `default_jvm_opts`, genquery `buildfiles` scope |
@@ -477,7 +492,7 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B42 | fixed (corpus-ccshared) | a test's runfile of an `actions.symlink` output of a generated file was a copy at the link's exec path, so `$ORIGIN` of a with_cfg-forwarded `cc_binary` missed its `dynamic_deps` |
 | B44 | fixed (corpus-parity3) | `ctx.actions.write(mnemonic=...)` was dropped: rules_cc's module maps are `CppModuleMap` in aquery, the profile and `Target.actions` |
 | B45 | fixed (corpus-parity3) | compiles staged the toolchain's `all_files` instead of `compiler_files` (`as_files` for `assemble`), so `build //src/utl:utl` also built the toolchain's link-time runtimes (1,109 actions against genuine's 829) |
-| B46 | 1 (rules_kotlin) | `Target.actions` `argv` is empty for an action whose `Args` use `map_each` (deferred to execution natively; genuine expands it at analysis): rules_kotlin's `windows_coverage_test_suite_flag_test` (`JavaLauncherMaker`) fails analysis on `jvm_flags[0]`, and the `javac_receives_the_plugins_of_the_flag` test sees an empty `Javac` argv |
+| B46 | fixed (corpus-parity4) | `Target.actions` `argv` is empty for an action whose `Args` use `map_each` (deferred to execution natively; genuine expands it at analysis): rules_kotlin's `windows_coverage_test_suite_flag_test` (`JavaLauncherMaker`) fails analysis on `jvm_flags[0]`, and the `javac_receives_the_plugins_of_the_flag` test sees an empty `Javac` argv |
 | B47 | 1 (rules_jvm_external-simple); not blocking (genuine fails too, no Android SDK) | rules_android's `android_split_transition` reads `//command_line_option:Android configuration distinguisher`: "transition inputs ... do not correspond to valid settings" (an unmodelled Android native option) |
 | B28 | fixed (corpus-runfiles) | `build //...` missed genuine's `.pic.o`/`.pic.d` of external C++ deps: the rule-returned `_hidden_top_level_INTERNAL_` group (rules_cc cc_library's transitive objects) was not built |
 
@@ -680,7 +695,8 @@ apparent repository @local_config_platform"; genuine still provides it.
 
 **B24.** Genuine rejects a `PROJECT.scl` outside any package ("error loading
 project files: Every .bzl file must have a corresponding package").
-bazel-rs does not run that check.
+bazel-rs does not run that check. Fixed on corpus-parity4 (footnote 23):
+both tools abort the same way.
 
 **B25.** In examples-frontend, the `test //...` run after `build //...`
 failed every target with "While resolving toolchains … invalid registered
@@ -720,6 +736,42 @@ adding the execution platform touches every evaluator (walk, eval,
 parallel, prepare, linearize pass 1's `toolchain_implementations` claim and
 its whole-command stop), cquery and the snapshot codec. Not attempted on
 corpus-parity2.
+
+**B13c (design, corpus-parity4).** Not attempted: the change cannot be
+made soundly in one step. What genuine does
+(ToolchainsForTargetsProducer/DependencyResolver, ConfiguredTargetKey): a
+toolchain implementation's key carries the execution platform of its
+parent's exec group (`executionPlatformLabel`), and only those edges; every
+other configured target stays keyed by (label, configuration). So one
+target can exist twice in one configuration, differing only in the
+execution platform its own exec-transitioned tools see. A sound native
+design:
+
+1. `ConfiguredTargetKey` gains `exec_platform: Option<Label>`, set only on
+   toolchain-resolution edges (the resolved implementation and an alias
+   chain to it), `None` everywhere else, so existing keys, their ordering
+   and their encodings stay byte-identical when it is `None` (the snapshot
+   codec writes the field only when present, with a format-version bump).
+2. Inside a key with `exec_platform`, the exec transition of the target's
+   own exec-configured dependencies uses that platform instead of the one
+   its own toolchain resolution picks (genuine: the toolchain's `cfg =
+   "exec"` attributes follow the parent's execution platform).
+3. Every place that collapses keys to labels needs an audit: the
+   evaluators' memo/`configured_contains`, linearize pass 1's
+   `toolchain_implementations` claim (today the whole-command stop),
+   the action owners and output paths (two keys of one target in one
+   configuration must not register the same outputs: genuine relies on
+   the shared-action check, `ActionConflict`; the exec-configured tools
+   differ, the toolchain target's own outputs usually do not), cquery
+   (`--output` shows the same label twice; genuine prints both), aquery
+   and the analysis snapshot's key interning.
+
+The cost is in step 3: the claim in linearize pass 1 assumes one node per
+(label, configuration); removing it without the conflict check would let
+two nodes write one output. The order: the key field and codec (no
+behaviour change), then the exec-platform propagation behind the existing
+whole-command stop (verified by the walk/eval/verify modes), then the
+shared-action conflict check, and only then lifting the stop.
 
 **B36–B42 (corpus-ccshared).** OpenROAD's analysis after B18/B30 hit B36
 (rules_cc_autoconf), B37 and B38 (sv-elab's repository rules); its
