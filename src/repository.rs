@@ -801,6 +801,18 @@ impl Drop for AheadScope<'_> {
     }
 }
 
+/// A speculation's held download warnings, released when it ends without
+/// its output committed (crate::download_warnings).
+struct ReleaseWarnings(Option<crate::download_warnings::Held>);
+
+impl Drop for ReleaseWarnings {
+    fn drop(&mut self) {
+        if let Some(held) = self.0.take() {
+            held.release();
+        }
+    }
+}
+
 /// Whether this thread runs a repository speculation or evaluates a module
 /// extension ahead: a dependency it finds unfetched is waited for a little
 /// ([`RepositorySet::published_after_requested_speculation`]).
@@ -1189,6 +1201,9 @@ thread_local! {
 struct ExtensionOutcome {
     /// `None`: an evaluation ahead that failed (`lock.evaluated.failure`).
     prepared: Option<Arc<PreparedOrdinary>>,
+    /// Its transfers' download warnings (in `output` too): released when
+    /// the commit drops it (crate::download_warnings).
+    warnings: crate::download_warnings::Held,
     /// The speculative preparations of other groups it used, in first-use
     /// order ([`RepositorySet::adopt_speculated_group`]).
     adopted: Adopted,
@@ -4779,11 +4794,16 @@ impl RepositorySet {
         let console = crate::ui::DeferredConsole::start();
         let unit = UnitRoots::record();
         let mut lock = None;
-        let ((result, observations), definitions) = crate::loading::speculative_definitions(|| {
-            crate::observed_fs::capture_detached(|| {
-                self.compute_ordinary(id, runtime, group, Some(&mut lock))
-            })
-        });
+        let (((result, observations), definitions), held) =
+            crate::download_warnings::collect(|| {
+                crate::loading::speculative_definitions(|| {
+                    crate::observed_fs::capture_detached(|| {
+                        self.compute_ordinary(id, runtime, group, Some(&mut lock))
+                    })
+                })
+            });
+        // Released unless the outcome is kept (then its commit decides).
+        let mut held = ReleaseWarnings(Some(held));
         let obtained = unit.finish();
         let output = console.finish();
         let registry_roots =
@@ -4840,6 +4860,7 @@ impl RepositorySet {
                     crate::repository_demand::sentinels_raised() == sentinels,
                 ) {
                     return Finished::Done(Box::new(ExtensionOutcome {
+                        warnings: held.0.take().unwrap_or_default(),
                         prepared: None,
                         adopted,
                         lock,
@@ -4888,6 +4909,7 @@ impl RepositorySet {
         self.retry_extension_speculations();
         self.request_after_group(id);
         Finished::Done(Box::new(ExtensionOutcome {
+            warnings: held.0.take().unwrap_or_default(),
             prepared: Some(prepared),
             adopted,
             lock,
@@ -4924,6 +4946,7 @@ impl RepositorySet {
             obtained,
             registry_roots,
             definitions,
+            warnings: _,
         } = outcome;
         // A root's materialization is the sequential engine's at this load;
         // it prints nothing but download warnings, written as they come.
@@ -5263,7 +5286,12 @@ impl RepositorySet {
             }
             Err(_) => return Finished::Failed,
         };
-        let (result, obtained) = UnitRoots::during(|| self.speculative_materialize(canonical));
+        let ((result, obtained), held) = crate::download_warnings::collect(|| {
+            UnitRoots::during(|| self.speculative_materialize(canonical))
+        });
+        // Its transfers' warnings, unless its output is committed or it
+        // published (crate::download_warnings).
+        let mut held = ReleaseWarnings(Some(held));
         let eval_requested = adoption.is_some();
         drop(adoption);
         let order_dependent = crate::repository_demand::take_order_dependent();
@@ -5303,6 +5331,7 @@ impl RepositorySet {
                             "repository speculation {canonical} (adopting {eval_requested}) published"
                         )
                     });
+                    held.0.take();
                     return Finished::Published;
                 }
                 // The coordinator evaluates the slot: it takes the outcome.
@@ -5312,6 +5341,8 @@ impl RepositorySet {
             (root, obtained)
         };
         let withdraw = self.speculation_withdrawal(canonical, &root);
+        // Its output, warnings included, is the coordinator's to write.
+        held.0.take();
         Finished::Done(Box::new(Outcome {
             root,
             output,
@@ -6864,9 +6895,15 @@ impl RepositorySet {
                 let _span = crate::timeline::span("extension", || id.to_owned());
                 // Prepared ahead already (crate::extension_speculation):
                 // committed here, where the sequential engine prepares it.
-                if let Some(outcome) = self.state.extension_speculation.take(id) {
+                if let Some(mut outcome) = self.state.extension_speculation.take(id) {
                     let chained = !outcome.adopted.is_empty();
+                    let warnings = std::mem::take(&mut outcome.warnings);
                     let committed = self.commit_extension_speculation(group, *outcome);
+                    if committed.is_none() {
+                        // Dropped: the coordinator's evaluation hits the
+                        // blobs it downloaded, and prints their warnings.
+                        warnings.release();
+                    }
                     self.state
                         .extension_speculation
                         .note_commit(committed.is_some(), chained);

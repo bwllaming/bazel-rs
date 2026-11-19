@@ -1325,3 +1325,122 @@ e = module_extension(implementation = _e)
         assert_eq!(runs(&log), 1, "jitter {jitter}:\n{}", run.stderr);
     }
 }
+
+/// Cold: an extension evaluated ahead downloads a checksummed file after a
+/// failed mirror (`WARNING: Download from … failed`), then needs a registry
+/// module's root nobody materialized yet, so its attempt is blocked (and
+/// retried, kept or dropped). The warning is printed exactly where the
+/// walk prints it, although the later attempt (or the coordinator's
+/// evaluation) finds the file in the download cache.
+#[test]
+fn a_failed_mirrors_warning_survives_a_retried_evaluation_ahead() {
+    let fixture = Fixture(
+        tempfile::Builder::new()
+            .prefix("extension-speculation-mirror-")
+            .tempdir_in(crate::test_temp::root())
+            .unwrap(),
+    );
+    let module = "module(name = 'reg_mod', version = '1')\n";
+    let bytes = archive(
+        "reg_mod",
+        &[
+            ("MODULE.bazel", module),
+            ("BUILD.bazel", ""),
+            ("f.txt", "from reg_mod\n"),
+        ],
+    );
+    let path = fixture.path().join("reg_mod-1.tar.gz");
+    fs::write(&path, &bytes).unwrap();
+    fixture.write("registry/modules/reg_mod/1/MODULE.bazel", module);
+    let source = serde_json::json!({
+        "url": format!("file://{}", path.display()),
+        "integrity": format!(
+            "sha256-{}",
+            base64::engine::general_purpose::STANDARD.encode(Sha256::digest(&bytes))
+        ),
+        "strip_prefix": "reg_mod-1",
+    });
+    fixture.write(
+        "registry/modules/reg_mod/1/source.json",
+        &source.to_string(),
+    );
+    let server = ArchiveServer::new(b"the blob\n".to_vec());
+    let sha: String = Sha256::digest(b"the blob\n")
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    fixture.write(
+        "MODULE.bazel",
+        "module(name = 'main')\nbazel_dep(name = 'reg_mod', version = '1')\ne = use_extension('//:ext.bzl', 'e')\nuse_repo(e, 'gen')\n",
+    );
+    fixture.write(
+        "ext.bzl",
+        &format!(
+            r#"def _r(rctx):
+    rctx.file("BUILD.bazel", "filegroup(name = 'f', srcs = ['v.txt'], visibility = ['//visibility:public'])\n")
+    rctx.file("v.txt", rctx.attr.text)
+
+r = repository_rule(implementation = _r, attrs = {{"text": attr.string()}})
+
+def _e(mctx):
+    mctx.download(["http://127.0.0.1:1/blob.txt", "{good}/blob.txt"], "blob.txt", sha256 = "{sha}")
+    text = mctx.read(mctx.path(Label("@reg_mod//:f.txt")))
+    print("e read " + text.strip() + " and " + mctx.read("blob.txt").strip())
+    r(name = "gen", text = text)
+
+e = module_extension(implementation = _e)
+"#,
+            good = server.url
+        ),
+    );
+    fixture.write("BUILD.bazel", "");
+    let mut all = Vec::new();
+    for i in 0..6 {
+        fixture.write(
+            &format!("p{i}/BUILD.bazel"),
+            "filegroup(name = 't', srcs = ['@gen//:f'], visibility = ['//visibility:public'])\n",
+        );
+        all.push(format!("'//p{i}:t'"));
+    }
+    fixture.write(
+        "all/BUILD.bazel",
+        &format!("filegroup(name = 'all', srcs = [{}])\n", all.join(", ")),
+    );
+    // Every run from a cold cache and no lockfile.
+    let fresh = || {
+        let cache = fixture.path().join("cache");
+        let _ = Command::new("chmod")
+            .arg("-R")
+            .arg("u+w")
+            .arg(&cache)
+            .status();
+        let _ = fs::remove_dir_all(&cache);
+        let _ = fs::remove_file(fixture.path().join("MODULE.bazel.lock"));
+    };
+    fresh();
+    let reference = fixture.build(1, "off", &[("BAZEL_RS_ANALYSIS", "walk")], &["//all"]);
+    assert_eq!(reference.code, Some(0), "{}", reference.stderr);
+    let warning = "WARNING: Download from http://127.0.0.1:1/blob.txt failed";
+    assert_eq!(
+        reference.stderr.matches(warning).count(),
+        1,
+        "{}",
+        reference.stderr
+    );
+    assert!(
+        reference.stderr.find(warning) < reference.stderr.find("e read from reg_mod"),
+        "{}",
+        reference.stderr
+    );
+    for (threads, extra) in [
+        (2, None),
+        (8, Some(("BAZEL_RS_EVAL_JITTER", "200"))),
+        (8, Some(("BAZEL_RS_EVAL_RESTARTS", "5"))),
+    ] {
+        fresh();
+        let mut env = vec![("BAZEL_RS_ANALYSIS", "eval")];
+        env.extend(extra);
+        let run = fixture.build(threads, "off", &env, &["//all"]);
+        assert_same(&reference, &run, &format!("threads={threads} {extra:?}"));
+    }
+}

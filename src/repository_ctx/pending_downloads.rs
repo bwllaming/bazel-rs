@@ -365,6 +365,7 @@ fn commit(entry: Entry) {
             "WARNING: Download from {url} failed: class {} {}",
             failure.class, failure.message
         );
+        crate::download_warnings::note(entry.expected.as_ref(), &warning);
         if !crate::repository_speculation::defer_stderr(&crate::ui::marked(&warning)) {
             crate::ui::note(&warning);
         }

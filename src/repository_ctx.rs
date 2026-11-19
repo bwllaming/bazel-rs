@@ -2529,6 +2529,7 @@ impl Context {
                     "WARNING: Download from {url} failed: class {} {}",
                     failure.class, failure.message
                 );
+                crate::download_warnings::note(expected, &warning);
                 if !crate::repository_speculation::defer_stderr(&crate::ui::marked(&warning)) {
                     crate::ui::note(&warning);
                 }
@@ -2784,6 +2785,16 @@ impl Context {
         // DownloadCache.get touches the entry it serves (java:214): its
         // last use (docs/CACHE_GC.md).
         crate::cache_gc::note_used_path(&blob);
+        // An uncommitted speculation fetched it after a failed mirror: its
+        // warnings are written here, where this download would print them
+        // (crate::download_warnings).
+        for warning in crate::download_warnings::take(expected) {
+            // (Held again for this download, which may be a speculation's.)
+            crate::download_warnings::note(Some(expected), &warning);
+            if !crate::repository_speculation::defer_stderr(&crate::ui::marked(&warning)) {
+                crate::ui::note(&warning);
+            }
+        }
         // DownloadManager.java:266-276: a failing copy is ignored ("We'll
         // just download again"), e.g. when the output is a directory.
         let copied = (|| -> std::io::Result<()> {

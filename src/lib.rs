@@ -63,6 +63,7 @@ pub mod digest_memo;
 pub mod dir_stamps;
 pub mod download_options;
 pub mod download_proxy;
+mod download_warnings;
 pub mod dump_command;
 pub mod engine;
 pub(crate) mod eval_timeline;
