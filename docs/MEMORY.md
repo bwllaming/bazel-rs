@@ -205,3 +205,35 @@ analysis results awaiting their merge (Starlark heaps, providers, the registered
 the deltas (~0.9 GB), the phase-1 configured rules and packages (~1.5 GB), the remaining listed inputs (~0.4 GB)
 and, while recording, the transcripts (~1.1 GB at the end of phase 1). The next step is the cursor's lag: deltas
 merged as their entries' turns come would not all be alive at once.
+
+## Snapshot misses (analysis-memory, ~/code and OpenROAD)
+
+Heap profiles at every `PERF` mark (`BAZEL_RS_TIMING_HEAP_DUMP`) and `BAZEL_RS_TIMING_ALLOC` of `build --nobuild`
+snapshot misses (`--define` changed, recording on). Both peaks are at the end of the deferred walk, after the
+cursor merged everything, not while results wait for it: OpenROAD's cursor waits ~10 s for the boost chain, but
+what the waiting entries hold (prepares, unmerged deltas: ~1 GB live mid-wait) is gone again at the walk's end,
+where the merged plan, the walk's tables and phase 1's structures peak together.
+
+| what (~/code `//src/...`) | at the peak | fix |
+|---|---|---|
+| each of 31,114 PyCompile actions listed the Python runtime's ~1,650 files (rules_python `actions_run`: the interpreter as executable, `inputs = depset([src], transitive = [runtime files])`, the precompiler as a tool); the shared run could not be a group beside the precompiler's runfiles tree, and the run also held the interpreter listed first | 1.65 GB (mostly pruned as unreachable in the tail) | the run is one group beside the tree (planned request format 11: `groups_at` places shared runs only, runfiles trees stay after all own inputs), without the entries the action lists first (`SharedInputs::group_beside`) |
+
+Result (non-LTO builds of main 0d2e0367 and the branch, alternating, three rounds, load 8–23, private caches):
+
+| run | main | analysis-memory |
+|---|---|---|
+| ~/code `--nobuild //src/...`, snapshot miss | 22.0 / 23.5 / 23.3 s, 9,596 / 9,677 / 9,591 MB | 22.4 / 23.9 / 21.4 s, 7,915 / 7,954 / 7,927 MB |
+| OpenROAD `--nobuild //...`, snapshot miss | 30.2 / 30.9 / 32.6 s, 6,895 / 6,909 / 6,911 MB | 28.6 / 29.8 / 28.3 s, 6,908 / 6,901 / 6,904 MB |
+
+The action dump of ~/code `//src/...` (5.5 M lines) and stdout are byte-identical; `BAZEL_RS_RUN_GROUPS=0` (lists
+every run in full) gives the same dump and the same aquery output (text and jsonproto, PyCompile included).
+
+What remains on OpenROAD (live at the walk's end ~6.5 GB, 7.0 GB resident; genuine 3.0 GB), none of it a single
+large item: the planned actions (1.2 GB: CppCompile arguments 250 MB as owned strings, 18,561 x ~200;
+GenerateMoc's inputs 122 MB, its memoized run only the first of a dozen header depsets; the test runfiles
+trees' and manifests' 30,839 nodes 190 MB), the targets' frozen analysis heaps (0.56 GB in 343,000 heaps),
+packages and configured rules (0.9 GB), the walk's own tables freed at its end (published results, shared-input
+memos, provisional reads, observations: ~0.4 GB) and phase 1's evaluator tables freed after it (~0.2 GB), and the
+snapshot recording (+0.45 GB live: the incremental tracker's tapes and the observations; +0.8 GB resident
+against `BAZEL_RS_SNAPSHOT=off`: 6.28 GB). jemalloc's arena count and decay times change nothing (narenas 16/64,
+dirty decay 1 s, background thread: 6.87–7.05 GB).
