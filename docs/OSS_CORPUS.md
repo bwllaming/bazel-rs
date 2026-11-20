@@ -180,13 +180,13 @@ sample.
 | highway | RS-FAIL | 11.9 / 7.6 (exit 1) | — | — | 736 / 234 | — | — | B1 |
 | bazel-skylib | BOTH-FAIL¹⁷ | 27.5 / 43.3 | 3.6 / — / 0.2 | 57.9 / 62.9 | 1327 / 558 | 689, 0, 0, 0 | FAILED:4 PASSED:158 / same | |
 | junit5-starter | DIFF¹⁷ ²¹ | 25.9 / 21.4 | 3.4 / — / 0.1 | 7.6 / 5.4 | 1239 / 481 | 100, 28, 0, 0 | PASSED:1 / PASSED:1 | C2 |
-| rules_zig | RS-FAIL¹⁵ ²³ | 36.0 / 37.7 (exit 1) | 17.2 / — / 12.5 (exit 1) | 39.5 / 12.1 (exit 1) | 2233 / 1956 | 0, 1292, 0, 0 | PASSED:211 SKIPPED:4 / SKIPPED:4 | B13c |
+| rules_zig | RS-FAIL¹⁵ ²⁴ | 37.9 / 82.5 (exit 1) | 14.0 / — / 13.4 (exit 1) | 39.3 / 12.1 (exit 1) | 2722 / 1952 | 0, 1292, 0, 0 | PASSED:211 SKIPPED:4 / SKIPPED:4 | B13c |
 | capnproto | RS-FAIL⁴ | 17.1 / 11.3 (exit 1) | 3.3 / 0.1 / 1.5 (exit 1) | 22.6 (exit 1) / 7.5 (exit 1) | 1127 / 384 | 317, 1085, 0, 0 | both: FAILED TO BUILD:5 SKIPPED:14 | B11, B20, (B2) |
 | tink-cc-examples | RS-FAIL | 17.3 / 17.1 (exit 1) | — | — | 1127 / 490 | — | — | B11, B14 |
 | examples-java-maven | DIFF²¹ | 33.0 / 25.4 | 3.3 / — / 0.1 | 7.0 / 5.5 | 1137 / 479 | 133, 2, 0, 0 | PASSED:2 / PASSED:2 | C2 |
-| rules_cc | RS-FAIL¹⁵ ²³ | 23.7 (exit 1) / 21.4 (exit 1) | 7.8 (exit 1) / — / 5.9 (exit 1) | 52.9 (exit 1) / 53.6 (exit 1) | 2634 / 1647 | 1559, 425, 0, 1 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:5 FAILED TO BUILD:2 PASSED:317 SKIPPED:2 | B32 |
+| rules_cc | DIFF¹⁵ ²⁴ | 19.9 (exit 1) / 22.9 (exit 1) | 6.8 (exit 1) / — / 8.0 (exit 1) | 78.4 (exit 1) / 64.9 (exit 1) | 2446 / 1699 | 1669, 315, 0, 1 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:1 FAILED TO BUILD:2 PASSED:346 SKIPPED:2 | B32 |
 | examples-rust-deps-cargo | RS-FAIL | 44.0 / 0.3 (exit 1) | 2.9 / 0.2 / 0.3 (exit 1) | 28.8 / 0.3 (exit 1) | 1034 / 29 | 0, 103, 0, 0 | — | B9, (B2) |
-| protobuf | BOTH-FAIL¹⁵ ²³ | 44.6 (exit 1) / 62.3 (exit 1) | 7.3 (exit 1) / — / 16.2 (exit 1) | — | 2075 / 3566 | — | — | B33 (2 targets left) |
+| protobuf | BOTH-FAIL¹⁵ ²⁴ | 79.1 (exit 1) / 72.7 (exit 1) | 7.4 (exit 1) / — / 20.5 (exit 1) | — | 2545 / 3600 | — | — | B33 (1 target left) |
 | openroad | OK²¹ ²² (nobuild, query) | 69.9–76.3 / 109.9–110.7 (one 198.8: a mirror's connect timeout) (cold-eval²²; main 139.4–173.2; download cache pre-filled: 67.1–67.4, main 86.3–87.0 — openroad-perf's 87.2–96.4²⁰ were such runs; corpus-parity3²¹ at load 52–91: 78.0 / 178.1) | 8.9 / — / 1.2–1.3 (corpus-parity3: 10.4 / — / 1.4) | `//:openroad` 676–702, 693.5 / 773.9 (was 1536) | 3014 / 6957–6983 (was 9169) | `//:openroad` before corpus-parity3: 15223, 3978, 301, 0; the B40/B41 targets now match²¹ | — | (C1) |
 | rules_kotlin | **OK**²¹ ²³ (nobuild, query) | 38.0 / 42.6 | 6.9 / — / 0.2 | — | 2334 / 2109 | — | — | |
 | riegeli | BOTH-FAIL⁶ | 30.2 (exit 1) / 31.0 (exit 1) | 4.1 / 0.2 / 3.7 (all exit 1) | 78.2 (exit 1) / 92.5 (exit 1) | 1427 / 794 | 2800, 0, 0, 0 | PASSED:2 / PASSED:2 | |
@@ -420,6 +420,25 @@ Notes:
     258; genuine 453). rules_zig: unchanged, B13c (not attempted, design
     below).
 
+24. Rerun 2026-11-20 on branch corpus-parity5 (main 92711fc8 = 0.4.33 plus
+    its commits; non-LTO), phases `nobuild_cold,nobuild_warm,query,build,
+    test` for rules_cc and rules_zig, `nobuild_cold,nobuild_warm,query` for
+    protobuf (load 20–45). rules_cc: 346 passing tests (317 on
+    corpus-parity4; genuine 453), its two remaining failures are the
+    cc_static_library `test_output_groups` and
+    `validate_static_library_env_test` builds (B32); its build now differs
+    from genuine's only by outputs genuine builds and bazel-rs does not (315,
+    was 425; one hash difference as before). Fixed there: `cc_internal.freeze`
+    as Bazel's shallow immutable copy (the 38 freeze targets), HeaderInfo's
+    merged headers, artifact name patterns, `objc.target_should_alwayslink`,
+    map_each's non-global error, hashable structs/providers holding frozen
+    lists, and transitions on `instrumentation_filter`, `save_temps`,
+    `start_end_lib`, `interface_shared_objects`,
+    `process_headers_in_dependencies`. protobuf: one analysis error left
+    (`test_compile_path_mapping`, B33; `instrumentation_filter` fixed);
+    `query` matches. rules_zig: unchanged, B13c (below: the shared-action
+    conflict check it needs exists and covers the execution platform).
+
 **Summary.** 37 projects ran. On 15 of them bazel-rs matches genuine exactly (rules_kotlin since corpus-parity4, footnote 23, its build and tests not compared)
 (10 before the corpus-parent rerun, footnote 17: diff.bzl, bazel-skylib
 and buildtools since B6's fix; bazel-skylib's and buildtools' own failing
@@ -457,7 +476,7 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B13 | fixed (bazel-skylib, rules_zig, rules_cc; bazel-gazelle not rerun) | analysis tests: `analysis_test_transition`, `testing.analysis_test`, `Target.actions`, `AnalysisFailureInfo` (docs/ANALYSIS_TESTS.md) |
 | B13a | fixed (corpus-parity2) | transition on `//command_line_option:minimum_os_version` and `ctx.fragments.cpp.minimum_os_version()` |
 | B13b | fixed (corpus-parity2) | `srcs = ["."]` (the package directory as a source label): "unsafe source label //tests/directory:." |
-| B13c | 1 (rules_zig) | one toolchain implementation for two execution platforms in one configuration (ConfiguredTargetKey.executionPlatformLabel), a fatal error (open: needs the execution platform in the configured-target key; design refined on corpus-parity4, below) |
+| B13c | 1 (rules_zig) | one toolchain implementation for two execution platforms in one configuration (ConfiguredTargetKey.executionPlatformLabel), a fatal error (open: needs the execution platform in the configured-target key; design refined on corpus-parity4, below; corpus-parity5: the shared-action conflict check it relies on exists and keys the execution platform, genuine-checked) |
 | B13d | fixed (= B29) | rules_cc's own `cc_test.bzl`/`cc_binary.bzl` "cannot use private API" |
 | B13e | fixed (corpus-parity2) | `cc_import` of `mylib.dll`/`mylib.lib` on Linux: "does not match expected filetype" |
 | B15 | fixed (corpus-runfiles) | test runfiles were hardlinks, not symlinks |
@@ -477,8 +496,8 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B25 | fixed (502d3267; not reproduced in corpus-parity3) | "needs-repository: repository @@rules_diff+ is unfetched and this thread does not fetch" on a warm `test` (a worker's sentinel answer cached by the ignored-subdirectories memo) |
 | B30 | fixed (corpus-ccshared) | `provider in target` fails "Target membership requires an exported provider constructor" in with_cfg's `transitioning_alias.bzl:55` (toolchains_llvm's `*_with_cfg` glibc/libunwind/libcxxabi targets; one of with_cfg's forwarded builtin providers is not an exported constructor natively: `apple_common.Objc`) |
 | B31 | fixed (corpus-parity3) | `config_common.config_feature_flag_transition`: loads; no transition unless the attribute sets flag values, which fails explicitly (docs/TEST_FLAGS.md) |
-| B32 | 1 (rules_cc's own tests) | Starlark transitions on unmodelled native options. Fixed on corpus-parity4: `--fission`, `--build_test_dwp`, `--legacy_whole_archive`, `--incompatible_remove_legacy_whole_archive` are configuration options and `--dynamic_mode` is transitionable (docs/CONFIGURATION.md); a fission compile's `.dwo` is declared where genuine declares it. Left: the FDO and Propeller options (`fdo_optimize`, `fdo_profile`, `fdo_instrument`, `cs_fdo_profile`, `xbinary_fdo`, `propeller_optimize*`, `memprof_profile`), `custom_malloc` (a late-bound dependency per configuration), `instrumentation_filter`, `experimental_cpp_modules`, `save_temps`, `grte_top`, `start_end_lib`, `ltoindexopt`/`ltobackendopt`/`per_file_ltobackendopt`; `cc_internal.freeze` of mutable structs / unfrozen functions (38 targets, the thin-LTO and linkstamp tests); `objc.target_should_alwayslink` with an `alwayslink` attribute; Windows artifact name patterns (`*_def_file_*_dll_pattern`) |
-| B33 | 1 (protobuf); 2 targets left | protobuf analysis. Fixed on corpus-parity4: symbolic-macro visibility delegation and alias select() keys under `--incompatible_config_setting_private_default_visibility` (5 visibility errors), `declare_file(sibling=)` from another package, per-attribute aspect views of aspects propagating over one attribute (`UpbMinitableCcInfo`/`JavaInfo` on proto_library targets), `Target.actions` of targets merged with aspects and of a rule under test's dependencies, `--dynamic_mode` transitions (rules_fuzzing). Left: transitions on `instrumentation_filter` (`generated_sources_not_coverage_instrumented`; native's filter is per command, not per configuration) and `experimental_output_paths=strip` (`test_compile_path_mapping`; path mapping) |
+| B32 | 1 (rules_cc's own tests: 346 of genuine's 453 pass) | rules_cc's own analysis tests. Fixed on corpus-parity4: `--fission`, `--build_test_dwp`, `--legacy_whole_archive`, `--incompatible_remove_legacy_whole_archive` are configuration options and `--dynamic_mode` is transitionable; a fission compile's `.dwo` is declared where genuine declares it. Fixed on corpus-parity5: `cc_internal.freeze` is Bazel's shallow immutable copy (the vendored starlark's immutable list/dict that is not frozen yet, docs/DEPSETS.md; the 38 thin-LTO and linkstamp targets), `create_header_info_with_deps` adds the merged deps' headers (cc_import's `direct_public_headers`), a toolchain's `artifact_name_pattern` applies (mingw/msvc dll names), `objc.target_should_alwayslink` of an explicit `alwayslink`, map_each's `must be declared by a top-level def statement` error, structs/providers with frozen list fields are hashable, and transitions on `instrumentation_filter`, `save_temps`, `start_end_lib`, `interface_shared_objects`, `process_headers_in_dependencies` (tests/fixtures/corpus_parity5). Left (tests): the LTO backends (`cc_internal.collect_per_file_lto_backend_opts`, `create_lto_backend_action*`, compile actions with shareable artifacts: ~37, also the linkstamp compile), the FDO/Propeller/memprof options (`fdo_optimize`, `fdo_profile`, `fdo_instrument`, `cs_fdo_profile`, `xbinary_fdo`, `fdo_prefetch_hints`, `propeller_optimize*`: ~37), `experimental_cpp_modules` (10), `custom_malloc` (5, a late-bound dependency per configuration), `cc_internal.expand_and_tokenize` (3 objc tests), `action_env` and `grte_top` transitions (2 each), `ltoindexopt`/`ltobackendopt`/`per_file_ltobackendopt`, and two builds: cc_static_library's `test_output_groups` builds a compile of a missing `file.cc` (the analysis test's target's validation outputs; genuine does not) and `validate_static_library_env_test`'s archive is not created |
+| B33 | 1 (protobuf); 1 target left | protobuf analysis. Fixed on corpus-parity4: symbolic-macro visibility delegation and alias select() keys under `--incompatible_config_setting_private_default_visibility` (5 visibility errors), `declare_file(sibling=)` from another package, per-attribute aspect views of aspects propagating over one attribute (`UpbMinitableCcInfo`/`JavaInfo` on proto_library targets), `Target.actions` of targets merged with aspects and of a rule under test's dependencies, `--dynamic_mode` transitions (rules_fuzzing). Fixed on corpus-parity5: transitions writing `instrumentation_filter` (`generated_sources_not_coverage_instrumented`; the filter is per configuration natively too). Left: `experimental_output_paths=strip` with `modify_execution_info` (`test_compile_path_mapping`): its `Target.actions` argv shows path-mapped `bazel-out/cfg/bin` paths, so path mapping would have to be modelled for execution too (not attempted) |
 | B34 | 1 (rules_python-bzlmod); not blocking | `external/other_module+/other_module/pkg/bin_zipapp.zip` differs from genuine's: rules_python's zipper stores each input's mode and relative symlinks as it finds them in the sandbox; native staging hardlinks read-only store blobs (docs/HARDLINK_STAGING.md) |
 | B43 | 1 (with_cfg); not blocking | genuine builds `cc_no_copt_binary/binary_/binary.runfiles_manifest` and `.repo_mapping` (the manual `cc_binary` behind with_cfg's frontend and transitioning alias, a no-op transition); bazel-rs does not (not investigated) |
 | B35 | fixed (corpus-parity3) | rules_kotlin: `download_and_extract(rename_files=…)`, `Target.actions` through an alias, TestingAspectInfo (per-attribute aspect views), `check_java_toolchain_is_declared_on_rule`, mutable `default_jvm_opts`, genquery `buildfiles` scope |
@@ -772,6 +791,33 @@ two nodes write one output. The order: the key field and codec (no
 behaviour change), then the exec-platform propagation behind the existing
 whole-command stop (verified by the walk/eval/verify modes), then the
 shared-action conflict check, and only then lifting the stop.
+
+**B13c (corpus-parity5): the shared-action conflict check.** The
+prerequisite exists: crate::shared_actions (docs/SHAREABLE_ARTIFACTS.md,
+tests/shared_actions.rs against a genuine receipt, 31 cases MATCH) keys
+every registered action (mnemonic, command lines, environment, execution
+info, inputs and outputs without owner, the execution platform and the exec
+properties) and checks each output path across all configured targets
+(crate::engine `register_output`), whatever their label or configuration:
+equal shareable actions share, anything else is genuine's `file 'X' is
+generated by these conflicting actions` (`Label:` line). corpus-parity5
+adds the B13c-relevant genuine cases (tests/fixtures/corpus_parity5,
+`exec_platform_*`): two targets' equal `run_shell`/`write` actions on one
+execution platform share their output, on two execution platforms they
+conflict, natively too. For rules_zig the two `zig_toolchain` copies
+declare `<name>/<escaped exec platform>.version_validation`, so no output
+is shared. What B13c itself still needs (not attempted: it touches the
+key of every evaluator, the dependency views and their (label,
+configuration) lookups — engine.rs `dependency_labels`/`artifacts`/
+`runfiles_info`, the parallel buffer's and prepare's waits, the eval
+host's `analyze(label, config)` and `forced_exec`/`toolchain_implementations`
+claims, linearize pass 1, cquery and the snapshot codec): the execution
+platform in `ConfiguredTargetKey` on toolchain-resolution edges, and,
+for unshareable actions (C++ compiles), the owner identity of their
+outputs (`ActionKey`'s owned files) must include it, since genuine's
+Artifact owner is the full ConfiguredTargetKey: two copies' equal C++
+compiles conflict in genuine, while today's native owner (label and
+configuration) would share them.
 
 **B36–B42 (corpus-ccshared).** OpenROAD's analysis after B18/B30 hit B36
 (rules_cc_autoconf), B37 and B38 (sv-elab's repository rules); its
