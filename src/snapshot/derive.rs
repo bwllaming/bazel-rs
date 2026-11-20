@@ -393,20 +393,35 @@ pub fn derive(
         .map(|node| (node.action.id.as_str(), node))
         .collect();
     let mut required: HashSet<&str> = HashSet::new();
-    while let Some(id) = todo.pop() {
-        if !required.insert(id) {
-            continue;
-        }
-        let Some(node) = by_id.get(id) else {
-            if id.starts_with(crate::request::STATUS_ID_PREFIX) && !source_has_status {
+    loop {
+        while let Some(id) = todo.pop() {
+            if !required.insert(id) {
                 continue;
             }
-            return Err(format!("the snapshot's plan has no action {id}"));
-        };
-        todo.extend(
-            node.all_dependencies()
-                .map(|dependency| dependency.action_id.as_str()),
-        );
+            let Some(node) = by_id.get(id) else {
+                if id.starts_with(crate::request::STATUS_ID_PREFIX) && !source_has_status {
+                    continue;
+                }
+                return Err(format!("the snapshot's plan has no action {id}"));
+            };
+            todo.extend(
+                node.all_dependencies()
+                    .map(|dependency| dependency.action_id.as_str()),
+            );
+        }
+        // The runfiles supports of the reached tools, built with their
+        // users (crate::engine's prune; PlannedAction::tool_runfiles_support_ids).
+        todo = required
+            .iter()
+            .filter_map(|id| by_id.get(id))
+            .filter(|node| !node.groups.is_empty())
+            .flat_map(|node| node.tool_runfiles_support_ids())
+            .filter_map(|id| by_id.get_key_value(id.as_str()).map(|(id, _)| *id))
+            .filter(|id| !required.contains(id))
+            .collect();
+        if todo.is_empty() {
+            break;
+        }
     }
     let is_status = |id: &str| id.starts_with(crate::request::STATUS_ID_PREFIX);
     if request.execute && !source.execute {

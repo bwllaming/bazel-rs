@@ -12643,6 +12643,36 @@ impl Engine {
                 }
             }
         }
+        // The runfiles supports of the tools the reached actions stage are
+        // built with them (B49, PlannedAction::tool_runfiles_support_ids);
+        // their own inputs are the trees' entries, already reached, so one
+        // round reaches everything but the walk repeats until it is stable.
+        loop {
+            let mut stack: Vec<usize> = nodes
+                .iter()
+                .zip(&keep)
+                .filter(|(node, kept)| **kept && !node.groups.is_empty())
+                .flat_map(|(node, _)| node.tool_runfiles_support_ids())
+                .filter_map(|id| position_of.get(id.as_str()).copied())
+                .filter(|position| !keep[*position])
+                .collect();
+            if stack.is_empty() {
+                break;
+            }
+            while let Some(position) = stack.pop() {
+                if !keep[position] {
+                    keep[position] = true;
+                    for dependency in nodes[position].all_dependencies() {
+                        let id = dependency.action_id.as_str();
+                        stack.push(
+                            *position_of
+                                .get(id)
+                                .ok_or_else(|| format!("missing producing action: {id}"))?,
+                        );
+                    }
+                }
+            }
+        }
         let reached = |id: &str| position_of.get(id).is_some_and(|position| keep[*position]);
         // An id planned twice keeps every node of it (as the id set did).
         let repeated_kept: Vec<usize> = repeated

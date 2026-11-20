@@ -49,6 +49,37 @@
     "//validation:consumer"
    ],
    "workspace": "workspace"
+  },
+  "tool_runfiles_support_is_built": {
+   "bin_paths": {
+    "toolrunfiles/tool.sh.repo_mapping": [
+     "file",
+     ",corpus_parity6,_main\n"
+    ],
+    "toolrunfiles/tool.sh.runfiles/MANIFEST?": "exists",
+    "toolrunfiles/tool.sh.runfiles_manifest?": "exists"
+   },
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/toolrunfiles/use.txt": "tool\n"
+   },
+   "startup": [],
+   "stderr": [
+    {
+     "line": "INFO: 7 processes: 6 internal, 1 processwrapper-sandbox.",
+     "pattern": "^INFO: \\d+ process"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//toolrunfiles:use"
+   ],
+   "workspace": "workspace"
   }
  },
  "elf_sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c"

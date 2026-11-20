@@ -1,0 +1,11 @@
+load(":defs.bzl", "tool", "use")
+
+tool(
+    name = "tool",
+    data = ["data.txt"],
+)
+
+use(
+    name = "use",
+    tool = ":tool",
+)

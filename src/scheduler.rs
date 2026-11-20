@@ -487,6 +487,36 @@ impl PlannedAction {
             .chain(last.iter().flat_map(|group| group.inputs.iter()))
     }
 
+    /// The runfiles support actions (input manifest and tree, by id) of
+    /// each tool whose runfiles tree this node stages, which the build
+    /// builds with the node without staging them (B49): Bazel's spawn
+    /// holds the tool's runfiles tree artifact, whose RunfilesTreeAction
+    /// takes the tree's MANIFEST (SymlinkTreeAction over the
+    /// `.runfiles_manifest`; RunfilesSupport.createRunfilesTreeArtifactAction,
+    /// analysis/RunfilesSupport.java:467-490), while the sandbox stages
+    /// the mapping only (SpawnInputExpander). A tree's support is named by
+    /// its repository mapping manifest's producer (`O#repo_mapping`, an
+    /// entry of every tree), the support's actions being `O#runfiles_manifest`
+    /// and `O#runfiles_tree` (planned with links and manifests only; a
+    /// caller keeps the ids that are planned).
+    pub fn tool_runfiles_support_ids(&self) -> impl Iterator<Item = String> + '_ {
+        self.groups
+            .iter()
+            .filter(|group| group.runfiles)
+            .filter_map(|group| {
+                group
+                    .dependencies
+                    .iter()
+                    .find_map(|dependency| dependency.action_id.strip_suffix("#repo_mapping"))
+            })
+            .flat_map(|owner| {
+                [
+                    format!("{owner}#runfiles_manifest"),
+                    format!("{owner}#runfiles_tree"),
+                ]
+            })
+    }
+
     /// The node's generated inputs: its own, each group's at
     /// [`PlannedAction::groups_at`] (after its own by default).
     pub fn all_dependencies(&self) -> impl Iterator<Item = &Dependency> {

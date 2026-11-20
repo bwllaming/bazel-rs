@@ -3162,18 +3162,31 @@ fn reach(
         .collect();
     let mut required: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut todo: Vec<String> = roots;
-    while let Some(id) = todo.pop() {
-        let Some((id, node)) = by_id.get_key_value(id.as_str()) else {
-            return Err(format!("the plan does not have the needed action '{id}'"));
-        };
-        if required.insert(id) {
-            todo.extend(
-                node.all_dependencies()
-                    .map(|dependency| dependency.action_id.clone()),
-            );
+    loop {
+        while let Some(id) = todo.pop() {
+            let Some((id, node)) = by_id.get_key_value(id.as_str()) else {
+                return Err(format!("the plan does not have the needed action '{id}'"));
+            };
+            if required.insert(id) {
+                todo.extend(
+                    node.all_dependencies()
+                        .map(|dependency| dependency.action_id.clone()),
+                );
+            }
+        }
+        // The runfiles supports of the reached tools, built with their
+        // users (crate::engine's prune; PlannedAction::tool_runfiles_support_ids).
+        todo = required
+            .iter()
+            .filter_map(|id| by_id.get(id))
+            .filter(|node| !node.groups.is_empty())
+            .flat_map(|node| node.tool_runfiles_support_ids())
+            .filter(|id| by_id.contains_key(id.as_str()) && !required.contains(id.as_str()))
+            .collect();
+        if todo.is_empty() {
+            return Ok(required);
         }
     }
-    Ok(required)
 }
 
 /// Every action of `plan` is reached from its reported outputs and the

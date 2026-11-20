@@ -1,6 +1,7 @@
 //! Parity cases of the open-source corpus bugs fixed on branch
 //! corpus-parity6 (docs/OSS_CORPUS.md): an analysis test propagates no
-//! `_validation` group (B48), the cases listed in
+//! `_validation` group (B48), a tool's runfiles manifest and tree are built
+//! with the action that uses the tool (B49), the cases listed in
 //! tests/fixtures/corpus_parity6/capture.py. Every case replays the genuine
 //! Bazel 9.3.1 capture tests/fixtures/corpus_parity6/reference_receipt.json
 //! (written by capture.py beside it).
@@ -224,16 +225,25 @@ fn corpus_parity6_matches_genuine() {
                 .unwrap();
             let bin = PathBuf::from(String::from_utf8_lossy(&info.stdout).trim());
             for (relative, expected) in paths {
-                let path = bin.join(relative);
-                let actual = match fs::symlink_metadata(&path) {
-                    Ok(metadata) if metadata.file_type().is_symlink() => serde_json::json!([
-                        "symlink",
-                        fs::read_link(&path).unwrap().to_str().unwrap()
-                    ]),
-                    _ => match fs::read_to_string(&path) {
-                        Ok(content) => serde_json::json!(["file", content]),
-                        Err(_) => serde_json::Value::Null,
-                    },
+                // `P?`: whether P exists (a manifest names absolute paths).
+                let actual = if let Some(existing) = relative.strip_suffix('?') {
+                    if bin.join(existing).exists() {
+                        serde_json::json!("exists")
+                    } else {
+                        serde_json::Value::Null
+                    }
+                } else {
+                    let path = bin.join(relative);
+                    match fs::symlink_metadata(&path) {
+                        Ok(metadata) if metadata.file_type().is_symlink() => serde_json::json!([
+                            "symlink",
+                            fs::read_link(&path).unwrap().to_str().unwrap()
+                        ]),
+                        _ => match fs::read_to_string(&path) {
+                            Ok(content) => serde_json::json!(["file", content]),
+                            Err(_) => serde_json::Value::Null,
+                        },
+                    }
                 };
                 if &actual != expected {
                     problems.push(format!(

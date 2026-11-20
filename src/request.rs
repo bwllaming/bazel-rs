@@ -1106,21 +1106,19 @@ pub fn execute_with_tests(
         crate::spawn_stats::action_completed(&[]);
     }
     // A tool's runfiles tree, which the native plan stages as a shared
-    // input group of its consumers, is three internal actions to Bazel
-    // (SourceManifestAction, SymlinkTreeAction, RunfilesTreeAction), run
-    // or cached with the tree's repository mapping manifest.
+    // input group of its consumers, is a RunfilesTreeAction to Bazel, run
+    // or cached with the tree's repository mapping manifest; its
+    // SourceManifestAction and SymlinkTreeAction are the support's own
+    // nodes, built with the tree's users (B49), the tree node counting
+    // twice below.
     for id in &tool_trees {
+        let owner = id.strip_suffix("#repo_mapping").unwrap_or(id);
+        if results.contains_key(&format!("{owner}#runfiles_tree")) {
+            continue;
+        }
         match results.get(id) {
-            Some(result) if result.cache_hit => {
-                for _ in 0..3 {
-                    crate::spawn_stats::action_cache_hit();
-                }
-            }
-            Some(_) => {
-                for _ in 0..3 {
-                    crate::spawn_stats::action_completed(&[]);
-                }
-            }
+            Some(result) if result.cache_hit => crate::spawn_stats::action_cache_hit(),
+            Some(_) => crate::spawn_stats::action_completed(&[]),
             None => {}
         }
     }
@@ -1128,6 +1126,15 @@ pub fn execute_with_tests(
         crate::spawn_stats::critical_path_at_least(result.critical);
         if id.starts_with(STATUS_ID_PREFIX) {
             continue;
+        }
+        // A runfiles tree node is Bazel's SymlinkTreeAction and
+        // RunfilesTreeAction (RunfilesSupport.create), both internal.
+        if id.ends_with("#runfiles_tree") {
+            if result.cache_hit {
+                crate::spawn_stats::action_cache_hit();
+            } else {
+                crate::spawn_stats::action_completed(&[]);
+            }
         }
         if result.cache_hit {
             crate::spawn_stats::action_cache_hit();

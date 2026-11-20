@@ -31,6 +31,10 @@ CASES = {
     'ordinary_rule_propagates_validation': (
         [], 'build', BUILD, ['//validation:consumer'], [], ['consumer.out'],
         'workspace', ['validation/subject.validated', 'validation/subject.out']),
+    'tool_runfiles_support_is_built': (
+        [], 'build', BUILD, ['//toolrunfiles:use'], [r'^INFO: \d+ process'], ['use.txt'],
+        'workspace', ['toolrunfiles/tool.sh.runfiles_manifest?', 'toolrunfiles/tool.sh.runfiles/MANIFEST?',
+                      'toolrunfiles/tool.sh.repo_mapping']),
 }
 
 TIME = re.compile(r'^\(\d\d:\d\d:\d\d\) ')
@@ -73,11 +77,14 @@ def main():
                     path = os.path.join(top, file)
                     files[os.path.relpath(path, out)] = open(path).read()
         # Paths below bazel-bin: a symlink's text, a file's content (through
-        # symlinks), or None when nothing resolves there.
+        # symlinks), or None when nothing resolves there; `P?`: whether P exists.
         tree = {}
         for relative in bin_paths:
-            path = os.path.join(workspace, 'bazel-bin', relative)
-            if os.path.islink(path):
+            path = os.path.join(workspace, 'bazel-bin', relative.rstrip('?'))
+            if relative.endswith('?'):
+                # Existence only (a manifest names absolute paths).
+                tree[relative] = 'exists' if os.path.exists(path) else None
+            elif os.path.islink(path):
                 tree[relative] = ['symlink', os.readlink(path)]
             elif os.path.isfile(path):
                 tree[relative] = ['file', open(path).read()]
