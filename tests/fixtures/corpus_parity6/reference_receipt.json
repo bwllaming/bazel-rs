@@ -1,0 +1,55 @@
+{
+ "bazel": "9.3.1",
+ "cases": {
+  "analysis_test_does_not_propagate_validation": {
+   "bin_paths": {
+    "validation/subject.out": null,
+    "validation/subject.validated": null
+   },
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/validation/starlark_test.sh": "#!/bin/sh\necho \nexit 0",
+    "k8-fastbuild/bin/validation/testing_test.sh": "#!/bin/sh\necho \nexit 0"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//validation:starlark_test",
+    "//validation:testing_test"
+   ],
+   "workspace": "workspace"
+  },
+  "ordinary_rule_propagates_validation": {
+   "bin_paths": {
+    "validation/subject.out": null,
+    "validation/subject.validated": [
+     "file",
+     "validated"
+    ]
+   },
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/validation/consumer.out": "consumer"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//validation:consumer"
+   ],
+   "workspace": "workspace"
+  }
+ },
+ "elf_sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c"
+}

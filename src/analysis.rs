@@ -3426,11 +3426,14 @@ fn analyze_inner(
                     crate::output_group_info::VALIDATION,
                     transitive,
                 );
-            } else {
+            } else if !invocation.declaration.analysis_test {
                 // RuleConfiguredTargetBuilder.propagateValidationActionOutputGroup
-                // (:294-296): an analysis test propagates nothing; those rules
-                // never reach the native analysis (rule(analysis_test=True) is
-                // an unanalyzed declared feature). Every other rule collects
+                // (:294-296): an analysis test (`rule(analysis_test = True)`,
+                // `testing.analysis_test`) propagates nothing, so building it
+                // never builds its target under test's validations (B48:
+                // protobuf's rules_testing tests built protoc and the prebuilt
+                // protoc validation in every transitioned configuration of
+                // their subjects). Every other rule collects
                 // its dependencies' `_validation` groups
                 // (collectTransitiveValidationOutputGroups, :397-430): through
                 // label attributes that are not implicit (`$`-prefixed), not

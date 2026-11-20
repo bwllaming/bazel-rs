@@ -1,0 +1,18 @@
+load(":defs.bzl", "consumer", "starlark_analysis_test", "subject", "testing_analysis_test")
+
+subject(name = "subject")
+
+consumer(
+    name = "consumer",
+    dep = ":subject",
+)
+
+starlark_analysis_test(
+    name = "starlark_test",
+    target = ":subject",
+)
+
+testing_analysis_test(
+    name = "testing_test",
+    target = ":subject",
+)
