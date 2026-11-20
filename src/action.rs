@@ -6720,6 +6720,18 @@ impl ContentInput {
         }
     }
 
+    /// [`Self::digest`]'s 32 bytes, without the hex spelling.
+    fn identity(&self) -> [u8; 32] {
+        match &self.0 {
+            Staged::File(input) => input.digest.0,
+            staged => {
+                let mut hash = Sha256::new();
+                frame_staged(&mut hash, staged);
+                hash.finalize().into()
+            }
+        }
+    }
+
     pub fn executable(&self) -> bool {
         match &self.0 {
             Staged::File(input) => input.executable != 0,
@@ -7224,53 +7236,65 @@ pub fn link_live_directory(
 /// is staged at its exec path. So `readlink` of a runfile names the
 /// artifact's execution path (`.../bazel-out/<cfg>/bin/...`) and `realpath`
 /// resolves to it, or to the workspace file for a source, as in Bazel.
-/// Returns the live source files the test can see.
+/// Returns the live source files the test can see. `inputs` is consumed:
+/// a test's runfiles can list hundreds of thousands of files (expanded
+/// trees), each held once while staging instead of copied.
 pub fn stage_test_inputs(
     cache_root: &Path,
-    inputs: &[(ContentInput, PathBuf)],
+    inputs: Vec<(ContentInput, PathBuf)>,
     links: &[(PathBuf, PathBuf)],
     execroot: &Path,
 ) -> Result<Vec<LiveInput>, String> {
     let (root, cas) = cache_store(cache_root)?;
-    let mut staged = BTreeMap::new();
-    let mut live = BTreeMap::new();
     // One path, one artifact: a runfile's exec path is staged once for every
     // runfile linking to it (and for a coverage input at that path); two
     // different contents there would silently overwrite each other (in
-    // Bazel an exec path names exactly one artifact).
-    let mut seen: BTreeMap<&Path, (String, bool)> = BTreeMap::new();
-    for (input, destination) in inputs {
-        validate_relative(destination)?;
-        let identity = (input.digest(), input.executable());
-        match seen.entry(destination.as_path()) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(identity);
-            }
-            std::collections::btree_map::Entry::Occupied(entry) if *entry.get() == identity => {
-                continue;
-            }
-            std::collections::btree_map::Entry::Occupied(_) => {
-                return Err(format!(
-                    "internal error: two different test inputs at '{}'",
-                    destination.display()
-                ));
+    // Bazel an exec path names exactly one artifact). The first input at a
+    // path is kept.
+    let mut kept = vec![false; inputs.len()];
+    {
+        let mut seen: BTreeMap<&Path, ([u8; 32], bool)> = BTreeMap::new();
+        for (index, (input, destination)) in inputs.iter().enumerate() {
+            validate_relative(destination)?;
+            let identity = (input.identity(), input.executable());
+            match seen.entry(destination.as_path()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(identity);
+                    kept[index] = true;
+                }
+                std::collections::btree_map::Entry::Occupied(entry) if *entry.get() == identity => {
+                }
+                std::collections::btree_map::Entry::Occupied(_) => {
+                    return Err(format!(
+                        "internal error: two different test inputs at '{}'",
+                        destination.display()
+                    ));
+                }
             }
         }
-        match &input.0 {
+    }
+    let mut staged = BTreeMap::new();
+    let mut live = BTreeMap::new();
+    for ((input, destination), kept) in inputs.into_iter().zip(kept) {
+        if !kept {
+            continue;
+        }
+        match input.0 {
             Staged::File(file)
                 if file.path.is_absolute()
                     && !file.path.starts_with(&root)
                     && !file.path.starts_with(cache_root)
                     && remote_only_input(&file.path).is_none() =>
             {
-                live.insert(destination.clone(), file);
+                live.insert(destination, file);
             }
             staged_input => {
-                staged.insert(destination.clone(), staged_input.clone());
+                staged.insert(destination, staged_input);
             }
         }
     }
     stage_inputs(&cas, &root, &staged, execroot)?;
+    drop(staged);
     let mut sources = Vec::with_capacity(live.len());
     let symlink = |target: &Path, destination: &Path| -> Result<(), String> {
         let path = execroot.join(destination);
@@ -7280,10 +7304,10 @@ pub fn stage_test_inputs(
         std::os::unix::fs::symlink(target, &path)
             .map_err(|e| io_error("cannot create symbolic link", &path, e))
     };
-    for (destination, file) in &live {
-        symlink(&file.path, destination)?;
+    for (destination, file) in live {
+        symlink(&file.path, &destination)?;
         sources.push(LiveInput {
-            path: file.path.clone(),
+            path: file.path,
             digest: file.digest,
             executable: file.executable,
             directory: false,
@@ -11391,14 +11415,14 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         // The same content twice is one input.
         stage_test_inputs(
             &fixture.cache(),
-            &[(a.clone(), same.clone()), (a.clone(), same.clone())],
+            vec![(a.clone(), same.clone()), (a.clone(), same.clone())],
             &[],
             &execroot,
         )
         .unwrap();
         let error = stage_test_inputs(
             &fixture.cache(),
-            &[(a, same.clone()), (b, same)],
+            vec![(a, same.clone()), (b, same)],
             &[],
             &fixture.0.join("execroot2"),
         )

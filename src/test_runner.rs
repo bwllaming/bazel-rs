@@ -1353,36 +1353,56 @@ impl Runner<'_> {
         remove_tree(&work)?;
         let execroot = work.join("execroot");
         fs::create_dir_all(&execroot).map_err(|e| io("cannot create", &execroot, e))?;
-        let mut staging: Vec<(ContentInput, PathBuf)> = Vec::with_capacity(inputs.len());
+        // With only `--remote_cache`, the test spawns go through the remote
+        // spawn cache like any spawn (StandaloneTestStrategy's spawns through
+        // the SpawnStrategyResolver, RemoteSpawnCache.lookup/store) when it
+        // reads or writes (RemoteSpawnCache.java:85-92). Coverage test
+        // actions stay local (their coverage spawn is not modelled remotely).
+        let spawn_cache = !crate::sandbox::remote_executor()
+            && spec.coverage.is_none()
+            && crate::remote_cache::active().is_some_and(|remote| {
+                remote.accept_cached || remote.upload_local_results || remote.has_disk()
+            });
+        let remote = crate::sandbox::remote_executor() || spawn_cache;
+        // The remote view of the inputs below borrows `inputs`; a local test
+        // hands them to the staging instead (a test's runfiles can list
+        // hundreds of thousands of expanded tree files, each then held once
+        // while staging and released before the test runs).
+        let staged_inputs = if remote {
+            inputs.clone()
+        } else {
+            std::mem::take(&mut inputs)
+        };
+        let mut staging: Vec<(ContentInput, PathBuf)> = Vec::with_capacity(staged_inputs.len());
         let mut links: Vec<(PathBuf, PathBuf)> = Vec::new();
         let mut directories: Vec<(PathBuf, PathBuf, ContentInput)> = Vec::new();
         // The exec paths that are links to other published outputs, once.
         let mut hop_links: std::collections::BTreeSet<(PathBuf, PathBuf)> =
             std::collections::BTreeSet::new();
-        for ((input, destination), layout) in inputs.iter().zip(&layouts) {
+        for ((input, destination), layout) in staged_inputs.into_iter().zip(layouts) {
             match layout {
                 RunfileLayout::LinkToExec(exec) => {
-                    staging.push((input.clone(), exec.clone()));
-                    links.push((destination.clone(), exec.clone()));
+                    staging.push((input, exec.clone()));
+                    links.push((destination, exec));
                 }
                 RunfileLayout::LinkVia(exec, hops) => {
                     let (_, last) = hops.last().expect("a LinkVia has a hop");
-                    staging.push((input.clone(), last.clone()));
-                    links.push((destination.clone(), exec.clone()));
+                    staging.push((input, last.clone()));
+                    links.push((destination, exec));
                     for hop in hops {
                         if hop_links.insert(hop.clone()) {
-                            links.push(hop.clone());
+                            links.push(hop);
                         }
                     }
                 }
                 RunfileLayout::AlsoAtExec(exec) => {
-                    staging.push((input.clone(), destination.clone()));
-                    staging.push((input.clone(), exec.clone()));
+                    staging.push((input.clone(), destination));
+                    staging.push((input, exec));
                 }
                 RunfileLayout::LiveDirectory(source) => {
-                    directories.push((destination.clone(), source.clone(), input.clone()))
+                    directories.push((destination, source, input))
                 }
-                RunfileLayout::Destination => staging.push((input.clone(), destination.clone())),
+                RunfileLayout::Destination => staging.push((input, destination)),
             }
         }
         // A published empty tree: its directory at its exec path, the
@@ -1407,8 +1427,8 @@ impl Runner<'_> {
                 hop_links.iter().map(|(link, _)| link).collect();
             staging.retain(|(_, destination)| !linked.contains(destination));
         }
-        let mut live = stage_test_inputs(self.cache, &staging, &links, &execroot)?;
-        drop(staging);
+        let mut live = stage_test_inputs(self.cache, staging, &links, &execroot)?;
+        drop(links);
         for (destination, source, input) in &directories {
             live.push(crate::action::link_live_directory(
                 self.cache,
@@ -1450,17 +1470,7 @@ impl Runner<'_> {
                 spec.label
             ));
         }
-        // With only `--remote_cache`, the test spawns go through the remote
-        // spawn cache like any spawn (StandaloneTestStrategy's spawns through
-        // the SpawnStrategyResolver, RemoteSpawnCache.lookup/store) when it
-        // reads or writes (RemoteSpawnCache.java:85-92). Coverage test
-        // actions stay local (their coverage spawn is not modelled remotely).
-        let spawn_cache = !crate::sandbox::remote_executor()
-            && spec.coverage.is_none()
-            && crate::remote_cache::active().is_some_and(|remote| {
-                remote.accept_cached || remote.upload_local_results || remote.has_disk()
-            });
-        let remote_inputs = if crate::sandbox::remote_executor() || spawn_cache {
+        let remote_inputs = if remote {
             let mut remote = RemoteTestInputs {
                 spec: crate::remote_cache::SpawnSpec::default(),
                 blobs: BTreeMap::new(),
