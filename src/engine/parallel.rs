@@ -2552,8 +2552,10 @@ impl Engine {
             self.check_published(state, key, &rule);
         }
         if let Some(frozen) = &self.frozen_walk {
-            frozen.results.publish(key, state);
+            // (Its declarations before its results: a reader finding these
+            // finds those.)
             frozen.results.publish_declared(state, self);
+            frozen.results.publish(key, state);
             Self::native_publish_wake(state, pipe, key);
         }
         let Some(waiters) = pipe.waiting.remove(key) else {

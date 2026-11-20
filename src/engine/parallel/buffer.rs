@@ -2666,13 +2666,16 @@ impl Engine {
                 {
                     self.check_published(state, &key, &rule);
                 }
+                // Its declarations first: a reader that finds its results
+                // (or a dependent `mark` dispatches at once) must find its
+                // output files' declarations too.
+                board.frozen.results.publish_declared(state, self);
                 if !same {
                     board.frozen.results.publish(&key, state);
                 }
                 if !published {
                     board.mark(&key);
                 }
-                board.frozen.results.publish_declared(state, self);
             }
             if let (Some(started), Some(claim), Some(slot)) =
                 (body_started, claim_done, board.slot(index))
