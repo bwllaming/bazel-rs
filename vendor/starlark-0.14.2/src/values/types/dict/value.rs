@@ -155,12 +155,20 @@ impl AllocFrozenValue for FrozenDictData {
 }
 
 impl<'v> Dict<'v> {
+    /// Modified for bazel-rs: also true for the immutable dict that is not
+    /// frozen yet ([`ImmutableDictData`]). Such a value must never reach
+    /// [`Dict::from_value_unchecked_mut`] (it is no `RefCell<Dict>`): only
+    /// fresh mutable dicts (comprehensions) take that path; a caller that
+    /// matched this type check mutates through `DictMut::from_value`, which
+    /// rejects it with `trying to mutate a frozen dict value`.
     pub(crate) fn is_dict_type(x: TypeId) -> bool {
         x == TypeId::of::<DictGen<FrozenDictData>>()
             || x == TypeId::of::<DictGen<RefCell<Dict<'static>>>>()
             || x == TypeId::of::<DictGen<ImmutableDictData<'static>>>()
     }
 
+    /// The value must be a mutable dict (`DictGen<RefCell<Dict>>`), never
+    /// a frozen or an immutable one ([`ImmutableDictData`]).
     pub(crate) unsafe fn from_value_unchecked_mut(x: Value<'v>) -> RefMut<'v, Self> {
         unsafe {
             let dict = &x.downcast_ref_unchecked::<DictGen<RefCell<Dict<'v>>>>().0;

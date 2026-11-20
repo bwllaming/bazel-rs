@@ -747,6 +747,30 @@ pub(crate) fn check_element(value: Value<'_>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A list or dict copy (`cc_internal.freeze`, immutable but not frozen
+/// yet) holding a function of this evaluation that is not frozen yet is
+/// only supported inside a struct or provider element, which is retained
+/// whole ([`struct_item`]): `to_list()` re-allocates any other list or dict
+/// on a temporary module heap ([`alloc_frozen_container`]), where the
+/// pending function cannot be reached, and [`pending_handles`] does not
+/// anchor functions below lists and dicts. Such a container directly in the
+/// element or in its tuples fails explicitly (genuine Bazel accepts it).
+pub(crate) fn check_pending_containers(item: &Item) -> anyhow::Result<()> {
+    fn unretained(item: &Item) -> bool {
+        match item {
+            Item::List(_) | Item::Dict(_) => item.has_pending_function(),
+            Item::Tuple(items) => items.iter().any(unretained),
+            _ => false,
+        }
+    }
+    if unretained(item) {
+        bail!(
+            "a depset element containing a list or dict holding a function of this evaluation that is not frozen yet (outside a struct or provider element) is not implemented in the native profile"
+        );
+    }
+    Ok(())
+}
+
 /// `item`, the snapshot of the struct or provider instance `value`: holding
 /// a function of this evaluation that is not frozen yet, it keeps `value`
 /// itself, retained by the evaluating heap ([`StructItem::retained`]).

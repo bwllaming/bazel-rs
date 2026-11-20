@@ -148,6 +148,14 @@ def _bad_impl(ctx):
         _cc.freeze([ctx.attr.dep, [1]])
     elif kind == "mutate":
         frozen.append("y")
+    elif kind == "pending_tuple":
+        f = lambda: 1
+        depset([(_cc.freeze([f]),)]).to_list()
+    elif kind == "pending_struct":
+        f = lambda: 1
+        held = depset([struct(l = _cc.freeze([f]))]).to_list()[0]
+        if held.l[0]() != 1:
+            fail("closure")
     return []
 
 bad = rule(_bad_impl, attrs = {"dep": attr.label(), "kind": attr.string()})
@@ -182,6 +190,8 @@ consumer(
 const BAD_BUILD: &str = r#"load(':defs.bzl', 'bad')
 bad(name = 'bad', dep = ':leaf', kind = 'mutable_element')
 bad(name = 'bad_mutate', dep = ':leaf', kind = 'mutate')
+bad(name = 'pending_tuple', dep = ':leaf', kind = 'pending_tuple')
+bad(name = 'pending_struct', dep = ':leaf', kind = 'pending_struct')
 "#;
 
 /// The exact rows genuine Bazel 9.3.0 prints (paired capture,
@@ -435,6 +445,38 @@ fn freeze_with_a_target_is_shallow_and_immutable() {
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(
         stderr.contains("error: trying to mutate a frozen list value\n"),
+        "{stderr}"
+    );
+    // A closure of this analysis in a frozen copy: held through a struct
+    // element (retained with it, as rules_cc's LinkstampInfo), an explicit
+    // gap directly inside a tuple element (genuine accepts both).
+    let held = ws.run(&[
+        "build",
+        "--experimental-builtin-modules",
+        &builtin_registry_flag(),
+        "//:pending_struct",
+    ]);
+    assert_eq!(
+        held.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&held.stderr)
+    );
+    let gap = ws.run(&[
+        "build",
+        "--experimental-builtin-modules",
+        &builtin_registry_flag(),
+        "//:pending_tuple",
+    ]);
+    assert_eq!(
+        gap.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&gap.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&gap.stderr);
+    assert!(
+        stderr.contains("a depset element containing a list or dict holding a function of this evaluation that is not frozen yet (outside a struct or provider element) is not implemented in the native profile"),
         "{stderr}"
     );
 }

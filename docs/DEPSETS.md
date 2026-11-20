@@ -193,7 +193,13 @@ not frozen yet returns an immutable list that is not frozen yet (below,
 Bazel's shallow copy does (rules_cc's cc_library `linkstamp`, whose
 LinkstampInfo wraps this analysis's private-API closures); as a depset
 element's field it is snapshotted like a frozen list, its function item
-retained with the element. Built-in functions and bound methods (`"x".upper`, `{}.get`,
+retained with the element (the struct or provider element is retained
+whole). Directly in the element or in its tuples (`depset([(freeze([f]),)])`)
+it fails explicitly: `to_list()` re-allocates such a list on a temporary
+module heap, where the pending function cannot be reached (`a depset
+element containing a list or dict holding a function of this evaluation
+that is not frozen yet (outside a struct or provider element) is not
+implemented in the native profile`; genuine accepts it). Built-in functions and bound methods (`"x".upper`, `{}.get`,
 `len`) are mutable as in Bazel (StarlarkValue.isImmutable default):
 `depset elements must not be mutable values`.
 

@@ -1107,7 +1107,9 @@ impl Item {
         eval: &Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Self> {
         crate::depset_items::check_element(value)?;
-        crate::depset_items::snapshot(value, eval, 0)
+        let item = crate::depset_items::snapshot(value, eval, 0)?;
+        crate::depset_items::check_pending_containers(&item)?;
+        Ok(item)
     }
 
     pub(crate) fn alloc<'v>(&self, heap: Heap<'v>) -> Value<'v> {
