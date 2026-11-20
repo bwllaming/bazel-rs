@@ -25,6 +25,34 @@
    ],
    "workspace": "workspace"
   },
+  "keep_going_builds_a_failed_binarys_runfiles_manifest": {
+   "bin_paths": {
+    "keepgoing/broken.sh.repo_mapping?": "exists",
+    "keepgoing/broken.sh.runfiles/MANIFEST?": "exists",
+    "keepgoing/broken.sh.runfiles_manifest?": "exists",
+    "keepgoing/broken.sh?": null
+   },
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--keep_going"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "INFO: 5 processes: 5 internal.",
+     "pattern": "^INFO: \\d+ process"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//keepgoing:broken"
+   ],
+   "workspace": "workspace"
+  },
   "ordinary_rule_propagates_validation": {
    "bin_paths": {
     "validation/subject.out": null,

@@ -15,7 +15,7 @@
 //! leaves in flight (the flag they get), like Bazel's interrupt of in-flight
 //! actions on a --nokeep_going error (AbstractQueueVisitor.awaitTermination).
 
-use crate::action::{self, Action, ActionResult};
+use crate::action::{self, Action, ActionResult, Transform};
 use crate::shared_path::SharedPath;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -734,6 +734,38 @@ struct Graph {
 }
 
 impl Graph {
+    /// `--keep_going`: `id` failed. Every action above it never runs
+    /// (`doomed`), except a runfiles manifest or tree, which does not wait
+    /// for the runfiles that failed ([`tolerates_failed`], B50).
+    fn failed(&mut self, id: &str, doomed: &mut BTreeSet<String>) {
+        let mut todo = vec![id.to_owned()];
+        doomed.insert(id.to_owned());
+        while let Some(id) = todo.pop() {
+            let Some(children) = self.consumers.get(&id) else {
+                continue;
+            };
+            for child in children.clone() {
+                if doomed.contains(&child) {
+                    continue;
+                }
+                let tolerates = self.nodes[self.index[&child]]
+                    .as_ref()
+                    .is_some_and(|node| tolerates_failed(node, &id));
+                if tolerates {
+                    let count = self.remaining.get_mut(&child).expect("known consumer");
+                    *count -= 1;
+                    if *count == 0 {
+                        let key = self.ready_key(&child);
+                        self.ready.insert(key);
+                    }
+                } else {
+                    doomed.insert(child.clone());
+                    todo.push(child);
+                }
+            }
+        }
+    }
+
     /// The ready order: the action heading the longest chain of dependent
     /// actions first, then by id. A ready action on the critical path (a
     /// toolchain builder or standard library that many compilations wait
@@ -990,12 +1022,36 @@ pub struct Leaves<'a> {
 /// not be kept beyond the call (the scheduler unwraps them at the end).
 pub type LeafRun<'a> = dyn Fn(usize, &LeafInputs, &AtomicBool) + Sync + 'a;
 
+/// Whether `node` still runs under `--keep_going` when its dependency
+/// `failed` failed (B50): a runfiles manifest or tree names its runfiles by
+/// path only. Bazel's SourceManifestAction has the runfiles' unresolved
+/// symlinks as its only inputs (SourceManifestAction.getInputs) and its
+/// SymlinkTreeAction the input manifest (and repository mapping), so both
+/// run, and leave their files, for a binary whose link failed. An
+/// unresolved symlink (read for its text) or the tree's input manifest
+/// (read) is still waited for.
+fn tolerates_failed(node: &PlannedAction, failed: &str) -> bool {
+    let manifest = match &node.action.extra.transform {
+        Some(Transform::RunfilesManifest { .. }) => None,
+        Some(Transform::RunfilesTree { manifest, .. }) => Some(manifest.as_path()),
+        _ => return false,
+    };
+    node.all_dependencies()
+        .filter(|dependency| dependency.action_id == failed)
+        .all(|dependency| {
+            let destination = dependency.destination.as_path();
+            Some(destination) != manifest && !node.action.extra.symlink_inputs.contains(destination)
+        })
+}
+
 /// One dispatched action: the node and its producers' results in
 /// dependency order (shared with, not copied by, the dispatching thread).
 struct Job {
     id: String,
     node: PlannedAction,
-    producers: Vec<Arc<ActionResult>>,
+    /// `None`: a producer that failed under `--keep_going`, which a
+    /// runfiles manifest or tree does not wait for ([`tolerates_failed`]).
+    producers: Vec<Option<Arc<ActionResult>>>,
 }
 
 /// One dispatched unit of work: an action, or a leaf with its inputs.
@@ -1093,6 +1149,23 @@ where
         node.dependencies.clear();
         let mut listings = TreeListings::new();
         for (dependency, producer) in listed.iter().zip(&producers) {
+            let Some(producer) = producer else {
+                // A failed producer's output (B50): named where the output
+                // tree would hold it (paths only, never read).
+                if let Some(Transform::RunfilesTree { executable, .. }) =
+                    &mut node.action.extra.transform
+                    && executable.as_deref() == Some(dependency.destination.as_path())
+                {
+                    *executable = None;
+                }
+                node.action.inputs.push((
+                    crate::output_tree::execution_root(cache)
+                        .join(&dependency.destination)
+                        .into(),
+                    dependency.destination.clone(),
+                ));
+                continue;
+            };
             if let Some(listing) = producer.trees.get(&dependency.output_index) {
                 listings.insert(dependency.destination.to_path_buf(), listing.clone());
             }
@@ -1122,6 +1195,7 @@ where
         result.critical = own
             + producers
                 .iter()
+                .flatten()
                 .map(|producer| producer.critical)
                 .max()
                 .unwrap_or_default();
@@ -1314,6 +1388,9 @@ where
     let failed = Arc::new(AtomicBool::new(false));
     let mut results: BTreeMap<String, Arc<ActionResult>> = BTreeMap::new();
     let mut errors = BTreeMap::new();
+    // --keep_going: the actions that failed or never run because of a
+    // failure ([`Graph::failed`]).
+    let mut doomed: BTreeSet<String> = BTreeSet::new();
     let (job_sender, job_receiver) = mpsc::channel::<Work>();
     let job_receiver = Mutex::new(job_receiver);
     let (done_sender, done_receiver) = mpsc::channel::<Done>();
@@ -1389,7 +1466,7 @@ where
                             .expect("ready node exists");
                         let producers = node
                             .all_dependencies()
-                            .map(|dependency| Arc::clone(&results[&dependency.action_id]))
+                            .map(|dependency| results.get(&dependency.action_id).cloned())
                             .collect();
                         running.insert(id.clone());
                         Work::Action(Box::new(Job {
@@ -1442,6 +1519,9 @@ where
                             if keep_going && error.starts_with("worker panicked: ") {
                                 fatal.push(format!("action '{id}': {error}"));
                                 failed.store(true, Ordering::Release);
+                            }
+                            if keep_going {
+                                graph.failed(&id, &mut doomed);
                             }
                             errors.insert(id, error);
                         }

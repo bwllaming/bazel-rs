@@ -35,6 +35,10 @@ CASES = {
         [], 'build', BUILD, ['//toolrunfiles:use'], [r'^INFO: \d+ process'], ['use.txt'],
         'workspace', ['toolrunfiles/tool.sh.runfiles_manifest?', 'toolrunfiles/tool.sh.runfiles/MANIFEST?',
                       'toolrunfiles/tool.sh.repo_mapping']),
+    'keep_going_builds_a_failed_binarys_runfiles_manifest': (
+        [], 'build', BUILD + ['--keep_going'], ['//keepgoing:broken'], [r'^INFO: \d+ process'], [],
+        'workspace', ['keepgoing/broken.sh.runfiles_manifest?', 'keepgoing/broken.sh.runfiles/MANIFEST?',
+                      'keepgoing/broken.sh.repo_mapping?', 'keepgoing/broken.sh?']),
     'worker_reads_an_input_producers_sibling_output': (
         [], 'build', BUILD, ['//worker:singleplex', '//worker:multiplex'], [r'^INFO: \d+ process'], ['singleplex.txt', 'multiplex.txt']),
 }

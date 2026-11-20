@@ -95,7 +95,12 @@ SkyframeErrorProcessor.processAnalysisErrors under keepGoing
 
 `crate::scheduler::execute_graph_keep_going`: a failed action stops only its
 consumers (and the test actions reading it); every other action and test
-runs. Input failures planning finds (`missing input file`, source directory
+runs. A runfiles manifest or tree is no consumer of the runfiles it names
+(B50): Bazel's SourceManifestAction takes only the unresolved symlinks among
+them as inputs and its SymlinkTreeAction the input manifest, so both still
+run for a binary whose link failed (naming the missing files where the
+output tree would hold them); Bazel's RunfilesTreeAction over the runfiles
+does not (the process tally counts the tree node once then). Input failures planning finds (`missing input file`, source directory
 traversal errors) fail the actions and targets they name, not the build:
 those actions and everything above them are dropped from the plan, the rest
 runs. After execution:

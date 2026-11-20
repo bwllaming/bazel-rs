@@ -1,7 +1,10 @@
 //! Parity cases of the open-source corpus bugs fixed on branch
 //! corpus-parity6 (docs/OSS_CORPUS.md): an analysis test propagates no
 //! `_validation` group (B48), a tool's runfiles manifest and tree are built
-//! with the action that uses the tool (B49), the cases listed in
+//! with the action that uses the tool (B49), a non-sandboxed persistent
+//! worker sees its inputs' producers' other outputs (B51), and
+//! `--keep_going` builds a failed binary's runfiles manifest and tree
+//! (B50), the cases listed in
 //! tests/fixtures/corpus_parity6/capture.py. Every case replays the genuine
 //! Bazel 9.3.1 capture tests/fixtures/corpus_parity6/reference_receipt.json
 //! (written by capture.py beside it).

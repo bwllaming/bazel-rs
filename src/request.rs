@@ -1013,6 +1013,25 @@ pub fn execute_with_tests(
         })
         .collect();
     set_remote_downloads(&command, &requested, &aspect_reports, &run_plans);
+    // --keep_going: each runfiles tree's dependencies; a tree whose runfiles
+    // failed still runs (the SymlinkTreeAction, crate::scheduler's
+    // tolerates_failed), but not Bazel's RunfilesTreeAction over them.
+    let tree_dependencies: HashMap<String, Vec<String>> = if keep_going.is_some() {
+        nodes
+            .iter()
+            .filter(|node| node.action.id.ends_with("#runfiles_tree"))
+            .map(|node| {
+                (
+                    node.action.id.clone(),
+                    node.all_dependencies()
+                        .map(|dependency| dependency.action_id.clone())
+                        .collect(),
+                )
+            })
+            .collect()
+    } else {
+        HashMap::new()
+    };
     let mut action_errors: Vec<(String, String)> = Vec::new();
     // A build without --keep_going whose action failed (reported).
     let mut action_failed = false;
@@ -1128,8 +1147,15 @@ pub fn execute_with_tests(
             continue;
         }
         // A runfiles tree node is Bazel's SymlinkTreeAction and
-        // RunfilesTreeAction (RunfilesSupport.create), both internal.
-        if id.ends_with("#runfiles_tree") {
+        // RunfilesTreeAction (RunfilesSupport.create), both internal; the
+        // latter only over runfiles that built.
+        if id.ends_with("#runfiles_tree")
+            && tree_dependencies.get(id).is_none_or(|dependencies| {
+                dependencies
+                    .iter()
+                    .all(|dependency| results.contains_key(dependency))
+            })
+        {
             if result.cache_hit {
                 crate::spawn_stats::action_cache_hit();
             } else {

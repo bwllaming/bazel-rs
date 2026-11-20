@@ -1,0 +1,6 @@
+load(":defs.bzl", "broken_binary")
+
+broken_binary(
+    name = "broken",
+    data = ["data.txt"],
+)
