@@ -237,3 +237,29 @@ memos, provisional reads, observations: ~0.4 GB) and phase 1's evaluator tables 
 snapshot recording (+0.45 GB live: the incremental tracker's tapes and the observations; +0.8 GB resident
 against `BAZEL_RS_SNAPSHOT=off`: 6.28 GB). jemalloc's arena count and decay times change nothing (narenas 16/64,
 dirty decay 1 s, background thread: 6.87–7.05 GB).
+
+## Test execution (miss-and-test-mem, ~/code)
+
+`test` of a 129-target ~/code sample (Go, Python, JS/vitest tests; built beforehand, `--nocache_test_results`,
+`--jobs=32`, derived snapshot hit: 1.8 GB at `execute.start`) grew bazel-rs to 7.8 GB within ~70 s and stayed
+there while the tests ran. Heap profiles (`lg_prof_interval`) put ~5.4 GB of the 6.9 GB live heap in
+`test_runner::Runner::run_unit`: each running test held its whole runfiles list several times over — the
+expanded tree files (`ContentSource::Tree`: rules_js `node_modules` packages, hundreds of thousands of files per
+test) as `(ContentInput, destination)` inputs, their layouts' exec paths, a cloned `staging` list, the `links`,
+and inside `stage_test_inputs` a cloned `staged` map and a hex digest per entry — and kept the inputs, layouts
+and links alive for the whole test run.
+
+| what | at the peak | fix |
+|---|---|---|
+| a running test's runfiles inputs, layouts, staging copy and links, live until the test ends | ~5 GB at 32 jobs | the inputs and layouts are moved into the staging list (the remote view, which borrows them, keeps a copy only when a remote executor or spawn cache is active), `stage_test_inputs` consumes it (a first pass checks one-artifact-per-path with 32-byte digests, then the entries move into the staged/live maps), the links are dropped after staging |
+
+Result (non-LTO, alternating, three rounds, load 31–42; bazel-rs's own peak VmRSS, 0.5 s polls):
+
+| run | main 92711fc8 | branch |
+|---|---|---|
+| 129 tests, `--nocache_test_results`, snapshot hit | 7.76 / 7.78 / 7.81 GB, 238 / 241 / 245 s | 3.71 / 3.74 GB (first run a miss: 5.81 GB), 248 / 236 / 235 s |
+
+Test cache keys are unchanged (the same `tests/<key>` entries); the staged set is the same (the first input at a
+path is kept, a second identical one skipped, a different one fails as before). What remains at the peak
+(~2.1 GB live): the tests mid-staging (their expanded tree entries, ~0.9 GB), the executed actions' cache
+validation (`cache_valid`, tree stamps, ~0.5 GB) and the decoded plan.
