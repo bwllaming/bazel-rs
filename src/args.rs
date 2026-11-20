@@ -509,6 +509,9 @@ fn check_mapper(
         repr.starts_with("<function ") && repr.contains(" from ")
     };
     if !allow_closure && starlark_function {
+        if let Some(error) = non_global_map_each(map_each) {
+            bail!(error);
+        }
         let name = map_each.function_name().unwrap_or("");
         // Analysis runs in a fresh module. The loader retains identities of
         // actual top-level def declarations, including private/imported helpers.
@@ -523,6 +526,26 @@ fn check_mapper(
         );
     }
     Ok(())
+}
+
+/// Args.validateMapEach's error (analysis/starlark/Args.java:378-385) for a
+/// `def` or lambda that is certainly not global: one created by this
+/// analysis (not frozen yet — every top-level def of a loaded .bzl file is
+/// frozen before the analysis starts), a nested def or a lambda of the rule
+/// implementation. A frozen function the native profile cannot verify keeps
+/// the caller's explicit error.
+pub(crate) fn non_global_map_each(map_each: Value<'_>) -> Option<String> {
+    if map_each.unpack_frozen().is_some() {
+        return None;
+    }
+    let location = starlark::eval::def_documentation(map_each)?.location;
+    let span = location.resolve_span();
+    Some(format!(
+        "to avoid unintended retention of analysis data structures, the map_each function (declared at {}:{}:{}) must be declared by a top-level def statement",
+        crate::debug_print::location_file(location.filename()),
+        span.begin.line + 1,
+        span.begin.column + 1
+    ))
 }
 
 /// StarlarkCustomCommandLine.wantsDirectoryExpander (:1185-1188): a

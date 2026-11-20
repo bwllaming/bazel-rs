@@ -1,0 +1,11 @@
+load(":defs.bzl", "mk")
+
+mk(
+    name = "nested",
+    kind = "nested",
+)
+
+mk(
+    name = "lambda",
+    kind = "lambda",
+)

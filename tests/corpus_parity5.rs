@@ -2,7 +2,8 @@
 //! corpus-parity5 (docs/OSS_CORPUS.md): Starlark transitions writing
 //! `--instrumentation_filter` (B32/B33) and the execution platform in the
 //! action key that shares or conflicts two targets' equal actions (the B13c
-//! prerequisite), the cases listed in
+//! prerequisite), Args.validateMapEach's error for a map_each function the
+//! rule implementation created (B32), the cases listed in
 //! tests/fixtures/corpus_parity5/capture.py. Every
 //! case replays the genuine Bazel 9.3.1 capture
 //! tests/fixtures/corpus_parity5/reference_receipt.json (written by

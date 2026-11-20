@@ -132,6 +132,10 @@ fn template_dict_methods(builder: &mut MethodsBuilder) {
             repr.starts_with("<function ") && repr.contains(" from ")
         };
         if !allow_closure && starlark_function {
+            // TemplateDict.addJoined's validation (TemplateDict.java:69-77).
+            if let Some(error) = crate::args::non_global_map_each(map_each) {
+                bail!(error);
+            }
             ensure!(
                 !name.contains("lambda")
                     && (crate::analysis_runtime::is_top_level_mapper(eval, map_each)
