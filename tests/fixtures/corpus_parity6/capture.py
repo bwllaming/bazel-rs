@@ -35,6 +35,8 @@ CASES = {
         [], 'build', BUILD, ['//toolrunfiles:use'], [r'^INFO: \d+ process'], ['use.txt'],
         'workspace', ['toolrunfiles/tool.sh.runfiles_manifest?', 'toolrunfiles/tool.sh.runfiles/MANIFEST?',
                       'toolrunfiles/tool.sh.repo_mapping']),
+    'worker_reads_an_input_producers_sibling_output': (
+        [], 'build', BUILD, ['//worker:singleplex', '//worker:multiplex'], [r'^INFO: \d+ process'], ['singleplex.txt', 'multiplex.txt']),
 }
 
 TIME = re.compile(r'^\(\d\d:\d\d:\d\d\) ')

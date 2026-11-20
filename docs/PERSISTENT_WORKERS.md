@@ -171,6 +171,13 @@ identifies the tools.
     itself because it is the worker's cwd. The spawn's inputs are then
     hardlink-staged into it, exactly like a sandboxed spawn's
     (docs/HARDLINK_STAGING.md).
+  - A worker that is not sandboxed runs in genuine's shared execution
+    root, where a tool can read outputs it was not given. bazel-rs stages
+    the other outputs of each input's producing action as well (they are
+    in genuine's execution root for certain; B51: rules_kotlin's JdepsMerge
+    reads the `-kt.jar` beside the jdeps it merges). Outputs of actions the
+    spawn does not depend on are not staged. The extra files are not
+    inputs: not in the WorkRequest, not in the action key.
   - The staged-inode check runs after the response.
   - Outputs are published from the directory as for any spawn.
   - The worker's own executable and jars are re-linked to the same

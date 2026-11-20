@@ -5533,6 +5533,67 @@ fn stage_inputs_kept(
     staged
 }
 
+/// A non-sandboxed persistent worker's working directory: besides the
+/// spawn's inputs, every other output the inputs' producing actions wrote
+/// (B51). Genuine runs such a worker in the shared execution root
+/// (WorkerSpawnRunner: no WorkerExecRoot unless sandboxed), where every
+/// output of every action already run is present; a tool reading a file
+/// it was not given (rules_kotlin's JdepsMerge reads the `-kt.jar` the
+/// jdeps it merges names, a sibling output of that jdeps' compile) finds
+/// it there. The producers of the inputs have all run, so their outputs
+/// are what that shared root holds for certain; outputs of actions this
+/// spawn does not depend on are not staged (they may or may not have run
+/// in genuine's build either). Never part of the action key; an output
+/// already staged (an input) is kept, and an output only in the remote
+/// cache stays there.
+fn stage_producer_siblings(
+    root: &Path,
+    inputs: &BTreeMap<PathBuf, Staged>,
+    execroot: &Path,
+) -> Result<(), String> {
+    let entries: std::collections::BTreeSet<PathBuf> = inputs
+        .values()
+        .filter_map(|input| match input {
+            Staged::File(input) => action_entry(root, &input.path),
+            _ => None,
+        })
+        .collect();
+    fn walk(from: &Path, to: &Path) -> Result<(), String> {
+        let Ok(listing) = fs::read_dir(from) else {
+            return Ok(());
+        };
+        for entry in listing.flatten() {
+            let source = entry.path();
+            let destination = to.join(entry.file_name());
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                walk(&source, &destination)?;
+                continue;
+            }
+            if fs::symlink_metadata(&destination).is_ok() {
+                continue;
+            }
+            ensure_directory(to)?;
+            if kind.is_symlink() {
+                if let Ok(target) = fs::read_link(&source) {
+                    std::os::unix::fs::symlink(&target, &destination)
+                        .map_err(|e| io_error("cannot stage output", &destination, e))?;
+                }
+            } else if fs::hard_link(&source, &destination).is_err() {
+                fs::copy(&source, &destination)
+                    .map_err(|e| io_error("cannot stage output", &destination, e))?;
+            }
+        }
+        Ok(())
+    }
+    for entry in entries {
+        walk(&entry.join("outputs"), execroot)?;
+    }
+    Ok(())
+}
+
 fn stage_inputs_untimed(
     cas: &Path,
     root: &Path,
@@ -8556,6 +8617,9 @@ pub fn execute_with_remote(
         Vec::new()
     };
     drop(kept);
+    if worker.as_ref().is_some_and(|(lease, _)| !lease.sandboxed()) {
+        stage_producer_siblings(root, inputs, &execroot)?;
+    }
     for (name, content) in &action.extra.param_files {
         write_file(&execroot.join(name), content, 0)?;
     }

@@ -1,0 +1,16 @@
+load(":defs.bzl", "consume", "produce")
+
+exports_files(["worker.py"])
+
+produce(name = "produced")
+
+consume(
+    name = "singleplex",
+    listing = ":produced",
+)
+
+consume(
+    name = "multiplex",
+    listing = ":produced",
+    multiplex = True,
+)

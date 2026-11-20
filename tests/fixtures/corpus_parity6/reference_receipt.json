@@ -80,6 +80,32 @@
     "//toolrunfiles:use"
    ],
    "workspace": "workspace"
+  },
+  "worker_reads_an_input_producers_sibling_output": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/worker/multiplex.txt": "sibling of the listing\n",
+    "k8-fastbuild/bin/worker/singleplex.txt": "sibling of the listing\n"
+   },
+   "startup": [],
+   "stderr": [
+    {
+     "line": "INFO: 4 processes: 1 internal, 1 processwrapper-sandbox, 2 worker.",
+     "pattern": "^INFO: \\d+ process"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//worker:singleplex",
+    "//worker:multiplex"
+   ],
+   "workspace": "workspace"
   }
  },
  "elf_sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c"
