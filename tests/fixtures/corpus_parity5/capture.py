@@ -52,6 +52,8 @@ CASES = {
     'cpp_booleans_on_the_command_line': (
         [], 'build', BUILD + ['--save_temps', '--nostart_end_lib', '--nointerface_shared_objects',
                               '--process_headers_in_dependencies'], ['//cppopts:leaf'], [], ['leaf.txt']),
+    'immutable_fields_hash': (
+        [], 'build', BUILD + ['--nobuild'], ['//hash:f'], [r'HASH', r'STRUCT'], []),
 }
 
 TIME = re.compile(r'^\(\d\d:\d\d:\d\d\) ')

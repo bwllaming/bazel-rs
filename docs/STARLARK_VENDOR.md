@@ -708,3 +708,12 @@ carry the support (each with a header notice; zero cost for other values):
 mutation errors after garbage collections that moved the values, the
 shared mutable elements, and the frozen result; the `cc_internal.freeze`
 surface test covers the Starlark side (docs/DEPSETS.md).
+
+`src/values/types/structs/value.rs` (corpus-parity5): a struct is hashable
+when it is immutable (StructImpl/StarlarkInfo.isImmutable under
+StarlarkValue.checkHashable), so a frozen list or dict field, or an
+immutable one not frozen yet, contributes its contents to the struct's hash
+(`StructRef::write_field_hash`, also used by bazel-rs provider instances,
+crate::providers); a list is still never a dict key by itself
+(StarlarkList.checkHashable). Genuine capture: tests/fixtures/corpus_parity5
+case `immutable_fields_hash` (rules_cc's ExtraLinkTimeLibraryInfo `_key`).

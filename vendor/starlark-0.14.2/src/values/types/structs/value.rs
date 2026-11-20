@@ -15,8 +15,8 @@
  * limitations under the License.
  */
 
-// Modified for native Bazel 9.3 struct repr compatibility and the unknown field
-// message; see vendor provenance.
+// Modified for native Bazel 9.3 struct repr compatibility, the unknown field
+// message and the hash of immutable list/dict fields; see vendor provenance.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -57,6 +57,7 @@ use crate::values::Value;
 use crate::values::ValueError;
 use crate::values::ValueLike;
 use crate::values::comparison::equals_small_map;
+use crate::values::structs::StructRef;
 use crate::values::structs::unordered_hasher::UnorderedHasher;
 
 impl<'v, V: ValueLike<'v>> StructGen<'v, V> {
@@ -207,7 +208,7 @@ where
             // `a=1 b=2` and `a=2 b=1` would produce different hashes.
             let mut entry_hasher = StarlarkHasher::new();
             k.hash().hash(&mut entry_hasher);
-            v.write_hash(&mut entry_hasher)?;
+            StructRef::write_field_hash(v.to_value(), &mut entry_hasher)?;
             unordered_hasher.write_hash(entry_hasher.finish());
         }
 
@@ -332,4 +333,52 @@ json.encode(struct(foo = [struct(bar = "some")])) == '{"foo":[{"bar":"some"}]}'
             "unsupported comparison: struct <=> struct",
         );
     }
+}
+
+/// Modified for bazel-rs: Bazel's struct and provider instance are
+/// hashable when they are immutable (StarlarkValue.checkHashable over
+/// StructImpl/StarlarkInfo.isImmutable), so a frozen list or dict field —
+/// or an immutable one not frozen yet (`cc_internal.freeze`) — contributes
+/// its contents, although such a list is never a dict key by itself
+/// (StarlarkList.checkHashable). Any other field hashes as usual.
+impl<'v> StructRef<'v> {
+    /// The hash a struct (or provider instance) field contributes.
+    pub fn write_field_hash(value: Value<'v>, hasher: &mut StarlarkHasher) -> crate::Result<()> {
+        write_field_hash(value, hasher, 0)
+    }
+}
+
+fn write_field_hash<'v>(
+    value: Value<'v>,
+    hasher: &mut StarlarkHasher,
+    depth: usize,
+) -> crate::Result<()> {
+    use crate::values::dict::DictRef;
+    use crate::values::list::ListRef;
+    if depth < 64 {
+        if let Some(list) = ListRef::from_value(value) {
+            if value.unpack_frozen().is_some() || ListRef::is_immutable_unfrozen(value) {
+                "list".hash(hasher);
+                for item in list.iter() {
+                    write_field_hash(item, hasher, depth + 1)?;
+                }
+                return Ok(());
+            }
+        } else if value.unpack_frozen().is_some() || DictRef::is_immutable_unfrozen(value) {
+            if let Some(dict) = DictRef::from_value(value) {
+                // Dict equality ignores the order: an unordered hash.
+                let mut unordered_hasher = UnorderedHasher::new();
+                for (key, item) in dict.iter() {
+                    let mut entry_hasher = StarlarkHasher::new();
+                    key.write_hash(&mut entry_hasher)?;
+                    write_field_hash(item, &mut entry_hasher, depth + 1)?;
+                    unordered_hasher.write_hash(entry_hasher.finish());
+                }
+                "dict".hash(hasher);
+                unordered_hasher.finish().hash(hasher);
+                return Ok(());
+            }
+        }
+    }
+    value.write_hash(hasher)
 }

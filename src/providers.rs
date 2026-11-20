@@ -506,7 +506,9 @@ where
         self.identity.hash(hasher);
         for (name, value) in &self.fields {
             name.hash(hasher);
-            value.to_value().write_hash(hasher)?;
+            // StarlarkInfo is hashable when immutable: a frozen (or
+            // immutable) list or dict field hashes its contents.
+            StructRef::write_field_hash(value.to_value(), hasher)?;
         }
         Ok(())
     }
