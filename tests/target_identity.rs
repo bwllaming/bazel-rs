@@ -389,13 +389,13 @@ fn target_files_is_one_depset_per_target() {
     assert_eq!(fs::read_to_string(path).unwrap(), FILES_EXPECTED);
 }
 
-/// The frozen copy keeps Bazel's shallow-copy semantics (N49b): the copy
-/// itself is frozen, but a mutable element still fails explicitly — the
-/// configured-target exception (whose re-allocation would not keep the
-/// Target's identity) is gone with N55. Genuine Bazel accepts the mutable
-/// element (declared native gap, `reference_receipt.json` row E/freeze_mutable).
+/// The copy keeps Bazel's shallow-copy semantics: immutable itself, holding
+/// the same elements — a mutable element is accepted and stays mutable
+/// (`reference_receipt.json` row E/freeze_mutable, EXACT since the native
+/// immutable list that is not frozen yet; before, a declared native gap),
+/// and mutating the copy fails like genuine (row E/freeze_mutate).
 #[test]
-fn freeze_with_a_target_keeps_the_other_explicit_errors() {
+fn freeze_with_a_target_is_shallow_and_immutable() {
     let ws = Workspace::new();
     ws.file(
         "defs.bzl",
@@ -413,13 +413,19 @@ fn freeze_with_a_target_keeps_the_other_explicit_errors() {
             BAD_BUILD
         ),
     );
-    for (target, message) in [
-        (
-            "//:bad",
-            "cc_internal.freeze of a list containing a mutable value of type 'list' (Bazel's shallow immutable copy keeps it mutable) is not implemented in the native profile",
-        ),
-        ("//:bad_mutate", "trying to mutate a frozen list value"),
-    ] {
+    let accepted = ws.run(&[
+        "build",
+        "--experimental-builtin-modules",
+        &builtin_registry_flag(),
+        "//:bad",
+    ]);
+    assert_eq!(
+        accepted.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&accepted.stderr)
+    );
+    for (target, message) in [("//:bad_mutate", "trying to mutate a frozen list value")] {
         let result = ws.run(&[
             "build",
             "--experimental-builtin-modules",

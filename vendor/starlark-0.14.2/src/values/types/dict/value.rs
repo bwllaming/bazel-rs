@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-// Modified for native Bazel 9.3 frozen-mutation messages and `dict | select`; see vendor provenance.
+// Modified for native Bazel 9.3 frozen-mutation messages and `dict | select`,
+// and for immutable dicts that are not frozen yet; see vendor provenance.
 
 use std::any::TypeId;
 use std::cell::Ref;
@@ -157,6 +158,7 @@ impl<'v> Dict<'v> {
     pub(crate) fn is_dict_type(x: TypeId) -> bool {
         x == TypeId::of::<DictGen<FrozenDictData>>()
             || x == TypeId::of::<DictGen<RefCell<Dict<'static>>>>()
+            || x == TypeId::of::<DictGen<ImmutableDictData<'static>>>()
     }
 
     pub(crate) unsafe fn from_value_unchecked_mut(x: Value<'v>) -> RefMut<'v, Self> {
@@ -405,6 +407,68 @@ impl<'v> DictLike<'v> for FrozenDictData {
         Err(crate::Error::new_other(ValueError::CannotMutateFrozenValue(
             "dict",
         )))
+    }
+}
+
+/// Modified for bazel-rs: an immutable dict that is not frozen yet, Bazel's
+/// `Dict.immutableCopyOf` (`cc_internal.freeze`): a shallow copy whose
+/// mutation fails with `trying to mutate a frozen dict value`; it freezes
+/// with its module into an ordinary frozen dict.
+#[derive(Trace, Debug, ProvidesStaticType, Allocative)]
+pub(crate) struct ImmutableDictData<'v>(pub(crate) Dict<'v>);
+
+impl<'v> Freeze for DictGen<ImmutableDictData<'v>> {
+    type Frozen = DictGen<FrozenDictData>;
+    fn freeze(self, freezer: &Freezer) -> FreezeResult<Self::Frozen> {
+        let content = self.0.0.content.freeze(freezer)?;
+        Ok(DictGen(FrozenDictData { content }))
+    }
+}
+
+impl<'v> DictLike<'v> for ImmutableDictData<'v> {
+    type ContentRef<'a>
+        = &'a SmallMap<Value<'v>, Value<'v>>
+    where
+        Self: 'a,
+        'v: 'a;
+
+    fn content<'a>(&'a self) -> &'a SmallMap<Value<'v>, Value<'v>> {
+        &self.0.content
+    }
+
+    unsafe fn iter_start(&self) {}
+
+    unsafe fn iter_stop(&self) {}
+
+    unsafe fn content_unchecked(&self) -> &SmallMap<Value<'v>, Value<'v>> {
+        &self.0.content
+    }
+
+    fn set_at(&self, _index: Hashed<Value<'v>>, _value: Value<'v>) -> crate::Result<()> {
+        Err(crate::Error::new_other(ValueError::CannotMutateFrozenValue(
+            "dict",
+        )))
+    }
+}
+
+/// Modified for bazel-rs: immutable dicts that are not frozen yet.
+impl<'v> Heap<'v> {
+    /// An immutable dict of `dict`'s entries on this heap
+    /// ([`ImmutableDictData`]); no entries: the shared empty frozen dict.
+    pub fn alloc_immutable_dict(self, dict: Dict<'v>) -> Value<'v> {
+        if dict.content.is_empty() {
+            return VALUE_EMPTY_FROZEN_DICT.to_frozen_value().to_value();
+        }
+        self.alloc_complex(DictGen(ImmutableDictData(dict)))
+    }
+}
+
+/// Modified for bazel-rs: immutable dicts that are not frozen yet.
+impl<'v> DictRef<'v> {
+    /// Whether `x` is an immutable dict that is not frozen yet
+    /// ([`Heap::alloc_immutable_dict`]).
+    pub fn is_immutable_unfrozen(x: Value<'v>) -> bool {
+        x.downcast_ref::<DictGen<ImmutableDictData<'v>>>().is_some()
     }
 }
 

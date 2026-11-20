@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-// Modified for native Bazel 9.3 frozen-mutation messages and `dict | select`; see vendor provenance.
+// Modified for native Bazel 9.3 frozen-mutation messages and `dict | select`,
+// and for immutable dicts that are not frozen yet; see vendor provenance.
 
 use std::cell::Ref;
 use std::cell::RefCell;
@@ -36,6 +37,7 @@ use crate::values::ValueLike;
 use crate::values::dict::Dict;
 use crate::values::dict::value::DictGen;
 use crate::values::dict::value::FrozenDictData;
+use crate::values::dict::value::ImmutableDictData;
 use crate::values::type_repr::StarlarkTypeRepr;
 use crate::values::types::dict::dict_type::DictType;
 
@@ -79,6 +81,12 @@ impl<'v> DictRef<'v> {
                     aref: Either::Right(coerce(&x.0)),
                 })
         } else {
+            if let Some(immutable) = x.downcast_ref::<DictGen<ImmutableDictData<'v>>>() {
+                // Modified for bazel-rs: an immutable dict not frozen yet.
+                return Some(DictRef {
+                    aref: Either::Right(&immutable.0.0),
+                });
+            }
             let ptr = x.downcast_ref::<DictGen<RefCell<Dict<'v>>>>()?;
             Some(DictRef {
                 aref: Either::Left(ptr.0.borrow()),
@@ -98,7 +106,9 @@ impl<'v> DictMut<'v> {
         #[cold]
         #[inline(never)]
         fn error<'v>(x: Value<'v>) -> anyhow::Error {
-            if x.downcast_ref::<DictGen<FrozenDictData>>().is_some() {
+            if x.downcast_ref::<DictGen<FrozenDictData>>().is_some()
+                || x.downcast_ref::<DictGen<ImmutableDictData>>().is_some()
+            {
                 ValueError::CannotMutateFrozenValue("dict").into()
             } else {
                 NotDictError(x.get_type()).into()

@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified for bazel-rs: an immutable (not yet frozen) list's array
+// (`IMMUTABLE`, cc_internal.freeze); see vendor provenance.
+
 //! Array type used in implementation of `List`.
 //!
 //! This object is used internally, and not visible outside of `starlark` crate.
@@ -191,9 +194,32 @@ impl<'v> Array<'v> {
         }
     }
 
-    /// Has at leave one iterator over the array.
+    /// Has at leave one iterator over the array, or is immutable
+    /// ([`Array::IMMUTABLE`]): either way it cannot be modified.
     pub(crate) fn iter_count_is_non_zero(&self) -> bool {
         unsafe { *self.iter_count.get() != 0 }
+    }
+
+    /// Modified for bazel-rs: the `iter_count` bit marking the array of an
+    /// immutable list that is not frozen yet (Bazel's
+    /// `StarlarkList.immutableCopyOf`, `cc_internal.freeze`). Iterators
+    /// count in the other bits; a garbage collection copy keeps the bit.
+    pub(crate) const IMMUTABLE: u32 = 1 << 31;
+
+    /// Modified for bazel-rs: whether the array is immutable
+    /// ([`Array::IMMUTABLE`]).
+    pub(crate) fn is_immutable(&self) -> bool {
+        unsafe { *self.iter_count.get() & Self::IMMUTABLE != 0 }
+    }
+
+    /// Modified for bazel-rs: marks a non-empty (so not statically
+    /// allocated) array without iterators immutable.
+    pub(crate) fn set_immutable(&self) {
+        assert!(!self.is_statically_allocated());
+        unsafe {
+            debug_assert_eq!(*self.iter_count.get(), 0);
+            *self.iter_count.get() |= Self::IMMUTABLE;
+        }
     }
 
     pub(crate) fn inc_iter_count(&self) {

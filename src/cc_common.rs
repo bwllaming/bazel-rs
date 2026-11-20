@@ -688,41 +688,32 @@ pub(crate) fn create_header_info<'v>(
 /// `cc_internal.freeze(value)` (CcStarlarkInternal.java:950-960): a dict
 /// becomes Dict.immutableCopyOf, any other Java `Iterable` (list, tuple,
 /// range, set) StarlarkList.immutableCopyOf, and everything else (e.g. a
-/// depset, struct or string) is returned unchanged. starlark-rust has no
-/// immutable-but-unfrozen containers, so the copy is a genuinely frozen
-/// list/dict re-allocated from owned snapshots of the elements (N49b,
-/// crate::depset_items::frozen_copy): immutable (`trying to mutate a frozen
-/// list value`) and usable in a depset element — rules_cc's LinkerInputInfo
-/// (cc/private/link/create_linker_input.bzl:63-68). Bazel's copy is shallow;
-/// an element natively without such a copy (a mutable value, a value whose
-/// immutability is not modelled) fails explicitly:
-/// `cc_internal.freeze of a list containing ... is not implemented in the
-/// native profile`. A configured target element keeps its identity through
-/// the copy (N55: the snapshot shares the configured target's one
-/// allocation).
+/// depset, struct or string) is returned unchanged. The copy is shallow and
+/// immutable without being frozen, as Bazel's (Mutability.IMMUTABLE): the
+/// vendored starlark's immutable list/dict (`Heap::alloc_immutable_list`,
+/// `Heap::alloc_immutable_dict`, docs/STARLARK_VENDOR.md) holds the very
+/// elements — a mutable element stays mutable, a function of this
+/// evaluation stays unfrozen until its module freezes — and mutating it
+/// fails with Bazel's `trying to mutate a frozen list value` (`dict`). An
+/// empty copy is the shared empty frozen list (dict).
 pub(crate) fn freeze<'v>(
     value: Value<'v>,
     eval: &mut Evaluator<'v, '_, '_>,
 ) -> starlark::Result<Value<'v>> {
-    use starlark::values::dict::DictRef;
+    use starlark::collections::SmallMap;
+    use starlark::values::dict::{Dict, DictRef};
     let heap = eval.heap();
-    let kind = value.get_type();
-    let unsupported = |what: String| {
-        starlark::Error::new_other(anyhow::anyhow!(
-            "cc_internal.freeze of a {kind} containing {what} is not implemented in the native profile"
-        ))
-    };
     if let Some(dict) = DictRef::from_value(value) {
-        let flat = dict.iter().flat_map(|(k, v)| [k, v]).collect::<Vec<_>>();
-        return crate::depset_items::frozen_copy(eval, &flat, true).map_err(unsupported);
-    }
-    if matches!(kind, "list" | "tuple" | "range" | "set") {
-        let items: Vec<Value<'v>> = value.iterate(heap)?.collect();
-        if items.is_empty() {
-            // StarlarkList.immutableCopyOf of nothing: the shared empty list.
-            return Ok(crate::subrule_fragments::empty_list());
+        let mut entries = SmallMap::with_capacity(dict.len());
+        for (key, item) in dict.iter_hashed() {
+            entries.insert_hashed(key, item);
         }
-        return crate::depset_items::frozen_copy(eval, &items, false).map_err(unsupported);
+        drop(dict);
+        return Ok(heap.alloc_immutable_dict(Dict::new(entries)));
+    }
+    if matches!(value.get_type(), "list" | "tuple" | "range" | "set") {
+        let items: Vec<Value<'v>> = value.iterate(heap)?.collect();
+        return Ok(heap.alloc_immutable_list(&items));
     }
     Ok(value)
 }
@@ -780,6 +771,79 @@ mod tests {
 
     /// rules_cc cc/private/cc_internal.bzl:17, verbatim.
     const CC_INTERNAL_BZL: &str = "cc_internal = cc_common.internal_DO_NOT_USE() if hasattr(cc_common, \"internal_DO_NOT_USE\") else struct()\n";
+
+    /// The vendored immutable list/dict (`cc_internal.freeze`'s copies)
+    /// keep their immutability across a garbage collection (the list's mark
+    /// lives in its array, which the collection copies) and freeze with the
+    /// module into ordinary frozen values.
+    #[test]
+    fn immutable_copies_survive_garbage_collection_and_freeze() {
+        use starlark::collections::SmallMap;
+        use starlark::environment::Globals;
+        use starlark::values::dict::{Dict, DictRef};
+        use starlark::values::list::{AllocList, ListRef};
+        let globals = Globals::standard();
+        let frozen = Module::with_temp_heap(|module| {
+            let heap = module.heap();
+            let inner = heap.alloc(AllocList([1]));
+            let list = heap.alloc_immutable_list(&[heap.alloc(1), inner]);
+            let mut entries = SmallMap::new();
+            entries.insert_hashed(heap.alloc("a").get_hashed().unwrap(), inner);
+            let dict = heap.alloc_immutable_dict(Dict::new(entries));
+            assert!(ListRef::is_immutable_unfrozen(list) && !ListRef::is_immutable_unfrozen(inner));
+            assert!(DictRef::is_immutable_unfrozen(dict));
+            module.set("l", list);
+            module.set("d", dict);
+            module.set("i", inner);
+            let before = (list.identity_address(), inner.identity_address());
+            let mut eval = Evaluator::new(&module);
+            let mut run = |code: &str| {
+                let ast = AstModule::parse("t.bzl", code.to_owned(), &Dialect::Standard).unwrap();
+                eval.eval_module(ast, &globals)
+                    .map_err(|error| error.to_string())
+            };
+            // Garbage collections run between top-level statements once
+            // enough was allocated; they move every live value.
+            run(&"x = [0] * 100000\n".repeat(20)).unwrap();
+            run("i.append(2)").unwrap();
+            for (code, message) in [
+                ("l.append(3)", "trying to mutate a frozen list value"),
+                ("l[0] = 3", "trying to mutate a frozen list value"),
+                ("d['b'] = 1", "trying to mutate a frozen dict value"),
+                ("d.clear()", "trying to mutate a frozen dict value"),
+            ] {
+                let error = run(code).unwrap_err();
+                assert!(error.contains(message), "{code}: {error}");
+            }
+            assert_eq!(
+                run("str((l, d, [x for x in l], l[1] == i, d['a'] == i))")
+                    .unwrap()
+                    .unpack_str()
+                    .map(str::to_owned),
+                Some("([1, [1, 2]], {\"a\": [1, 2]}, [1, [1, 2]], True, True)".to_owned())
+            );
+            run("i.append(3)").unwrap();
+            drop(eval);
+            let moved = |name: &str| module.get(name).unwrap().identity_address();
+            assert_ne!(
+                (moved("l"), moved("i")),
+                before,
+                "no garbage collection ran"
+            );
+            module.freeze()
+        })
+        .unwrap();
+        let list = frozen.get("l").unwrap();
+        assert_eq!(list.value().to_str(), "[1, [1, 2, 3]]");
+        assert!(list.value().unpack_frozen().is_some());
+        assert!(ListRef::from_value(list.value()).is_some());
+        assert!(!ListRef::is_immutable_unfrozen(list.value()));
+        let dict = frozen.get("d").unwrap();
+        assert_eq!(dict.value().to_str(), "{\"a\": [1, 2, 3]}");
+        assert!(
+            dict.value().unpack_frozen().is_some() && DictRef::from_value(dict.value()).is_some()
+        );
+    }
 
     #[test]
     fn cc_common_struct_shape_and_explicit_failures() {
@@ -949,6 +1013,20 @@ _opts = cc_internal.freeze({"a": (1,), "b": "s"})
 _li = depset([struct(user_link_flags = _flags, opts = _opts, libraries = cc_internal.freeze(depset([struct(a = 1)]).to_list()))])
 (_li.to_list()[0].user_link_flags == ["-lm", ("x",)] and _li.to_list()[0].opts == {"a": (1,), "b": "s"}) or fail("freeze in depset")
 (len(depset([struct(l = _flags), struct(l = cc_internal.freeze(["-lm", ("x",)]))]).to_list()) == 1) or fail("freeze equality")
+# Bazel's copy is shallow (Mutability.IMMUTABLE, not frozen): a mutable
+# element stays the same mutable value, a function of this evaluation is held.
+_inner = [2]
+_shallow = cc_internal.freeze([1, _inner])
+_inner.append(3)
+_shallow[1].append(4)
+(_shallow == [1, [2, 3, 4]] and _shallow[1] == _inner) or fail("freeze shallow list")
+_md = cc_internal.freeze({"a": _inner, "s": struct(f = len)})
+_md["a"].append(5)
+(_inner == [2, 3, 4, 5] and _md["s"].f("ab") == 2 and len(_md) == 2) or fail("freeze shallow dict")
+_fl = cc_internal.freeze([lambda: 7])
+(_fl[0]() == 7 and type(cc_internal.freeze(_fl)) == "list") or fail("freeze function")
+(sorted(_shallow[:1] + [0]) == [0, 1] and [x for x in _shallow] == _shallow and 1 in _shallow) or fail("freeze reads")
+(repr(_md["s"]) == "struct(f = <built-in function len>)" and str(_shallow) == "[1, [2, 3, 4, 5]]" and {k: v for k, v in _md.items()}["a"] == _inner) or fail("freeze dict reads")
 "#
         );
         pass("@@rules_cc+//cc/private:cc_common.bzl", &source);
@@ -977,27 +1055,40 @@ _li = depset([struct(user_link_flags = _flags, opts = _opts, libraries = cc_inte
                 "cc_internal.freeze((1,)).append(2)",
                 "trying to mutate a frozen list value",
             ),
-            // Bazel's copy is shallow and keeps a mutable element mutable:
-            // explicit natively.
+            // The shallow copy is immutable whatever it holds.
             (
-                "cc_internal.freeze([1, [2]])",
-                "cc_internal.freeze of a list containing a mutable value of type 'list' (Bazel's shallow immutable copy keeps it mutable) is not implemented in the native profile",
+                "cc_internal.freeze([1, [2]]).append(3)",
+                "trying to mutate a frozen list value",
             ),
             (
-                "cc_internal.freeze((1, {}))",
-                "cc_internal.freeze of a tuple containing a mutable value of type 'dict'",
+                "cc_internal.freeze([1, [2]])[0] = 3",
+                "trying to mutate a frozen list value",
             ),
             (
-                "cc_internal.freeze({'a': [1]})",
-                "cc_internal.freeze of a dict containing a mutable value of type 'list'",
+                "x = cc_internal.freeze([lambda: 1])\nx += [2]",
+                "trying to mutate a frozen list value",
             ),
             (
-                "cc_internal.freeze([struct(f = len)])",
-                "cc_internal.freeze of a list containing a mutable value of type 'struct'",
+                "cc_internal.freeze({'a': [1]}).update(b = 1)",
+                "trying to mutate a frozen dict value",
             ),
             (
-                "cc_internal.freeze([lambda: 1])",
-                "cc_internal.freeze of a list containing a function that is not frozen yet, outside a rule, aspect, .bzl or BUILD evaluation is not implemented in the native profile",
+                "cc_internal.freeze({'a': [1]})['b'] = 1",
+                "trying to mutate a frozen dict value",
+            ),
+            (
+                "x = cc_internal.freeze({'a': struct(f = len)})\nx |= {}",
+                "trying to mutate a frozen dict value",
+            ),
+            // In a depset element the copy's elements are copied natively,
+            // so they must be immutable (Bazel: any immutable copy).
+            (
+                "depset([struct(l = cc_internal.freeze([[1]]))])",
+                "a depset element containing a value of type 'list holding a mutable value (an immutable copy, not frozen yet)' is not implemented in the native profile",
+            ),
+            (
+                "depset([struct(l = cc_internal.freeze([lambda: 1]))])",
+                "a function that is not frozen yet, outside a rule, aspect, .bzl or BUILD evaluation is not implemented in the native profile",
             ),
             (
                 // N60: the compile action factory needs the analysis context

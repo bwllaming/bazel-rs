@@ -91,11 +91,11 @@
     "error": null
    },
    "native": {
-    "exit": 1,
-    "error": "cc_internal.freeze of a list containing a mutable value of type 'list' (Bazel's shallow immutable copy keeps it mutable) is not implemented in the native profile"
+    "exit": 0,
+    "error": null
    },
-   "verdict": "EXPECTED_NATIVE_GAP",
-   "why": "Bazel's copy is shallow (a mutable element stays mutable); the native profile fails explicitly"
+   "verdict": "EXACT",
+   "why": "Bazel's copy is shallow (a mutable element stays mutable); since corpus-parity5 the native copy is an immutable list that is not frozen yet holding the same elements (docs/DEPSETS.md); before, the native profile failed explicitly"
   },
   {
    "case": "E/freeze_mutate",

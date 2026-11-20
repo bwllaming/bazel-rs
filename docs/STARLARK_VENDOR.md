@@ -673,3 +673,38 @@ vendored files carry the support (each with a header notice):
 A heap without retention behaves exactly as before; a module freeze with no
 retained values does no extra work.
 
+## Immutable lists and dicts not frozen yet (cc_internal.freeze)
+
+Bazel's `cc_internal.freeze` (StarlarkList/Dict.immutableCopyOf) returns a
+shallow copy with Mutability.IMMUTABLE: not frozen, yet every mutation fails
+with `trying to mutate a frozen list value` (`dict`). Upstream starlark-rust
+has only mutable and frozen containers, and a frozen container cannot hold a
+mutable value or a function that is not frozen yet. Five vendored files
+carry the support (each with a header notice; zero cost for other values):
+
+* `src/values/types/array.rs`: `Array::IMMUTABLE`, the top bit of the
+  array's iterator count, marks the array of an immutable list
+  (`is_immutable`, `set_immutable`; only a non-empty, so not statically
+  allocated, array is marked). Iterators count in the other bits.
+* `src/values/layout/avalues/array.rs`: a garbage collection copy of an
+  array keeps the mark (read before the forward overwrites the payload).
+* `src/values/types/list/value.rs`: `ListData::check_can_mutate`, the
+  check every list mutation makes (methods, `x[i] = v`, `+=`), fails with
+  `CannotMutateFrozenValue("list")` for a marked array instead of the
+  iteration error. `Heap::alloc_immutable_list(&[Value])` (an empty one is
+  the shared empty frozen list) and `ListRef::is_immutable_unfrozen`.
+  A marked list freezes like any list.
+* `src/values/types/dict/value.rs`: `ImmutableDictData`, a third
+  `DictGen` payload beside the `RefCell<Dict>` and the frozen dict: no
+  borrow flag (it is never mutated), `set_at` and `Freeze` like the frozen
+  and the mutable dict, `Dict::is_dict_type` includes it.
+  `Heap::alloc_immutable_dict(Dict)` (an empty one is the shared empty
+  frozen dict) and `DictRef::is_immutable_unfrozen`.
+* `src/values/types/dict/refs.rs`: `DictRef::from_value` reads it,
+  `DictMut::from_value` fails with `CannotMutateFrozenValue("dict")`.
+
+`src/cc_common.rs`
+`immutable_copies_survive_garbage_collection_and_freeze` checks the
+mutation errors after garbage collections that moved the values, the
+shared mutable elements, and the frozen result; the `cc_internal.freeze`
+surface test covers the Starlark side (docs/DEPSETS.md).

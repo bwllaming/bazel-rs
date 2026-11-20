@@ -418,14 +418,16 @@ fn cc_binary_links_and_the_workspace_status_stamps() {
 
     // The recorded remaining cc boundary: a cc_library `linkstamp` attribute
     // puts the LinkstampInfo provider (rules_cc's private-API wrapper
-    // closures, created by this analysis) in a depset — supported — and then
-    // `cc_internal.freeze`s the list of them: a frozen list cannot hold
-    // functions that are not frozen yet natively; the failure is explicit.
+    // closures, created by this analysis) in a depset and
+    // `cc_internal.freeze`s the list of them — both supported (the copy is
+    // an immutable list not frozen yet holding the closures) — and the
+    // binary's link then compiles the linkstamp with shareable artifacts,
+    // which fails explicitly.
     let output = ws.build("cache", &[&script, "//bin:stamped_tool"]);
     let text = stderr(&output);
     assert!(!output.status.success(), "{text}");
     assert!(
-        text.contains("cc_internal.freeze of a list containing a function of this evaluation (not frozen yet, while Bazel's copy holds it) is not implemented in the native profile"),
+        text.contains("cc_internal.create_cc_compile_action with shareable artifacts is not implemented in the native profile"),
         "{text}"
     );
 }

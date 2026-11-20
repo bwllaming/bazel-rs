@@ -188,10 +188,12 @@ from its frozen provider, as in Bazel. The order of unequal function items
 transient deduplication sets.
 
 `cc_internal.freeze` of a list holding a function of this evaluation that is
-not frozen yet stays an explicit gap: Bazel's shallow immutable copy holds
-the function, natively a frozen list cannot (rules_cc's cc_library
-`linkstamp`, whose LinkstampInfo wraps this analysis's private-API
-closures). Built-in functions and bound methods (`"x".upper`, `{}.get`,
+not frozen yet returns an immutable list that is not frozen yet (below,
+"Frozen lists and dicts inside elements"): it holds the very function, as
+Bazel's shallow copy does (rules_cc's cc_library `linkstamp`, whose
+LinkstampInfo wraps this analysis's private-API closures); as a depset
+element's field it is snapshotted like a frozen list, its function item
+retained with the element. Built-in functions and bound methods (`"x".upper`, `{}.get`,
 `len`) are mutable as in Bazel (StarlarkValue.isImmutable default):
 `depset elements must not be mutable values`.
 
@@ -234,19 +236,23 @@ frozen list value` (`dict`) (Mutability.checkMutable,
 is Dict.immutableCopyOf for a dict, StarlarkList.immutableCopyOf for any
 other iterable (list, tuple, range, set; the empty result is the shared
 empty list) and `x` itself otherwise (depset, struct, string, None, ...).
-Natively the copy is such a frozen list/dict re-allocated from owned
-snapshots of the elements (`depset_items::frozen_copy`). Bazel's copy is
-shallow, so an element without a native frozen copy fails explicitly
-instead of yielding a mutable copy: a mutable value (`cc_internal.freeze of
-a list containing a mutable value of type 'list' (Bazel's shallow immutable
-copy keeps it mutable) is not implemented in the native profile`), a
-closure of this evaluation that is not frozen yet (see above), or a value
-whose immutability is not modelled. A configured target
-keeps its identity through the copy (N55: the snapshot shares the
-configured target's one allocation), so a list or dict holding a Target
-freezes like any other immutable element. On this base every `freeze`
-reached by the rules_cc/cc_toolchain tests and the rules_go go_library
-fixture is of an empty list.
+Bazel's copy is shallow and immutable without being frozen
+(Mutability.IMMUTABLE): a mutable element stays the same mutable value, a
+function of this evaluation is held. Natively the copy is the vendored
+starlark's immutable list or dict that is not frozen yet
+(`Heap::alloc_immutable_list`, `Heap::alloc_immutable_dict`,
+docs/STARLARK_VENDOR.md "Immutable lists and dicts not frozen yet"): it
+holds the very elements on the evaluating heap, every mutation fails with
+`trying to mutate a frozen list value` (`dict`), and it freezes with its
+module into an ordinary frozen list or dict (rules_cc's
+LtoCompilationContextInfo, `freeze` of a dict of BitcodeInfo instances
+holding mutable `copts` lists). Starlark.isImmutable of such a copy is true
+whatever it holds; in a depset element the native snapshot copies the
+copy's elements, so they must be immutable themselves, else the element
+fails explicitly (`a depset element containing a value of type 'list
+holding a mutable value (an immutable copy, not frozen yet)' is not
+implemented in the native profile`). A configured target keeps its
+identity through the copy (N55).
 
 ## Identity of a depset built from one transitive set (N49b)
 

@@ -686,10 +686,29 @@ fn mutability(value: Value<'_>, depth: usize) -> Mutability {
         return all(&mut tuple.iter());
     }
     if matches!(value.get_type(), "list" | "dict" | "set") {
-        return if value.unpack_frozen().is_some() {
-            Immutable
+        if value.unpack_frozen().is_some() {
+            return Immutable;
+        }
+        // An immutable copy not frozen yet (`cc_internal.freeze`) is
+        // immutable in Bazel whatever it holds; its native snapshot copies
+        // the elements, so they must be immutable too.
+        let elements: Vec<Value<'_>> = if let Some(list) = ListRef::from_value(value)
+            && ListRef::is_immutable_unfrozen(value)
+        {
+            list.iter().collect()
+        } else if DictRef::is_immutable_unfrozen(value)
+            && let Some(dict) = DictRef::from_value(value)
+        {
+            dict.iter().flat_map(|(key, item)| [key, item]).collect()
         } else {
-            Mutable
+            return Mutable;
+        };
+        return match all(&mut elements.into_iter()) {
+            Mutable => Unknown(format!(
+                "{} holding a mutable value (an immutable copy, not frozen yet)",
+                value.get_type()
+            )),
+            other => other,
         };
     }
     if let Some(structure) = StructRef::from_value(value) {
@@ -726,71 +745,6 @@ pub(crate) fn check_element(value: Value<'_>) -> anyhow::Result<()> {
         );
     }
     Ok(())
-}
-
-/// The frozen copy of a list-like or dict (`elements` are the elements, or
-/// the key/value pairs in turn): `cc_internal.freeze`'s
-/// StarlarkList/Dict.immutableCopyOf (N49b, crate::cc_common::freeze),
-/// re-allocated from owned snapshots. Bazel's copy is shallow; natively every
-/// element must be immutable (then shallow and deep agree) and have an owned
-/// snapshot that keeps its identity: a configured target's shared `Arc`
-/// (N55) re-allocates as the same instance. Otherwise the error names the
-/// offending element.
-pub(crate) fn frozen_copy<'v>(
-    eval: &Evaluator<'v, '_, '_>,
-    elements: &[Value<'v>],
-    pairs: bool,
-) -> Result<Value<'v>, String> {
-    let heap = eval.heap();
-    let mut items = Vec::with_capacity(elements.len());
-    for &value in elements {
-        let kind = value.get_type();
-        match mutability(value, 0) {
-            Mutability::Immutable => {}
-            Mutability::Mutable => {
-                return Err(format!(
-                    "a mutable value of type '{kind}' (Bazel's shallow immutable copy keeps it mutable)"
-                ));
-            }
-            Mutability::Unknown(inner) => {
-                return Err(format!(
-                    "a value of type '{kind}' holding a value of type '{inner}' (its immutability is not modelled)"
-                ));
-            }
-        }
-        let item = snapshot(value, eval, 0).map_err(|error| {
-            let error = error.to_string();
-            match error
-                .strip_prefix("a depset element containing ")
-                .and_then(|what| what.strip_suffix(" is not implemented in the native profile"))
-            {
-                Some(what) if kind == "struct" || kind == "tuple" => {
-                    format!("a value of type '{kind}' holding {what}")
-                }
-                Some(what) => what.to_owned(),
-                None => format!("a value of type '{kind}' ({error})"),
-            }
-        })?;
-        items.push(item);
-    }
-    let container = if pairs {
-        let mut entries = Vec::with_capacity(items.len() / 2);
-        let mut items = items.into_iter();
-        while let (Some(key), Some(value)) = (items.next(), items.next()) {
-            entries.push((key, value));
-        }
-        Item::Dict(DictItem(entries))
-    } else {
-        Item::List(items)
-    };
-    if container.has_pending_function() {
-        // A frozen container cannot hold a value that is not frozen yet.
-        return Err(
-            "a function of this evaluation (not frozen yet, while Bazel's copy holds it)"
-                .to_owned(),
-        );
-    }
-    Ok(alloc_frozen_container(heap, &container))
 }
 
 /// `item`, the snapshot of the struct or provider instance `value`: holding
@@ -886,9 +840,9 @@ pub(crate) fn snapshot<'v>(
         );
         struct_item(eval, value, item)?
     } else if let Some(list) = ListRef::from_value(value) {
-        // Only a frozen list passes the element check; a frozen list's
-        // contents are frozen too.
-        if value.unpack_frozen().is_none() {
+        // Only a frozen list or an immutable copy (whose elements passed
+        // the element check) passes the element check.
+        if value.unpack_frozen().is_none() && !ListRef::is_immutable_unfrozen(value) {
             bail!("depset elements must not be mutable values");
         }
         Item::List(
@@ -897,7 +851,7 @@ pub(crate) fn snapshot<'v>(
                 .collect::<anyhow::Result<_>>()?,
         )
     } else if let Some(dict) = DictRef::from_value(value) {
-        if value.unpack_frozen().is_none() {
+        if value.unpack_frozen().is_none() && !DictRef::is_immutable_unfrozen(value) {
             bail!("depset elements must not be mutable values");
         }
         Item::Dict(DictItem(

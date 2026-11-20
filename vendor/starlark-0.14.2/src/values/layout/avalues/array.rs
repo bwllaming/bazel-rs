@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified for bazel-rs: a garbage collection copy keeps an array's immutable
+// mark (`Array::IMMUTABLE`); see vendor provenance.
+
 use std::marker::PhantomData;
 use std::mem;
 use std::mem::MaybeUninit;
@@ -111,6 +114,9 @@ impl<'v> AValue<'v> for AValueArray {
             }
 
             AValueForward::assert_does_not_overwrite_extra::<Self>();
+            // Modified for bazel-rs: read before the forward overwrites the
+            // payload.
+            let immutable = (*me).payload.is_immutable();
             let content = (*me).payload.content_mut();
 
             let (v, r, extra) = tracer.reserve_with_extra::<Self>(content.len());
@@ -124,7 +130,12 @@ impl<'v> AValue<'v> for AValueArray {
             content.trace(tracer);
 
             // Note when copying we are dropping extra capacity.
-            r.fill(Array::new(content.len() as u32, content.len() as u32));
+            // Modified for bazel-rs: the copy keeps the immutable mark.
+            let copy = Array::new(content.len() as u32, content.len() as u32);
+            if immutable {
+                copy.set_immutable();
+            }
+            r.fill(copy);
             let extra = &mut *extra;
             maybe_uninit_write_slice(extra, content);
             v

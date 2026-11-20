@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-// Modified for native Bazel 9.3 frozen-mutation messages and `dict | select`; see vendor provenance.
+// Modified for native Bazel 9.3 frozen-mutation messages and `dict | select`,
+// and for immutable lists that are not frozen yet; see vendor provenance.
 
 use std::any::TypeId;
 use std::cell::Cell;
@@ -148,11 +149,22 @@ impl<'v> ListData<'v> {
     }
 
     /// Return an error if there's at least one iterator over the list.
+    /// Modified for bazel-rs: or if the list is immutable
+    /// ([`Array::IMMUTABLE`]): Bazel's `trying to mutate a frozen list value`.
     fn check_can_mutate(&self) -> anyhow::Result<()> {
         if unlikely(self.content.get().as_ref().iter_count_is_non_zero()) {
+            if self.content.get().as_ref().is_immutable() {
+                return Err(ValueError::CannotMutateFrozenValue("list").into());
+            }
             return Err(ValueError::MutationDuringIteration.into());
         }
         Ok(())
+    }
+
+    /// Modified for bazel-rs: whether the list is immutable without being
+    /// frozen yet ([`Array::IMMUTABLE`]).
+    pub(crate) fn is_immutable(&self) -> bool {
+        self.content.get().as_ref().is_immutable()
     }
 
     #[cold]
@@ -238,6 +250,40 @@ impl<'v> ListData<'v> {
 
     pub(crate) fn remove(&self, index: usize) -> Value<'v> {
         self.content.get().remove(index)
+    }
+}
+
+/// Modified for bazel-rs: immutable lists that are not frozen yet.
+impl<'v> Heap<'v> {
+    /// An immutable list of `elems` on this heap: Bazel's
+    /// `StarlarkList.immutableCopyOf` (`cc_internal.freeze`). Its elements
+    /// stay what they are (a shallow copy: a mutable element stays mutable,
+    /// a function of this evaluation stays unfrozen); mutating the list
+    /// fails with `trying to mutate a frozen list value`, and it freezes
+    /// with its module like any list. No elements: the shared empty frozen
+    /// list.
+    pub fn alloc_immutable_list(self, elems: &[Value<'v>]) -> Value<'v> {
+        if elems.is_empty() {
+            return FrozenValue::new_empty_list().to_value();
+        }
+        let list = self.alloc_list(elems);
+        let data = list
+            .downcast_ref::<ListGen<ListData<'v>>>()
+            .expect("a freshly allocated list");
+        data.0.content.get().set_immutable();
+        list
+    }
+}
+
+/// Modified for bazel-rs: immutable lists that are not frozen yet.
+impl<'v> ListRef<'v> {
+    /// Whether `x` is an immutable list that is not frozen yet
+    /// ([`Heap::alloc_immutable_list`]).
+    pub fn is_immutable_unfrozen(x: Value<'v>) -> bool {
+        x.unpack_frozen().is_none()
+            && x
+                .downcast_ref::<ListGen<ListData<'v>>>()
+                .is_some_and(|list| list.0.is_immutable())
     }
 }
 
