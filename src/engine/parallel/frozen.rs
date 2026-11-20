@@ -361,13 +361,13 @@ impl PlannedResults {
         &self,
         key: &ConfiguredTargetKey,
         delta: &delta::TargetDelta,
-        transitive: &BTreeSet<String>,
+        transitive: Option<&BTreeSet<String>>,
         artifacts: &ConcurrentArtifactIndex,
         stamp: u32,
         shared: &HashMap<File, Artifact>,
     ) {
         let mut results = KeyResults {
-            repositories: Some(Arc::new(transitive.clone())),
+            repositories: transitive.map(|transitive| Arc::new(transitive.clone())),
             ..KeyResults::default()
         };
         let resolve = |artifact: &Artifact| {
@@ -614,9 +614,18 @@ impl Engine {
     /// frame at its turn in the coordinator's scopes.
     pub(super) fn frozen_prepares(&self, state: &ActionPlanning) -> bool {
         self.eval_async_phase2
-            && (self.commits_ahead(state) || self.keep_going_buffered())
+            && (self.commits_ahead(state)
+                || self.semantic_merges_buffered(state)
+                || self.keep_going_buffered())
             && shared_prepares()
             && enabled()
+    }
+
+    /// cquery (semantic commits): a deferred walk without --keep_going is a
+    /// frozen walk through the merge buffer, which merges in plan order
+    /// (the pipeline's commits ahead stay off for semantic commits).
+    pub(super) fn semantic_merges_buffered(&self, state: &ActionPlanning) -> bool {
+        self.semantic_only() && state.nodes.deferring && !self.keep_going && commit_ahead_enabled()
     }
 
     /// `--keep_going`: a frozen walk through the merge buffer
@@ -641,8 +650,7 @@ impl Engine {
         configured: &ConfiguredNodes,
     ) -> Arc<Frozen> {
         self.ensure_analysis_pool();
-        let view =
-            (!self.semantic_only() && worker_deltas()).then(|| delta::SharedView::new(self, state));
+        let view = worker_deltas().then(|| delta::SharedView::new(self, state));
         state.declared.journal = Some(Default::default());
         let engine = self.fork_frozen();
         crate::perf_mark("pass2.freeze.engine");
@@ -763,8 +771,7 @@ impl Engine {
         let state = self.action_planning.as_mut()?;
         let deferring = std::mem::replace(&mut state.nodes.deferring, !keep_going);
         let state = self.action_planning.as_ref()?;
-        let view =
-            (!self.semantic_only() && worker_deltas()).then(|| delta::SharedView::new(self, state));
+        let view = worker_deltas().then(|| delta::SharedView::new(self, state));
         if let Some(state) = self.action_planning.as_mut() {
             state.nodes.deferring = deferring;
         }
@@ -1276,7 +1283,8 @@ pub(super) fn run_native(
                 provider_keys: None,
                 runfiles_info: plain.runfiles_info,
                 validation,
-                repositories: Some(Arc::new(transitive)),
+                // A semantic commit keeps no transitive repositories.
+                repositories: (!engine.semantic_only()).then(|| Arc::new(transitive)),
             },
             registered,
             declared: declared
@@ -1511,10 +1519,12 @@ pub(super) fn publish_starlark_results(
         }
         delta::provisional_bump(5);
     }
+    // A semantic commit (cquery) keeps no transitive repositories
+    // (`Engine::commit_target`): none published either.
     frozen.results.publish_shared(
         &parts.key,
         built,
-        &parts.transitive,
+        (!frozen.engine.semantic_only()).then_some(&parts.transitive),
         &frozen.artifacts,
         stamp,
         &shared,
@@ -1755,15 +1765,17 @@ fn package_group_results(
 }
 
 /// T2: whether a frozen walk publishes `rule`'s results from a worker
-/// (`native_results::plain`, no coverage instrumentation, an execution
-/// plan).
+/// (`native_results::plain`, no coverage instrumentation; under semantic
+/// commits, cquery, only a plain native rule: its commit is the
+/// execution plan's but for its inputs, one per File, `Engine::inputs_in`,
+/// and its transitive repositories, none).
 pub(super) fn publishes_native(engine: &Engine, rule: &Rule, config: ConfigId) -> bool {
     publishes()
         && (super::native_results::plain(rule)
-            || super::native_results::selected_output_group(rule).is_some()
-            || matches!(rule.kind, RuleKind::Genrule)
-            || package_group_resolved(engine, rule))
-        && !engine.semantic_only()
+            || (!engine.semantic_only()
+                && (super::native_results::selected_output_group(rule).is_some()
+                    || matches!(rule.kind, RuleKind::Genrule)
+                    || package_group_resolved(engine, rule))))
         && !engine
             .configurations
             .get(config)
@@ -2203,7 +2215,7 @@ mod tests {
         results.publish_shared(
             &l,
             &declared_delta(&sharer, false),
-            &transitive,
+            Some(&transitive),
             &index,
             7,
             &HashMap::new(),
@@ -2216,7 +2228,7 @@ mod tests {
         results.publish_shared(
             &w,
             &declared_delta(&generating, true),
-            &transitive,
+            Some(&transitive),
             &index,
             3,
             &HashMap::new(),
@@ -2224,7 +2236,7 @@ mod tests {
         results.publish_shared(
             &l,
             &declared_delta(&sharer, false),
-            &transitive,
+            Some(&transitive),
             &index,
             7,
             &HashMap::new(),

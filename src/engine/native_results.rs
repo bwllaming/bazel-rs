@@ -201,6 +201,21 @@ impl Engine {
         config: ConfigId,
     ) -> Result<ResolvedInputs, String> {
         let mut inputs = Vec::with_capacity(rule.srcs.len());
+        if cx.engine().semantic_only() {
+            // A semantic commit (cquery) keeps one input per File, in
+            // declaration order: no execution-path normalization (that is
+            // the execution plan's, build and --nobuild alike).
+            let mut seen: HashSet<File> = HashSet::with_capacity(rule.srcs.len());
+            for src in &rule.srcs {
+                let label = cx.engine().resolve_rule_src(rule, src)?;
+                for artifact in Self::shared_artifacts_in(cx, &label, config, reads)?.iter() {
+                    if seen.insert(artifact.file.clone()) {
+                        inputs.push(artifact.clone());
+                    }
+                }
+            }
+            return Ok(inputs);
+        }
         // Lookups only: `inputs` keeps the declaration order.
         let mut seen: HashMap<SharedPath, Artifact> = HashMap::with_capacity(rule.srcs.len());
         for src in &rule.srcs {

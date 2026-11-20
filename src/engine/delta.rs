@@ -2333,14 +2333,13 @@ impl DeltaInputs {
     /// commit registers on first need (the workspace status, a build-info
     /// action resolved against it), a repo mapping manifest left to
     /// resolve, a spawn whose execution platform is not analyzed yet.
+    /// A semantic delta (cquery) is built on a worker in frozen walks only
+    /// (the pipeline's `Engine::delta_inputs` gives none).
     fn unsafe_reason(
         &self,
         analyzed: &analysis::AnalysisResult,
         precomputed: Option<&RunfilesPrecomputed>,
     ) -> Option<&'static str> {
-        if self.view.semantic_only {
-            return Some("delta_semantic");
-        }
         if Engine::workspace_status_needed(&analyzed.actions)
             || analyzed
                 .files
