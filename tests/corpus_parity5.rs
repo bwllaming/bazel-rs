@@ -3,7 +3,9 @@
 //! `--instrumentation_filter` (B32/B33) and the execution platform in the
 //! action key that shares or conflicts two targets' equal actions (the B13c
 //! prerequisite), Args.validateMapEach's error for a map_each function the
-//! rule implementation created (B32), the cases listed in
+//! rule implementation created and the CppOptions booleans `--save_temps`,
+//! `--start_end_lib`, `--interface_shared_objects` and
+//! `--process_headers_in_dependencies` (B32), the cases listed in
 //! tests/fixtures/corpus_parity5/capture.py. Every
 //! case replays the genuine Bazel 9.3.1 capture
 //! tests/fixtures/corpus_parity5/reference_receipt.json (written by

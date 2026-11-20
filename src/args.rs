@@ -482,11 +482,11 @@ fn formatted(template: Option<&str>, value: &str) -> anyhow::Result<String> {
     crate::command_line::format(template, value).map_err(anyhow::Error::msg)
 }
 
-fn check_mapper(
-    map_each: Value<'_>,
+fn check_mapper<'v>(
+    map_each: Value<'v>,
     allow_closure: bool,
     method: &str,
-    eval: &Evaluator<'_, '_, '_>,
+    eval: &Evaluator<'v, '_, '_>,
 ) -> anyhow::Result<()> {
     if map_each.is_none() {
         return Ok(());
@@ -509,7 +509,7 @@ fn check_mapper(
         repr.starts_with("<function ") && repr.contains(" from ")
     };
     if !allow_closure && starlark_function {
-        if let Some(error) = non_global_map_each(map_each) {
+        if let Some(error) = non_global_map_each(eval, map_each) {
             bail!(error);
         }
         let name = map_each.function_name().unwrap_or("");
@@ -531,11 +531,23 @@ fn check_mapper(
 /// Args.validateMapEach's error (analysis/starlark/Args.java:378-385) for a
 /// `def` or lambda that is certainly not global: one created by this
 /// analysis (not frozen yet — every top-level def of a loaded .bzl file is
-/// frozen before the analysis starts), a nested def or a lambda of the rule
-/// implementation. A frozen function the native profile cannot verify keeps
+/// frozen before the analysis starts — and no global of the evaluated
+/// module), a nested def or a lambda of the rule implementation. A frozen function the native profile cannot verify keeps
 /// the caller's explicit error.
-pub(crate) fn non_global_map_each(map_each: Value<'_>) -> Option<String> {
+pub(crate) fn non_global_map_each<'v>(
+    eval: &Evaluator<'v, '_, '_>,
+    map_each: Value<'v>,
+) -> Option<String> {
     if map_each.unpack_frozen().is_some() {
+        return None;
+    }
+    // A top-level def of the module being evaluated (not frozen yet either).
+    if let Some(name) = map_each.function_name()
+        && eval
+            .module()
+            .get(name)
+            .is_some_and(|global| global.ptr_eq(map_each))
+    {
         return None;
     }
     let location = starlark::eval::def_documentation(map_each)?.location;
@@ -1283,7 +1295,7 @@ expanded([a]) == ["pkg/file with $ spaces", "prefix:x,prefix:y"]
         );
         fail(
             "def build():\n    def nested(x):\n        return x\n    a.add_all(['x'], map_each=nested)\nbuild()",
-            "allow_closure=True",
+            "the map_each function (declared at args_test.star:2:9) must be declared by a top-level def statement",
         );
     }
 
@@ -1300,7 +1312,7 @@ expanded([a]) == ["1", "2", "\"x\""]
         );
         fail(
             "a.add_all(['x'], map_each=lambda x: x)",
-            "allow_closure=True",
+            "to avoid unintended retention of analysis data structures, the map_each function (declared at args_test.star:1:27) must be declared by a top-level def statement",
         );
     }
 

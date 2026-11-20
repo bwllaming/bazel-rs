@@ -133,7 +133,7 @@ fn template_dict_methods(builder: &mut MethodsBuilder) {
         };
         if !allow_closure && starlark_function {
             // TemplateDict.addJoined's validation (TemplateDict.java:69-77).
-            if let Some(error) = crate::args::non_global_map_each(map_each) {
+            if let Some(error) = crate::args::non_global_map_each(eval, map_each) {
                 bail!(error);
             }
             ensure!(

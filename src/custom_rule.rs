@@ -544,6 +544,15 @@ pub struct CppConfigurationView {
     /// CppOptions.removeLegacyWholeArchive
     /// (`--incompatible_remove_legacy_whole_archive`).
     pub remove_legacy_whole_archive: bool,
+    /// CppOptions.saveTemps (`--save_temps`).
+    pub save_temps: bool,
+    /// CppOptions.useStartEndLib (`--start_end_lib`).
+    pub start_end_lib: bool,
+    /// CppOptions.useInterfaceSharedObjects (`--interface_shared_objects`).
+    pub interface_shared_objects: bool,
+    /// CppOptions.processHeadersInDependencies
+    /// (`--process_headers_in_dependencies`).
+    pub process_headers_in_dependencies: bool,
 }
 
 impl Default for CppConfigurationView {
@@ -564,6 +573,10 @@ impl Default for CppConfigurationView {
             build_test_dwp: false,
             legacy_whole_archive: true,
             remove_legacy_whole_archive: true,
+            save_temps: false,
+            start_end_lib: true,
+            interface_shared_objects: true,
+            process_headers_in_dependencies: false,
         }
     }
 }
@@ -603,6 +616,14 @@ impl CppConfigurationView {
             remove_legacy_whole_archive: native
                 .raw_value("incompatible_remove_legacy_whole_archive")
                 != Some(crate::configuration::OptionValue::Bool(false)),
+            save_temps: native.raw_value("save_temps")
+                == Some(crate::configuration::OptionValue::Bool(true)),
+            start_end_lib: native.raw_value("start_end_lib")
+                != Some(crate::configuration::OptionValue::Bool(false)),
+            interface_shared_objects: native.raw_value("interface_shared_objects")
+                != Some(crate::configuration::OptionValue::Bool(false)),
+            process_headers_in_dependencies: native.raw_value("process_headers_in_dependencies")
+                == Some(crate::configuration::OptionValue::Bool(true)),
         }
     }
 

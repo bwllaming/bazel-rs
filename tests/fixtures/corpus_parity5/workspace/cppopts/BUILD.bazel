@@ -1,0 +1,56 @@
+load(":defs.bzl", "leaf", "top")
+
+config_setting(
+    name = "temps",
+    values = {"save_temps": "true"},
+)
+
+config_setting(
+    name = "no_start_end",
+    values = {"start_end_lib": "false"},
+)
+
+config_setting(
+    name = "no_ifso",
+    values = {"interface_shared_objects": "false"},
+)
+
+config_setting(
+    name = "headers",
+    values = {"process_headers_in_dependencies": "true"},
+)
+
+leaf(
+    name = "leaf",
+    flags = select({
+        ":temps": ["temps"],
+        "//conditions:default": [],
+    }) + select({
+        ":no_start_end": ["no_start_end"],
+        "//conditions:default": [],
+    }) + select({
+        ":no_ifso": ["no_ifso"],
+        "//conditions:default": [],
+    }) + select({
+        ":headers": ["headers"],
+        "//conditions:default": [],
+    }),
+)
+
+top(
+    name = "all_set",
+    dep = ":leaf",
+    headers = True,
+    ifso = False,
+    start_end = False,
+    temps = True,
+)
+
+top(
+    name = "defaults",
+    dep = ":leaf",
+    headers = False,
+    ifso = True,
+    start_end = True,
+    temps = False,
+)

@@ -601,9 +601,9 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
         this: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<bool> {
-        receiver(this).map_err(starlark::Error::new_other)?;
+        let cpp = receiver(this).map_err(starlark::Error::new_other)?;
         private_api(eval)?;
-        Ok(true)
+        Ok(cpp.view.interface_shared_objects)
     }
     /// CppConfiguration.java:478-482; --legacy_whole_archive.
     fn legacy_whole_archive<'v>(
@@ -682,9 +682,9 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
         this: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<bool> {
-        receiver(this).map_err(starlark::Error::new_other)?;
+        let cpp = receiver(this).map_err(starlark::Error::new_other)?;
         private_api(eval)?;
-        Ok(false)
+        Ok(cpp.view.process_headers_in_dependencies)
     }
     /// CppConfiguration.java:659-669.
     fn propeller_optimize_absolute_cc_profile<'v>(
@@ -724,9 +724,9 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
     }
     /// CppConfiguration.java:395-404; --save_temps default false.
     fn save_temps<'v>(this: Value<'v>, eval: &mut Evaluator<'v, '_, '_>) -> starlark::Result<bool> {
-        receiver(this).map_err(starlark::Error::new_other)?;
+        let cpp = receiver(this).map_err(starlark::Error::new_other)?;
         private_api(eval)?;
-        Ok(false)
+        Ok(cpp.view.save_temps)
     }
     /// CppConfiguration.java:608-610, 767-771; --share_native_deps default true.
     fn share_native_deps<'v>(
@@ -760,9 +760,9 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
         this: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<bool> {
-        receiver(this).map_err(starlark::Error::new_other)?;
+        let cpp = receiver(this).map_err(starlark::Error::new_other)?;
         private_api(eval)?;
-        Ok(true)
+        Ok(cpp.view.start_end_lib)
     }
     /// CppConfiguration.java:385-393; --stripopt.
     fn strip_opts<'v>(

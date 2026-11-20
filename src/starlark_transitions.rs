@@ -104,6 +104,10 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "build_test_dwp",
     "legacy_whole_archive",
     "incompatible_remove_legacy_whole_archive",
+    "save_temps",
+    "start_end_lib",
+    "interface_shared_objects",
+    "process_headers_in_dependencies",
 ];
 
 /// Table-driven options (crate::configuration::VALUE_OPTIONS) read and
@@ -120,6 +124,16 @@ const GENERIC_VALUE_OPTIONS: &[(&str, &str)] = &[
     (
         "incompatible_remove_legacy_whole_archive",
         "rules.cpp.CppOptions.removeLegacyWholeArchive",
+    ),
+    ("save_temps", "rules.cpp.CppOptions.saveTemps"),
+    ("start_end_lib", "rules.cpp.CppOptions.useStartEndLib"),
+    (
+        "interface_shared_objects",
+        "rules.cpp.CppOptions.useInterfaceSharedObjects",
+    ),
+    (
+        "process_headers_in_dependencies",
+        "rules.cpp.CppOptions.processHeadersInDependencies",
     ),
 ];
 

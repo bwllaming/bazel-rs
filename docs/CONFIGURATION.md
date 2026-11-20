@@ -151,6 +151,7 @@ replayed by `tests/value_options.rs`; `enable_runfiles` also by
 | `experimental_strict_java_deps` | StrictDepsMode, `default` | yes | propagated | `JavaOptions.java:167-178`, `:369` |
 | `enable_runfiles` | TriState (TriStateConverter: `auto` or a boolean spelling, stored as `YES`/`NO`/`AUTO`; boolean syntax), `auto` | yes (also read by the runfiles trees, crate::runfiles_tree, and `ctx.configuration.runfiles_enabled()`) | propagated | `CoreOptions.java:954-961`, `Converters.java:133-156`, `:237` |
 | `collect_code_coverage` | Bool, `false` (the typed field a Starlark transition sets, N47) | yes (docs/COVERAGE.md) | default | `CoreOptions.java:566-578`, `:231-287` |
+| `save_temps`, `start_end_lib`, `interface_shared_objects`, `process_headers_in_dependencies` | Bool, `false`/`true`/`true`/`false` (table-driven CppOptions read by the cpp fragment; Starlark transitions read and write them; corpus-parity5, tests/fixtures/corpus_parity5) | yes | `start_end_lib` propagated, the others default | `CppOptions.java:152-237, 552-561`, `builtin_exec_platforms.bzl:305` |
 | `apple_platform_type` | PlatformTypeConverter (ASCII lower case), `macos` | no (Apple rule transitions and `ctx.fragments.apple` are not modelled for other platform types) | set to `macos` | `rules/apple/AppleCommandLineOptions.java:194-203, 394-406`, `:185, 190` |
 
 They unblock protobuf 33.4's `bazel/private:native_bool_flag` settings

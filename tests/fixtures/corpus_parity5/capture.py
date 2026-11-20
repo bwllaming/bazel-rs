@@ -47,6 +47,11 @@ CASES = {
         [], 'build', BUILD, ['//mapeach:nested'], [r'must be declared by a top-level def statement'], []),
     'map_each_lambda': (
         [], 'build', BUILD, ['//mapeach:lambda'], [r'must be declared by a top-level def statement'], []),
+    'cpp_booleans_in_transitions': (
+        [], 'build', BUILD, ['//cppopts:all_set', '//cppopts:defaults', '//cppopts:leaf'], [r'READ'], ['leaf.txt']),
+    'cpp_booleans_on_the_command_line': (
+        [], 'build', BUILD + ['--save_temps', '--nostart_end_lib', '--nointerface_shared_objects',
+                              '--process_headers_in_dependencies'], ['//cppopts:leaf'], [], ['leaf.txt']),
 }
 
 TIME = re.compile(r'^\(\d\d:\d\d:\d\d\) ')

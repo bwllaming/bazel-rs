@@ -920,6 +920,81 @@ pub const VALUE_OPTIONS: &[ValueOption] = &[
         command_line: true,
         exec: ExecValue::Propagate,
         exec_source: "builtin_exec_platforms.bzl:309",
+    }, // CppOptions.saveTemps (`--save_temps`): read by
+    // `ctx.fragments.cpp.save_temps()` (CppConfiguration.java:395-404); rules_cc's own tests transition on it (B32).
+    ValueOption {
+        option: OptionDef {
+            name: "save_temps",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "false",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:552-561",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
+    // CppOptions.useStartEndLib (`--start_end_lib`): read by
+    // `ctx.fragments.cpp.start_end_lib()` (CppConfiguration.java:463-472);
+    // propagated to the exec configuration; rules_cc's own tests transition on it (B32).
+    ValueOption {
+        option: OptionDef {
+            name: "start_end_lib",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "true",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:152-163",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:305",
+    },
+    // CppOptions.useInterfaceSharedObjects (`--interface_shared_objects`):
+    // read by `ctx.fragments.cpp.interface_shared_objects()`
+    // (CppConfiguration.java:501-505); rules_cc's own tests transition on it (B32).
+    ValueOption {
+        option: OptionDef {
+            name: "interface_shared_objects",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "true",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:165-177",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
+    // CppOptions.processHeadersInDependencies
+    // (`--process_headers_in_dependencies`): read by
+    // `ctx.fragments.cpp.process_headers_in_dependencies()`
+    // (CppConfiguration.java:927-931); rules_cc's own tests transition on it (B32).
+    ValueOption {
+        option: OptionDef {
+            name: "process_headers_in_dependencies",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "false",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:229-237",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
     },
 ];
 
@@ -3767,7 +3842,11 @@ mod tests {
                 "fission",
                 "build_test_dwp",
                 "legacy_whole_archive",
-                "incompatible_remove_legacy_whole_archive"
+                "incompatible_remove_legacy_whole_archive",
+                "save_temps",
+                "start_end_lib",
+                "interface_shared_objects",
+                "process_headers_in_dependencies"
             ]
         );
         let defaults = NativeOptions::default();
