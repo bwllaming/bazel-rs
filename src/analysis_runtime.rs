@@ -1467,7 +1467,7 @@ fn register_spawn(
                 inputs[initial_inputs..]
                     .iter()
                     .chain(&inputs[..initial_inputs])
-                    .map(|input| input.path.clone())
+                    .cloned()
                     .collect(),
             ),
             ..Default::default()

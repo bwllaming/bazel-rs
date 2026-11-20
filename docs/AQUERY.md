@@ -207,6 +207,21 @@ genuine. A target in the no-config configuration (NoConfigTransition, e.g.
 * `--include_file_write_contents` on SourceSymlinkManifest prints empty
   contents (genuine's names absolute output-base paths).
 
+Memory: like genuine's formatters, the output lists one action's inputs at
+a time. A record whose inputs are exactly its planned action's keeps no
+copy of them (`ActionRecord::listed_from`): they are listed from the
+planned action (its shared input groups held once) when the action is
+written, and a Starlark spawn's NestedSet input order (`Meta::input_order`,
+for `--print_action` and the primary input) holds its Files, not their
+paths as strings. `aquery 'mnemonic("PyCompile", deps(//src/python/...))'
+--output=text` on ~/code (69,237 actions, 12.9 GB of text, a 1,655-file
+Python runtime per action) peaks at 6.4 GB; before, it exceeded 40 GB
+before printing anything (every action's inputs as strings, twice: the
+analysis's records and the selected copy).
+
+`--print_action` reads every action's inputs at once: they are listed for
+all records first (`Analysis::materialize`).
+
 ## `genquery`
 
 The native `genquery` rule (rules/genquery/GenQuery.java) runs its

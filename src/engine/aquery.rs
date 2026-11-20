@@ -44,12 +44,25 @@ pub struct Analysis {
     configurations: Vec<crate::aquery::Configuration>,
     actions: Vec<(u32, ActionRecord)>,
     top_level: Vec<TopLevel>,
+    /// The planned actions the records list their inputs from
+    /// ([`ActionRecord::listed_from`]).
+    nodes: Arc<Vec<PlannedAction>>,
 }
 
 impl Analysis {
     /// The requested configured targets (crate::print_action).
     pub fn top_level(&self) -> &[TopLevel] {
         &self.top_level
+    }
+
+    /// List every record's inputs now (crate::print_action reads them all
+    /// at once; the aquery output lists one action's at a time).
+    pub fn materialize(&mut self) {
+        for (_, record) in &mut self.actions {
+            if record.listed_from.is_some() {
+                *record = crate::aquery::materialized(&self.nodes, record).into_owned();
+            }
+        }
     }
 
     /// Every planned action with its owner's configuration checksum.
@@ -105,6 +118,7 @@ impl Analysis {
         Dump {
             configurations: self.configurations.clone(),
             actions,
+            nodes: Arc::clone(&self.nodes),
         }
     }
 }
@@ -298,7 +312,7 @@ impl Engine {
         let mut configurations = Vec::new();
         let mut configuration_index: BTreeMap<ConfigId, usize> = BTreeMap::new();
         let mut actions = Vec::new();
-        for node in &capture.nodes {
+        for (index, node) in capture.nodes.iter().enumerate() {
             let id = node.action.id.as_str();
             let owner = capture.owners.get(id).or_else(|| {
                 id.rsplit_once('#')
@@ -328,9 +342,14 @@ impl Engine {
                 _ => None,
             };
             let display_target = display(&owner.key.label);
-            for mut record in
-                self.aquery_records(node, owner, rule_class, configuration, &configurations)
-            {
+            for mut record in self.aquery_records(
+                node,
+                index,
+                owner,
+                rule_class,
+                configuration,
+                &configurations,
+            ) {
                 record.display_target = display_target.clone();
                 record.display_execution_platform = record
                     .execution_platform
@@ -383,6 +402,7 @@ impl Engine {
             configurations,
             actions,
             top_level: capture.top_level.clone(),
+            nodes: Arc::new(capture.nodes),
         })
     }
 
@@ -415,9 +435,13 @@ impl Engine {
             .find_map(|(_, info)| info.as_ref().ok().cloned())
     }
 
+    /// The records of the planned action `node` (`index` in the capture's
+    /// nodes; a record listing exactly its inputs lists them from there
+    /// when written, ActionRecord::listed_from).
     fn aquery_records(
         &self,
         node: &PlannedAction,
+        index: usize,
         owner: &Owner,
         rule_class: Option<String>,
         configuration: usize,
@@ -425,7 +449,7 @@ impl Engine {
     ) -> Vec<ActionRecord> {
         // A shared run's groups (not runfiles trees) are inputs listed one
         // by one, as the node lists them without sharing; a runfiles tree
-        // stays one input.
+        // stays one input (crate::aquery::listed_inputs).
         let flattened;
         let node = if node.groups.iter().any(|group| !group.runfiles) {
             flattened = node.runs_listed();
@@ -433,6 +457,7 @@ impl Engine {
         } else {
             node
         };
+        let inputs = crate::aquery::runs_listed_inputs(node);
         let action = &node.action;
         let meta: Meta = action.extra.aquery.as_deref().cloned().unwrap_or_default();
         let tool = configurations[configuration].is_tool;
@@ -452,20 +477,6 @@ impl Engine {
         let platform_label = platform
             .as_ref()
             .map_or(platform_label, |info| info.label.clone());
-        let mut inputs: Vec<String> = Vec::new();
-        for (_, destination) in &action.inputs {
-            inputs.push(destination.to_string_lossy().into_owned());
-        }
-        for dependency in &node.dependencies {
-            inputs.push(dependency.destination.to_string_lossy().into_owned());
-        }
-        for (path, _) in &action.embedded_inputs {
-            inputs.push(path.to_string_lossy().into_owned());
-        }
-        for group in &node.groups {
-            inputs.push(group.root.to_string_lossy().into_owned());
-        }
-        let inputs = crate::aquery::dedup(inputs);
         let outputs: Vec<(String, bool)> = action
             .outputs
             .iter()
@@ -483,8 +494,8 @@ impl Engine {
             .input_order
             .as_ref()
             .and_then(|order| order.first())
-            .or(inputs.first())
-            .map(String::as_str);
+            .map(|file| file.path.as_str())
+            .or(inputs.first().map(String::as_str));
         let suffix = action.id.rsplit_once('#').map(|(_, suffix)| suffix);
         let mut extra_records = Vec::new();
         let mut record = ActionRecord {
@@ -499,7 +510,7 @@ impl Engine {
             execution_platform: (!no_config)
                 .then(|| crate::rule_declarations::canonical_form(&platform_label)),
             inputs: inputs.clone(),
-            input_order: meta.input_order.clone(),
+            input_order: meta.input_order_paths(),
             outputs: outputs.clone(),
             expansion_error: meta.expansion_error.clone(),
             ..Default::default()
@@ -839,6 +850,16 @@ impl Engine {
         }
         let mut records = vec![record];
         records.extend(extra_records);
+        // Listed again when written (ActionRecord::listed_from): not held
+        // as strings for every action of the universe at once.
+        let input_order = meta.input_order_paths();
+        for record in &mut records {
+            if record.inputs == inputs && record.input_order == input_order {
+                record.inputs = Vec::new();
+                record.input_order = None;
+                record.listed_from = Some(index);
+            }
+        }
         records
     }
 

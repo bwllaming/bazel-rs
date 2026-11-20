@@ -51,8 +51,10 @@ pub struct Meta {
     /// (CppCompileAction; crate::cc_actions).
     pub compute_key: Option<Vec<u8>>,
     /// A Starlark spawn's inputs in their NestedSet order (inputs, then
-    /// tools), exec paths (crate::print_action's SpawnInfo.input_file).
-    pub input_order: Option<Vec<String>>,
+    /// tools; crate::print_action's SpawnInfo.input_file, by exec path):
+    /// the Files, not their paths as strings (every PyCompile action lists
+    /// the 1,655 files of the Python runtime).
+    pub input_order: Option<Vec<crate::starlark_types::File>>,
     /// A native action class's `getExecutionInfo()` in its order
     /// (JavaCompileAction's in-memory jdeps directive is not a legal
     /// Starlark key); `None`: the spawn's filtered requirements.
@@ -64,6 +66,15 @@ pub struct Meta {
     /// becomes an IOException, then an interruption:
     /// OutputFormatterCallback.processAllTargets -> "build interrupted").
     pub expansion_error: Option<String>,
+}
+
+impl Meta {
+    /// [`Meta::input_order`]'s exec paths.
+    pub fn input_order_paths(&self) -> Option<Vec<String>> {
+        self.input_order
+            .as_ref()
+            .map(|files| files.iter().map(|file| file.path.clone()).collect())
+    }
 }
 
 /// A ParameterFileWriteAction's file type, fingerprint and arguments.
@@ -389,6 +400,12 @@ pub struct ActionRecord {
     /// Its command line could not be expanded ([`Meta::expansion_error`]):
     /// printing it interrupts the aquery ([`interrupted`]).
     pub expansion_error: Option<String>,
+    /// `inputs` and `input_order` left out: they are the planned action's
+    /// at this index of [`Dump::nodes`], listed when the action is written
+    /// ([`Dump::materialized`]) — the output streams like Bazel's instead of
+    /// holding every action's inputs as strings at once (31k PyCompile
+    /// actions listing a 1,655-file Python runtime: over 25 GB).
+    pub listed_from: Option<usize>,
 }
 
 /// The selected actions with their configurations.
@@ -396,6 +413,69 @@ pub struct ActionRecord {
 pub struct Dump {
     pub configurations: Vec<Configuration>,
     pub actions: Vec<ActionRecord>,
+    /// The planned actions the records' inputs are listed from
+    /// ([`ActionRecord::listed_from`]).
+    pub nodes: std::sync::Arc<Vec<crate::scheduler::PlannedAction>>,
+}
+
+impl Dump {
+    /// `action` with its inputs and their order ([`ActionRecord::listed_from`]).
+    pub fn materialized<'a>(&self, action: &'a ActionRecord) -> std::borrow::Cow<'a, ActionRecord> {
+        materialized(&self.nodes, action)
+    }
+}
+
+/// `action` with its inputs listed from `nodes` ([`ActionRecord::listed_from`]).
+pub fn materialized<'a>(
+    nodes: &[crate::scheduler::PlannedAction],
+    action: &'a ActionRecord,
+) -> std::borrow::Cow<'a, ActionRecord> {
+    let Some(node) = action.listed_from.and_then(|index| nodes.get(index)) else {
+        return std::borrow::Cow::Borrowed(action);
+    };
+    let mut action = action.clone();
+    action.listed_from = None;
+    action.inputs = listed_inputs(node);
+    action.input_order = node
+        .action
+        .extra
+        .aquery
+        .as_ref()
+        .and_then(|meta| meta.input_order_paths());
+    std::borrow::Cow::Owned(action)
+}
+
+/// A planned action's inputs as aquery lists them: its own sources, its
+/// generated inputs, its embedded inputs, then each group's root, with its
+/// shared runs (groups that are not runfiles trees) listed one by one, as
+/// the node lists them without sharing, and a runfiles tree one input;
+/// deduplicated, in order.
+pub fn listed_inputs(node: &crate::scheduler::PlannedAction) -> Vec<String> {
+    if node.groups.iter().any(|group| !group.runfiles) {
+        runs_listed_inputs(&node.runs_listed())
+    } else {
+        runs_listed_inputs(node)
+    }
+}
+
+/// [`listed_inputs`] of a node whose shared runs are listed already
+/// (crate::scheduler::PlannedAction::runs_listed).
+pub fn runs_listed_inputs(node: &crate::scheduler::PlannedAction) -> Vec<String> {
+    let action = &node.action;
+    let mut inputs: Vec<String> = Vec::new();
+    for (_, destination) in &action.inputs {
+        inputs.push(destination.to_string_lossy().into_owned());
+    }
+    for dependency in &node.dependencies {
+        inputs.push(dependency.destination.to_string_lossy().into_owned());
+    }
+    for (path, _) in &action.embedded_inputs {
+        inputs.push(path.to_string_lossy().into_owned());
+    }
+    for group in &node.groups {
+        inputs.push(group.root.to_string_lossy().into_owned());
+    }
+    dedup(inputs)
 }
 
 /// Bazel's progress message (AbstractAction.getProgressMessageChecked):
@@ -485,10 +565,9 @@ fn shell_escape(text: &str) -> String {
 /// output. The summary formatter expands no command line.
 pub fn interrupted(dump: &Dump, filters: &Filters, options: &Options) -> bool {
     options.output != "summary"
-        && dump
-            .actions
-            .iter()
-            .any(|action| action.expansion_error.is_some() && filters.matches(action))
+        && dump.actions.iter().any(|action| {
+            action.expansion_error.is_some() && filters.matches(&dump.materialized(action))
+        })
 }
 
 /// Write the dump in the requested format.
@@ -555,6 +634,8 @@ fn write_text(
 ) -> std::io::Result<()> {
     let mut param_files: HashMap<String, String> = HashMap::new();
     for action in &dump.actions {
+        // One action's inputs at a time (ActionRecord::listed_from).
+        let action = &*dump.materialized(action);
         if options.include_param_files
             && let Some(arguments) = &action.param_file
             && let Some((output, _)) = action.outputs.first()
@@ -765,6 +846,11 @@ fn write_summary(
     let mut aspects = Counts::default();
     let mut total = 0;
     for action in &dump.actions {
+        let action = &*if filters.inputs.is_empty() {
+            std::borrow::Cow::Borrowed(action)
+        } else {
+            dump.materialized(action)
+        };
         if !filters.matches(action) {
             continue;
         }
@@ -1079,6 +1165,7 @@ fn proto_messages(dump: &Dump, filters: &Filters, options: &Options) -> Vec<Mess
     };
     let mut params: HashMap<String, Vec<String>> = HashMap::new();
     for action in &dump.actions {
+        let action = &*dump.materialized(action);
         if options.include_param_files
             && let Some(arguments) = &action.param_file
             && let Some((output, _)) = action.outputs.first()
@@ -1701,6 +1788,92 @@ pub fn dedup(paths: impl IntoIterator<Item = String>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A record whose inputs are listed from its planned action when
+    /// written (ActionRecord::listed_from) prints exactly like one holding
+    /// them, in every output format, and an inputs filter sees them.
+    #[test]
+    fn listed_inputs_print_like_held_ones() {
+        use crate::scheduler::{Dependency, PlannedAction};
+        let mut action = crate::action::Action {
+            id: "//pkg:t#0".into(),
+            inputs: vec![
+                ("/src/pkg/b.txt".into(), "pkg/b.txt".into()),
+                ("/src/pkg/a.txt".into(), "pkg/a.txt".into()),
+            ],
+            outputs: vec!["bazel-out/k8-fastbuild/bin/pkg/out".into()],
+            ..Default::default()
+        };
+        action.extra.aquery = Some(std::sync::Arc::new(Meta::default()));
+        let node = PlannedAction::new(
+            action,
+            vec![Dependency {
+                action_id: "//pkg:gen#0".into(),
+                output_index: 0,
+                destination: std::path::PathBuf::from("bazel-out/k8-fastbuild/bin/pkg/gen.txt")
+                    .into(),
+            }],
+        );
+        let held = ActionRecord {
+            target: "//pkg:t".into(),
+            display_target: "//pkg:t".into(),
+            mnemonic: "Action".into(),
+            description: "Action pkg/out".into(),
+            arguments: Some(vec!["touch".into(), "pkg/out".into()]),
+            inputs: listed_inputs(&node),
+            outputs: vec![("bazel-out/k8-fastbuild/bin/pkg/out".into(), false)],
+            ..Default::default()
+        };
+        assert_eq!(
+            held.inputs,
+            [
+                "pkg/b.txt",
+                "pkg/a.txt",
+                "bazel-out/k8-fastbuild/bin/pkg/gen.txt"
+            ]
+        );
+        let lazy = ActionRecord {
+            inputs: Vec::new(),
+            listed_from: Some(0),
+            ..held.clone()
+        };
+        let configurations = vec![Configuration {
+            mnemonic: "k8-fastbuild".into(),
+            platform_name: "k8".into(),
+            checksum: "abc".into(),
+            is_tool: false,
+        }];
+        let dump = |action: ActionRecord| Dump {
+            configurations: configurations.clone(),
+            actions: vec![action],
+            nodes: std::sync::Arc::new(vec![node.clone()]),
+        };
+        let filters = Filters {
+            inputs: vec![fancy_regex::Regex::new("gen\\.txt").unwrap()],
+            ..Default::default()
+        };
+        for output in [
+            "text",
+            "commands",
+            "summary",
+            "jsonproto",
+            "textproto",
+            "proto",
+        ] {
+            let options = Options {
+                output: output.into(),
+                ..Options::default()
+            };
+            let written = |action: &ActionRecord| {
+                let mut out = Vec::new();
+                write(&dump(action.clone()), &filters, &options, &mut out).unwrap();
+                out
+            };
+            let expected = written(&held);
+            assert!(!expected.is_empty(), "{output}");
+            assert_eq!(written(&lazy), expected, "{output}");
+        }
+    }
 
     #[test]
     fn summary_follows_java_hash_map_order() {

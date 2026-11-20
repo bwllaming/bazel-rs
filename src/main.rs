@@ -1463,7 +1463,7 @@ fn run() -> Result<(), String> {
     // (cmdline/TargetPattern.java:783-789).
     let relative_directory = relative_directory(&root, &cwd)?;
     if let Some((expression, filters)) = aquery_expression {
-        let analysis = engine.aquery_analysis(
+        let mut analysis = engine.aquery_analysis(
             &aquery_options.universe(&expression),
             &relative_directory,
             &test_options,
@@ -1479,6 +1479,7 @@ fn run() -> Result<(), String> {
                 .lock()
                 .map(|mnemonics| mnemonics.clone())
                 .unwrap_or_default();
+            analysis.materialize();
             match bazel_rs::print_action::summary(&analysis, &mnemonics) {
                 Ok(text) => {
                     print!("{text}");
