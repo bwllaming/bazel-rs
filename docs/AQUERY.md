@@ -232,6 +232,41 @@ targets (the pattern keeps manual targets, 1.67x the targets of
 whole order held ~0.95 GB: 70k PyCompile spawns listing the 1,655-file
 Python runtime as Files).
 
+### Speed (query-speed, 2026-11-20)
+
+aquery analyzes on the build's fast paths: its walks are the frozen walks
+through the merge buffer, with worker deltas and natives published by the
+workers (before, an aquery capture switched off commits ahead, worker deltas
+and frozen walks, so every Starlark rule computed and committed at its turn
+on the coordinator). What aquery needs beyond a build is captured on those
+paths too: the action owners (`Engine::aquery_owner`) are recorded wherever
+the console owners are (every prepare path: the coordinator's, a batch's, a
+frozen job's merge, an aspect job's), the descriptions (`Meta`) are built at
+the compute and travel in the actions, and the configured graph is
+cquery's phase-1 capture. `BAZEL_RS_TIMING=1` prints `PERF-AQUERY nodes=…
+owners=… described=… records=…` and `aquery.*` marks.
+
+The action records are then described on several threads
+(`--loading_phase_threads`, chunks of 256 actions, kept in plan order),
+each platform's PlatformInfo looked up once (it was a scan of the
+platform table per action).
+
+~/code (non-LTO builds, 4 alternating rounds, load 24-70 from other
+work, output byte-identical every round):
+
+| command | before | after | peak RSS |
+|---|---|---|---|
+| `aquery 'kind("cc_.*", //src/...)'` | 153-165 s | 48-54 s | 10.7 -> 13.7 GB |
+| `aquery 'deps(//src/python/tools/...)'` | 7.0-11.2 s | 5.8-9.5 s | 1.2 GB |
+
+Of the 160 s before, the analysis took ~100 s and the records 41 s; after,
+~27 s and 2.5 s. The extra memory is the frozen walk's (its view and the
+deltas in flight), as for `build --nobuild`.
+
+aquery has no analysis snapshot: a repeated aquery analyzes again (genuine
+answers it from its warm server). Its records list inputs from the planned
+actions, which no snapshot keeps.
+
 ## `genquery`
 
 The native `genquery` rule (rules/genquery/GenQuery.java) runs its

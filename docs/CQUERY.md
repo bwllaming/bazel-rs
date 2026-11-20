@@ -221,6 +221,29 @@ shared GC, ELF/full-key separation and allocation preflights. These small-fixtur
 proofs do not establish whole-application TD memory fit; a new ELF must create its
 own snapshots before the separate bounded acceptance run.
 
+## Analysis speed (query-speed, 2026-11-20)
+
+Semantic commits (cquery's provider analysis) walk as frozen walks through
+the merge buffer, which merges in plan order (the pipeline's commits ahead
+stay off for them): the workers build the semantic deltas
+(`DeltaInputs::unsafe_reason` no longer refuses them; the pipeline's
+`Engine::delta_inputs` still gives none) and publish plain native rules'
+results (`frozen::publishes_native`; a semantic commit's inputs are one per
+File, now in `Engine::inputs_in` for both, and it keeps no transitive
+repositories, so none are published). Genrules, output-group filegroups and
+package groups merge at their turn. A merge at its turn publishes its
+output-file declarations before its results and before its dependents are
+dispatched (a race the semantic walks exposed: a dependent's job could miss
+a genrule's output, `missing analyzed output`).
+
+~/code `cquery 'deps(//src/...)' --output=label` with `BAZEL_RS_SNAPSHOT=off`
+(4 alternating rounds, load 24-70): 95-110 s -> 51-54 s, peak RSS 7.9 ->
+9.7 GB, output byte-identical; every output format compared on
+`deps(//src/python/tools/...)` (label, label_kind, build, proto,
+streamed_proto, textproto, jsonproto, files, graph, starlark,
+`--transitions=lite`). A configured-graph snapshot hit is unchanged
+(~2.3 s); `BAZEL_RS_SNAPSHOT=verify` agrees.
+
 ## Validation and measured performance
 
 The pinned official target-determinator v0.34.0 binary was run with
