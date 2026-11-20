@@ -270,8 +270,11 @@ fn compilation_context_inputs<'v>(
         })
         .transpose()?;
     let (headers, headers_memo) = match struct_field(info, "headers", heap) {
-        Some(value) => crate::starlark_types::file_list_with_memo(value)
-            .map_err(|error| failure(format!("{function}: headers: {error}")))?,
+        Some(value) => crate::starlark_types::file_list_with_memo(
+            value,
+            crate::starlark_types::MemoUse::Shared,
+        )
+        .map_err(|error| failure(format!("{function}: headers: {error}")))?,
         None => (Vec::new(), None),
     };
     Ok(CompilationContextInputs {
@@ -1190,8 +1193,11 @@ fn create_cc_compile_action<'v>(
         "_compiler_files"
     };
     let (all_files, memo) = match struct_field(toolchain_info, toolchain_group, heap) {
-        Some(value) => crate::starlark_types::file_list_with_memo(value)
-            .map_err(|error| failure(format!("{F}: {toolchain_group}: {error}")))?,
+        Some(value) => crate::starlark_types::file_list_with_memo(
+            value,
+            crate::starlark_types::MemoUse::Shared,
+        )
+        .map_err(|error| failure(format!("{F}: {toolchain_group}: {error}")))?,
         None => (Vec::new(), None),
     };
     let start = inputs.len();

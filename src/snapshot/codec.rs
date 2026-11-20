@@ -320,10 +320,15 @@ pub fn encode_parts_with<T: Send>(
 }
 
 /// The GROUPS table of `nodes`: every distinct shared input group (by
-/// pointer) once, in first-seen order — the nodes in order, each node's
-/// groups in order — and each node's indices into it, in its group order.
+/// value: equal groups of distinct allocations — the shared run of a walk
+/// two threads resolved at once, a group rebuilt after a provisional fill —
+/// are one entry, so the encoding never depends on which allocations a
+/// parallel analysis happened to share) once, in first-seen order — the
+/// nodes in order, each node's groups in order — and each node's indices
+/// into it, in its group order.
 fn group_table(nodes: &[PlannedAction]) -> (Vec<&InputGroup>, Vec<Vec<u32>>) {
     let mut positions: HashMap<*const InputGroup, u32> = HashMap::new();
+    let mut by_value: HashMap<Vec<u8>, u32> = HashMap::new();
     let mut table: Vec<&InputGroup> = Vec::new();
     let indices = nodes
         .iter()
@@ -340,8 +345,17 @@ fn group_table(nodes: &[PlannedAction]) -> (Vec<&InputGroup>, Vec<Vec<u32>>) {
                             "internal error: shared input group {} is encoded but not valid",
                             group.root.display()
                         );
-                        table.push(group);
-                        u32::try_from(table.len() - 1).expect("fewer than 2^32 shared input groups")
+                        let mut push = || {
+                            table.push(group);
+                            u32::try_from(table.len() - 1)
+                                .expect("fewer than 2^32 shared input groups")
+                        };
+                        // A group that cannot be serialized fails the
+                        // GROUPS section's encoding below.
+                        match postcard::to_stdvec(&GroupOut::of(group)) {
+                            Ok(value) => *by_value.entry(value).or_insert_with(push),
+                            Err(_) => push(),
+                        }
                     })
                 })
                 .collect()
@@ -3033,14 +3047,15 @@ mod tests {
         assert!(!encodes_to(&changed, &bytes).unwrap());
         let reordered = with_nodes(vec![holder(0, &[&other, &tool]), holder(1, &[&other])]);
         assert!(!encodes_to(&reordered, &bytes).unwrap());
-        // Equal content in a separate Arc per holder encodes one group per
-        // allocation: the planner shares by pointer, and so does the table.
+        // Equal content in a separate Arc per holder is one group: the
+        // encoding does not depend on which allocations a parallel analysis
+        // happened to share.
         let copied = with_nodes(vec![
             holder(0, &[&tool, &other]),
             holder(1, &[&input_group("other.runfiles", "b")]),
         ]);
-        assert!(!encodes_to(&copied, &bytes).unwrap());
-        assert_eq!(table(&encode(&copied).unwrap()).len(), 3);
+        assert!(encodes_to(&copied, &bytes).unwrap());
+        assert_eq!(table(&encode(&copied).unwrap()).len(), 2);
     }
 
     #[test]

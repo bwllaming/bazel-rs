@@ -2308,7 +2308,11 @@ fn analyze_aspect_inner(
         let implementation = crate::rule_declarations::Aspect::from_value(aspect_value)
             .ok_or_else(|| anyhow!("aspect {} is not an aspect value", aspect.identity))?
             .implementation;
+        // The depsets the aspect implementation creates are its own
+        // (crate::starlark_types::MemoUse).
+        let scope = crate::starlark_types::AnalysisScope::enter();
         let returned = eval.eval_function(implementation, &[target_value, ctx], &[]);
+        drop(scope);
         context.scope.finish();
         context.active.store(false, Ordering::Release);
         let reported = aspect_surface.take_errors();
@@ -3152,7 +3156,11 @@ fn analyze_inner(
             let implementation = module
                 .heap()
                 .access_owned_frozen_value(&invocation.implementation);
+            // The depsets the rule implementation (and its parents',
+            // ctx.super()) creates are its own (crate::starlark_types::MemoUse).
+            let scope = crate::starlark_types::AnalysisScope::enter();
             let returned = eval.eval_function(implementation, &[ctx], &[]);
+            drop(scope);
             // StarlarkRuleContext.close (:466-469): an extending rule's
             // implementation must have called ctx.super().
             {

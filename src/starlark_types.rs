@@ -212,6 +212,11 @@ mod owned {
         /// derived, never serialized (one byte in the node's padding).
         #[allocative(skip)]
         pub(super) flat_walks: std::sync::atomic::AtomicU8,
+        /// The rule or aspect implementation run that created the node
+        /// ([`AnalysisScope`]; 0: none, or a deserialized node): derived,
+        /// never serialized.
+        #[allocative(skip)]
+        pub(super) creator: u32,
         /// The retained values of the evaluating heap, not frozen yet,
         /// that the node's elements (and its children's) hold
         /// (crate::depset_items::pending_handles): a depset value of the
@@ -1498,6 +1503,7 @@ impl Depset {
                 element_type,
                 depth,
                 flat_walks: std::sync::atomic::AtomicU8::new(0),
+                creator: AnalysisScope::current(),
             }),
         })
     }
@@ -1555,6 +1561,12 @@ impl Depset {
     /// walk: the first `files.files().len()` files are its files. `Err`
     /// names a non-File element.
     ///
+    /// Which node's walk the files begin with is a function of the depset
+    /// alone, never of what was flattened before ([`MemoUse`]): the shared
+    /// runs of planned actions (crate::engine SharedInputs) — and with them
+    /// the planned request and its snapshot — are the same in every
+    /// analysis, whatever order parallel evaluation registered actions in.
+    ///
     /// The traversal is NestedSet.toList's. A walk reaches the memoized node
     /// first, along the first-visited child of each node above it (the
     /// first child of a default or postorder node, of a preorder node
@@ -1566,26 +1578,65 @@ impl Depset {
     #[allow(clippy::mutable_key_type)]
     pub(crate) fn flatten_files_with_memo(
         &self,
+        usage: MemoUse,
     ) -> Result<(Vec<File>, Option<Arc<FlatFiles>>), &Item> {
+        fn first_child(node: &Arc<DepsetNode>) -> Option<&Arc<DepsetNode>> {
+            match node.order {
+                Order::Default | Order::Postorder => node.children.first(),
+                Order::Preorder if node.direct.is_empty() => node.children.first(),
+                _ => None,
+            }
+        }
         let mut memo = None;
         let mut chain: Vec<&DepsetNode> = Vec::new();
         if self.node.order != Order::Topological {
-            let mut node: &Arc<DepsetNode> = &self.node;
-            loop {
-                if let Some(files) = memoized_walk(node) {
-                    memo = Some((files, Arc::as_ptr(node)));
-                    break;
+            match usage {
+                MemoUse::Shared => {
+                    memo = if AnalysisScope::created_here(&self.node) {
+                        memoized_own_walk(&self.node)
+                    } else {
+                        memoized_walk(&self.node)
+                    }
+                    .map(|files| (files, Arc::as_ptr(&self.node)));
                 }
-                let first = match node.order {
-                    Order::Default | Order::Postorder => node.children.first(),
-                    Order::Preorder if node.direct.is_empty() => node.children.first(),
-                    _ => None,
-                };
-                let Some(first) = first else {
-                    break;
-                };
-                chain.push(node);
-                node = first;
+                MemoUse::FirstChild => {
+                    // Down the first children: a node from another target's
+                    // analysis is the run from its first request (or no node
+                    // below it can be: it is too small); one of this run's
+                    // own from its second, the next node down until then.
+                    let mut node: &Arc<DepsetNode> = &self.node;
+                    while let Some(child) = first_child(node) {
+                        chain.push(node);
+                        if !AnalysisScope::created_here(child) {
+                            memo = memoized_walk(child).map(|files| (files, Arc::as_ptr(child)));
+                            break;
+                        }
+                        if let Some(files) = memoized_own_walk(child) {
+                            memo = Some((files, Arc::as_ptr(child)));
+                            break;
+                        }
+                        node = child;
+                    }
+                    if memo.is_none() {
+                        chain.clear();
+                    }
+                }
+                MemoUse::Lookup => {
+                    // Any walk memoized along the first children: the same
+                    // files either way, faster; nothing is memoized.
+                    let mut node: &Arc<DepsetNode> = &self.node;
+                    loop {
+                        if let Some(files) = memoized_walk_lookup(node) {
+                            memo = Some((files, Arc::as_ptr(node)));
+                            break;
+                        }
+                        let Some(first) = first_child(node) else {
+                            break;
+                        };
+                        chain.push(node);
+                        node = first;
+                    }
+                }
             }
         }
         let Some((memo, memoized)) = memo else {
@@ -1631,7 +1682,8 @@ impl Depset {
                 }
             }
         }
-        Ok((files, Some(memo)))
+        // A lookup's memo is never an action's shared run.
+        Ok((files, (usage != MemoUse::Lookup).then_some(memo)))
     }
 }
 
@@ -1692,9 +1744,12 @@ fn walk(node: &DepsetNode) -> Vec<&Item> {
 /// The smallest walk a node memoizes ([`memoized_walk`]).
 const FLAT_MEMO_MIN_ITEMS: usize = 128;
 
-/// [`DepsetNode::flat_walks`]: never walked for its files, walked once,
-/// memoized (in [`flat_memos`]), or not memoizable.
+/// [`DepsetNode::flat_walks`]: never asked for, asked for once by its
+/// creator, memoized (in [`flat_memos`]), or not memoizable (fewer than [`FLAT_MEMO_MIN_ITEMS`]
+/// files, or not Files).
 const FLAT_UNWALKED: u8 = 0;
+/// Requested once by the implementation run that created it
+/// ([`memoized_own_walk`]).
 const FLAT_WALKED: u8 = 1;
 const FLAT_MEMOIZED: u8 = 2;
 const FLAT_NEVER: u8 = 3;
@@ -1717,30 +1772,50 @@ pub(crate) fn flat_memo_stats() -> (usize, usize) {
     )
 }
 
+/// Which node of a depset of Files the shared run of its listing starts at
+/// ([`Depset::flatten_files_with_memo`]). Chosen by the caller, never by
+/// what was flattened before: a run memoized "from the second request on"
+/// made the first action of a parallel analysis to list a node (whichever
+/// it was) list it as its own inputs and the others as a shared group, so
+/// two analyses planned different requests (snapshot verify mismatches).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MemoUse {
+    /// The depset itself is the run: a provider's depset many actions list
+    /// as it is (a C++ toolchain's files, a compilation context's headers),
+    /// from its first request, or its second in the implementation run that
+    /// created it (as [`MemoUse::FirstChild`]).
+    Shared,
+    /// Its first-visited child is the run (an action's `inputs` built over
+    /// a shared depset: `depset([src], transitive = [runtime files])`): a
+    /// child from another target's analysis (a provider's depset) on its
+    /// first request; a child the registering implementation run created
+    /// itself (a Go archive's `libs` over its dependencies', a Rust crate's
+    /// transitive inputs), which only its own actions can list until it
+    /// returns, from its second request in that run on — the run's
+    /// requests are sequential, so that is deterministic too — and before
+    /// that, the same choice one first child down.
+    FirstChild,
+    /// No run: the files only, sped up by any walk memoized already.
+    Lookup,
+}
+
 /// The memoized walk ([`walk`]) of a node of File elements with at least
-/// [`FLAT_MEMO_MIN_ITEMS`] items, from its second request on (the first
-/// one walks it as before), so the walks of the depsets built over it
-/// (every PyCompile action's inputs over the Python runtime's files) start
-/// from it instead of hashing its items again
-/// ([`Depset::flatten_files_with_memo`]).
+/// [`FLAT_MEMO_MIN_ITEMS`] items, memoized on its first request, so the
+/// walks of the depsets built over it (every PyCompile action's inputs over
+/// the Python runtime's files) start from it instead of hashing its items
+/// again ([`Depset::flatten_files_with_memo`]).
 fn memoized_walk(node: &Arc<DepsetNode>) -> Option<Arc<FlatFiles>> {
     use std::sync::atomic::Ordering;
     let lock = || flat_memos().lock().unwrap_or_else(|e| e.into_inner());
-    match node.flat_walks.load(Ordering::Relaxed) {
-        FLAT_MEMOIZED => {
-            let memos = lock();
-            let (weak, files) = memos.get(&(Arc::as_ptr(node) as usize))?;
-            (weak.as_ptr() == Arc::as_ptr(node)).then(|| Arc::clone(files))
-        }
-        FLAT_UNWALKED => {
-            if node.element_type == Some(ItemType::File) && !node.empty {
-                node.flat_walks.store(FLAT_WALKED, Ordering::Relaxed);
-            } else {
-                node.flat_walks.store(FLAT_NEVER, Ordering::Relaxed);
+    match node.flat_walks.load(Ordering::Acquire) {
+        FLAT_MEMOIZED => memoized_walk_lookup(node),
+        // Requested once by its creator, now by another run (or a second
+        // time by its creator, memoized_own_walk).
+        FLAT_UNWALKED | FLAT_WALKED => {
+            if node.element_type != Some(ItemType::File) || node.empty {
+                node.flat_walks.store(FLAT_NEVER, Ordering::Release);
+                return None;
             }
-            None
-        }
-        FLAT_WALKED => {
             let items = walk(node);
             let files = (items.len() >= FLAT_MEMO_MIN_ITEMS)
                 .then(|| {
@@ -1762,23 +1837,100 @@ fn memoized_walk(node: &Arc<DepsetNode>) -> Option<Arc<FlatFiles>> {
                 })
                 .flatten();
             let Some(files) = files else {
-                node.flat_walks.store(FLAT_NEVER, Ordering::Relaxed);
+                node.flat_walks.store(FLAT_NEVER, Ordering::Release);
                 return None;
             };
             let mut memos = lock();
+            let address = Arc::as_ptr(node) as usize;
+            // Two threads walked it at once: the first one's walk is the
+            // node's, so every action listing it holds the one run.
+            if let Some((weak, known)) = memos.get(&address)
+                && weak.as_ptr() == Arc::as_ptr(node)
+            {
+                return Some(Arc::clone(known));
+            }
             // Forget the walks of dropped nodes before the table grows.
             if memos.len() >= 256 && memos.len().is_power_of_two() {
                 memos.retain(|_, (weak, _)| weak.strong_count() > 0);
             }
-            memos.insert(
-                Arc::as_ptr(node) as usize,
-                (Arc::downgrade(node), Arc::clone(&files)),
-            );
-            node.flat_walks.store(FLAT_MEMOIZED, Ordering::Relaxed);
+            memos.insert(address, (Arc::downgrade(node), Arc::clone(&files)));
+            node.flat_walks.store(FLAT_MEMOIZED, Ordering::Release);
             Some(files)
         }
         _ => None,
     }
+}
+
+/// [`memoized_walk`] from the node's second request on, for a node the
+/// current implementation run created ([`MemoUse`]): only that
+/// run can request it until the run returns, one request after another.
+fn memoized_own_walk(node: &Arc<DepsetNode>) -> Option<Arc<FlatFiles>> {
+    use std::sync::atomic::Ordering;
+    match node.flat_walks.load(Ordering::Acquire) {
+        FLAT_UNWALKED => {
+            if node.element_type == Some(ItemType::File) && !node.empty {
+                node.flat_walks.store(FLAT_WALKED, Ordering::Release);
+            } else {
+                node.flat_walks.store(FLAT_NEVER, Ordering::Release);
+            }
+            None
+        }
+        _ => memoized_walk(node),
+    }
+}
+
+/// The rule or aspect implementation run creating depset nodes on this
+/// thread ([`DepsetNode::creator`]): a node of the current run can only be
+/// listed by the run's own actions, in the run's (sequential) order, until
+/// it returns; every other node — a dependency's provider's, a `.bzl`
+/// global's — was complete before the run began.
+pub(crate) struct AnalysisScope {
+    previous: u32,
+}
+
+thread_local! {
+    static ANALYSIS_SCOPE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+impl AnalysisScope {
+    /// Enter a new implementation run until the guard drops.
+    pub(crate) fn enter() -> Self {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+        let mut id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if id == 0 {
+            id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        Self {
+            previous: ANALYSIS_SCOPE.with(|scope| scope.replace(id)),
+        }
+    }
+
+    fn current() -> u32 {
+        ANALYSIS_SCOPE.with(std::cell::Cell::get)
+    }
+
+    /// Whether the current run created `node` (never outside a run).
+    fn created_here(node: &DepsetNode) -> bool {
+        let current = Self::current();
+        current != 0 && node.creator == current
+    }
+}
+
+impl Drop for AnalysisScope {
+    fn drop(&mut self) {
+        ANALYSIS_SCOPE.with(|scope| scope.set(self.previous));
+    }
+}
+
+/// The walk memoized for `node` already, if any (no memoizing).
+fn memoized_walk_lookup(node: &Arc<DepsetNode>) -> Option<Arc<FlatFiles>> {
+    use std::sync::atomic::Ordering;
+    if node.flat_walks.load(Ordering::Acquire) != FLAT_MEMOIZED {
+        return None;
+    }
+    let memos = flat_memos().lock().unwrap_or_else(|e| e.into_inner());
+    let (weak, files) = memos.get(&(Arc::as_ptr(node) as usize))?;
+    (weak.as_ptr() == Arc::as_ptr(node)).then(|| Arc::clone(files))
 }
 
 /// A memoized walk of a large node of File elements ([`memoized_walk`]): its
@@ -1874,6 +2026,7 @@ impl starlark::pagable::StarlarkDeserialize for DepsetNode {
             depth: usize::starlark_deserialize(ctx)?,
             empty: bool::starlark_deserialize(ctx)?,
             flat_walks: std::sync::atomic::AtomicU8::new(0),
+            creator: 0,
             pending: None,
         })
     }
@@ -2047,17 +2200,18 @@ pub fn alloc_depset<'v>(heap: Heap<'v>, files: Vec<File>) -> Value<'v> {
 }
 
 pub fn unpack_depset(value: Value<'_>) -> anyhow::Result<Vec<File>> {
-    unpack_depset_with_memo(value).map(|(files, _)| files)
+    unpack_depset_with_memo(value, MemoUse::Lookup).map(|(files, _)| files)
 }
 
 /// [`file_list`] and, for a depset whose files begin with a memoized walk
 /// ([`Depset::flatten_files_with_memo`]), that walk: the first
-/// `memo.files().len()` files are its files.
+/// `memo.files().len()` files are its files (`usage`: which walk).
 pub(crate) fn file_list_with_memo(
     value: Value<'_>,
+    usage: MemoUse,
 ) -> anyhow::Result<(Vec<File>, Option<Arc<FlatFiles>>)> {
     if Depset::from_value(value).is_some() {
-        unpack_depset_with_memo(value)
+        unpack_depset_with_memo(value, usage)
     } else {
         Ok((file_list(value)?, None))
     }
@@ -2067,6 +2221,7 @@ pub(crate) fn file_list_with_memo(
 /// ([`file_list_with_memo`]).
 pub(crate) fn unpack_depset_with_memo(
     value: Value<'_>,
+    usage: MemoUse,
 ) -> anyhow::Result<(Vec<File>, Option<Arc<FlatFiles>>)> {
     let depset = Depset::from_value(value)
         .ok_or_else(|| anyhow!("expected depset of File, got {}", value.get_type()))?;
@@ -2080,7 +2235,7 @@ pub(crate) fn unpack_depset_with_memo(
             depset.node.element_type.unwrap().name()
         );
     }
-    depset.flatten_files_with_memo().map_err(|item| {
+    depset.flatten_files_with_memo(usage).map_err(|item| {
         anyhow!(
             "expected depset of File, got {} element",
             item.kind().name()
@@ -4406,9 +4561,9 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
     }
 
     /// The memoized walks (`flatten_files_with_memo`) list exactly what
-    /// `flatten` lists, on every request (the memo starts with the second),
-    /// across orders, chains of first children, nodes the memoized one
-    /// shares with later children, and direct elements it already holds.
+    /// `flatten` lists, on every request and in every [`MemoUse`], across
+    /// orders, chains of first children, nodes the memoized one shares with
+    /// later children, and direct elements it already holds.
     #[test]
     fn memoized_walks_list_what_flatten_lists() {
         let files = |prefix: &str, count: usize| -> Vec<Item> {
@@ -4460,33 +4615,104 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
         cases.push(runtime.clone());
         cases.push(node(files("src", 1), vec![&runtime], Order::Topological));
         for round in 0..3 {
-            for (index, depset) in cases.iter().enumerate() {
-                let expected: Vec<File> = depset
-                    .flatten()
-                    .into_iter()
-                    .map(|item| match item {
-                        Item::File(file) => file.clone(),
-                        _ => unreachable!(),
-                    })
-                    .collect();
-                let (listed, memo) = depset.flatten_files_with_memo().unwrap();
-                assert_eq!(listed, expected, "round {round}, case {index}");
-                if let Some(memo) = memo {
-                    assert_eq!(&listed[..memo.files().len()], memo.files());
+            for usage in [MemoUse::Lookup, MemoUse::FirstChild, MemoUse::Shared] {
+                for (index, depset) in cases.iter().enumerate() {
+                    let expected: Vec<File> = depset
+                        .flatten()
+                        .into_iter()
+                        .map(|item| match item {
+                            Item::File(file) => file.clone(),
+                            _ => unreachable!(),
+                        })
+                        .collect();
+                    let (listed, memo) = depset.flatten_files_with_memo(usage).unwrap();
+                    assert_eq!(listed, expected, "round {round}, {usage:?}, case {index}");
+                    if let Some(memo) = memo {
+                        assert_eq!(&listed[..memo.files().len()], memo.files());
+                    }
                 }
             }
         }
-        // A new spawn's inputs begin with the runtime's memoized walk (a
-        // depset flattened again is memoized itself).
+        // A spawn's inputs begin with the runtime's walk (its first child).
         let spawn = node(files("other", 1), vec![&runtime], Order::Default);
-        let (_, memo) = spawn.flatten_files_with_memo().unwrap();
+        let (_, memo) = spawn.flatten_files_with_memo(MemoUse::FirstChild).unwrap();
         assert_eq!(memo.map(|memo| memo.files().len()), Some(220));
-        let (_, memo) = cases[0].flatten_files_with_memo().unwrap();
+        // The depset itself as a shared run.
+        let (_, memo) = cases[0].flatten_files_with_memo(MemoUse::Shared).unwrap();
         assert_eq!(memo.map(|memo| memo.files().len()), Some(221));
+        // A lookup never hands out a run.
+        let (_, memo) = cases[0].flatten_files_with_memo(MemoUse::Lookup).unwrap();
+        assert!(memo.is_none());
         // A small node is never memoized.
         let (_, memo) = node(files("x", 1), vec![&small], Order::Default)
-            .flatten_files_with_memo()
+            .flatten_files_with_memo(MemoUse::FirstChild)
             .unwrap();
         assert!(memo.is_none());
+    }
+
+    /// The run a listing starts with depends on the depset alone, never on
+    /// what was flattened before (the planned request of a parallel
+    /// analysis is the same in every analysis): the first request of a
+    /// node's listing gets the run every later one gets, and neither a
+    /// lookup nor a listing of the depset in another use changes it.
+    #[test]
+    fn memoized_runs_do_not_depend_on_earlier_requests() {
+        let files = |prefix: &str, count: usize| -> Vec<Item> {
+            (0..count)
+                .map(|index| Item::File(file(&format!("{prefix}/{index}"))))
+                .collect()
+        };
+        let node = |direct: Vec<Item>, children: Vec<&Depset>| {
+            Depset::compose(
+                direct,
+                children
+                    .into_iter()
+                    .map(|child| child.node.clone())
+                    .collect(),
+                Order::Default,
+                Some(ItemType::File),
+            )
+            .unwrap()
+        };
+        let run_of = |depset: &Depset, usage: MemoUse| {
+            depset
+                .flatten_files_with_memo(usage)
+                .unwrap()
+                .1
+                .map(|memo| memo.files().len())
+        };
+        // Go-link-like inputs: an archive's libs over its deps' libs.
+        let build = || {
+            let dep = node(files("dep", 200), vec![]);
+            let libs = node(files("libs", 10), vec![&dep]);
+            let inputs = node(files("direct", 2), vec![&libs]);
+            (dep, libs, inputs)
+        };
+        // Fresh graphs, requested in different orders before the inputs.
+        let (_, _, inputs) = build();
+        let alone = run_of(&inputs, MemoUse::FirstChild);
+        assert_eq!(alone, Some(210));
+        let (dep, libs, inputs) = build();
+        for warm in [&dep, &libs, &inputs] {
+            for usage in [MemoUse::Lookup, MemoUse::Shared, MemoUse::FirstChild] {
+                let _ = run_of(warm, usage);
+            }
+        }
+        assert_eq!(run_of(&inputs, MemoUse::FirstChild), alone);
+        assert_eq!(run_of(&inputs, MemoUse::FirstChild), alone);
+        // A depset the registering run created itself is a run from its
+        // second request in that run on, and a dependent's run's first.
+        let (dep, libs, inputs) = {
+            let _scope = AnalysisScope::enter();
+            let (dep, libs, inputs) = build();
+            assert_eq!(run_of(&inputs, MemoUse::FirstChild), None);
+            assert_eq!(run_of(&inputs, MemoUse::FirstChild), Some(210));
+            (dep, libs, inputs)
+        };
+        let _scope = AnalysisScope::enter();
+        let over = node(files("dependent", 1), vec![&dep]);
+        assert_eq!(run_of(&over, MemoUse::FirstChild), Some(200));
+        assert_eq!(run_of(&inputs, MemoUse::FirstChild), Some(210));
+        drop(libs);
     }
 }

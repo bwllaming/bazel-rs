@@ -1332,7 +1332,12 @@ fn register_spawn(
     let initial_inputs = inputs.len();
     let (listed, memo) = options
         .inputs
-        .map(crate::starlark_types::file_list_with_memo)
+        .map(|inputs| {
+            crate::starlark_types::file_list_with_memo(
+                inputs,
+                crate::starlark_types::MemoUse::FirstChild,
+            )
+        })
         .transpose()?
         .unwrap_or_default();
     inputs.extend(listed);

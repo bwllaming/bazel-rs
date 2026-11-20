@@ -321,14 +321,31 @@ Paired capture: `artifacts/depset_structs-capture.py`, receipt
 
 The walks that list a depset's Files for natively consumed inputs
 (`file_list`/`unpack_depset`: action inputs, among others) may start from a
-memoized walk: a node of Files with at least 128 elements, walked a second
-time, keeps its walk (files in walk order and their set) in a process-wide
-table by address, with a weak reference; one byte in the node's padding
-records the state. A walk reaches a memoized node first along the
-first-visited children (default/postorder first child, preorder first child
-without direct elements; never under a topological depset), takes its files,
-and walks the rest exactly as above, deduplicating against the memoized set
-too. The result is NestedSet.toList's, element for element
+memoized walk: a node of Files with at least 128 elements keeps its walk
+(files in walk order and their set) in a process-wide table by address,
+with a weak reference; one byte in the node's padding records the state. A
+walk reaches a memoized node first along the first-visited children
+(default/postorder first child, preorder first child without direct
+elements; never under a topological depset), takes its files, and walks the
+rest exactly as above, deduplicating against the memoized set too.
+
+Which node an action's inputs start with — its shared run, a shared input
+group of the planned request — is a function of the depset alone, never of
+what was flattened before (`MemoUse`; before, a node was memoized from its
+second request on, so the first action of a parallel analysis to list it,
+whichever it was, listed it as its own inputs: `BAZEL_RS_SNAPSHOT=verify`
+reported Go link actions as plan mismatches on ~/code). `ctx.actions.run`
+inputs (`FirstChild`) go down the first children: a node from another
+target's analysis (a provider's depset, a `.bzl` global's) is the run from
+its first request; a node the registering rule or aspect implementation run
+created itself (`AnalysisScope`, a `u32` in the node's padding) — a Go
+archive's `libs`, a Rust crate's transitive inputs — only from its second
+request in that run (only the run's own actions can list it until it
+returns, one after another), and the next node down before that. A C++
+compile's toolchain files and headers (`Shared`) are the depset itself, by
+the same rule. Other walks (`Lookup`) only use memoized walks. The planned
+request's group table is deduplicated by value, so equal groups of separate
+allocations (two threads resolving one run at once) encode alike. The result is NestedSet.toList's, element for element
 (`memoized_walks_list_what_flatten_lists`); the depset's identity, repr and
 `to_list()` are untouched (`flatten()` itself never memoizes). Action
 registration and commit reuse the walk's per-input checks

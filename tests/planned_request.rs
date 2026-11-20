@@ -572,6 +572,127 @@ fn encoded_requests_are_identical_across_threads_and_loading_jitter() {
     }
 }
 
+const SHARED_RUN_DEFS: &str = r#"RuntimeInfo = provider(fields = ["files"])
+
+def _runtime(ctx):
+    outs = [ctx.actions.declare_file("%s/f%d.txt" % (ctx.label.name, i)) for i in range(150)]
+    ctx.actions.run_shell(outputs = outs, command = "touch " + " ".join([f.path for f in outs]))
+    return [RuntimeInfo(files = depset(outs)), DefaultInfo(files = depset(outs))]
+
+runtime = rule(implementation = _runtime)
+
+def _consumer(ctx):
+    files = ctx.attr.runtime[RuntimeInfo].files
+    # Its own depset over the runtime's, listed by two of its actions.
+    own = depset(
+        [ctx.actions.declare_file(ctx.label.name + "/o%d.txt" % i) for i in range(130)],
+        transitive = [files],
+    )
+    ctx.actions.run_shell(outputs = own.to_list()[150:], command = "true")
+    outs = []
+    for name, over in [("a", files), ("b", files), ("c", own), ("d", own)]:
+        out = ctx.actions.declare_file(ctx.label.name + "." + name)
+        ctx.actions.run_shell(
+            outputs = [out],
+            inputs = depset([ctx.file.src], transitive = [over]),
+            command = "touch " + out.path,
+        )
+        outs.append(out)
+    return [DefaultInfo(files = depset(outs))]
+
+consumer = rule(implementation = _consumer, attrs = {
+    "runtime": attr.label(providers = [RuntimeInfo]),
+    "src": attr.label(allow_single_file = True),
+})
+"#;
+
+/// The shared runs of action inputs (crate::starlark_types::MemoUse) do not
+/// depend on the order a parallel analysis registered actions in: every
+/// consumer's actions over a dependency's large depset hold its one group
+/// — not "all but the first one to list it" — and the encoded request is
+/// the same at 1/8/32 threads, under loading jitter and under the
+/// evaluator's restart hook (BAZEL_RS_SNAPSHOT=verify reported Go link
+/// actions' runs as plan mismatches on ~/code).
+#[test]
+fn shared_input_runs_are_identical_across_threads_and_restarts() {
+    let mut files: Vec<(String, String)> = vec![
+        ("MODULE.bazel".into(), "module(name = \"shared_runs\")\n".into()),
+        ("rules/BUILD.bazel".into(), String::new()),
+        ("rules/defs.bzl".into(), SHARED_RUN_DEFS.into()),
+        (
+            "rt/BUILD.bazel".into(),
+            "load(\"//rules:defs.bzl\", \"runtime\")\nruntime(name = \"rt\", visibility = [\"//visibility:public\"])\n".into(),
+        ),
+    ];
+    for index in 0..8 {
+        files.push((
+            format!("c{index}/BUILD.bazel"),
+            "load(\"//rules:defs.bzl\", \"consumer\")\nconsumer(name = \"c\", runtime = \"//rt\", src = \"src.txt\")\n".to_owned(),
+        ));
+        files.push((format!("c{index}/src.txt"), format!("{index}\n")));
+    }
+    let borrowed: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(path, content)| (path.as_str(), content.as_str()))
+        .collect();
+    let ws = Workspace::new(&borrowed);
+    let plans = ws.0.path().join("plans");
+    fs::create_dir_all(&plans).unwrap();
+    let mut reference: Option<(Vec<u8>, String)> = None;
+    for (threads, jitter, restarts) in [
+        (1usize, 0u64, 0u64),
+        (8, 0, 0),
+        (32, 0, 0),
+        (8, 7, 0),
+        (1, 0, 3),
+        (8, 0, 7),
+        (32, 40, 11),
+    ] {
+        let file = plans.join(format!("{threads}-{jitter}-{restarts}.plan"));
+        let file_text = file.display().to_string();
+        let threads_flag = format!("--loading_phase_threads={threads}");
+        let (jitter_text, restarts_text) = (jitter.to_string(), restarts.to_string());
+        let mut env = vec![
+            ("BAZEL_RS_SNAPSHOT_PLAN_OUT", file_text.as_str()),
+            ("BAZEL_RS_TIMING", "1"),
+            SNAPSHOT_OFF,
+        ];
+        if jitter > 0 {
+            env.push(("BAZEL_RS_LOADING_JITTER", jitter_text.as_str()));
+        }
+        if restarts > 0 {
+            env.push(("BAZEL_RS_EVAL_RESTARTS", restarts_text.as_str()));
+        }
+        let output = ws.run(
+            &["build", threads_flag.as_str(), "--nobuild", "//..."],
+            &env,
+        );
+        let stderr = observed(&output).2;
+        assert!(output.status.success(), "{stderr}");
+        let groups = stderr
+            .lines()
+            .find(|line| line.starts_with("PERF-GROUPS "))
+            .unwrap_or_default()
+            .to_owned();
+        // 8 consumers x 2 actions over the runtime (one group) and x 2
+        // over their own depset over it: the first listing of their own
+        // starts with the runtime's run, the second with its own (one
+        // group per consumer).
+        assert!(
+            groups.contains(" holders=32 refs=32 distinct=9 "),
+            "{threads} threads, jitter {jitter}, restarts {restarts}: {groups}"
+        );
+        let bytes = fs::read(&file).unwrap();
+        match &reference {
+            None => reference = Some((bytes, groups)),
+            Some((reference, first)) => assert!(
+                *reference == bytes,
+                "{threads} threads, jitter {jitter}, restarts {restarts}: the encoded request differs ({groups} vs {first})"
+            ),
+        }
+    }
+}
+
 const BUILD_INFO_DEFS: &str = r#"def _group_impl(ctx):
     return [DefaultInfo(files = getattr(ctx.attr.translator[OutputGroupInfo], ctx.attr.group))]
 
