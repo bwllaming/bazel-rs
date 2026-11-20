@@ -234,6 +234,10 @@ pub struct RuleSurface {
     pub target_description: String,
     /// The rule defines an `alwayslink` attribute (ObjcConfiguration.targetShouldAlwayslink).
     pub has_alwayslink_attribute: bool,
+    /// An explicitly specified `alwayslink`
+    /// (AttributeMap.isAttributeValueExplicitlySpecified): its configured
+    /// value when it is a boolean.
+    pub explicit_alwayslink: Option<Option<bool>>,
     /// JavaHelper distinguishes explicitly empty resource_strip_prefix from
     /// an omitted/default value.
     pub explicit_resource_strip_prefix: bool,
@@ -1701,13 +1705,17 @@ impl<'v> StarlarkValue<'v> for FragmentMethod {
                         ctx.get_type()
                     ))
                 })?;
-                if rule.has_alwayslink_attribute {
-                    return Err(error(
-                        "objc.target_should_alwayslink of a rule with an 'alwayslink' attribute is not implemented by the native profile (explicitly specified attribute values)"
+                // ObjcConfiguration.targetShouldAlwayslink (:176-186): an
+                // explicitly specified `alwayslink`, else
+                // --incompatible_objc_alwayslink_by_default (false).
+                match rule.explicit_alwayslink {
+                    Some(Some(value)) => Ok(Value::new_bool(value)),
+                    Some(None) => Err(error(
+                        "objc.target_should_alwayslink of a rule whose 'alwayslink' attribute is not a boolean is not implemented by the native profile"
                             .to_owned(),
-                    ));
+                    )),
+                    None => Ok(Value::new_bool(false)),
                 }
-                Ok(Value::new_bool(false))
             }
             _ => Err(error(unknown_member(self.kind, self.name))),
         }

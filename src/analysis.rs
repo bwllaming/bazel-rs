@@ -1138,6 +1138,14 @@ fn rule_surface(
         declared_fragments: invocation.declaration.fragments.clone(),
         target_description: format!("{} rule {label}", invocation.declaration.rule_class),
         has_alwayslink_attribute: invocation.schema.contains_key("alwayslink"),
+        explicit_alwayslink: invocation
+            .declaration
+            .explicit
+            .contains("alwayslink")
+            .then(|| match invocation.attrs.get("alwayslink") {
+                Some(crate::custom_rule::AttrValue::Bool(value)) => Some(*value),
+                _ => None,
+            }),
         explicit_resource_strip_prefix: invocation
             .declaration
             .explicit

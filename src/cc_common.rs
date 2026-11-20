@@ -587,6 +587,52 @@ pub(crate) fn check_private_api_call<'v>(
     Ok(Value::new_none())
 }
 
+/// HeaderInfo.create's header lists (rules/cpp/CcCompilationContext.java
+/// :869-925): ImmutableSets in insertion order — a public or private
+/// `.inc` header (CppFileTypes.CPP_TEXTUAL_INCLUDE) is textual — then each
+/// merged HeaderInfo's public, private and textual headers added.
+fn header_lists(
+    public: &[File],
+    private: &[File],
+    textual: &[File],
+    merged: &[HeaderInfo],
+) -> (Vec<File>, Vec<File>, Vec<File>) {
+    fn add(set: &mut Vec<File>, seen: &mut std::collections::HashSet<File>, file: &File) {
+        if seen.insert(file.clone()) {
+            set.push(file.clone());
+        }
+    }
+    let (mut public_set, mut private_set, mut textual_set) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut public_seen, mut private_seen, mut textual_seen) = Default::default();
+    for file in textual {
+        add(&mut textual_set, &mut textual_seen, file);
+    }
+    for (files, set, seen) in [
+        (public, &mut public_set, &mut public_seen),
+        (private, &mut private_set, &mut private_seen),
+    ] {
+        for file in files {
+            if file.path.ends_with(".inc") {
+                add(&mut textual_set, &mut textual_seen, file);
+            } else {
+                add(set, seen, file);
+            }
+        }
+    }
+    for info in merged {
+        for file in &info.modular_public_headers {
+            add(&mut public_set, &mut public_seen, file);
+        }
+        for file in &info.modular_private_headers {
+            add(&mut private_set, &mut private_seen, file);
+        }
+        for file in &info.textual_headers {
+            add(&mut textual_set, &mut textual_seen, file);
+        }
+    }
+    (public_set, private_set, textual_set)
+}
+
 /// CcStarlarkInternal.createHeaderInfo (:1166-1222): a new HeaderInfo
 /// identity carrying the module artifacts and header lists
 /// (HeaderInfo.create with the thread's next identity token).
@@ -672,15 +718,21 @@ pub(crate) fn create_header_info<'v>(
         textual_headers,
         separate_module_headers,
     ] = lists;
+    let (modular_public_headers, modular_private_headers, textual_headers) = header_lists(
+        &modular_public_headers.unwrap_or_default(),
+        &modular_private_headers.unwrap_or_default(),
+        &textual_headers.unwrap_or_default(),
+        &[],
+    );
     Ok(eval.heap().alloc(HeaderInfo {
         id: NEXT_HEADER_INFO.fetch_add(1, Ordering::Relaxed),
         header_module,
         pic_header_module,
         separate_module,
         separate_pic_module,
-        modular_public_headers: modular_public_headers.unwrap_or_default(),
-        modular_private_headers: modular_private_headers.unwrap_or_default(),
-        textual_headers: textual_headers.unwrap_or_default(),
+        modular_public_headers,
+        modular_private_headers,
+        textual_headers,
         separate_module_headers: separate_module_headers.unwrap_or_default(),
     }))
 }
@@ -737,27 +789,39 @@ pub(crate) fn create_header_info_with_deps<'v>(
         Some(info) => info.clone(),
         None => return Err(type_error(F, "header_info", header_info, "HeaderInfo")),
     };
+    let mut merged = Vec::new();
     for (index, name) in [(1, "deps"), (2, "merged_deps")] {
         let Some(value) = bound[index] else { continue };
         // Sequence.cast(deps, HeaderInfo.class, "deps").
         for (position, element) in sequence(F, name, value)?.into_iter().enumerate() {
-            if HeaderInfo::from_value(element).is_none() {
+            let Some(info) = HeaderInfo::from_value(element) else {
                 return Err(failure(format!(
                     "at index {position} of {name}, got element of type {}, want HeaderInfo",
                     element.get_type()
                 )));
+            };
+            if index == 2 {
+                merged.push(info.clone());
             }
         }
     }
+    // HeaderInfo.create with the merged deps' headers added (the deps
+    // themselves are not modelled: nothing natively reads them).
+    let (modular_public_headers, modular_private_headers, textual_headers) = header_lists(
+        &header_info.modular_public_headers,
+        &header_info.modular_private_headers,
+        &header_info.textual_headers,
+        &merged,
+    );
     Ok(eval.heap().alloc(HeaderInfo {
         id: NEXT_HEADER_INFO.fetch_add(1, Ordering::Relaxed),
         header_module: header_info.header_module.clone(),
         pic_header_module: header_info.pic_header_module.clone(),
         separate_module: header_info.separate_module.clone(),
         separate_pic_module: header_info.separate_pic_module.clone(),
-        modular_public_headers: header_info.modular_public_headers.clone(),
-        modular_private_headers: header_info.modular_private_headers.clone(),
-        textual_headers: header_info.textual_headers.clone(),
+        modular_public_headers,
+        modular_private_headers,
+        textual_headers,
         separate_module_headers: header_info.separate_module_headers.clone(),
     }))
 }
@@ -771,6 +835,50 @@ mod tests {
 
     /// rules_cc cc/private/cc_internal.bzl:17, verbatim.
     const CC_INTERNAL_BZL: &str = "cc_internal = cc_common.internal_DO_NOT_USE() if hasattr(cc_common, \"internal_DO_NOT_USE\") else struct()\n";
+
+    /// HeaderInfo.create (CcCompilationContext.java:869-925): `.inc`
+    /// headers are textual, the lists are insertion-ordered sets, and a
+    /// merged HeaderInfo's headers are added (rules_cc's merge_cc_infos of
+    /// a cc_import: `direct_public_headers` keeps the direct context's).
+    #[test]
+    fn header_lists_follow_header_info_create() {
+        let file = |path: &str| {
+            crate::starlark_types::File::new(crate::starlark_types::FileData {
+                path: path.to_owned(),
+                short_path: path.to_owned(),
+                owner: String::new(),
+                is_source: true,
+                is_directory: false,
+                is_symlink: false,
+            })
+        };
+        let names = |files: &[crate::starlark_types::File]| {
+            files
+                .iter()
+                .map(|file| file.path.clone())
+                .collect::<Vec<_>>()
+        };
+        let merged = super::HeaderInfo {
+            id: 0,
+            header_module: None,
+            pic_header_module: None,
+            separate_module: None,
+            separate_pic_module: None,
+            modular_public_headers: vec![file("m.h"), file("a.h")],
+            modular_private_headers: vec![file("mp.h")],
+            textual_headers: vec![file("mt.inc")],
+            separate_module_headers: Vec::new(),
+        };
+        let (public, private, textual) = super::header_lists(
+            &[file("a.h"), file("b.inc"), file("a.h")],
+            &[file("p.h"), file("q.inc")],
+            &[file("t.h")],
+            &[merged],
+        );
+        assert_eq!(names(&public), ["a.h", "m.h"]);
+        assert_eq!(names(&private), ["p.h", "mp.h"]);
+        assert_eq!(names(&textual), ["t.h", "b.inc", "q.inc", "mt.inc"]);
+    }
 
     /// The vendored immutable list/dict (`cc_internal.freeze`'s copies)
     /// keep their immutability across a garbage collection (the list's mark

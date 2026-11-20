@@ -194,6 +194,7 @@ pub(super) fn rule_surface(
         declared_fragments: Vec::new(),
         target_description: format!("{class} rule {label}"),
         has_alwayslink_attribute: false,
+        explicit_alwayslink: None,
         explicit_resource_strip_prefix: false,
         split_transition_attribute: false,
         skylark_testable: false,

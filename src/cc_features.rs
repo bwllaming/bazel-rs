@@ -882,7 +882,14 @@ impl ToolchainData {
         // rules_cc's artifact_category_names), the toolchain config's
         // artifact_name_pattern through getCategoryName (lowercase); the
         // mapper is keyed by the category either way.
-        if let Some((prefix, extension)) = self.artifact_name_overrides.get(category) {
+        // The overrides are keyed by the configured (lowercase) category
+        // name: the enum constant's lowercase form finds them.
+        if let Some((prefix, extension)) =
+            self.artifact_name_overrides.get(category).or_else(|| {
+                self.artifact_name_overrides
+                    .get(&category.to_ascii_lowercase())
+            })
+        {
             return Ok((prefix.clone(), extension.clone()));
         }
         let (prefix, _, allowed) = ARTIFACT_CATEGORIES

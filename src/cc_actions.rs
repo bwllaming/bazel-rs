@@ -1836,5 +1836,26 @@ mod tests {
                 .unwrap_err()
                 .contains("No enum constant")
         );
+        // A toolchain's artifact_name_pattern (category_name lowercase)
+        // overrides the category queried by its enum constant name (rules_cc's
+        // mingw/msvc dll pattern tests).
+        let data = crate::cc_features::build_graph(Vec::new(), Vec::new(), "", || {
+            Ok(vec![(
+                "dynamic_library".to_owned(),
+                "".to_owned(),
+                ".dll".to_owned(),
+            )])
+        })
+        .unwrap();
+        assert_eq!(
+            data.artifact_name_for_category("DYNAMIC_LIBRARY", "dir/foo_shared")
+                .unwrap(),
+            "dir/foo_shared.dll"
+        );
+        assert_eq!(
+            data.artifact_name_extension_for_category("DYNAMIC_LIBRARY")
+                .unwrap(),
+            ".dll"
+        );
     }
 }
