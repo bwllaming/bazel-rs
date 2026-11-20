@@ -199,15 +199,15 @@ counted). `query //...` labels match on all 37 projects.
 | junit5-starter | DIFF | 22.2 / 15.0 | 3.6 / 0.2 / 0.2 | 7.8 / 5.4 | 1298 / 515 | 100, 28, 0, 0 | PASSED:1 / same | C2 |
 | yalantinglibs | DIFF⁸ | 12.0 / 6.8 | 3.4 / 0.2 / 0.2 | 58.6† / 52.2† | 679 / 244 | 126, 6, 0, 0 | FAILED TO BUILD:1 PASSED:2 SKIPPED:2 / same | C5 |
 | examples-frontend | DIFF⁹ | 88.3† / 121.6† | 60.9† / 110.9† / 97.7† | 60.8† / 137.7† | 1488 / 1806 | 215801, 12, 2, 0 | PASSED:14 / same | C3 |
-| examples-rust-deps-cargo | DIFF¹⁰ | 42.2 / 30.3 | 3.1 / 0.2 / 0.2 | 27.3 / 24.6 | 1013 / 364 | 102, 1, 0, 1 | — | B49, C4 |
+| examples-rust-deps-cargo | DIFF¹⁰ | 39.6 / 28.8 | 3.4 / 0.2 / 0.2 | 27.7 / 24.7 | 1016 / 371 | 103, 0, 0, 1 | — | C4 |
 | rules_python-bzlmod | DIFF | 43.2 / 36.2 | 4.6 / 0.6 / 0.2 | 43.7 / 39.7 | 1959 / 2577 | 319, 0, 0, 1 | PASSED:31 / same | B34 |
 | with_cfg-examples | DIFF | 33.2 / 28.2 | 4.0 / 0.4 / 0.1 | 8.9 / 5.9 | 1737 / 1678 | 207, 37, 0, 0 | PASSED:20 / same | C2, B43 |
-| capnproto | DIFF¹¹ | 39.2 / 11.1 | 3.4 / 0.2 / 0.2 | 20.2† / 18.2† | 1078 / 384 | 1178, 224, 0, 0 | FAILED TO BUILD:5 SKIPPED:14 / same counts | B50, C5 |
+| capnproto | DIFF¹¹ | 17.1 / 11.1 | 3.5 / 0.2 / 0.2 | 23.9 / 18.1 | 1079 / 385 | 1270, 132, 0, 0 | FAILED TO BUILD:5 SKIPPED:14 / same | C5 |
 | flatbuffers | DIFF¹² | 17.1† / 7.4† | 3.0† / 0.3† / 0.5† | 3.1† / 0.4† | 763 / 207 | 0, 0, 0, 0 | — | B12 |
 | rules_jvm_external-simple | DIFF¹² | 72.9† / 38.1† | 4.2† / 0.4† / 1.8† | 4.0† / 1.5† | 1625 / 655 | 0, 0, 0, 0 | — | B47 |
 | rules_cc | DIFF | 18.8† / 20.5† | 5.7† / 0.6† / 5.7† | 51.3† / 56.0† | 2655 / 1696 | 1669, 315, 0, 1 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:1 FAILED TO BUILD:2 PASSED:346 SKIPPED:2 | B32 |
-| protobuf | DIFF¹³ | 41.9† / 62.3† | 7.3† / 0.6† / 15.2† | 286.9† / 648.0† | 2718 / 3613 | 19827, 21260, 0, 0 | — | B48, B33, B49, C2, C5 |
-| rules_kotlin | RS-FAIL¹⁴ | 37.6 / 45.1 | 5.4 / 0.6 / 0.2 | 66.9 / 79.0† | 2320 / 2073 | 2234, 1117, 0, 0 | both hit the 20-minute cap | B51 |
+| protobuf | DIFF¹³ | 43.7† / 73.3† | 6.2† / 0.6† / 14.8† | 290.5† / 302.1† | 2970 / 3625 | 19840, 21247, 0, 0 | — | B33, C2, C5 |
+| rules_kotlin | DIFF¹⁴ | 38.0 / 42.0 | 5.0 / 0.6 / 0.3 | 59.2 / 59.7 | 2113 / 2082 | 2235, 1116, 0, 1 | genuine 772 s, FAILED:2 PASSED:266 / 20-minute cap at 224 of 268 | C2, B53 |
 | rules_zig | RS-FAIL | 38.0 / 37.5† | 14.1 / 0.3 / 12.0† | 38.0 / 12.2† | 2517 / 1933 | 0, 1292, 0, 0 | PASSED:211 SKIPPED:4 / SKIPPED:4 | B13c |
 
 Notes:
@@ -240,32 +240,33 @@ Notes:
    tools, so every command fails and the timings include connection
    timeouts. Only C3 and next.js's random build id (2 files each side)
    differ.
-10. Only genuine: `_bs-.runfiles_manifest` of the anyhow
-    `cargo_build_script` (B49); the hash difference is
-    `_bs.out_dir/anyhow.d`, whose dep-info lines hold each tool's absolute
-    sandbox path (C4).
-11. The `//src/kj/compat` compile errors (gcc 13) and "Build succeeded for
-    only 40 of 171 top-level targets" are identical, but genuine runs 1,177
-    processes and bazel-rs 996 (B50), so genuine's `bazel-bin` has 224 more
-    files (`capnp-rpc` `.pic.d` files, `samples/*` runfiles manifests); the
-    test summary lists 5 `FAILED TO BUILD` on both, but different targets.
+10. corpus-parity6 (B49 fixed): the file lists match; the hash difference
+    is `_bs.out_dir/anyhow.d`, whose dep-info lines hold each tool's
+    absolute sandbox path (C4).
+11. corpus-parity6 (B50, B52 fixed): the compile errors (gcc 13), "Build
+    succeeded for only 40 of 171 top-level targets", the 1,177 processes
+    (697 internal) and the test statuses match; the 132 only-genuine files
+    are the failed compiles' `.d` files (C5). The `test` row is from a
+    non-LTO build of the final commit (the B52 fix came after the release
+    binary of the other phases).
 12. Genuine fails too (flatbuffers: the old rules_go's `CcInfo`;
     rules_jvm_external-simple: no Android SDK); bazel-rs adds B12 / B47.
 13. `//ruby/...` and `//csharp/...` excluded (genuine needs a system
     `ruby`), no `test` phase. `query` matches (3,411 labels). Both fail
     the same compiles (gcc 13) and the rules_ruby fetch; bazel-rs also fails
     analysis of `//bazel/tests:test_compile_path_mapping` (B33). Of the
-    21,260 only-genuine files, 21,243 are C2 `_javac` class files, 3 are
-    B33's target, 4 are `cargo_build_script` manifests (B49) and the rest
-    failed targets' runfiles manifests (C5). bazel-rs's build takes 2.3×
-    as long because it builds 8 extra exec configurations of protoc (B48;
-    19,007 processes against 13,945). Its warm run re-analyses (15.2 s): a
-    command whose analysis failed saves no snapshot.
-14. `build //...`: one JdepsMerge action fails on bazel-rs (B51), reproduced
-    in a second run; 891 of 893 top-level targets build. `test //...` runs
-    nested Bazel integration tests (`//examples:*_test`): both tools hit
-    the 20-minute cap and the nested builds drove the machine's load to
-    1,400, so the test statuses are not compared.
+    21,247 only-genuine files, 21,243 are C2 `_javac` class files and 3 are
+    B33's target. corpus-parity6 (B48, B49 fixed): 13,940 processes against
+    13,945 (the 5 are B33's target), the build 302 s against 290 s (was
+    648 s). Its warm run re-analyses (14.8 s): a command whose analysis
+    failed saves no snapshot. The cold and warm rows ran at a load of up to
+    250 from other work.
+14. corpus-parity6 (B51 fixed): `build //...` succeeds on both; the
+    only-genuine files are C2's `_javac` classes, the hash difference a
+    KSP-generated srcjar. `test //...` runs nested Bazel integration tests
+    (`//examples:*_test`): genuine finishes in 772 s (2 of them fail);
+    bazel-rs hits the 20-minute cap with 224 of 268 tests done (B53), so
+    the test statuses are not compared.
 
 **Summary.** 37 projects ran, all with no workaround edits for bazel-rs
 bugs:
@@ -279,15 +280,18 @@ bugs:
   rules_python-pip_parse, tink-cc-examples.
 - **6 fail identically** (the project's own failures): bazel-gazelle,
   bazel-skylib, buildtools, examples-configurations, re2, riegeli.
-- **13 differ**: 4 only cosmetically (examples-java-maven,
-  examples-java-tutorial, junit5-starter: C2; yalantinglibs: C5), and
-  examples-frontend (C3), examples-rust-deps-cargo (B49, C4),
-  rules_python-bzlmod (B34), with_cfg-examples (C2, B43), capnproto (B50),
-  flatbuffers (B12) and rules_jvm_external-simple (B47) where genuine fails
-  too, rules_cc (B32: 346 of genuine's 453 tests pass), protobuf (B48, B33,
-  B49).
-- **2 blocked**: rules_kotlin (B51 fails one build action), rules_zig
-  (B13c ends analysis).
+- **14 differ**: 6 only cosmetically (examples-java-maven,
+  examples-java-tutorial, junit5-starter: C2; yalantinglibs, capnproto:
+  C5; examples-rust-deps-cargo: C4), and examples-frontend (C3),
+  rules_python-bzlmod (B34), with_cfg-examples (C2, B43), flatbuffers (B12)
+  and rules_jvm_external-simple (B47) where genuine fails too, rules_cc
+  (B32: 346 of genuine's 453 tests pass), protobuf (B33), rules_kotlin
+  (builds; its `test //...` does not finish in 20 minutes, B53).
+- **1 blocked**: rules_zig (B13c ends analysis).
+
+corpus-parity6 (2026-11-21, its LTO release binary) reran protobuf,
+examples-rust-deps-cargo, rules_kotlin and capnproto (their rows and notes
+10, 11, 13 and 14); the other rows are the corpus-rerun run's.
 
 `query //...` matches on all 37. Every common output sampled is
 byte-identical except B34's zipapp, C4's dep-info file and rules_cc's one
@@ -304,17 +308,19 @@ ranked by the projects they affect in that run, then the fixed ones.
 
 | id | status (corpus-rerun) | summary |
 |---|---|---|
-| B49 | open, 2 (examples-rust-deps-cargo, protobuf); not blocking | genuine's `bazel-bin` has the runfiles manifest of rules_rust's `cargo_build_script` `_bs-` executable (`external/rules_rust++crate+crates__anyhow-1.0.79/_bs-.runfiles_manifest`; protobuf: 4 crates); bazel-rs does not build it (not investigated) |
+| B53 | open, 1 (rules_kotlin); `test //...` | rules_kotlin's `test //...` (nested Bazel integration tests `//examples:*_test`) hits the 20-minute cap on bazel-rs with 224 of 268 tests done; genuine finishes in 772 s (`//examples:android_8.x_test` 670 s, `android_.bazelversion_test` 122 s; on bazel-rs the latter ran over 840 s). Not investigated (the nested builds' sandboxing, scheduling or parallelism) |
 | B13c | open, 1 (rules_zig); blocking | one toolchain implementation for two execution platforms in one configuration (ConfiguredTargetKey.executionPlatformLabel), a fatal error (needs the execution platform in the configured-target key; design below) |
-| B51 | open, 1 (rules_kotlin); blocking `build //...` | rules_kotlin's `JdepsMerge //src/test/data/jvm/jvm_target:mixed_jvm8` fails in its multiplex worker (`cache/work/bazel-workers-*/multiplex-worker-*-JdepsMerge/execroot`): `NoSuchFileException: bazel-out/k8-fastbuild-ST-…/bin/src/test/data/jvm/jvm_target/mixed_jvm8-kt.jar` (JarOwner.readJarOwnerFromManifest). The jar exists in the output tree; the merger reads it although it is apparently not an input of the action, which works in genuine's multiplex workers because they run in the shared execution root (as C2). Reproduced twice (not investigated) |
-| B48 | open, 1 (protobuf); performance, outputs | `build //...` builds protoc and the upb generators in 8 extra exec configurations (`k8-opt-exec-ST-*`, 436 objects each) and the prebuilt-protoc `validation_output.txt` in 17 extra target configurations (`k8-fastbuild-ST-*`); genuine's `bazel-out` has only `k8-opt-exec` and one `k8-fastbuild-ST-*`. 19,007 processes against 13,945, 648 s against 287 s. Genuine's cquery shows the same transitioned configurations (`//python/dist` `_py_dist_transition`, `//rust:dist` `_cpu_transition`), so the difference is in what gets built under them (perhaps incompatible-target skipping); not investigated |
-| B50 | open, 1 (capnproto); not blocking | `build --keep_going` after compile failures: genuine runs 1,177 processes, bazel-rs 996, with the same errors and "40 of 171 top-level targets"; genuine's `bazel-bin` has 224 more files (`capnp-rpc` `.pic.d`, `samples/*` runfiles manifests), so bazel-rs seems to skip work genuine still does under failed top-level targets (not investigated) |
 | B32 | open, 1 (rules_cc's own tests: 346 of genuine's 453 pass) | rules_cc's own analysis tests. Fixed on corpus-parity4: `--fission`, `--build_test_dwp`, `--legacy_whole_archive`, `--incompatible_remove_legacy_whole_archive` are configuration options and `--dynamic_mode` is transitionable; a fission compile's `.dwo` is declared where genuine declares it. Fixed on corpus-parity5: `cc_internal.freeze` is Bazel's shallow immutable copy (the vendored starlark's immutable list/dict that is not frozen yet, docs/DEPSETS.md; the 38 thin-LTO and linkstamp targets), `create_header_info_with_deps` adds the merged deps' headers (cc_import's `direct_public_headers`), a toolchain's `artifact_name_pattern` applies (mingw/msvc dll names), `objc.target_should_alwayslink` of an explicit `alwayslink`, map_each's `must be declared by a top-level def statement` error, structs/providers with frozen list fields are hashable, and transitions on `instrumentation_filter`, `save_temps`, `start_end_lib`, `interface_shared_objects`, `process_headers_in_dependencies` (tests/fixtures/corpus_parity5). Left (tests): the LTO backends (`cc_internal.collect_per_file_lto_backend_opts`, `create_lto_backend_action*`, compile actions with shareable artifacts: ~37, also the linkstamp compile), the FDO/Propeller/memprof options (`fdo_optimize`, `fdo_profile`, `fdo_instrument`, `cs_fdo_profile`, `xbinary_fdo`, `fdo_prefetch_hints`, `propeller_optimize*`: ~37), `experimental_cpp_modules` (10), `custom_malloc` (5, a late-bound dependency per configuration), `cc_internal.expand_and_tokenize` (3 objc tests), `action_env` and `grte_top` transitions (2 each), `ltoindexopt`/`ltobackendopt`/`per_file_ltobackendopt`, and two builds: cc_static_library's `test_output_groups` builds a compile of a missing `file.cc` (the analysis test's target's validation outputs; genuine does not) and `validate_static_library_env_test`'s archive is not created |
 | B33 | open, 1 (protobuf); 1 target | protobuf analysis. Fixed on corpus-parity4: symbolic-macro visibility delegation and alias select() keys under `--incompatible_config_setting_private_default_visibility` (5 visibility errors), `declare_file(sibling=)` from another package, per-attribute aspect views of aspects propagating over one attribute (`UpbMinitableCcInfo`/`JavaInfo` on proto_library targets), `Target.actions` of targets merged with aspects and of a rule under test's dependencies, `--dynamic_mode` transitions (rules_fuzzing). Fixed on corpus-parity5: transitions writing `instrumentation_filter` (`generated_sources_not_coverage_instrumented`; the filter is per configuration natively too). Left: `experimental_output_paths=strip` with `modify_execution_info` (`test_compile_path_mapping`): its `Target.actions` argv shows path-mapped `bazel-out/cfg/bin` paths, so path mapping would have to be modelled for execution too (not attempted) |
 | B34 | open, 1 (rules_python-bzlmod); not blocking | `external/other_module+/other_module/pkg/bin_zipapp.zip` differs from genuine's: rules_python's zipper stores each input's mode and relative symlinks as it finds them in the sandbox; native staging hardlinks read-only store blobs (docs/HARDLINK_STAGING.md) |
 | B43 | open, 1 (with_cfg); not blocking | genuine builds `cc_no_copt_binary/binary_/binary.runfiles_manifest` and `.repo_mapping` (the manual `cc_binary` behind with_cfg's frontend and transitioning alias, a no-op transition); bazel-rs does not (not investigated) |
 | B12 | open, 1 (flatbuffers; genuine fails too) | `@local_config_platform` unknown (aspect_bazel_lib 1.x `platform_utils.bzl:3`) |
 | B47 | open, 1 (rules_jvm_external-simple; genuine fails too, no Android SDK) | rules_android's `android_split_transition` reads `//command_line_option:Android configuration distinguisher`: "transition inputs ... do not correspond to valid settings" (an unmodelled Android native option) |
+| B52 | fixed (corpus-parity6) | the test summary listed `FAILED TO BUILD` targets in string order (`//a/b:c` before `//a:z`); genuine orders them as Label.compareTo, package before name (capnproto's first five lines) |
+| B48 | fixed (corpus-parity6) | protobuf built protoc in 8 extra exec configurations and the prebuilt-protoc validation in 17 extra target configurations: an analysis test (`testing.analysis_test`, rules_testing) propagated its target under test's `_validation` group; RuleConfiguredTargetBuilder.propagateValidationActionOutputGroup propagates none for analysis tests. protobuf: 13,940 processes against 13,945 (B33's target), 302 s against 290 s |
+| B49 | fixed (corpus-parity6) | rules_rust's `cargo_build_script` `_bs-` runfiles manifest: a tool's runfiles manifest and tree are built with the action that stages the tool's runfiles (Bazel's spawn holds the tool's runfiles tree artifact, whose RunfilesTreeAction takes the MANIFEST); never staged in the sandbox (tests/fixtures/corpus_parity6) |
+| B50 | fixed (corpus-parity6) | capnproto `build --keep_going`: a runfiles manifest or tree still runs for a binary whose link failed (SourceManifestAction's inputs are the unresolved symlinks only, SymlinkTreeAction's the input manifest); the tree tallies as SymlinkTreeAction alone then. 1,177 processes on both |
+| B51 | fixed (corpus-parity6) | rules_kotlin's multiplex JdepsMerge reads the `-kt.jar` beside the jdeps it merges, not an input: a non-sandboxed worker runs in genuine's shared execution root, so its native working directory also holds the other outputs of its inputs' producing actions (docs/PERSISTENT_WORKERS.md) |
 | B1 | fixed (googletest, re2, highway identical) | `config_setting(values = {"features": …})` |
 | B2 | fixed (every rc option of the corpus; all `comment_out` edits dropped) | rc options rejected at startup: "options are never silently ignored" |
 | B3 | fixed (bazel-skylib, junit5-starter, with_cfg analyse) | `native.existing_rule` / `existing_rules` missing in BUILD and legacy-macro context |
@@ -683,7 +689,7 @@ difference of docs/RUNFILES_TREES.md, here in `bazel-bin`).
 **B31–B35** are the next blockers the corpus-parity2 rerun found. B31, B35,
 B40, B41, B44 and B45 are fixed on corpus-parity3; B46 and B47 are what that
 rerun found next. B48–B51 are what the corpus-rerun full run found (table
-above). The "note"/"footnote" numbers cited in this section and under
+above); corpus-parity6 fixed them and B52 and found B53. The "note"/"footnote" numbers cited in this section and under
 Performance refer to the earlier runs' results notes (this file's git
 history before the corpus-rerun commit).
 
@@ -704,8 +710,8 @@ history before the corpus-rerun commit).
   (`_bs.out_dir/anyhow.d` in examples-rust-deps-cargo); they differ between
   two genuine runs too.
 - C5: after a failed action genuine's `bazel-bin` keeps the failed
-  compiles' `.d` files and the failing targets' runfiles manifests
-  (yalantinglibs, capnproto, protobuf); bazel-rs does not.
+  compiles' `.d` files (yalantinglibs, capnproto, protobuf); bazel-rs does
+  not. (The failing targets' runfiles manifests match since B50.)
 - Error message formats differ; for example, Starlark tracebacks use the
   `* file:line` style. The exit codes match.
 
@@ -781,11 +787,13 @@ the test column of OpenROAD and protobuf is not run (JSON phases).
   5.7, riegeli 3.2 against the server's 0.3–0.6 s).
 - **Full build:** bazel-rs is faster or even on 32 of 37 (abseil 66.0 s
   against 76.3, tink-cc 87.3 against 95.1, highway 172.6 against 178.0).
-  Slower: protobuf (648 against 287 s: B48 builds protoc 8 more times),
+  Slower: protobuf (648 against 287 s: B48 built protoc 8 more times;
+  302 against 290 s after corpus-parity6),
   examples-frontend (137.7 against 60.8, both failing), OpenROAD
   `//:openroad` (994.6 against 714.0 s for the same 13,479 actions, at a
   higher load: 20–52 against 12–38; openroad-perf measured 773.9 against
-  693.5 s), rules_kotlin (79.0 against 66.9, failing on B51).
+  693.5 s), rules_kotlin (79.0 against 66.9, failing on B51; 59.7
+  against 59.2 after corpus-parity6).
 - **Tests:** faster or even on 31 of the 34 `test` commands (some without
   test targets); slower on
   examples-frontend, rules_python-bzlmod (10.3 against 7.5 s) and rules_cc
@@ -1085,15 +1093,12 @@ were runs with the download cache pre-filled too, the fully cold runs take
 
 From the corpus-rerun run (2026-11-20):
 
-1. The two blocked projects: B51 (rules_kotlin's multiplex JdepsMerge
-   worker misses an output it reads; check the action's declared inputs
-   against what native multiplex workers stage) and B13c (rules_zig; the
-   design above).
-2. B48 (protobuf builds protoc in 8 extra exec configurations, 2.3× the
-   build time): find which transitioned targets genuine does not build.
-3. Output parity left: B49 (`cargo_build_script` runfiles manifest, 2
-   projects), B50 (`--keep_going` work after failures), B43, B34, and the
-   rules_cc/protobuf analysis gaps B32 and B33.
+1. The blocked project: B13c (rules_zig; the design above). (B48–B52
+   are fixed on corpus-parity6.)
+2. B53: rules_kotlin's `test //...` (nested Bazel integration tests) does
+   not finish in 20 minutes on bazel-rs; genuine takes 772 s.
+3. Output parity left: B43, B34, and the rules_cc/protobuf analysis gaps
+   B32 and B33.
 4. Performance: OpenROAD cold analysis (P7) and peak RSS (6.9 GB against
    3.7 GB), `//:openroad` build time, protobuf's memory, examples-frontend.
 5. Rerun the corpus after each fix: `oss_corpus.py run --only <project>`.
