@@ -31,6 +31,59 @@ pub struct TopLevel {
     pub files_to_compile: Vec<String>,
 }
 
+/// One planned action to describe (`Engine::aquery_analysis`).
+struct RecordJob<'a> {
+    /// The action's index in the capture's nodes.
+    index: usize,
+    owner: &'a Owner,
+    graph_node: u32,
+    configuration: usize,
+}
+
+/// `describe` of every job on up to `threads` threads, results in the
+/// jobs' order.
+fn in_parallel<I: Sync, T: Send>(
+    jobs: &[I],
+    threads: usize,
+    describe: &(dyn Fn(&I) -> T + Sync),
+) -> Vec<T> {
+    const CHUNK: usize = 256;
+    let chunks = jobs.len().div_ceil(CHUNK);
+    let threads = threads.min(chunks).min(32);
+    if threads <= 1 {
+        return jobs.iter().map(describe).collect();
+    }
+    let results: Vec<std::sync::Mutex<Vec<T>>> = (0..chunks)
+        .map(|_| std::sync::Mutex::new(Vec::new()))
+        .collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let work = || {
+        loop {
+            let chunk = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if chunk >= chunks {
+                break;
+            }
+            let slice = &jobs[chunk * CHUNK..jobs.len().min((chunk + 1) * CHUNK)];
+            let described: Vec<T> = slice.iter().map(describe).collect();
+            *results[chunk].lock().unwrap_or_else(|e| e.into_inner()) = described;
+        }
+    };
+    std::thread::scope(|scope| {
+        for _ in 1..threads {
+            std::thread::Builder::new()
+                .name("aquery-records".to_owned())
+                .stack_size(16 << 20)
+                .spawn_scoped(scope, work)
+                .expect("spawn an aquery record thread");
+        }
+        work();
+    });
+    results
+        .into_iter()
+        .flat_map(|chunk| chunk.into_inner().unwrap_or_else(|e| e.into_inner()))
+        .collect()
+}
+
 struct Owner {
     key: ConfiguredTargetKey,
     /// The aspect path (outermost first); empty for a rule's own actions.
@@ -273,6 +326,7 @@ impl Engine {
         crate::aquery::set_capturing(false);
         let capture = self.aquery_capture.take().unwrap_or_default();
         let graph = graph?;
+        crate::perf_mark("aquery.graph");
         let mut nodes_by_key: HashMap<(String, String), u32> = HashMap::new();
         for (id, node) in graph.nodes.iter().enumerate() {
             if let Some(configuration) = node.configuration {
@@ -312,6 +366,9 @@ impl Engine {
         let mut configurations = Vec::new();
         let mut configuration_index: BTreeMap<ConfigId, usize> = BTreeMap::new();
         let mut actions = Vec::new();
+        // The owner, graph node and configuration of each planned action, in
+        // plan order (configurations are numbered in first-use order).
+        let mut jobs: Vec<RecordJob> = Vec::new();
         for (index, node) in capture.nodes.iter().enumerate() {
             let id = node.action.id.as_str();
             let owner = capture.owners.get(id).or_else(|| {
@@ -337,27 +394,60 @@ impl Engine {
                 });
                 configurations.len() - 1
             });
-            let rule_class = match &graph.nodes[graph_node as usize].target {
+            jobs.push(RecordJob {
+                index,
+                owner,
+                graph_node,
+                configuration,
+            });
+        }
+        // The records of each action are independent of the others' (a
+        // function of the planned action, its owner and the engine's
+        // finished analysis): described on several threads, kept in plan
+        // order.
+        let platform_infos = self.aquery_platform_infos();
+        let describe = |job: &RecordJob| -> Vec<(u32, ActionRecord)> {
+            let rule_class = match &graph.nodes[job.graph_node as usize].target {
                 crate::cquery_proto::Target::Rule(rule) => Some(rule.rule_class.clone()),
                 _ => None,
             };
-            let display_target = display(&owner.key.label);
-            for mut record in self.aquery_records(
-                node,
-                index,
-                owner,
+            let display_target = display(&job.owner.key.label);
+            self.aquery_records(
+                &capture.nodes[job.index],
+                job.index,
+                job.owner,
                 rule_class,
-                configuration,
+                job.configuration,
                 &configurations,
-            ) {
+                &platform_infos,
+            )
+            .into_iter()
+            .map(|mut record| {
                 record.display_target = display_target.clone();
                 record.display_execution_platform = record
                     .execution_platform
                     .as_deref()
                     .and_then(|platform| Label::parse_canonical(platform).ok())
                     .map(|platform| display(&platform));
-                actions.push((graph_node, record));
-            }
+                (job.graph_node, record)
+            })
+            .collect()
+        };
+        actions.extend(
+            in_parallel(&jobs, self.loading_phase_threads, &describe)
+                .into_iter()
+                .flatten(),
+        );
+        if crate::plan_timings::enabled() {
+            // The planned actions without an owner in the universe are not
+            // listed (workspace status, actions of targets outside it).
+            eprintln!(
+                "PERF-AQUERY nodes={} owners={} described={} records={}",
+                capture.nodes.len(),
+                capture.owners.len(),
+                jobs.len(),
+                actions.len()
+            );
         }
         // TestRunner actions: registered with the rule's (after its
         // RunfilesSupport actions, TestActionBuilder via
@@ -397,6 +487,7 @@ impl Engine {
                 actions.push((graph_node, record));
             }
         }
+        crate::perf_mark("aquery.records");
         Ok(Analysis {
             graph,
             configurations,
@@ -425,6 +516,19 @@ impl Engine {
         )
     }
 
+    /// [`Self::aquery_platform_info`] of every analyzed platform label.
+    fn aquery_platform_infos(&self) -> HashMap<Label, Arc<crate::platforms::PlatformInfo>> {
+        let mut infos = HashMap::new();
+        for (key, info) in self.platforms.iter() {
+            if let Ok(info) = info {
+                infos
+                    .entry(key.label.clone())
+                    .or_insert_with(|| Arc::clone(info));
+            }
+        }
+        infos
+    }
+
     pub(super) fn aquery_platform_info(
         &self,
         label: &Label,
@@ -438,6 +542,7 @@ impl Engine {
     /// The records of the planned action `node` (`index` in the capture's
     /// nodes; a record listing exactly its inputs lists them from there
     /// when written, ActionRecord::listed_from).
+    #[allow(clippy::too_many_arguments)]
     fn aquery_records(
         &self,
         node: &PlannedAction,
@@ -446,6 +551,7 @@ impl Engine {
         rule_class: Option<String>,
         configuration: usize,
         configurations: &[crate::aquery::Configuration],
+        platform_infos: &HashMap<Label, Arc<crate::platforms::PlatformInfo>>,
     ) -> Vec<ActionRecord> {
         // A shared run's groups (not runfiles trees) are inputs listed one
         // by one, as the node lists them without sharing; a runfiles tree
@@ -470,7 +576,7 @@ impl Engine {
         let platform = if no_config {
             None
         } else {
-            self.aquery_platform_info(&platform_label)
+            platform_infos.get(&platform_label).cloned()
         };
         // An alias (`@bazel_tools//tools:host_platform`) prints as the
         // platform it resolves to (PlatformInfo.label).

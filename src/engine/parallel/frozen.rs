@@ -630,7 +630,6 @@ impl Engine {
             && keep_going_frozen()
             && super::buffer::enabled()
             && !self.semantic_only()
-            && self.aquery_capture.is_none()
             && commit_ahead_enabled()
     }
 
@@ -642,8 +641,8 @@ impl Engine {
         configured: &ConfiguredNodes,
     ) -> Arc<Frozen> {
         self.ensure_analysis_pool();
-        let view = (!self.semantic_only() && self.aquery_capture.is_none() && worker_deltas())
-            .then(|| delta::SharedView::new(self, state));
+        let view =
+            (!self.semantic_only() && worker_deltas()).then(|| delta::SharedView::new(self, state));
         state.declared.journal = Some(Default::default());
         let engine = self.fork_frozen();
         crate::perf_mark("pass2.freeze.engine");
@@ -764,8 +763,8 @@ impl Engine {
         let state = self.action_planning.as_mut()?;
         let deferring = std::mem::replace(&mut state.nodes.deferring, !keep_going);
         let state = self.action_planning.as_ref()?;
-        let view = (!self.semantic_only() && self.aquery_capture.is_none() && worker_deltas())
-            .then(|| delta::SharedView::new(self, state));
+        let view =
+            (!self.semantic_only() && worker_deltas()).then(|| delta::SharedView::new(self, state));
         if let Some(state) = self.action_planning.as_mut() {
             state.nodes.deferring = deferring;
         }

@@ -3839,22 +3839,17 @@ impl Engine {
     /// P4: whether finished entries may commit ahead of their turn (a
     /// walk that defers its lowerings, so their nodes join the plan at
     /// their turn; an execution plan without --keep_going, whose failures
-    /// skip dependents at the failing turn, and without an aquery capture).
+    /// skip dependents at the failing turn; an aquery capture too: its
+    /// action owners are recorded with the console owners wherever a
+    /// prepare runs, and its actions' descriptions travel in the actions).
     /// Task D: [`Self::commits_ahead`] of the walk to come (which defers
     /// its lowerings unless --keep_going).
     pub(super) fn commits_ahead_when_walking(&self) -> bool {
-        !self.keep_going
-            && !self.semantic_only()
-            && self.aquery_capture.is_none()
-            && commit_ahead_enabled()
+        !self.keep_going && !self.semantic_only() && commit_ahead_enabled()
     }
 
     fn commits_ahead(&self, state: &ActionPlanning) -> bool {
-        state.nodes.deferring
-            && !self.keep_going
-            && !self.semantic_only()
-            && self.aquery_capture.is_none()
-            && commit_ahead_enabled()
+        state.nodes.deferring && !self.keep_going && !self.semantic_only() && commit_ahead_enabled()
     }
 
     /// P4: commit the entries whose computes finished, ahead of their turn
@@ -4466,8 +4461,8 @@ impl Engine {
     }
 
     /// S1: what the analysis worker needs to build the delta of the target
-    /// prepared as `parts` (none for cquery's semantic commits and under an
-    /// aquery capture, whose commits stay on the coordinator).
+    /// prepared as `parts` (none for cquery's semantic commits, which stay
+    /// on the coordinator).
     fn delta_inputs(
         &self,
         state: &ActionPlanning,
@@ -4475,7 +4470,7 @@ impl Engine {
         parts: &PreparedParts,
         class: u32,
     ) -> Option<Box<delta::DeltaInputs>> {
-        if self.semantic_only() || self.aquery_capture.is_some() || !worker_deltas() {
+        if self.semantic_only() || !worker_deltas() {
             return None;
         }
         Some(Box::new(delta::DeltaInputs {

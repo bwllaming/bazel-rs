@@ -1473,6 +1473,7 @@ fn run() -> Result<(), String> {
             warn(&warning);
         }
         drop(std::mem::ManuallyDrop::into_inner(engine));
+        bazel_rs::perf_mark("aquery.engine_dropped");
         lockfile_gate.open();
         bazel_rs::observed_fs::close_window();
         if print_action {
@@ -1500,6 +1501,7 @@ fn run() -> Result<(), String> {
             &aquery_options,
             &relative_directory,
         )?;
+        bazel_rs::perf_mark("aquery.written");
         snapshot.finish();
         if !printed {
             // crate::aquery::interrupted.
@@ -3399,10 +3401,12 @@ fn aquery_output(
         relative,
         &mut std::collections::BTreeMap::new(),
     )?;
+    bazel_rs::perf_mark("aquery.selected");
     let dump = analysis.dump(&selected, options.query.include_aspects);
     if bazel_rs::aquery::interrupted(&dump, filters, options) {
         return Ok(false);
     }
+    bazel_rs::perf_mark("aquery.dump");
     let output_file = &options.query.common.output_file;
     if output_file.is_empty() {
         let mut stdout = std::io::stdout().lock();
