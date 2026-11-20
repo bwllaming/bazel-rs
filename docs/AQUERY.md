@@ -222,6 +222,16 @@ analysis's records and the selected copy).
 `--print_action` reads every action's inputs at once: they are listed for
 all records first (`Analysis::materialize`).
 
+Only `print_action` reads a spawn's whole input order; under `aquery`,
+`Meta::input_order` keeps the first input (the primary input of the
+description, `%{input}`) and nothing else (`aquery::whole_input_order`).
+`aquery 'kind("cc_.*", //src/...)'` on ~/code analyzes 223k configured
+targets (the pattern keeps manual targets, 1.67x the targets of
+`build //src/...`; a `build --nobuild` of the same 17,901 targets peaks at
+11.0 GiB): 11.7 -> 10.7 GiB peak, 180 -> 151 s, output byte-identical (the
+whole order held ~0.95 GB: 70k PyCompile spawns listing the 1,655-file
+Python runtime as Files).
+
 ## `genquery`
 
 The native `genquery` rule (rules/genquery/GenQuery.java) runs its

@@ -1462,11 +1462,16 @@ fn register_spawn(
             arguments: Some(bazel_arguments),
             expansion_error,
             // StarlarkActionFactory: the inputs, then the tools (a File
-            // executable is one).
+            // executable is one); aquery reads the first only.
             input_order: Some(
                 inputs[initial_inputs..]
                     .iter()
                     .chain(&inputs[..initial_inputs])
+                    .take(if crate::aquery::whole_input_order() {
+                        usize::MAX
+                    } else {
+                        1
+                    })
                     .cloned()
                     .collect(),
             ),

@@ -1463,6 +1463,7 @@ fn run() -> Result<(), String> {
     // (cmdline/TargetPattern.java:783-789).
     let relative_directory = relative_directory(&root, &cwd)?;
     if let Some((expression, filters)) = aquery_expression {
+        bazel_rs::aquery::set_whole_input_order(print_action);
         let mut analysis = engine.aquery_analysis(
             &aquery_options.universe(&expression),
             &relative_directory,

@@ -28,6 +28,23 @@ pub fn set_capturing(on: bool) {
     CAPTURING.store(on, Ordering::Relaxed);
 }
 
+static WHOLE_INPUT_ORDER: AtomicBool = AtomicBool::new(false);
+
+/// Whether a Starlark spawn's [`Meta::input_order`] keeps every input
+/// (print_action lists them in that order) or only the first: the aquery
+/// formatters read the primary input alone, and the whole order of every
+/// spawn of the universe held ~0.95 GB on ~/code's `//src/...` (70k
+/// PyCompile actions listing the 1,655-file Python runtime).
+pub fn whole_input_order() -> bool {
+    WHOLE_INPUT_ORDER.load(Ordering::Relaxed)
+}
+
+/// Keep every input of [`Meta::input_order`] (print_action) or only the
+/// first (aquery).
+pub fn set_whole_input_order(on: bool) {
+    WHOLE_INPUT_ORDER.store(on, Ordering::Relaxed);
+}
+
 /// What an action's registration knows that its native [`crate::action::Action`]
 /// does not (crate::action::ActionExtra::aquery): recorded only while
 /// [`capturing`], never keyed or persisted.
@@ -53,7 +70,8 @@ pub struct Meta {
     /// A Starlark spawn's inputs in their NestedSet order (inputs, then
     /// tools; crate::print_action's SpawnInfo.input_file, by exec path):
     /// the Files, not their paths as strings (every PyCompile action lists
-    /// the 1,655 files of the Python runtime).
+    /// the 1,655 files of the Python runtime). Only the first (the primary
+    /// input) unless [`whole_input_order`] (print_action).
     pub input_order: Option<Vec<crate::starlark_types::File>>,
     /// A native action class's `getExecutionInfo()` in its order
     /// (JavaCompileAction's in-memory jdeps directive is not a legal
@@ -395,7 +413,7 @@ pub struct ActionRecord {
     /// effective one (CppCompileAction: the configuration's environment).
     pub text_environment: Option<Vec<(String, String)>>,
     /// The inputs in their NestedSet order when known
-    /// ([`Meta::input_order`]; crate::print_action).
+    /// ([`Meta::input_order`]; crate::print_action; aquery: the first).
     pub input_order: Option<Vec<String>>,
     /// Its command line could not be expanded ([`Meta::expansion_error`]):
     /// printing it interrupts the aquery ([`interrupted`]).
