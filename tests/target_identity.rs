@@ -425,18 +425,16 @@ fn freeze_with_a_target_is_shallow_and_immutable() {
         "{}",
         String::from_utf8_lossy(&accepted.stderr)
     );
-    for (target, message) in [("//:bad_mutate", "trying to mutate a frozen list value")] {
-        let result = ws.run(&[
-            "build",
-            "--experimental-builtin-modules",
-            &builtin_registry_flag(),
-            target,
-        ]);
-        assert_eq!(result.status.code(), Some(1), "{target}");
-        let stderr = String::from_utf8_lossy(&result.stderr);
-        assert!(
-            stderr.contains(&format!("error: {message}\n")),
-            "{target}: {stderr}"
-        );
-    }
+    let result = ws.run(&[
+        "build",
+        "--experimental-builtin-modules",
+        &builtin_registry_flag(),
+        "//:bad_mutate",
+    ]);
+    assert_eq!(result.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("error: trying to mutate a frozen list value\n"),
+        "{stderr}"
+    );
 }

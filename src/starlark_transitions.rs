@@ -58,6 +58,10 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "extra_execution_platforms",
     "cpu",
     "collect_code_coverage",
+    // CoreOptions.instrumentationFilter: per configuration natively too
+    // (NativeOptions::instrumentation); written, not read (B32/B33:
+    // rules_cc's and protobuf's coverage analysis tests).
+    "instrumentation_filter",
     "build_runfile_links",
     "allow_analysis_failures",
     "build_runfile_manifests",
@@ -1014,6 +1018,13 @@ pub(crate) fn native_input<'v>(
         "stamp" => heap.alloc(native.stamp),
         "force_pic" => heap.alloc(native.force_pic),
         "collect_code_coverage" => heap.alloc(native.collect_code_coverage),
+        // A RegexFilter, whose converter has no Starlark reversal
+        // (Converter.starlarkConvertible): no Starlark value to read.
+        "instrumentation_filter" => {
+            return Err(anyhow!(
+                "reading //command_line_option:instrumentation_filter (a RegexFilter value) in a transition is not implemented in the native profile"
+            ));
+        }
         "build_runfile_links" | "build_runfile_manifests" | "allow_analysis_failures" => {
             heap.alloc(native.value(name) == Some(OptionValue::Bool(true)))
         }
@@ -2191,6 +2202,17 @@ fn convert_native(
                 _ => native.host_per_file_copts = values,
             }
         }
+        // CoreOptions.instrumentationFilter (RegexFilterConverter): a string
+        // converts; the configuration keeps the text as given (its
+        // RegexFilter is parsed again where it is used, and printed in its
+        // normalized RegexFilter.toString form in the ST hash).
+        "instrumentation_filter" => match &raw.kind {
+            RawKind::String(text) => {
+                crate::coverage::RegexFilter::parse(text).map_err(parsing)?;
+                native.instrumentation.filter = Some(text.clone());
+            }
+            _ => return Err(invalid()),
+        },
         // CppOptions.crosstoolTop (LabelConverter with a PackageContext).
         "crosstool_top" => {
             native.crosstool_top = Some(match &raw.kind {

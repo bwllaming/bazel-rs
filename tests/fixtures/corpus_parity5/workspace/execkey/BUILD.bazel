@@ -1,0 +1,29 @@
+load(":defs.bzl", "gen")
+
+constraint_setting(name = "side")
+
+constraint_value(
+    name = "ca",
+    constraint_setting = ":side",
+)
+
+constraint_value(
+    name = "cb",
+    constraint_setting = ":side",
+)
+
+platform(
+    name = "ea",
+    constraint_values = [":ca"],
+)
+
+platform(
+    name = "eb",
+    constraint_values = [":cb"],
+)
+
+[gen(
+    name = kind + "_" + side,
+    exec_compatible_with = [":c" + side[0]],
+    kind = kind,
+) for kind in ["run", "write"] for side in ["a", "a2", "b"]]

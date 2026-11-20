@@ -126,8 +126,13 @@ fn union(regexes: Vec<String>) -> Result<Option<(String, fancy_regex::Regex)>, S
         "(?:(?>{}))",
         deduped.into_iter().collect::<Vec<_>>().join(")|(?>")
     );
-    let regex = fancy_regex::Regex::new(&pattern)
-        .map_err(|error| format!("Failed to build valid regular expression: {error}"))?;
+    let regex = fancy_regex::Regex::new(&pattern).map_err(|error| {
+        // PatternSyntaxException.getMessage of the union pattern.
+        format!(
+            "Failed to build valid regular expression: {}",
+            crate::engine::query::java_pattern_error(&pattern, &error)
+        )
+    })?;
     Ok(Some((pattern, regex)))
 }
 

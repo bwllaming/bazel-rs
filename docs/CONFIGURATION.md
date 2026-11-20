@@ -617,7 +617,13 @@ configuration.` (`:247-262`).
    `force_pic`, `platforms`, `host_platform`, `extra_toolchains`, the
    JavaOptions version strings `java_runtime_version`,
    `java_language_version`, `tool_java_runtime_version` and
-   `tool_java_language_version` (N28b), `cpu` and `collect_code_coverage`
+   `tool_java_language_version` (N28b), `cpu`, `instrumentation_filter`
+   (written only: a RegexFilter has no Starlark value, so reading it fails
+   explicitly; the configuration keeps the text, its ST hash form is the
+   normalized RegexFilter.toString, an invalid filter is genuine's
+   `OptionsParsingError for option 'instrumentation_filter': Failed to build
+   valid regular expression: ...`; corpus-parity5,
+   tests/fixtures/corpus_parity5) and `collect_code_coverage`
    (N47; `--collect_code_coverage` stays an unsupported command-line option,
    `--cpu` is one since the pre-platforms flags change; `host_cpu` and
    `crosstool_top` are command-line and `config_setting` options only); `define` (never writable in Bazel) and `copt`

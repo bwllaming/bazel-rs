@@ -736,6 +736,22 @@ pub(crate) fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static
     options
 }
 
+/// `--instrumentation_filter` in its hash form: RegexFilter.toString, the
+/// normalized union pattern (util/RegexFilter.java:158-171).
+fn instrumentation_filter_string(native: &NativeOptions) -> String {
+    let filter = native
+        .instrumentation
+        .filter
+        .as_deref()
+        .unwrap_or(crate::coverage::DEFAULT_INSTRUMENTATION_FILTER);
+    format!(
+        "={}",
+        crate::coverage::RegexFilter::parse(filter)
+            .map(|filter| filter.to_string())
+            .unwrap_or_else(|_| filter.to_owned())
+    )
+}
+
 /// computeNameFragmentWithDiff (OutputPathMnemonicComputer.java:286-318):
 /// `ST-` and the first 12 hex digits of the fingerprint of the sorted
 /// `KEY=VALUE` strings of the options that differ from the baseline, minus
@@ -748,8 +764,18 @@ fn name_fragment_with_diff(
     if configuration.id == baseline.id {
         return None;
     }
-    let to = native_option_strings(&configuration.native);
-    let from = native_option_strings(&baseline.native);
+    let mut to = native_option_strings(&configuration.native);
+    let mut from = native_option_strings(&baseline.native);
+    // CoreOptions.instrumentationFilter, which a Starlark transition may
+    // write (not part of cquery's modelled build options).
+    to.insert(
+        "instrumentation_filter",
+        instrumentation_filter_string(&configuration.native),
+    );
+    from.insert(
+        "instrumentation_filter",
+        instrumentation_filter_string(&baseline.native),
+    );
     // A TreeMap of `KEY` to its hash form.
     let mut chosen: BTreeMap<String, String> = BTreeMap::new();
     for (name, value) in &to {

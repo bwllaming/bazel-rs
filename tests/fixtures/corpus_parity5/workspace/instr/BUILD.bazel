@@ -1,0 +1,38 @@
+load(":defs.bzl", "leaf", "top")
+
+leaf(
+    name = "instrumented",
+    srcs = ["a.c"],
+)
+
+top(
+    name = "matching",
+    dep = ":instrumented",
+    filter = "/instrumented$",
+)
+
+top(
+    name = "unmatched",
+    dep = ":instrumented",
+    filter = "/unused",
+)
+
+# A different spelling of an equal filter (RegexFilter.toString normalizes
+# it: the output root's hash is the same as :matching's natively too).
+top(
+    name = "respelled",
+    dep = ":instrumented",
+    filter = "+/instrumented$",
+)
+
+top(
+    name = "excluded",
+    dep = ":instrumented",
+    filter = "//instr[/:],-/instrumented$",
+)
+
+top(
+    name = "invalid",
+    dep = ":instrumented",
+    filter = "(",
+)
