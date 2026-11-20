@@ -1606,8 +1606,17 @@ impl TestSummary {
             .cmp(&(self.num_cached > 0))
             .then(self.num_uncached().cmp(&other.num_uncached()))
             .then(self.status.sort_key().cmp(&other.status.sort_key()))
-            .then(self.label.cmp(&other.label))
+            .then(label_order(&self.label).cmp(&label_order(&other.label)))
     }
+}
+
+/// Label.compareTo: the package identifier (repository, then package path)
+/// before the target name, so `//a:z` sorts before `//a/b:c` (a plain
+/// string comparison puts `/` before `:`).
+fn label_order(label: &str) -> (&str, &str, &str) {
+    let (repository, rest) = label.split_once("//").unwrap_or(("", label));
+    let (package, name) = rest.split_once(':').unwrap_or((rest, ""));
+    (repository.trim_start_matches('@'), package, name)
 }
 
 /// TestSummaryPrinter.timeInSec (runtime/TestSummaryPrinter.java:260-266).

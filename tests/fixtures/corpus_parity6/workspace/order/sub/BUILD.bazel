@@ -1,0 +1,3 @@
+load("//order:defs.bzl", "broken_test")
+
+broken_test(name = "a_test")

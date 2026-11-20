@@ -78,6 +78,24 @@
    ],
    "workspace": "workspace"
   },
+  "test_summary_orders_labels_by_package": {
+   "bin_paths": {},
+   "command": "test",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--keep_going"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [],
+   "stdout": "//order:z_test                                                  FAILED TO BUILD\n//order/sub:a_test                                              FAILED TO BUILD\n\nExecuted 0 out of 2 tests: 2 fail to build.\n",
+   "targets": [
+    "//order/..."
+   ],
+   "workspace": "workspace"
+  },
   "tool_runfiles_support_is_built": {
    "bin_paths": {
     "toolrunfiles/tool.sh.repo_mapping": [

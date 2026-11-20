@@ -39,6 +39,8 @@ CASES = {
         [], 'build', BUILD + ['--keep_going'], ['//keepgoing:broken'], [r'^INFO: \d+ process'], [],
         'workspace', ['keepgoing/broken.sh.runfiles_manifest?', 'keepgoing/broken.sh.runfiles/MANIFEST?',
                       'keepgoing/broken.sh.repo_mapping?', 'keepgoing/broken.sh?']),
+    'test_summary_orders_labels_by_package': (
+        [], 'test', BUILD + ['--keep_going'], ['//order/...'], [], []),
     'worker_reads_an_input_producers_sibling_output': (
         [], 'build', BUILD, ['//worker:singleplex', '//worker:multiplex'], [r'^INFO: \d+ process'], ['singleplex.txt', 'multiplex.txt']),
 }

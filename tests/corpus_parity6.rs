@@ -4,7 +4,7 @@
 //! with the action that uses the tool (B49), a non-sandboxed persistent
 //! worker sees its inputs' producers' other outputs (B51), and
 //! `--keep_going` builds a failed binary's runfiles manifest and tree
-//! (B50), the cases listed in
+//! (B50), and the test summary orders labels by package (B52), the cases listed in
 //! tests/fixtures/corpus_parity6/capture.py. Every case replays the genuine
 //! Bazel 9.3.1 capture tests/fixtures/corpus_parity6/reference_receipt.json
 //! (written by capture.py beside it).
