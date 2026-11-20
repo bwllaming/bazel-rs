@@ -11,7 +11,8 @@ their workaround edits are in `scripts/oss_corpus_repos.json`. Unit tests for
 the harness's pure parts are in `tests/test_oss_corpus.py`.
 
 First run: 2026-11-16/17, bazel-rs 0.4.23 (the installed main binary, sha256
-`69ce3bf6…`), genuine `bazel-9.3.1-linux-x86_64`.
+`69ce3bf6…`), genuine `bazel-9.3.1-linux-x86_64`. Latest full run (the
+results below): 2026-11-20, bazel-rs 0.4.34 (main d11712c8, LTO release).
 
 ## Method
 
@@ -63,7 +64,8 @@ First run: 2026-11-16/17, bazel-rs 0.4.23 (the installed main binary, sha256
   - `BOTH-FAIL`: both fail the same way (for example, a project test that
     fails on both tools).
 - **Host.** 64 CPUs and 251 GB RAM, shared with other workers. The load
-  average was 15–60 during the runs, so timings are indicative only.
+  average was 15–60 during the first runs and 6–95 (mostly 10–35) during
+  the corpus-rerun run, so timings are indicative only.
 
 ```
 python3 scripts/oss_corpus.py clone --src /tmp/opencode/w/oss-src
@@ -131,377 +133,222 @@ there (B12).
 
 ### Workaround edits (applied to both tools)
 
-Workaround edits are recorded per project in the JSON (`comment_out`,
-`replace`, `vendor_archives`). Each one names the bazel-rs bug it bypasses.
-Every edit is applied to both tools, so the comparison stays like for like.
+Workaround edits are recorded per project in the JSON (`delete`, `replace`,
+and the harness's `comment_out` and `vendor_archives`). Every edit is
+applied to both tools, so the comparison stays like for like. Since the
+corpus-rerun run no edit works around a bazel-rs bug: the B2 `comment_out`
+lines (16 projects) and OpenROAD's vendored `kepler-formal` archive (B9,
+B22) were dropped, because bazel-rs accepts every rc option of the corpus
+and supports `archive_override`. The two edits left are for genuine:
 
-- **B2 (rc options).** The rc lines that bazel-rs rejects are commented out.
-  This applies to 16 projects; see B2 for the list of options.
 - **rules-template.** Its v26 `MODULE.bazel.lock` is rejected by genuine
   9.3.1 too. It is deleted and the project runs with
   `--lockfile_mode=update`.
 - **rules_go-basic_gazelle.** rules_go, gazelle and Go are bumped to 0.63.0,
   0.51.3 and 1.27.1, as in docs/BENCHMARKS.md. The pinned rules_go 0.52
   fails on Bazel 9 because `CcInfo` was removed.
-- **openroad.** `archive_override(kepler-formal)` (B9) is replaced by the same
-  archive, downloaded, verified against its integrity and patched with the
-  seven `bazel/kepler-patches`, then wired in with `local_path_override`. The
-  equivalent `git_override` fails on bazel-rs too (B22).
 
 ## Results
 
-Times are wall seconds: genuine (g) against bazel-rs (rs). The "warm nobuild"
-column gives genuine `--batch` / warm genuine server / bazel-rs. Peak RSS is
-the tool process during the cold run. The outputs column counts `bazel-bin`
-files: common, only genuine, only bazel-rs, and hash differences in the
-sample.
+Full rerun on 2026-11-20 (branch corpus-rerun): main d11712c8 = bazel-rs
+0.4.34, LTO release build (sha256 `6528369c…`), against genuine
+`bazel-9.3.1-linux-x86_64`. Every project ran every phase of its JSON entry
+(OpenROAD: `nobuild_cold,nobuild_warm,server,query`, then `build //:openroad`
+by hand on the same state) with no workaround edits for bazel-rs bugs (the B2
+`comment_out` lines and OpenROAD's B9/B22 vendored archive are dropped:
+`archive_override` and every rc option now work). One project ran at a
+time, after the 1-minute load average fell below 20 (or 30 minutes passed);
+the "load" column of the performance table is the 1-minute load sampled
+every 20 s during the project (64 CPUs, shared with other workers' runs).
+The table and notes below are from this run only; earlier runs' tables
+and notes are in this file's git history (before this commit).
 
-| project | verdict | cold nobuild g / rs (s) | warm nobuild g-batch / g-server / rs (s) | build g / rs (s) | peak RSS cold g / rs (MB) | outputs (common, only g, only rs, hash diff) | tests g / rs | blocking bugs |
+Times are wall seconds: genuine (g) against bazel-rs (rs); † marks a
+non-zero exit. The "warm nobuild" column gives genuine `--batch` / warm
+genuine server / bazel-rs. Peak RSS is the tool process during the cold run.
+The outputs column counts `bazel-bin` files: common, only genuine, only
+bazel-rs, and hash differences in the sample (C1's params files are not
+counted). `query //...` labels match on all 37 projects.
+
+| project | verdict | cold nobuild g / rs (s) | warm nobuild g-batch / g-server / rs (s) | build g / rs (s) | peak RSS cold g / rs (MB) | outputs (common, only g, only rs, hash diff) | tests g / rs | open differences |
 |---|---|---|---|---|---|---|---|---|
-| abseil-cpp | **OK**¹⁵ ¹⁹ ²² | 13.1–13.8 / 10.5–12.6 (cold-eval²²; main 12.6–13.2; download cache pre-filled: 8.4–9.1, main 9.7–9.9; before: 14.8 / 12.0, rerun 16.1–17.5 / 16.7–44.6) | 3.3 / 0.2 / 0.2 | 97.7 / 76.3 | 1131 / 453 | 2767, 0, 0, 0 | PASSED:252 / PASSED:252 | (B2) |
-| limdor-cpp | **OK** | 11.0 / 6.7 | 2.8 / 0.1 / 0.1 | 7.3 / 0.7 | 704 / 217 | 18, 0, 0, 0 | PASSED:1 / PASSED:1 | |
-| limdor-rust | **OK** | 29.0 / 20.5 | 2.8 / 0.1 / 0.2 | 4.7 / 1.9 | 807 / 426 | 91, 0, 0, 0 | PASSED:1 / PASSED:1 | |
-| examples-bzlmod-01 | **OK** | 11.5 / 6.7 | 3.0 / 0.1 / 0.1 | 5.4 / 2.6 | 641 / 217 | 187, 0, 0, 0 | — | |
-| examples-bzlmod-05 | **OK** | 8.6 / 3.5 | 2.1 / 0.1 / 0.1 | 2.2 / 0.1 | 332 / 80 | 1, 0, 0, 0 | — | |
-| examples-cpp-tutorial | **OK** | 10.8 / 6.7 | 2.8 / 0.2 / 0.1 | 3.6 / 0.7 | 755 / 203 | 13, 0, 0, 0 | — | |
-| examples-rust-ffi | **OK** | 27.0 / 17.4 | 2.9 / 0.2 / 0.1 | 4.0 / 1.6 | 788 / 373 | 57, 0, 0, 0 | — | (B2) |
-| rules_go-basic_gazelle | **OK** | 27.5 / 23.9 | 5.9 / 0.2 / 0.2 | 42.6 / 32.0 | 1281 / 490 | 117, 0, 0, 0 | PASSED:1 / PASSED:1 | |
-| rules_python-pip_parse | **OK**¹⁵ ¹⁹ ²² | 28.0–33.4 / 29.6–30.5 (cold-eval²²; main 34.3–36.2; download cache pre-filled: 21.7–22.6, main 26.0–26.5; before: 30.3–35.7 / 46.5–51.7, rerun 34.9–37.8 / 38.7–61.0) | 3.5 / 0.2 / 0.2 | 4.7 / 1.1 | 1625 / 614 | 56, 0, 0, 0 | PASSED:2 / PASSED:2 | (B2) |
-| rules-template | BOTH-FAIL¹ | 25.8 / 24.1 | 3.7 / 0.2 / 0.2 | 26.4 / 25.6 | 1405 / 423 | 446, 0, 0, 0 | FAILED:1 PASSED:1 / same | (B2) |
-| yalantinglibs | DIFF² | 12.2 / 7.5 | 3.1 / 0.2 / 0.1 | 61.5 (exit 1) / 52.1 (exit 1) | 638 / 213 | 126, 6, 0, 0 | same | (B2) |
-| buildtools | BOTH-FAIL¹⁷ | 40.4 / 62.3 | 4.7 / — / 0.2 | 56.4 / 83.4 | 1990 / 1471 | 566, 0, 0, 0 | FAILED:2 PASSED:23 / same | |
-| bazel-gazelle | RS-FAIL¹⁶ | 49.8 / 40.2 | 4.4 / 0.3 / not rerun | 53.0–62.5 / 55.1–59.7 | 1647 / 1031 | 2545, 6, 0, 0 (before B13's fix) | FAILED:2 PASSED:194 / FAILED:2 PASSED:192 (before B13's fix) | (B13 fixed; not rerun) |
-| diff.bzl | **OK**¹⁷ | 29.4 / 43.5 | 3.6 / — / 0.2 | 13.0 / 16.0 | 812 / 374 | 308, 0, 0, 0 | PASSED:6 / PASSED:6 | |
-| rules_python-bzlmod | DIFF¹⁷ | 51.9 / 77.6 | 6.2 / — / 0.2 | 48.7 / 43.0 | 1936 / 2583 | 319, 0, 0, 1 | PASSED:31 / PASSED:31 | B34 |
-| with_cfg-examples | RS-FAIL¹⁰ ¹⁸ | 36.6 / 72.5 (exit 1) | 5.0 / — / 3.5 (exit 1) | 10.0 / 9.1 (exit 1) | 2061 / 1718 | 201, 43, 0, 0 | PASSED:20 / PASSED:18 | B43 |
-| examples-rules | RS-FAIL | 12.3 / 8.3 (exit 1) | 2.9 / 0.1 / 1.2 (exit 1) | 3.6 / 1.7 (exit 1) | 673 / 250 | 99, 4, 0, 0 | PASSED:1 / PASSED:1 | B23 |
-| googletest | RS-FAIL | 25.4 / 14.7 (exit 1) | 3.2 / 0.2 / 1.5 (exit 1) | 32.0 / 1.1 (exit 1) | 1198 / 453 | 8, 521, 0, 0 | PASSED:44 / — | B1 |
-| re2 | RS-FAIL³ | 13.7 (exit 1) / 9.5 (exit 1) | 2.9 / 0.2 / 1.4 (both exit 1) | 15.3 (exit 1) / 6.6 (exit 1) | 1071 / 313 | 324, 761, 0, 0 | PASSED:21 / PASSED:1 | B1 |
-| highway | RS-FAIL | 11.9 / 7.6 (exit 1) | — | — | 736 / 234 | — | — | B1 |
-| bazel-skylib | BOTH-FAIL¹⁷ | 27.5 / 43.3 | 3.6 / — / 0.2 | 57.9 / 62.9 | 1327 / 558 | 689, 0, 0, 0 | FAILED:4 PASSED:158 / same | |
-| junit5-starter | DIFF¹⁷ ²¹ | 25.9 / 21.4 | 3.4 / — / 0.1 | 7.6 / 5.4 | 1239 / 481 | 100, 28, 0, 0 | PASSED:1 / PASSED:1 | C2 |
-| rules_zig | RS-FAIL¹⁵ ²⁴ | 37.9 / 82.5 (exit 1) | 14.0 / — / 13.4 (exit 1) | 39.3 / 12.1 (exit 1) | 2722 / 1952 | 0, 1292, 0, 0 | PASSED:211 SKIPPED:4 / SKIPPED:4 | B13c |
-| capnproto | RS-FAIL⁴ | 17.1 / 11.3 (exit 1) | 3.3 / 0.1 / 1.5 (exit 1) | 22.6 (exit 1) / 7.5 (exit 1) | 1127 / 384 | 317, 1085, 0, 0 | both: FAILED TO BUILD:5 SKIPPED:14 | B11, B20, (B2) |
-| tink-cc-examples | RS-FAIL | 17.3 / 17.1 (exit 1) | — | — | 1127 / 490 | — | — | B11, B14 |
-| examples-java-maven | DIFF²¹ | 33.0 / 25.4 | 3.3 / — / 0.1 | 7.0 / 5.5 | 1137 / 479 | 133, 2, 0, 0 | PASSED:2 / PASSED:2 | C2 |
-| rules_cc | DIFF¹⁵ ²⁴ | 19.9 (exit 1) / 22.9 (exit 1) | 6.8 (exit 1) / — / 8.0 (exit 1) | 78.4 (exit 1) / 64.9 (exit 1) | 2446 / 1699 | 1669, 315, 0, 1 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:1 FAILED TO BUILD:2 PASSED:346 SKIPPED:2 | B32 |
-| examples-rust-deps-cargo | RS-FAIL | 44.0 / 0.3 (exit 1) | 2.9 / 0.2 / 0.3 (exit 1) | 28.8 / 0.3 (exit 1) | 1034 / 29 | 0, 103, 0, 0 | — | B9, (B2) |
-| protobuf | BOTH-FAIL¹⁵ ²⁴ | 79.1 (exit 1) / 72.7 (exit 1) | 7.4 (exit 1) / — / 20.5 (exit 1) | — | 2545 / 3600 | — | — | B33 (1 target left) |
-| openroad | OK²¹ ²² (nobuild, query) | 69.9–76.3 / 109.9–110.7 (one 198.8: a mirror's connect timeout) (cold-eval²²; main 139.4–173.2; download cache pre-filled: 67.1–67.4, main 86.3–87.0 — openroad-perf's 87.2–96.4²⁰ were such runs; corpus-parity3²¹ at load 52–91: 78.0 / 178.1) | 8.9 / — / 1.2–1.3 (corpus-parity3: 10.4 / — / 1.4) | `//:openroad` 676–702, 693.5 / 773.9 (was 1536) | 3014 / 6957–6983 (was 9169) | `//:openroad` before corpus-parity3: 15223, 3978, 301, 0; the B40/B41 targets now match²¹ | — | (C1) |
-| rules_kotlin | **OK**²¹ ²³ (nobuild, query) | 38.0 / 42.6 | 6.9 / — / 0.2 | — | 2334 / 2109 | — | — | |
-| riegeli | BOTH-FAIL⁶ | 30.2 (exit 1) / 31.0 (exit 1) | 4.1 / 0.2 / 3.7 (all exit 1) | 78.2 (exit 1) / 92.5 (exit 1) | 1427 / 794 | 2800, 0, 0, 0 | PASSED:2 / PASSED:2 | |
-| examples-frontend | DIFF⁷ ²¹ | 87.8 (exit 1) / 128.8 (exit 1) | 64.5 / — / 96.5 (all exit 1) | 60.5 (exit 1) / 135.9 (exit 1) | 1524 / 1933 | 215801, 12, 2, 0 | PASSED:14 / PASSED:14 | C3, (B2) |
-| rules_jvm_external-simple | BOTH-FAIL¹⁵ ²¹ | 55.8 (exit 1) / 30.4 (exit 1) | 3.7 (exit 1) / — / 1.6 (exit 1) | 3.9 (exit 1) / 1.5 (exit 1) | 1726 / 607 | 0, 0, 0, 0 | — | B47 |
-| flatbuffers | BOTH-FAIL⁸ | 21.7 (exit 1) / 8.2 (exit 1) | — | — | 864 / 184 | — | — | B12 |
-| examples-java-tutorial | DIFF | 18.7 (exit 1) / 15.1 (exit 1) | 3.2 / 0.2 / 1.6 (both exit 1) | 5.9 (exit 1) / 4.2 (exit 1) | 881 / 266 | 11, 2, 0, 0 | — | C2 |
-| examples-configurations | BOTH-FAIL⁹ ²³ | 10.0 (exit 1) / 5.4 (exit 1) | 2.2 / — / 0.2 (both exit 1) | 2.2 (exit 1) / 0.2 (exit 1) | 406 / 129 | 0, 0, 0, 0 | — (both: no test runs) | |
+| abseil-cpp | **OK** | 17.2 / 13.2 | 3.5 / 0.2 / 0.2 | 76.3 / 66.0 | 1191 / 540 | 2767, 0, 0, 0 | PASSED:252 / same | |
+| diff.bzl | **OK** | 20.7 / 15.4 | 3.4 / 0.2 / 0.2 | 13.7 / 11.4 | 1178 / 367 | 308, 0, 0, 0 | PASSED:6 / same | |
+| examples-bzlmod-01 | **OK** | 11.9 / 6.6 | 3.1 / 0.1 / 0.1 | 6.1 / 2.9 | 600 / 257 | 187, 0, 0, 0 | — | |
+| examples-bzlmod-05 | **OK** | 8.6 / 3.7 | 2.5 / 0.1 / 0.1 | 2.5 / 0.1 | 387 / 82 | 1, 0, 0, 0 | — | |
+| examples-cpp-tutorial | **OK** | 11.5 / 6.4 | 2.7 / 0.1 / 0.2 | 3.0 / 0.6 | 597 / 235 | 13, 0, 0, 0 | — | |
+| examples-rules | **OK** | 13.7 / 8.5 | 3.0 / 0.2 / 0.1 | 4.9 / 1.1 | 637 / 286 | 103, 0, 0, 0 | PASSED:1 / same | |
+| examples-rust-ffi | **OK** | 56.1 / 22.6 | 2.8 / 0.2 / 0.2 | 4.2 / 1.7 | 851 / 398 | 57, 0, 0, 0 | — | |
+| googletest | **OK** | 18.9 / 12.5 | 3.4 / 0.2 / 0.2 | 29.4 / 29.8 | 1181 / 436 | 529, 0, 0, 0 | PASSED:44 / same | |
+| highway | **OK**¹ | 12.4 / 7.3 | 3.1 / 0.2 / 0.2 | 178.0 / 172.6 | 582 / 268 | 1053, 0, 0, 0 | PASSED:138 / same | |
+| limdor-cpp | **OK** | 12.0 / 6.6 | 2.8 / 0.2 / 0.1 | 3.1 / 0.6 | 635 / 251 | 18, 0, 0, 0 | PASSED:1 / same | |
+| limdor-rust | **OK** | 28.5 / 26.0 | 3.0 / 0.1 / 0.2 | 4.5 / 2.1 | 847 / 485 | 91, 0, 0, 0 | PASSED:1 / same | |
+| openroad | **OK**² | 90.7 / 120.1 | 8.7 / 0.7 / 1.4 | `//:openroad` 714.0 / 994.6 | 3749 / 6868 | `//:openroad` 19201, 0, 0, 0 (all compared) | — | |
+| rules-template | **OK** | 27.2 / 22.3 | 4.2 / 0.2 / 0.2 | 27.1 / 25.0 | 1311 / 445 | 446, 0, 0, 0 | PASSED:2 / same | |
+| rules_go-basic_gazelle | **OK** | 25.7 / 22.3 | 4.0 / 0.3 / 0.2 | 31.3 / 28.9 | 1244 / 488 | 117, 0, 0, 0 | PASSED:1 / same | |
+| rules_python-pip_parse | **OK** | 31.2 / 32.5 | 3.6 / 0.3 / 0.2 | 4.4 / 1.1 | 1635 / 800 | 56, 0, 0, 0 | PASSED:2 / same | |
+| tink-cc-examples | **OK** | 18.0 / 12.1 | 3.6 / 0.3 / 0.2 | 95.1 / 87.3 | 1219 / 601 | 3499, 0, 0, 0 | PASSED:13 / same | |
+| bazel-gazelle | BOTH-FAIL³ | 41.0 / 36.8 | 4.6 / 0.3 / 0.2 | 57.0 / 52.0 | 1765 / 940 | 2551, 0, 0, 0 | FAILED:2 PASSED:194 / same | |
+| bazel-skylib | BOTH-FAIL³ | 21.7 / 20.0 | 3.7 / 0.3 / 0.2 | 50.7 / 50.2 | 1289 / 566 | 689, 0, 0, 0 | FAILED:4 PASSED:158 / same | |
+| buildtools | BOTH-FAIL³ | 24.5 / 24.1 | 4.5 / 0.3 / 0.2 | 49.6 / 48.7 | 1951 / 1300 | 566, 0, 0, 0 | FAILED:2 PASSED:23 / same | |
+| examples-configurations | BOTH-FAIL⁴ | 9.8† / 5.6† | 2.2† / 0.1† / 0.2† | 1.8† / 0.2† | 472 / 104 | 0, 0, 0, 0 | — | |
+| re2 | BOTH-FAIL⁵ | 11.7† / 8.1† | 3.2† / 0.2† / 1.2† | 16.4† / 15.9† | 1057 / 316 | 1085, 0, 0, 0 | PASSED:21 / same | |
+| riegeli | BOTH-FAIL⁶ | 28.5† / 20.0† | 4.4† / 0.3† / 3.2† | 70.9† / 68.8† | 1373 / 805 | 2800, 0, 0, 0 | PASSED:2 / same | |
+| examples-java-maven | DIFF | 34.8 / 56.0 | 3.3 / 0.2 / 0.2 | 8.9 / 7.2 | 1216 / 457 | 133, 2, 0, 0 | PASSED:2 / same | C2 |
+| examples-java-tutorial | DIFF⁷ | 18.8† / 19.4† | 3.3† / 0.1† / 0.8† | 6.4† / 4.2† | 745 / 306 | 11, 2, 0, 0 | — | C2 |
+| junit5-starter | DIFF | 22.2 / 15.0 | 3.6 / 0.2 / 0.2 | 7.8 / 5.4 | 1298 / 515 | 100, 28, 0, 0 | PASSED:1 / same | C2 |
+| yalantinglibs | DIFF⁸ | 12.0 / 6.8 | 3.4 / 0.2 / 0.2 | 58.6† / 52.2† | 679 / 244 | 126, 6, 0, 0 | FAILED TO BUILD:1 PASSED:2 SKIPPED:2 / same | C5 |
+| examples-frontend | DIFF⁹ | 88.3† / 121.6† | 60.9† / 110.9† / 97.7† | 60.8† / 137.7† | 1488 / 1806 | 215801, 12, 2, 0 | PASSED:14 / same | C3 |
+| examples-rust-deps-cargo | DIFF¹⁰ | 42.2 / 30.3 | 3.1 / 0.2 / 0.2 | 27.3 / 24.6 | 1013 / 364 | 102, 1, 0, 1 | — | B49, C4 |
+| rules_python-bzlmod | DIFF | 43.2 / 36.2 | 4.6 / 0.6 / 0.2 | 43.7 / 39.7 | 1959 / 2577 | 319, 0, 0, 1 | PASSED:31 / same | B34 |
+| with_cfg-examples | DIFF | 33.2 / 28.2 | 4.0 / 0.4 / 0.1 | 8.9 / 5.9 | 1737 / 1678 | 207, 37, 0, 0 | PASSED:20 / same | C2, B43 |
+| capnproto | DIFF¹¹ | 39.2 / 11.1 | 3.4 / 0.2 / 0.2 | 20.2† / 18.2† | 1078 / 384 | 1178, 224, 0, 0 | FAILED TO BUILD:5 SKIPPED:14 / same counts | B50, C5 |
+| flatbuffers | DIFF¹² | 17.1† / 7.4† | 3.0† / 0.3† / 0.5† | 3.1† / 0.4† | 763 / 207 | 0, 0, 0, 0 | — | B12 |
+| rules_jvm_external-simple | DIFF¹² | 72.9† / 38.1† | 4.2† / 0.4† / 1.8† | 4.0† / 1.5† | 1625 / 655 | 0, 0, 0, 0 | — | B47 |
+| rules_cc | DIFF | 18.8† / 20.5† | 5.7† / 0.6† / 5.7† | 51.3† / 56.0† | 2655 / 1696 | 1669, 315, 0, 1 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:1 FAILED TO BUILD:2 PASSED:346 SKIPPED:2 | B32 |
+| protobuf | DIFF¹³ | 41.9† / 62.3† | 7.3† / 0.6† / 15.2† | 286.9† / 648.0† | 2718 / 3613 | 19827, 21260, 0, 0 | — | B48, B33, B49, C2, C5 |
+| rules_kotlin | RS-FAIL¹⁴ | 37.6 / 45.1 | 5.4 / 0.6 / 0.2 | 66.9 / 79.0† | 2320 / 2073 | 2234, 1117, 0, 0 | both hit the 20-minute cap | B51 |
+| rules_zig | RS-FAIL | 38.0 / 37.5† | 14.1 / 0.3 / 12.0† | 38.0 / 12.2† | 2517 / 1933 | 0, 1292, 0, 0 | PASSED:211 SKIPPED:4 / SKIPPED:4 | B13c |
 
 Notes:
 
-1. One project test fails identically on both tools.
-2. Four gcc 13 compile errors are identical on both tools. Genuine keeps the
-   failed compiles' `.d` files and the failed test's runfiles manifest; that
-   is harmless.
-3. The project's `//app` package fails on both tools. Beyond that, B1 fails
-   every gtest target on bazel-rs.
-4. Genuine analyses everything; its build fails on gcc 13 compile errors in
-   `//src/kj`.
-5. Genuine needs a system `ruby` for rules_ruby, so `//ruby/...` and
-   `//csharp/...` are excluded. bazel-rs fails at module resolution (B9).
-6. Rerun 2026-11-17 (branch corpus-macros, after B10 and B16): both tools
-   fail the same way in loading and analysis (`@local_config_tf` is not
-   visible; `sh_binary` undefined in `//python`), and the same 256 of 263
-   top-level targets build. `query //...` (264 labels) and the tests match.
-   The output difference was B28 plus C1's 322 params files; rerun
-   2026-11-17 (branch corpus-runfiles, B28 fixed): the 2,800 outputs match,
-   only C1's params files remain.
-7. `cosmo.zip` (the `ape` toolchain) timed out from this host on both tools,
-   so timings include connection timeouts. Besides that, bazel-rs fails
-   `//react-router:build` (B8). Its `test` run then hit B25. The output
-   difference is mostly the missing outputs of the failing targets.
-8. Genuine fails too: rules_jvm_external-simple on the missing Android SDK,
-   flatbuffers on the old rules_go's `CcInfo`. bazel-rs fails earlier or
-   with extra errors.
-9. Genuine aborts on `alias/project_main:PROJECT.scl` ("Every .bzl file must
-   have a corresponding package"). bazel-rs does not run that project-file
-   check, analyses on and fails later (fixed on corpus-parity4, B24).
-10. Rerun 2026-11-17 (branch corpus-macros): B3 and B16 are fixed, so the
-    `inherit_attrs` wrappers (`wrapper.bzl:31`) load and expand. The two
-    test failures (`//opt_filegroup:slow_app_integration_test` and its
-    `_with_reset` variant) were B15: the test checks that the runfile's
-    `realpath` contains `-opt/bin/`, but bazel-rs's per-test runfiles were
-    hardlinked copies. Rerun 2026-11-17 (branch corpus-runfiles, B15 fixed):
-    both pass. The five tests still missing are behind the `.bzl` files
-    using `rule(parent=…)` (B17: `//sh`, `//args_location_expansion`) and
-    `cc_shared_library` (B18: `//dynamic_deps`).
-11. Rerun 2026-11-17 (branch corpus-macros), without the `build` phase (a
-    full genuine OpenROAD build exceeds the 20-minute cap; bazel-rs fails in
-    analysis first). B9, B22, B10 and B16 are passed: `query //...` matches
-    (7,079 labels). Analysis stops at B26 and B27.
-12. Rerun 2026-11-17 on branch corpus-depset, phases
-    `nobuild_cold,nobuild_warm,query`. B26 is fixed: rules_cc's `cc_args`
-    (`cc/toolchains/args.bzl:109`) puts skylib `DirectoryInfo` values, whose
-    fields are lambdas, in a depset; bazel-rs now accepts functions inside
-    depset elements (docs/DEPSETS.md "Functions inside elements"), so
-    OpenROAD's `@llvm//toolchain/args/linux:*_headers_include_search_paths`
-    analyse. rules_cc as the main module additionally hits B29 (4 targets)
-    and B13 `testing.analysis_test` (17 targets); genuine fails there too
-    (its `//tests/integration` targets need a `bazel` on PATH).
-    Rerun 2026-11-17 on branch corpus-runfiles (B26 from main, B27 fixed),
-    phases `nobuild_cold,nobuild_warm,server,query`: `query //...` still
-    matches (7,079 labels) and `@openssl` analyses. The next analysis errors
-    are B30 (13 targets) and B18 (9 `cc_shared_library` targets under
-    `@llvm//runtimes/glibc` and `@llvm-project//libcxxabi`).
-13. Rerun on 2026-11-17 on branch corpus-analysistest (bazel-rs 0.4.27 plus
-    the B13 fix). bazel-skylib's `nonexistent_subdirectory_test` fails in
-    that run and passes after its last commit: 154 of 158 pass. rules_kotlin
-    is the base 0.4.27 run's `nobuild_cold`; its other phases were not
-    rerun, because genuine's `test //...` runs nested Bazel integration
-    tests. These runs predate main's B16 fix: rules_cc's
-    `extension_support_tests.bzl` (`inherit_attrs`) failed in them too.
-14. Rerun 2026-11-17 (branch corpus-runfiles, B15 fixed): the test statuses
-    match (`//:make_location_lint` passes; the two failures are the same on
-    both tools). The one remaining output difference is B6
-    (`lang/tables.gen.go_checkshtest.repo_mapping`).
-15. Rerun 2026-11-17 on branch corpus-parity2 (phases `nobuild_cold,
-    nobuild_warm,query,build,test`; protobuf and rules_kotlin
-    `nobuild_cold,nobuild_warm,query`; rules_jvm_external-simple without
-    `test`), with the B2 workaround edits of protobuf, diff.bzl,
-    rules_kotlin, rules_python-bzlmod and rules_zig dropped. Fixed: B2's
-    `--incompatible_check_testonly_for_output_files` and the other rc options
-    of docs/RC_OPTIONS.md "Options of the OSS corpus", B4, B5, B7, B13a,
-    B13b, B13e, B29 (= B13d). bazel-skylib and diff.bzl: every test status
-    matches; only B6 remains. rules_python-bzlmod: tests match, B34 left.
-    protobuf: `query //...` matches (3,411 labels); genuine's cold
-    `build --nobuild` fails on rules_ruby (no `ruby` on PATH), bazel-rs on
-    B33 first. rules_cc: 258 passing tests (50 before; genuine 453), next
-    B32, B17, B18. rules_zig: B13c only. examples-java-maven and
-    rules_jvm_external-simple: B31 (rules_jvm_external-simple also fails
-    on genuine: no Android SDK). rules_kotlin: B35.
+1. The first highway run's `build` coincided with a machine-wide load
+   spike (1-minute load up to 1,973 from other work; bazel-rs 382 s against
+   genuine's 206 s before it); `nobuild_cold,build` were rerun on their own
+   at load 15–33 (the row). Its `test` (both 739–749 s) ran at load 9–25.
+2. Phases `nobuild_cold,nobuild_warm,server,query` (`query //...` matches,
+   7,079 labels; `build --nobuild //...` exits 0 on both, with the
+   project's own `archive_override(kepler-formal)` and its seven patches:
+   B9 is fixed), then `build --keep_going //:openroad` by hand on the same
+   state, `--jobs=16`: genuine 714.0 s (load 12 → 38), bazel-rs 994.6 s
+   (load 20 → 52, other workers' runs), the same 13,480/13,479 actions and
+   7,642 sandboxed spawns, critical path 59.7 s against 63.5 s, peak RSS
+   2.9 GB against 3.0 GB. All 19,201 `bazel-out/k8-opt/bin` files match byte
+   for byte (none only on one side, C1's params files aside).
+3. The project's own failing tests (and the `query //...` exit 3 of its
+   `--keep_going` loading errors) are identical on both tools.
+4. Both tools abort on genuine's `error loading project files: Every .bzl
+   file must have a corresponding package` (B24, fixed).
+5. Both fail the project's `//app` package; every test status, label and
+   output matches (B1 is fixed).
+6. Both fail the same way in loading (`sh_binary` undefined in `//python`,
+   `@local_config_tf` not visible); the outputs and tests match.
+7. Both fail loading on `//:greeter`; only C2 differs.
+8. The compile errors (gcc 13) are identical; genuine keeps the failed
+   compiles' `.d` files and the failed test's runfiles manifest (C5).
+9. `cosmo.zip` (the `ape` toolchain) times out from this host on both
+   tools, so every command fails and the timings include connection
+   timeouts. Only C3 and next.js's random build id (2 files each side)
+   differ.
+10. Only genuine: `_bs-.runfiles_manifest` of the anyhow
+    `cargo_build_script` (B49); the hash difference is
+    `_bs.out_dir/anyhow.d`, whose dep-info lines hold each tool's absolute
+    sandbox path (C4).
+11. The `//src/kj/compat` compile errors (gcc 13) and "Build succeeded for
+    only 40 of 171 top-level targets" are identical, but genuine runs 1,177
+    processes and bazel-rs 996 (B50), so genuine's `bazel-bin` has 224 more
+    files (`capnp-rpc` `.pic.d` files, `samples/*` runfiles manifests); the
+    test summary lists 5 `FAILED TO BUILD` on both, but different targets.
+12. Genuine fails too (flatbuffers: the old rules_go's `CcInfo`;
+    rules_jvm_external-simple: no Android SDK); bazel-rs adds B12 / B47.
+13. `//ruby/...` and `//csharp/...` excluded (genuine needs a system
+    `ruby`), no `test` phase. `query` matches (3,411 labels). Both fail
+    the same compiles (gcc 13) and the rules_ruby fetch; bazel-rs also fails
+    analysis of `//bazel/tests:test_compile_path_mapping` (B33). Of the
+    21,260 only-genuine files, 21,243 are C2 `_javac` class files, 3 are
+    B33's target, 4 are `cargo_build_script` manifests (B49) and the rest
+    failed targets' runfiles manifests (C5). bazel-rs's build takes 2.3×
+    as long because it builds 8 extra exec configurations of protoc (B48;
+    19,007 processes against 13,945). Its warm run re-analyses (15.2 s): a
+    command whose analysis failed saves no snapshot.
+14. `build //...`: one JdepsMerge action fails on bazel-rs (B51), reproduced
+    in a second run; 891 of 893 top-level targets build. `test //...` runs
+    nested Bazel integration tests (`//examples:*_test`): both tools hit
+    the 20-minute cap and the nested builds drove the machine's load to
+    1,400, so the test statuses are not compared.
 
-16. Rerun 2026-11-17 on branch corpus-perf (main 460717e5 plus the
-    performance fixes below), phases `nobuild_cold` and `nobuild_warm` (and
-    `build` for bazel-gazelle) only, with the harness's flags and isolation
-    but driven by hand, three rounds each; ranges are the three runs (load
-    13–47). bazel-gazelle's cold `--nobuild` and `build //...` now exit 0
-    on both tools (B13 is fixed); its `build` outputs are byte-identical
-    before and after the scheduler change (2,551 files of `bazel-bin`);
-    query and test were not rerun. abseil-cpp's first repeat now hits the
-    snapshot (0.19–0.24 s, was 3.2–3.5 s). rules_python-pip_parse's cold
-    run stays unsaved: its pip extension prints a warning
-    (`extension-output`), which the next run does not print.
-17. Rerun 2026-11-18 on branch corpus-parent (main 0b26c20d plus B6, B17
-    and B14's fixes), phases `nobuild_cold,nobuild_warm,query,build,test`
-    (no genuine server phase), load 25-38 with other workers' runs (the
-    cold times include every fetch, P3/P4). B6 is fixed: a repo mapping
-    manifest's transitive packages now include those of the select() keys
-    and of an output file's generating rule (its exec tools), so every
-    `.repo_mapping` of diff.bzl, bazel-skylib and buildtools matches
-    (tests/fixtures/repo_mapping_closure). diff.bzl is **OK**; bazel-skylib
-    and buildtools match genuine in every compared output, label and test
-    status (their failing project tests fail identically). B17 is fixed
-    (docs/RULE_EXTENSION.md): with_cfg's `rule(parent=...)` rules load and
-    analyse, `query //...` matches (194 labels) and 17 of genuine's 20
-    tests pass; the three left are `//dynamic_deps` (B18), and the outputs
-    differ by B18's targets, B19's 8 solib hashes and B43. junit5-starter
-    (B3 fixed meanwhile) builds and passes its test; only C2's `_javac`
-    class directories differ. examples-java-maven: B14 is fixed (it was an
-    evaluator bug, below); only B31 remains. rules_python-bzlmod: B34 left
-    (cause below).
+**Summary.** 37 projects ran, all with no workaround edits for bazel-rs
+bugs:
 
-18. Rerun 2026-11-18 on branch corpus-ccshared (bazel-rs at its HEAD,
-    non-LTO release), phases `nobuild_cold,nobuild_warm,query` for
-    OpenROAD and all phases for with_cfg-examples. Fixed: B18
-    (`cc_shared_library`), B19 (transitioned solib names), B30, and the
-    next OpenROAD blockers B36–B39; with_cfg's
-    `//dynamic_deps:bin_test_from_symlinked_runfiles` needed B42.
-    OpenROAD: `build --nobuild //...` exits 0 on both tools (6,773
-    targets), `query //...` matches (7,079 labels). Genuine's cold run of
-    this rerun failed on a DNS error for `users.aalto.fi` (bliss), so its
-    cold time is the previous round's 89.6 s; the warm columns are the
-    second repeat (bazel-rs's first repeat: 58.2 s, genuine 20.5 s). The
-    full `build //...` exceeds the 20-minute cap, so `build //:openroad`
-    ran by hand after the nobuild phases (`--jobs=16`, both cold action
-    caches): genuine 676 s (load 15) and 702 s (load 37), bazel-rs 1,536 s
-    (load 20–48), the same 13,479/13,480 actions (7,642 sandboxed spawns).
-    The `openroad` binary (119 MB) and every other common `bazel-bin` file
-    are byte-identical (all 15,223 compared; the runfiles manifest differs
-    only by its absolute paths). Only genuine: `src/web/node_modules`
-    (B41); only bazel-rs: the clang `include/`/`share/` files of
-    `@llvm//toolchain:linux_x86_64_cc_toolchain_resource_directory` (B40).
-    with_cfg-examples: every hash matches (B19); the two missing tests and
-    the `args_location_expansion`/`sh` outputs are B17; the rest of the 43
-    only-genuine files are C2 (`_javac` class directories) and runfiles
-    trees of targets in the `_with_reset`/`cc_no_copt_binary` packages, as
-    in earlier runs.
+- **16 identical** (same exit codes, `query //...` labels, `bazel-bin`
+  file lists, sampled SHA-256s and test results): abseil-cpp, diff.bzl,
+  examples-bzlmod-01, examples-bzlmod-05, examples-cpp-tutorial,
+  examples-rules, examples-rust-ffi, googletest, highway, limdor-cpp,
+  limdor-rust, openroad (nobuild, query and the full `//:openroad` build:
+  19,201 identical files), rules-template, rules_go-basic_gazelle,
+  rules_python-pip_parse, tink-cc-examples.
+- **6 fail identically** (the project's own failures): bazel-gazelle,
+  bazel-skylib, buildtools, examples-configurations, re2, riegeli.
+- **13 differ**: 4 only cosmetically (examples-java-maven,
+  examples-java-tutorial, junit5-starter: C2; yalantinglibs: C5), and
+  examples-frontend (C3), examples-rust-deps-cargo (B49, C4),
+  rules_python-bzlmod (B34), with_cfg-examples (C2, B43), capnproto (B50),
+  flatbuffers (B12) and rules_jvm_external-simple (B47) where genuine fails
+  too, rules_cc (B32: 346 of genuine's 453 tests pass), protobuf (B48, B33,
+  B49).
+- **2 blocked**: rules_kotlin (B51 fails one build action), rules_zig
+  (B13c ends analysis).
 
-19. Rerun 2026-11-18 on branch corpus-fetch (main 0b26c20d plus the
-    fetch changes below, with the side-by-side lane experiment that was
-    then left unmerged; non-LTO), phase `nobuild_cold` only, the
-    harness's flags and isolation driven by hand, three rounds each, main
-    and the branch and genuine `--batch` alternating (load 7–36; cold
-    downloads from the public mirrors, whose speed varied by 2× between
-    rounds: abseil-cpp's own runs took 16.7–44.6 s on both binaries). The
-    ranges are the branch's. Exit codes, stdout, stderr (without timings
-    and progress), `MODULE.bazel.lock` and the repository-to-tree map
-    match main's in every round; abseil-cpp's and pip_parse's action
-    dumps (2,313 and 88 actions) are byte-identical.
-
-20. Rerun 2026-11-18 on branch openroad-perf (b8ce9666 plus its
-    commits; non-LTO builds), by hand with the harness's flags and
-    isolation, three rounds alternating with b8ce9666 (load 12–42): cold
-    `--nobuild //...` (every fetch), its first repeat, a snapshot miss
-    (`--define` changed) and hit; then `build //:openroad` after the
-    `--nobuild` (action cache and store removed; genuine: `clean`) once per
-    tool (load 21–34). The 15,223 common `bazel-bin` files of `//:openroad`
-    match genuine's byte for byte (all compared; only genuine: B41's 3,978,
-    only bazel-rs: B40's 301); the action dump of `//src/utl:utl
-    //src/sta:opensta_lib` is byte-identical to b8ce9666's. P6 and the
-    OpenROAD memory below.
-
-21. Rerun 2026-11-18/19 on branch corpus-parity3 (main 97611a75 = 0.4.30
-    plus its commits; non-LTO), phases `nobuild_cold,nobuild_warm,query,
-    build,test` for junit5-starter, examples-java-maven,
-    rules_jvm_external-simple and examples-frontend,
-    `nobuild_cold,nobuild_warm,query` for rules_kotlin and openroad (load
-    14–91 with other workers' runs). Fixed: B8, B25 (not reproduced: the
-    warm `test` passes 14/14; 502d3267's sentinel fix covers it), B31, B35
-    (and the next rules_kotlin errors: `check_java_toolchain_is_declared_on_rule`,
-    mutable `default_jvm_opts`, per-attribute aspect views, genquery
-    `buildfiles` scope), B40, B41, B44, B45 and rules_android's `$x`
-    private attribute keywords. examples-java-maven builds and passes both
-    tests; only C2 is left. examples-frontend: query (8,701 labels) and
-    tests match; `bazel-bin` differs by 10 rules_js lifecycle `.bin` files
-    (C3) and next.js's random build id (2 files each side); was 170,965
-    only-genuine files (B41). rules_kotlin: `query //...` matches (1,319
-    labels), one analysis error left (B46). rules_jvm_external-simple fails
-    on both (no Android SDK); query matches. OpenROAD: `build --nobuild
-    //...` exits 0 on both, `query //...` matches (7,079 labels); by hand on
-    the openroad-perf state: `build //src/utl:utl` runs 829 actions (630
-    spawns), genuine's exact counts (was 1,109/867), its 40 common
-    `bazel-bin/src/utl` files are byte-identical (only genuine: C1's
-    params file); `aquery --output=summary 'deps(//src/utl:utl)'` is
-    identical; after `build //src/web:node_modules
-    @llvm//toolchain:linux_x86_64_cc_toolchain_resource_directory`,
-    `bazel-bin/src/web` holds genuine's 7,387 files (B41) and the resource
-    directory genuine's 2 (B40). The full `//:openroad` build was not
-    rerun.
-
-22. Rerun 2026-11-18/19 on branch cold-eval (main 97611a75 plus its
-    commits; non-LTO builds), phase `nobuild_cold` only, by hand with the
-    harness's flags and isolation, three rounds each, main and the branch
-    alternating: fully cold (every download from the public mirrors, with
-    genuine `--batch` in the same rounds; load 7–19) and with the download
-    cache pre-filled (the repository cache's `downloads` seeded from an
-    earlier run, everything else fresh; load 6–19). Exit codes, stdout,
-    stderr (without timings and progress) and `MODULE.bazel.lock` match
-    main's in every round (one fully cold OpenROAD round of the branch
-    printed a `m4-1.4.18.tar.xz` mirror's connect-timeout warning, the
-    network's); abseil-cpp's and pip_parse's action dumps
-    (2,313 and 88 actions) and snapshot recordings (6,307 and 39,523
-    observation, environment and taint records, `BAZEL_RS_SNAPSHOT=record`)
-    are identical. Peak RSS (`plan.end` high-water mark, pre-filled cache):
-    OpenROAD 7.17 GB against 7.15 GB, abseil-cpp 566 MB against 514 MB,
-    pip_parse 808 MB against 654 MB (`stable_tools` and `rust_host_tools`
-    now extract the same rust archives side by side).
-
-23. Rerun 2026-11-19 on branch corpus-parity4 (main 0d2e0367 = 0.4.32 plus
-    its commits; non-LTO), phases `nobuild_cold,nobuild_warm,query,build,
-    test` for examples-configurations, rules_cc and rules_zig,
-    `nobuild_cold,nobuild_warm,query` for rules_kotlin and protobuf (load
-    17–25). Fixed: B46 (rules_kotlin: `build --nobuild //...` exits 0 on
-    both tools, `query //...` matches, 1,319 labels), B24
-    (examples-configurations: both tools abort on genuine's `error loading
-    project files: Every .bzl file must have a corresponding package, but
-    '//alias/project_main:PROJECT.scl' does not have one…`, `test` included;
-    `query` matches, 54 labels), most of B33 (protobuf: 28 of its 30
-    analysis errors gone; `query` matches, 3,411 labels; genuine still
-    fails on rules_ruby) and part of B32 (rules_cc: 317 passing tests, was
-    258; genuine 453). rules_zig: unchanged, B13c (not attempted, design
-    below).
-
-24. Rerun 2026-11-20 on branch corpus-parity5 (main 92711fc8 = 0.4.33 plus
-    its commits; non-LTO), phases `nobuild_cold,nobuild_warm,query,build,
-    test` for rules_cc and rules_zig, `nobuild_cold,nobuild_warm,query` for
-    protobuf (load 20–45). rules_cc: 346 passing tests (317 on
-    corpus-parity4; genuine 453), its two remaining failures are the
-    cc_static_library `test_output_groups` and
-    `validate_static_library_env_test` builds (B32); its build now differs
-    from genuine's only by outputs genuine builds and bazel-rs does not (315,
-    was 425; one hash difference as before). Fixed there: `cc_internal.freeze`
-    as Bazel's shallow immutable copy (the 38 freeze targets), HeaderInfo's
-    merged headers, artifact name patterns, `objc.target_should_alwayslink`,
-    map_each's non-global error, hashable structs/providers holding frozen
-    lists, and transitions on `instrumentation_filter`, `save_temps`,
-    `start_end_lib`, `interface_shared_objects`,
-    `process_headers_in_dependencies`. protobuf: one analysis error left
-    (`test_compile_path_mapping`, B33; `instrumentation_filter` fixed);
-    `query` matches. rules_zig: unchanged, B13c (below: the shared-action
-    conflict check it needs exists and covers the execution platform).
-
-**Summary.** 37 projects ran. On 15 of them bazel-rs matches genuine exactly (rules_kotlin since corpus-parity4, footnote 23, its build and tests not compared)
-(10 before the corpus-parent rerun, footnote 17: diff.bzl, bazel-skylib
-and buildtools since B6's fix; bazel-skylib's and buildtools' own failing
-tests fail identically on both tools; junit5-starter and, since
-corpus-parity3, examples-java-maven differ only by C2; OpenROAD's compared
-phases and outputs match too, its full build not rerun, footnote 21):
-same exit codes, `query //...` labels, `bazel-bin` file lists, sampled
-SHA-256s and test results. abseil-cpp is the largest: 2,767 outputs and 252
-passing tests. Two more (rules-template, yalantinglibs; riegeli too since the
-corpus-runfiles rerun, and examples-configurations since corpus-parity4)
-fail the same way on both tools. Two are clean except for one bug each: bazel-gazelle (B13,
-fixed since; the corpus-perf rerun builds `//...` on both tools, its query
-and tests not rerun) and rules_python-bzlmod (B34, its zipapp's modes). The
-rest are blocked by the
-bugs below. Most block loading, analysis or module resolution, not
-execution: where both tools built, the outputs were identical except in
-with_cfg (B19).
+`query //...` matches on all 37. Every common output sampled is
+byte-identical except B34's zipapp, C4's dep-info file and rules_cc's one
+file. Fixed since the previous runs, by this run's evidence: B1, B2 (every
+rc option of the corpus; all `comment_out` edits dropped), B3, B9 (no
+vendored archive for OpenROAD), B10, B11, B14, B20, B21, B23, B24, B25.
 
 ## Bugs (ranked by the number of projects they block)
 
 Every bug below is a case where genuine 9.3.1 succeeds and bazel-rs fails or
-differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
+differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`. The status
+column is from the 2026-11-20 full rerun (corpus-rerun): open bugs first,
+ranked by the projects they affect in that run, then the fixed ones.
 
-| id | projects | summary |
+| id | status (corpus-rerun) | summary |
 |---|---|---|
-| B2 | 16 (abseil-cpp, capnproto, yalantinglibs, with_cfg, rules_zig, rules_kotlin, rules-template, diff.bzl, examples-frontend, rules_python ×2, examples-rust ×2, openroad, protobuf, examples-rust-ffi query) | rc options rejected at startup: "options are never silently ignored" |
-| B3 | 4 (bazel-skylib, junit5-starter, rules_zig, with_cfg) | `native.existing_rule` / `existing_rules` missing in BUILD and legacy-macro context |
-| B9 | 4 (rules_cc, protobuf, openroad, examples-rust-deps-cargo) | `archive_override` unsupported |
-| B1 | 3+ (googletest, re2, highway; every project that tests with googletest ≥ 1.15) | `config_setting(values = {"features": …})` |
-| B10 | 3 (rules_kotlin, riegeli, openroad) | `override_repo()` / `inject_repo()` unsupported in MODULE.bazel |
-| B6 | fixed (corpus-parent; rules-template not rerun) | `_repo_mapping` manifest missed the repositories of select() keys and of an output file's generating rule |
-| B11 | 2 (tink-cc, capnproto); every boringssl user | `strip_prefix` with a trailing `/` rejected |
-| B14 | fixed for examples-java-maven (corpus-parent); tink-cc, examples-frontend not rerun | internal errors "has no recorded duplicate-label check" / "internal analysis order error" |
+| B49 | open, 2 (examples-rust-deps-cargo, protobuf); not blocking | genuine's `bazel-bin` has the runfiles manifest of rules_rust's `cargo_build_script` `_bs-` executable (`external/rules_rust++crate+crates__anyhow-1.0.79/_bs-.runfiles_manifest`; protobuf: 4 crates); bazel-rs does not build it (not investigated) |
+| B13c | open, 1 (rules_zig); blocking | one toolchain implementation for two execution platforms in one configuration (ConfiguredTargetKey.executionPlatformLabel), a fatal error (needs the execution platform in the configured-target key; design below) |
+| B51 | open, 1 (rules_kotlin); blocking `build //...` | rules_kotlin's `JdepsMerge //src/test/data/jvm/jvm_target:mixed_jvm8` fails in its multiplex worker (`cache/work/bazel-workers-*/multiplex-worker-*-JdepsMerge/execroot`): `NoSuchFileException: bazel-out/k8-fastbuild-ST-…/bin/src/test/data/jvm/jvm_target/mixed_jvm8-kt.jar` (JarOwner.readJarOwnerFromManifest). The jar exists in the output tree; the merger reads it although it is apparently not an input of the action, which works in genuine's multiplex workers because they run in the shared execution root (as C2). Reproduced twice (not investigated) |
+| B48 | open, 1 (protobuf); performance, outputs | `build //...` builds protoc and the upb generators in 8 extra exec configurations (`k8-opt-exec-ST-*`, 436 objects each) and the prebuilt-protoc `validation_output.txt` in 17 extra target configurations (`k8-fastbuild-ST-*`); genuine's `bazel-out` has only `k8-opt-exec` and one `k8-fastbuild-ST-*`. 19,007 processes against 13,945, 648 s against 287 s. Genuine's cquery shows the same transitioned configurations (`//python/dist` `_py_dist_transition`, `//rust:dist` `_cpu_transition`), so the difference is in what gets built under them (perhaps incompatible-target skipping); not investigated |
+| B50 | open, 1 (capnproto); not blocking | `build --keep_going` after compile failures: genuine runs 1,177 processes, bazel-rs 996, with the same errors and "40 of 171 top-level targets"; genuine's `bazel-bin` has 224 more files (`capnp-rpc` `.pic.d`, `samples/*` runfiles manifests), so bazel-rs seems to skip work genuine still does under failed top-level targets (not investigated) |
+| B32 | open, 1 (rules_cc's own tests: 346 of genuine's 453 pass) | rules_cc's own analysis tests. Fixed on corpus-parity4: `--fission`, `--build_test_dwp`, `--legacy_whole_archive`, `--incompatible_remove_legacy_whole_archive` are configuration options and `--dynamic_mode` is transitionable; a fission compile's `.dwo` is declared where genuine declares it. Fixed on corpus-parity5: `cc_internal.freeze` is Bazel's shallow immutable copy (the vendored starlark's immutable list/dict that is not frozen yet, docs/DEPSETS.md; the 38 thin-LTO and linkstamp targets), `create_header_info_with_deps` adds the merged deps' headers (cc_import's `direct_public_headers`), a toolchain's `artifact_name_pattern` applies (mingw/msvc dll names), `objc.target_should_alwayslink` of an explicit `alwayslink`, map_each's `must be declared by a top-level def statement` error, structs/providers with frozen list fields are hashable, and transitions on `instrumentation_filter`, `save_temps`, `start_end_lib`, `interface_shared_objects`, `process_headers_in_dependencies` (tests/fixtures/corpus_parity5). Left (tests): the LTO backends (`cc_internal.collect_per_file_lto_backend_opts`, `create_lto_backend_action*`, compile actions with shareable artifacts: ~37, also the linkstamp compile), the FDO/Propeller/memprof options (`fdo_optimize`, `fdo_profile`, `fdo_instrument`, `cs_fdo_profile`, `xbinary_fdo`, `fdo_prefetch_hints`, `propeller_optimize*`: ~37), `experimental_cpp_modules` (10), `custom_malloc` (5, a late-bound dependency per configuration), `cc_internal.expand_and_tokenize` (3 objc tests), `action_env` and `grte_top` transitions (2 each), `ltoindexopt`/`ltobackendopt`/`per_file_ltobackendopt`, and two builds: cc_static_library's `test_output_groups` builds a compile of a missing `file.cc` (the analysis test's target's validation outputs; genuine does not) and `validate_static_library_env_test`'s archive is not created |
+| B33 | open, 1 (protobuf); 1 target | protobuf analysis. Fixed on corpus-parity4: symbolic-macro visibility delegation and alias select() keys under `--incompatible_config_setting_private_default_visibility` (5 visibility errors), `declare_file(sibling=)` from another package, per-attribute aspect views of aspects propagating over one attribute (`UpbMinitableCcInfo`/`JavaInfo` on proto_library targets), `Target.actions` of targets merged with aspects and of a rule under test's dependencies, `--dynamic_mode` transitions (rules_fuzzing). Fixed on corpus-parity5: transitions writing `instrumentation_filter` (`generated_sources_not_coverage_instrumented`; the filter is per configuration natively too). Left: `experimental_output_paths=strip` with `modify_execution_info` (`test_compile_path_mapping`): its `Target.actions` argv shows path-mapped `bazel-out/cfg/bin` paths, so path mapping would have to be modelled for execution too (not attempted) |
+| B34 | open, 1 (rules_python-bzlmod); not blocking | `external/other_module+/other_module/pkg/bin_zipapp.zip` differs from genuine's: rules_python's zipper stores each input's mode and relative symlinks as it finds them in the sandbox; native staging hardlinks read-only store blobs (docs/HARDLINK_STAGING.md) |
+| B43 | open, 1 (with_cfg); not blocking | genuine builds `cc_no_copt_binary/binary_/binary.runfiles_manifest` and `.repo_mapping` (the manual `cc_binary` behind with_cfg's frontend and transitioning alias, a no-op transition); bazel-rs does not (not investigated) |
+| B12 | open, 1 (flatbuffers; genuine fails too) | `@local_config_platform` unknown (aspect_bazel_lib 1.x `platform_utils.bzl:3`) |
+| B47 | open, 1 (rules_jvm_external-simple; genuine fails too, no Android SDK) | rules_android's `android_split_transition` reads `//command_line_option:Android configuration distinguisher`: "transition inputs ... do not correspond to valid settings" (an unmodelled Android native option) |
+| B1 | fixed (googletest, re2, highway identical) | `config_setting(values = {"features": …})` |
+| B2 | fixed (every rc option of the corpus; all `comment_out` edits dropped) | rc options rejected at startup: "options are never silently ignored" |
+| B3 | fixed (bazel-skylib, junit5-starter, with_cfg analyse) | `native.existing_rule` / `existing_rules` missing in BUILD and legacy-macro context |
+| B9 | fixed (openroad's own `archive_override`, rules_cc, protobuf, examples-rust-deps-cargo) | `archive_override` unsupported |
+| B10 | fixed (rules_kotlin, riegeli, openroad) | `override_repo()` / `inject_repo()` unsupported in MODULE.bazel |
+| B11 | fixed (tink-cc-examples identical, capnproto) | `strip_prefix` with a trailing `/` rejected |
+| B14 | fixed (tink-cc-examples, examples-java-maven) | internal errors "has no recorded duplicate-label check" / "internal analysis order error" |
+| B20 | fixed (capnproto analyses) | `rule(output_to_genfiles=True)` |
+| B21 | fixed (rules_zig's repository rules) | `attr.int_list` in repository rules |
+| B22 | not exercised (OpenROAD's `archive_override` works, so the `git_override` alternative is not needed) | `git_override` of a repository with submodule gitlinks |
+| B23 | fixed (examples-rules identical) | predeclared `attr.output` given as `":name"` |
+| B24 | fixed (corpus-parity4; examples-configurations aborts as genuine) | PROJECT.scl project files: looked up and loaded before the analysis, genuine's `error loading project files` (docs/CONFIGURATION.md "PROJECT.scl project files"); a project with configurations fails explicitly |
+| B25 | fixed (examples-frontend's warm `test` passes 14/14) | "needs-repository: repository @@rules_diff+ is unfetched and this thread does not fetch" on a warm `test` |
+| B6 | fixed (corpus-parent) | `_repo_mapping` manifest missed the repositories of select() keys and of an output file's generating rule |
 | B4 | fixed (corpus-parity2) | `android_common` global undefined: now the `.bzl` toplevel; its two methods fail explicitly |
-| B13 | fixed (bazel-skylib, rules_zig, rules_cc; bazel-gazelle not rerun) | analysis tests: `analysis_test_transition`, `testing.analysis_test`, `Target.actions`, `AnalysisFailureInfo` (docs/ANALYSIS_TESTS.md) |
+| B13 | fixed (bazel-skylib, rules_zig, rules_cc, bazel-gazelle) | analysis tests: `analysis_test_transition`, `testing.analysis_test`, `Target.actions`, `AnalysisFailureInfo` (docs/ANALYSIS_TESTS.md) |
 | B13a | fixed (corpus-parity2) | transition on `//command_line_option:minimum_os_version` and `ctx.fragments.cpp.minimum_os_version()` |
 | B13b | fixed (corpus-parity2) | `srcs = ["."]` (the package directory as a source label): "unsafe source label //tests/directory:." |
-| B13c | 1 (rules_zig) | one toolchain implementation for two execution platforms in one configuration (ConfiguredTargetKey.executionPlatformLabel), a fatal error (open: needs the execution platform in the configured-target key; design refined on corpus-parity4, below; corpus-parity5: the shared-action conflict check it relies on exists and keys the execution platform, genuine-checked) |
 | B13d | fixed (= B29) | rules_cc's own `cc_test.bzl`/`cc_binary.bzl` "cannot use private API" |
 | B13e | fixed (corpus-parity2) | `cc_import` of `mylib.dll`/`mylib.lib` on Linux: "does not match expected filetype" |
 | B15 | fixed (corpus-runfiles) | test runfiles were hardlinks, not symlinks |
 | B7 | fixed (corpus-parity2) | transition: "Starlark flag and its alias have different values: False and "false"" |
 | B5 | fixed (corpus-parity2) | `local_repository` → `rctx.symlink(path, ".")` rejected (now a copy plus a `watch_tree` input, docs/LOCAL_REPOSITORIES.md) |
 | B8 | fixed (corpus-parity3) | declared output "crosses a package boundary": a `declare_file`/`declare_directory` output may lie below a subpackage; predeclared outputs keep genuine's `Label ... is invalid because ... is a subpackage` |
+| B16 | fixed (corpus-macros) | symbolic macro `inherit_attrs` |
 | B17 | fixed (corpus-parent) | `rule(parent=…)` rule extension (docs/RULE_EXTENSION.md) |
 | B18, B19 | fixed (corpus-ccshared) | `cc_shared_library` (`cc_common.check_experimental_cc_shared_library`); solib naming in transitioned configurations |
 | B26 | fixed | depset elements holding functions that are not top-level defs (skylib `DirectoryInfo` in rules_cc `cc_args`; openroad) |
-| B29 | fixed (corpus-parity2) | "file '//cc/private/rules_impl:cc_test.bzl' cannot use private API": the private-API allowlist now treats the main repository as rules_cc when the root module is rules_cc |
-| B20 | 1 (capnproto) | `rule(output_to_genfiles=True)` |
-| B21 | 1 (rules_zig) | `attr.int_list` in repository rules |
-| B22 | 1 (openroad) | `git_override` of a repository with submodule gitlinks |
-| B23 | 1 (examples-rules) | predeclared `attr.output` given as `":name"` |
-| B12 | 1 (flatbuffers) | `@local_config_platform` unknown |
-| B24 | fixed (corpus-parity4) | PROJECT.scl project files: looked up and loaded before the analysis, genuine's `error loading project files` (docs/CONFIGURATION.md "PROJECT.scl project files"); a project with configurations fails explicitly |
-| B25 | fixed (502d3267; not reproduced in corpus-parity3) | "needs-repository: repository @@rules_diff+ is unfetched and this thread does not fetch" on a warm `test` (a worker's sentinel answer cached by the ignored-subdirectories memo) |
-| B30 | fixed (corpus-ccshared) | `provider in target` fails "Target membership requires an exported provider constructor" in with_cfg's `transitioning_alias.bzl:55` (toolchains_llvm's `*_with_cfg` glibc/libunwind/libcxxabi targets; one of with_cfg's forwarded builtin providers is not an exported constructor natively: `apple_common.Objc`) |
-| B31 | fixed (corpus-parity3) | `config_common.config_feature_flag_transition`: loads; no transition unless the attribute sets flag values, which fails explicitly (docs/TEST_FLAGS.md) |
-| B32 | 1 (rules_cc's own tests: 346 of genuine's 453 pass) | rules_cc's own analysis tests. Fixed on corpus-parity4: `--fission`, `--build_test_dwp`, `--legacy_whole_archive`, `--incompatible_remove_legacy_whole_archive` are configuration options and `--dynamic_mode` is transitionable; a fission compile's `.dwo` is declared where genuine declares it. Fixed on corpus-parity5: `cc_internal.freeze` is Bazel's shallow immutable copy (the vendored starlark's immutable list/dict that is not frozen yet, docs/DEPSETS.md; the 38 thin-LTO and linkstamp targets), `create_header_info_with_deps` adds the merged deps' headers (cc_import's `direct_public_headers`), a toolchain's `artifact_name_pattern` applies (mingw/msvc dll names), `objc.target_should_alwayslink` of an explicit `alwayslink`, map_each's `must be declared by a top-level def statement` error, structs/providers with frozen list fields are hashable, and transitions on `instrumentation_filter`, `save_temps`, `start_end_lib`, `interface_shared_objects`, `process_headers_in_dependencies` (tests/fixtures/corpus_parity5). Left (tests): the LTO backends (`cc_internal.collect_per_file_lto_backend_opts`, `create_lto_backend_action*`, compile actions with shareable artifacts: ~37, also the linkstamp compile), the FDO/Propeller/memprof options (`fdo_optimize`, `fdo_profile`, `fdo_instrument`, `cs_fdo_profile`, `xbinary_fdo`, `fdo_prefetch_hints`, `propeller_optimize*`: ~37), `experimental_cpp_modules` (10), `custom_malloc` (5, a late-bound dependency per configuration), `cc_internal.expand_and_tokenize` (3 objc tests), `action_env` and `grte_top` transitions (2 each), `ltoindexopt`/`ltobackendopt`/`per_file_ltobackendopt`, and two builds: cc_static_library's `test_output_groups` builds a compile of a missing `file.cc` (the analysis test's target's validation outputs; genuine does not) and `validate_static_library_env_test`'s archive is not created |
-| B33 | 1 (protobuf); 1 target left | protobuf analysis. Fixed on corpus-parity4: symbolic-macro visibility delegation and alias select() keys under `--incompatible_config_setting_private_default_visibility` (5 visibility errors), `declare_file(sibling=)` from another package, per-attribute aspect views of aspects propagating over one attribute (`UpbMinitableCcInfo`/`JavaInfo` on proto_library targets), `Target.actions` of targets merged with aspects and of a rule under test's dependencies, `--dynamic_mode` transitions (rules_fuzzing). Fixed on corpus-parity5: transitions writing `instrumentation_filter` (`generated_sources_not_coverage_instrumented`; the filter is per configuration natively too). Left: `experimental_output_paths=strip` with `modify_execution_info` (`test_compile_path_mapping`): its `Target.actions` argv shows path-mapped `bazel-out/cfg/bin` paths, so path mapping would have to be modelled for execution too (not attempted) |
-| B34 | 1 (rules_python-bzlmod); not blocking | `external/other_module+/other_module/pkg/bin_zipapp.zip` differs from genuine's: rules_python's zipper stores each input's mode and relative symlinks as it finds them in the sandbox; native staging hardlinks read-only store blobs (docs/HARDLINK_STAGING.md) |
-| B43 | 1 (with_cfg); not blocking | genuine builds `cc_no_copt_binary/binary_/binary.runfiles_manifest` and `.repo_mapping` (the manual `cc_binary` behind with_cfg's frontend and transitioning alias, a no-op transition); bazel-rs does not (not investigated) |
-| B35 | fixed (corpus-parity3) | rules_kotlin: `download_and_extract(rename_files=…)`, `Target.actions` through an alias, TestingAspectInfo (per-attribute aspect views), `check_java_toolchain_is_declared_on_rule`, mutable `default_jvm_opts`, genquery `buildfiles` scope |
 | B27 | fixed (corpus-runfiles) | `depset` was not a BUILD-file global, and list-typed attributes did not accept depsets (`@openssl//:BUILD.bazel:508`, `select({...: depset([...])})`) |
+| B28 | fixed (corpus-runfiles) | `build //...` missed genuine's `.pic.o`/`.pic.d` of external C++ deps: the rule-returned `_hidden_top_level_INTERNAL_` group (rules_cc cc_library's transitive objects) was not built |
+| B29 | fixed (corpus-parity2) | "file '//cc/private/rules_impl:cc_test.bzl' cannot use private API": the private-API allowlist now treats the main repository as rules_cc when the root module is rules_cc |
+| B30 | fixed (corpus-ccshared) | `provider in target` fails "Target membership requires an exported provider constructor" in with_cfg's `transitioning_alias.bzl:55` |
+| B31 | fixed (corpus-parity3) | `config_common.config_feature_flag_transition`: loads; no transition unless the attribute sets flag values, which fails explicitly (docs/TEST_FLAGS.md) |
+| B35 | fixed (corpus-parity3) | rules_kotlin: `download_and_extract(rename_files=…)`, `Target.actions` through an alias, TestingAspectInfo (per-attribute aspect views), `check_java_toolchain_is_declared_on_rule`, mutable `default_jvm_opts`, genquery `buildfiles` scope |
 | B36 | fixed (corpus-ccshared) | `ctx.actions.write(execution_requirements=…)` rejected (rules_cc_autoconf `ctx_actions_write.bzl`; 360 OpenROAD targets) |
 | B37 | fixed (corpus-ccshared) | a repository's BUILD file symlinked into another repository's tree: "build file … resolves outside workspace" (sv-elab's `vendored-hashlib`) |
 | B38 | fixed (corpus-ccshared) | `repository_ctx.delete()` of the repository directory itself (bazel_tools `git_repository`'s `git_worker.bzl`; sv-elab's `vendored-slang`) |
@@ -510,10 +357,8 @@ differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`.
 | B41 | fixed (corpus-parity3) | rules_js `node_modules` links in `bazel-bin`: a relative symlink output keeps its text in the output tree (docs/UNRESOLVED_SYMLINKS.md) |
 | B42 | fixed (corpus-ccshared) | a test's runfile of an `actions.symlink` output of a generated file was a copy at the link's exec path, so `$ORIGIN` of a with_cfg-forwarded `cc_binary` missed its `dynamic_deps` |
 | B44 | fixed (corpus-parity3) | `ctx.actions.write(mnemonic=...)` was dropped: rules_cc's module maps are `CppModuleMap` in aquery, the profile and `Target.actions` |
-| B45 | fixed (corpus-parity3) | compiles staged the toolchain's `all_files` instead of `compiler_files` (`as_files` for `assemble`), so `build //src/utl:utl` also built the toolchain's link-time runtimes (1,109 actions against genuine's 829) |
-| B46 | fixed (corpus-parity4) | `Target.actions` `argv` is empty for an action whose `Args` use `map_each` (deferred to execution natively; genuine expands it at analysis): rules_kotlin's `windows_coverage_test_suite_flag_test` (`JavaLauncherMaker`) fails analysis on `jvm_flags[0]`, and the `javac_receives_the_plugins_of_the_flag` test sees an empty `Javac` argv |
-| B47 | 1 (rules_jvm_external-simple); not blocking (genuine fails too, no Android SDK) | rules_android's `android_split_transition` reads `//command_line_option:Android configuration distinguisher`: "transition inputs ... do not correspond to valid settings" (an unmodelled Android native option) |
-| B28 | fixed (corpus-runfiles) | `build //...` missed genuine's `.pic.o`/`.pic.d` of external C++ deps: the rule-returned `_hidden_top_level_INTERNAL_` group (rules_cc cc_library's transitive objects) was not built |
+| B45 | fixed (corpus-parity3) | compiles staged the toolchain's `all_files` instead of `compiler_files` (`as_files` for `assemble`) |
+| B46 | fixed (corpus-parity4) | `Target.actions` `argv` is empty for an action whose `Args` use `map_each` |
 
 ### Details and minimal repros
 
@@ -835,9 +680,12 @@ absolute link into the producing action's cache entry, where the package
 store's relative link does not resolve (the declared `bazel run`
 difference of docs/RUNFILES_TREES.md, here in `bazel-bin`).
 
-**B31–B35** are the next blockers the corpus-parity2 rerun found (details in
-the table above and footnote 15). B31, B35, B40, B41, B44 and B45 are fixed
-on corpus-parity3 (footnote 21); B46 and B47 are what that rerun found next.
+**B31–B35** are the next blockers the corpus-parity2 rerun found. B31, B35,
+B40, B41, B44 and B45 are fixed on corpus-parity3; B46 and B47 are what that
+rerun found next. B48–B51 are what the corpus-rerun full run found (table
+above). The "note"/"footnote" numbers cited in this section and under
+Performance refer to the earlier runs' results notes (this file's git
+history before the corpus-rerun commit).
 
 ### Cosmetic differences
 
@@ -851,40 +699,114 @@ on corpus-parity3 (footnote 21); B46 and B47 are what that rerun found next.
   `node_modules/.aspect_rules_js/<pkg>/node_modules/.bin/*` shims in
   `bazel-bin` (10 files in examples-frontend; no action declares them);
   bazel-rs does not.
+- C4: dep-info (`.d`) files a build script writes hold the absolute
+  sandbox path of each tool's execution root
+  (`_bs.out_dir/anyhow.d` in examples-rust-deps-cargo); they differ between
+  two genuine runs too.
+- C5: after a failed action genuine's `bazel-bin` keeps the failed
+  compiles' `.d` files and the failing targets' runfiles manifests
+  (yalantinglibs, capnproto, protobuf); bazel-rs does not.
 - Error message formats differ; for example, Starlark tracebacks use the
   `* file:line` style. The exit codes match.
 
 ## Performance
 
-These are indicative only, because the host was shared (load 15–60).
+### Performance vs genuine (corpus-rerun, 2026-11-20)
 
-- **Cold `build --nobuild //...`** (module resolution, fetch, loading,
-  analysis): bazel-rs is faster on 9 of the 11 matching projects, by 1.2–1.7×
-  (abseil 12.0 s against 14.8 s, limdor-cpp 6.7 against 11.0, rust-ffi
-  17.4 against 27.0). It is slower on rules_python pip_parse (46–52 against
-  30–36 s; P3 below), on OpenROAD (144–153 against 88 s; P4) and was on
-  bazel-gazelle (39.9 against 32.6; 40.2 against 49.8 in the corpus-perf
-  rerun). It is even on buildtools. Since cold-eval (note 22), fully
-  cold: abseil 10.5–12.6 s against 13.1–13.8, pip_parse 29.6–30.5 against
-  28.0–33.4, OpenROAD 110–111 against 70–76 (67 s with the download
-  cache pre-filled; P7).
-- **Warm `build --nobuild`:** bazel-rs, with its analysis snapshot, takes
-  0.1–0.2 s, like a warm genuine server (0.1–0.4 s) and 15–30× faster than
-  genuine `--batch` (2.8–5.9 s). Since corpus-perf the command that wrote
-  `MODULE.bazel.lock` (the cold one) saves a snapshot too (P1, fixed), so
-  the first repeat hits: abseil 0.19–0.24 s, was 3.2–3.5 s. A command whose
-  analysis failed is never saved; OpenROAD's repeats (5,439 targets fail on
-  B18/B30) re-analyse: 15.4–17.4 s against genuine `--batch` 8.4 s (was
-  65–68 s; P5).
-- **Full build** (after the cold analysis): bazel-rs is faster on abseil
-  (76 s against 98 s), buildtools (58 against 75), basic_gazelle (32 against
-  43) and the small projects. bazel-gazelle (P2, fixed) is now even:
-  55.1–59.7 s against genuine's 53.0–62.5 s (main before the fix:
-  63.5–71.6 s; the corpus's 113 s ran into B13).
-- **Memory:** bazel-rs's peak RSS is 1.3–3.5× lower on cold analysis (for
-  example 453 MB against 1,131 MB on abseil). The exceptions are the large JS
-  (1.8 GB against 1.35 GB) and rules_python bzlmod (2.6 GB, about equal)
-  workspaces.
+From the full rerun above (bazel-rs 0.4.34, LTO release; one project at a
+time; "load" is the 1-minute load average sampled during the project, other
+workers' runs included). Wall seconds; † a non-zero exit (both tools fail
+the same command unless the results table says otherwise), "(cap)" the
+20-minute cap. Each × is genuine ÷ bazel-rs, so above 1 means bazel-rs is
+faster or smaller: warm compares bazel-rs's fresh process with genuine's
+warm server, peak RSS is the cold `build --nobuild` run's. Cold includes
+every download from the public mirrors. OpenROAD's build is
+`build //:openroad` (by hand; its peak RSS 2.9 GB genuine, 3.0 GB bazel-rs);
+the test column of OpenROAD and protobuf is not run (JSON phases).
+
+| project | load | cold g / rs (s) | × | warm g-batch / g-server / rs (s) | × vs server | build g / rs (s) | × | test g / rs (s) | × | peak RSS cold g / rs (MB) | × |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| abseil-cpp | 17–28 | 17.2 / 13.2 | 1.30 | 3.5 / 0.2 / 0.2 | 1.00 | 76.3 / 66.0 | 1.16 | 57.2 / 57.0 | 1.00 | 1191 / 540 | 2.2 |
+| bazel-gazelle | 11–42 | 41.0 / 36.8 | 1.11 | 4.6 / 0.3 / 0.2 | 1.50 | 57.0 / 52.0 | 1.09 | 47.0† / 46.1† | 1.02 | 1765 / 940 | 1.9 |
+| bazel-skylib | 17–33 | 21.7 / 20.0 | 1.08 | 3.7 / 0.3 / 0.2 | 1.50 | 50.7 / 50.2 | 1.01 | 4.3† / 1.8† | 2.39 | 1289 / 566 | 2.3 |
+| buildtools | 11–95 | 24.5 / 24.1 | 1.02 | 4.5 / 0.3 / 0.2 | 1.75 | 49.6 / 48.7 | 1.02 | 7.9† / 4.3† | 1.86 | 1951 / 1300 | 1.5 |
+| capnproto | 14–19 | 39.2 / 11.1 | 3.54 | 3.4 / 0.2 / 0.2 | 1.25 | 20.2† / 18.2† | 1.11 | 9.4† / 7.5† | 1.26 | 1078 / 384 | 2.8 |
+| diff.bzl | 19–25 | 20.7 / 15.4 | 1.34 | 3.4 / 0.2 / 0.2 | 0.80 | 13.7 / 11.4 | 1.20 | 3.8 / 0.8 | 4.70 | 1178 / 367 | 3.2 |
+| examples-bzlmod-01 | 15–19 | 11.9 / 6.6 | 1.81 | 3.1 / 0.1 / 0.1 | 1.00 | 6.1 / 2.9 | 2.12 | 3.0† / 0.5† | 6.02 | 600 / 257 | 2.3 |
+| examples-bzlmod-05 | 12–13 | 8.6 / 3.7 | 2.36 | 2.5 / 0.1 / 0.1 | 3.00 | 2.5 / 0.1 | 25.10 | 2.5† / 0.1† | 49.20 | 387 / 82 | 4.7 |
+| examples-configurations | 18–23 | 9.8† / 5.6† | 1.76 | 2.2† / 0.1† / 0.2† | 0.50 | 1.8† / 0.2† | 9.05 | 1.9† / 0.3† | 6.37 | 472 / 104 | 4.5 |
+| examples-cpp-tutorial | 12–15 | 11.5 / 6.4 | 1.81 | 2.7 / 0.1 / 0.2 | 0.75 | 3.0 / 0.6 | 5.47 | 3.4† / 0.5† | 7.60 | 597 / 235 | 2.5 |
+| examples-frontend | 8–43 | 88.3† / 121.6† | 0.73 | 60.9† / 110.9† / 97.7† | 1.14 | 60.8† / 137.7† | 0.44 | 60.9† / 104.4† | 0.58 | 1488 / 1806 | 0.8 |
+| examples-java-maven | 18–82 | 34.8 / 56.0 | 0.62 | 3.3 / 0.2 / 0.2 | 1.00 | 8.9 / 7.2 | 1.23 | 7.0 / 2.6 | 2.68 | 1216 / 457 | 2.7 |
+| examples-java-tutorial | 12–20 | 18.8† / 19.4† | 0.97 | 3.3† / 0.1† / 0.8† | 0.20 | 6.4† / 4.2† | 1.52 | 3.4† / 0.9† | 3.73 | 745 / 306 | 2.4 |
+| examples-rules | 9–14 | 13.7 / 8.5 | 1.62 | 3.0 / 0.2 / 0.1 | 1.33 | 4.9 / 1.1 | 4.39 | 3.6 / 0.9 | 3.76 | 637 / 286 | 2.2 |
+| examples-rust-deps-cargo | 17–23 | 42.2 / 30.3 | 1.39 | 3.1 / 0.2 / 0.2 | 1.00 | 27.3 / 24.6 | 1.11 | 3.9† / 0.6† | 7.04 | 1013 / 364 | 2.8 |
+| examples-rust-ffi | 13–29 | 56.1 / 22.6 | 2.49 | 2.8 / 0.2 / 0.2 | 1.25 | 4.2 / 1.7 | 2.43 | 3.2† / 1.4† | 2.24 | 851 / 398 | 2.1 |
+| flatbuffers | 12–13 | 17.1† / 7.4† | 2.33 | 3.0† / 0.3† / 0.5† | 0.67 | 3.1† / 0.4† | 7.65 | 3.2† / 0.5† | 7.02 | 763 / 207 | 3.7 |
+| googletest | 14–17 | 18.9 / 12.5 | 1.51 | 3.4 / 0.2 / 0.2 | 1.25 | 29.4 / 29.8 | 0.99 | 7.0 / 6.0 | 1.18 | 1181 / 436 | 2.7 |
+| highway | 15–33 | 12.4 / 7.3 | 1.70 | 3.1 / 0.2 / 0.2 | 1.00 | 178.0 / 172.6 | 1.03 | 739.1 / 749.0 | 0.99 | 582 / 268 | 2.2 |
+| junit5-starter | 12–18 | 22.2 / 15.0 | 1.48 | 3.6 / 0.2 / 0.2 | 1.25 | 7.8 / 5.4 | 1.46 | 4.5 / 1.5 | 3.06 | 1298 / 515 | 2.5 |
+| limdor-cpp | 12–16 | 12.0 / 6.6 | 1.82 | 2.8 / 0.2 / 0.1 | 1.33 | 3.1 / 0.6 | 5.18 | 3.2 / 0.8 | 4.28 | 635 / 251 | 2.5 |
+| limdor-rust | 11–37 | 28.5 / 26.0 | 1.10 | 3.0 / 0.1 / 0.2 | 0.75 | 4.5 / 2.1 | 2.19 | 3.6 / 1.1 | 3.14 | 847 / 485 | 1.7 |
+| openroad (`//:openroad`) | 6–21 | 90.7 / 120.1 | 0.76 | 8.7 / 0.7 / 1.4 | 0.46 | 714.0 / 994.6 | 0.72 | — / — | — | 3749 / 6868 | 0.5 |
+| protobuf | 16–62 | 41.9† / 62.3† | 0.67 | 7.3† / 0.6† / 15.2† | 0.04 | 286.9† / 648.0† | 0.44 | — / — | — | 2718 / 3613 | 0.8 |
+| re2 | 10–30 | 11.7† / 8.1† | 1.44 | 3.2† / 0.2† / 1.2† | 0.21 | 16.4† / 15.9† | 1.03 | 327.9† / 331.8† | 0.99 | 1057 / 316 | 3.3 |
+| riegeli | 12–25 | 28.5† / 20.0† | 1.43 | 4.4† / 0.3† / 3.2† | 0.09 | 70.9† / 68.8† | 1.03 | 12.8† / 10.6† | 1.21 | 1373 / 805 | 1.7 |
+| rules-template | 12–20 | 27.2 / 22.3 | 1.22 | 4.2 / 0.2 / 0.2 | 1.25 | 27.1 / 25.0 | 1.08 | 4.3 / 0.8 | 5.02 | 1311 / 445 | 2.9 |
+| rules_cc | 16–39 | 18.8† / 20.5† | 0.92 | 5.7† / 0.6† / 5.7† | 0.10 | 51.3† / 56.0† | 0.92 | 6.3† / 7.2† | 0.88 | 2655 / 1696 | 1.6 |
+| rules_go-basic_gazelle | 13–23 | 25.7 / 22.3 | 1.15 | 4.0 / 0.3 / 0.2 | 1.75 | 31.3 / 28.9 | 1.09 | 4.2 / 0.9 | 4.69 | 1244 / 488 | 2.5 |
+| rules_jvm_external-simple | 19–35 | 72.9† / 38.1† | 1.91 | 4.2† / 0.4† / 1.8† | 0.23 | 4.0† / 1.5† | 2.72 | 4.3† / 1.6† | 2.77 | 1625 / 655 | 2.5 |
+| rules_kotlin | 15–43 | 37.6 / 45.1 | 0.83 | 5.4 / 0.6 / 0.2 | 2.40 | 66.9 / 79.0† | 0.85 | 1209.0 (cap) / 1200.0 (cap) | — | 2320 / 2073 | 1.1 |
+| rules_python-bzlmod | 10–36 | 43.2 / 36.2 | 1.19 | 4.6 / 0.6 / 0.2 | 2.20 | 43.7 / 39.7 | 1.10 | 7.5 / 10.3 | 0.73 | 1959 / 2577 | 0.8 |
+| rules_python-pip_parse | 12–17 | 31.2 / 32.5 | 0.96 | 3.6 / 0.3 / 0.2 | 1.40 | 4.4 / 1.1 | 4.22 | 4.8 / 2.0 | 2.38 | 1635 / 800 | 2.0 |
+| rules_zig | 17–32 | 38.0 / 37.5† | 1.01 | 14.1 / 0.3 / 12.0† | 0.03 | 38.0 / 12.2† | 3.10 | 14.4 / 12.1† | 1.19 | 2517 / 1933 | 1.3 |
+| tink-cc-examples | 10–21 | 18.0 / 12.1 | 1.48 | 3.6 / 0.3 / 0.2 | 1.50 | 95.1 / 87.3 | 1.09 | 4.9 / 1.7 | 2.85 | 1219 / 601 | 2.0 |
+| with_cfg-examples | 12–21 | 33.2 / 28.2 | 1.18 | 4.0 / 0.4 / 0.1 | 2.67 | 8.9 / 5.9 | 1.52 | 5.0 / 1.2 | 4.03 | 1737 / 1678 | 1.0 |
+| yalantinglibs | 14–35 | 12.0 / 6.8 | 1.78 | 3.4 / 0.2 / 0.2 | 1.00 | 58.6† / 52.2† | 1.12 | 54.4† / 53.7† | 1.01 | 679 / 244 | 2.8 |
+
+- **Cold `build --nobuild //...`** (module resolution, every fetch,
+  loading, analysis): bazel-rs is faster on 29 of 37 projects, typically
+  1.1–2.5× (abseil 13.2 s against 17.2, capnproto 11.1 against 39.2,
+  rust-ffi 22.6 against 56.1, both with slow genuine downloads). Slower:
+  OpenROAD (120.1 against 90.7 s, P7), protobuf (62.3 against 41.9),
+  examples-frontend (121.6 against 88.3, both failing on a download
+  timeout), rules_kotlin (45.1 against 37.6), rules_cc (20.5 against 18.8)
+  and examples-java-maven (56.0 against 34.8, during a load peak of 82).
+- **Warm `build --nobuild`:** a fresh bazel-rs process with its analysis
+  snapshot takes 0.1–0.2 s on every project whose analysis succeeds, like
+  genuine's warm server (0.1–0.6 s) and 15–30× faster than genuine
+  `--batch` (2.5–14.1 s); OpenROAD 1.4 s against the server's 0.7 s and
+  `--batch`'s 8.7 s. A command whose analysis failed saves no snapshot,
+  so its repeat re-analyses (protobuf 15.2 s, rules_zig 12.0, rules_cc
+  5.7, riegeli 3.2 against the server's 0.3–0.6 s).
+- **Full build:** bazel-rs is faster or even on 32 of 37 (abseil 66.0 s
+  against 76.3, tink-cc 87.3 against 95.1, highway 172.6 against 178.0).
+  Slower: protobuf (648 against 287 s: B48 builds protoc 8 more times),
+  examples-frontend (137.7 against 60.8, both failing), OpenROAD
+  `//:openroad` (994.6 against 714.0 s for the same 13,479 actions, at a
+  higher load: 20–52 against 12–38; openroad-perf measured 773.9 against
+  693.5 s), rules_kotlin (79.0 against 66.9, failing on B51).
+- **Tests:** faster or even on 31 of the 34 `test` commands (some without
+  test targets); slower on
+  examples-frontend, rules_python-bzlmod (10.3 against 7.5 s) and rules_cc
+  (fewer tests run).
+- **Memory:** bazel-rs's cold peak RSS is lower on 32 of 37, typically
+  1.5–3×. Higher: OpenROAD (6.9 GB against 3.7 GB), protobuf (3.6 against
+  2.7 GB), rules_python-bzlmod (2.6 against 2.0 GB), examples-frontend (1.8
+  against 1.5 GB).
+
+### Earlier summary (first runs, 2026-11-16/18)
+
+- **Cold `build --nobuild //...`**: bazel-rs was faster on 9 of the 11
+  matching projects, by 1.2–1.7×, slower on rules_python pip_parse (P3) and
+  OpenROAD (P4); since cold-eval (fully cold) abseil 10.5–12.6 s against
+  13.1–13.8, pip_parse 29.6–30.5 against 28.0–33.4, OpenROAD 110–111
+  against 70–76 (67 s with the download cache pre-filled; P7).
+- **Warm `build --nobuild`:** 0.1–0.2 s with the snapshot; since
+  corpus-perf the command that wrote `MODULE.bazel.lock` saves a snapshot
+  too (P1).
+- **Full build:** bazel-gazelle (P2, fixed) even with genuine; OpenROAD
+  `//:openroad` 1,536 s → 773.9 s against 693.5 s (P6).
 
 ### Findings and fixes (branch corpus-perf)
 
@@ -1161,13 +1083,17 @@ were runs with the download cache pre-filled too, the fully cold runs take
 
 ## Recommendations
 
-1. B2 first. One table change, accepting the no-op startup and command
-   options, unblocks 16 projects' first command with no edits.
-2. Then B1, B11 and B3 (C++ with gtest, boringssl users, skylib/aspect
-   helpers), then B9 and B10 (module resolution for rules_cc, protobuf,
-   OpenROAD, rules_kotlin, rules_swift users). OpenROAD needs B9 (or B22)
-   and B10.
-3. B15 (symlinked runfiles for tests) and B6 (`_repo_mapping` entries) were
-   silent behaviour differences; both are fixed with parity fixtures.
-4. Rerun the corpus after each fix: `oss_corpus.py run --only <project>`,
-   then drop the corresponding workaround edits from the JSON.
+From the corpus-rerun run (2026-11-20):
+
+1. The two blocked projects: B51 (rules_kotlin's multiplex JdepsMerge
+   worker misses an output it reads; check the action's declared inputs
+   against what native multiplex workers stage) and B13c (rules_zig; the
+   design above).
+2. B48 (protobuf builds protoc in 8 extra exec configurations, 2.3× the
+   build time): find which transitioned targets genuine does not build.
+3. Output parity left: B49 (`cargo_build_script` runfiles manifest, 2
+   projects), B50 (`--keep_going` work after failures), B43, B34, and the
+   rules_cc/protobuf analysis gaps B32 and B33.
+4. Performance: OpenROAD cold analysis (P7) and peak RSS (6.9 GB against
+   3.7 GB), `//:openroad` build time, protobuf's memory, examples-frontend.
+5. Rerun the corpus after each fix: `oss_corpus.py run --only <project>`.
