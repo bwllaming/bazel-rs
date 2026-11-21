@@ -4,13 +4,13 @@
 //! its configured targets and aspect applications. Nothing executes: no
 //! workspace status, no input digests, no scheduler.
 use super::*;
-use crate::aquery::{ActionRecord, Aspect, Dump, Meta};
+use crate::aquery::{ActionRecord, Aspect, Dump, Meta, PackedStrings};
 use crate::aquery_key::{CommandLinePart, KeyKind, KeyPlatform};
 
 /// The owner of each action id prefix, and the planned actions.
 #[derive(Default)]
 pub(super) struct Capture {
-    owners: HashMap<String, Owner>,
+    owners: HashMap<String, Arc<Owner>>,
     nodes: Vec<PlannedAction>,
     top_level: Vec<TopLevel>,
     /// The analyzed test rules (their TestRunner actions, super::aquery_test).
@@ -31,13 +31,62 @@ pub struct TopLevel {
     pub files_to_compile: Vec<String>,
 }
 
-/// One planned action to describe (`Engine::aquery_analysis`).
-struct RecordJob<'a> {
+/// Label.getDisplayForm(main repository mapping): the text output's
+/// `Target:` spelling (LabelPrinter.displayForm).
+fn display_form(graph: &cquery::Graph) -> impl Fn(&Label) -> String + Sync + '_ {
+    let mut apparent: BTreeMap<&str, &str> = BTreeMap::new();
+    for (name, canonical) in &graph.repository_mapping {
+        let shorter = apparent
+            .get(canonical.as_str())
+            .is_none_or(|known| name.len() < known.len());
+        if shorter {
+            apparent.insert(canonical.as_str(), name.as_str());
+        }
+    }
+    move |label: &Label| -> String {
+        if label.repository.is_empty() {
+            return format!("//{}:{}", label.package, label.name);
+        }
+        match apparent.get(label.repository.as_str()) {
+            Some(name) if !name.is_empty() => {
+                format!("@{name}//{}:{}", label.package, label.name)
+            }
+            _ => label.to_string(),
+        }
+    }
+}
+
+/// `BAZEL_RS_PARITY_VERIFY=1`: an aquery action without an owner is an
+/// internal error (always in debug builds).
+fn parity_verify() -> bool {
+    // snapshot-unrecorded: a diagnostics check; it changes no result (it fails on a missing owner).
+    std::env::var_os("BAZEL_RS_PARITY_VERIFY").is_some_and(|value| value == "1")
+}
+
+/// Whether the planned action `id` is the build's own, owned by no target.
+/// (The workspace status actions, BazelWorkspaceStatusAction: a stamped
+/// action's build-info actions are its owner's.)
+fn owned_by_the_build(id: &str) -> bool {
+    id.starts_with(crate::request::STATUS_ID_PREFIX)
+}
+
+/// One planned action to describe (`Engine::aquery_describe`).
+struct RecordJob {
     /// The action's index in the capture's nodes.
     index: usize,
-    owner: &'a Owner,
+    /// Its owner (the target and aspect path).
+    owner: Arc<Owner>,
     graph_node: u32,
     configuration: usize,
+}
+
+/// The planned actions of an analysis not described yet: a query's are
+/// described once its expression selected their targets (only theirs are
+/// printed).
+struct Pending {
+    jobs: Vec<RecordJob>,
+    /// The TestRunner actions' records, listed after the planned actions'.
+    tests: Vec<(u32, ActionRecord)>,
 }
 
 /// `describe` of every job on up to `threads` threads, results in the
@@ -84,7 +133,7 @@ fn in_parallel<I: Sync, T: Send>(
         .collect()
 }
 
-struct Owner {
+pub(super) struct Owner {
     key: ConfiguredTargetKey,
     /// The aspect path (outermost first); empty for a rule's own actions.
     aspects: Vec<Aspect>,
@@ -100,6 +149,8 @@ pub struct Analysis {
     /// The planned actions the records list their inputs from
     /// ([`ActionRecord::listed_from`]).
     nodes: Arc<Vec<PlannedAction>>,
+    /// The actions not described yet ([`Engine::aquery_describe`]).
+    pending: Option<Pending>,
 }
 
 impl Analysis {
@@ -241,10 +292,10 @@ impl Engine {
         if let Some(capture) = &mut self.aquery_capture {
             capture.owners.insert(
                 action_owner.to_owned(),
-                Owner {
+                Arc::new(Owner {
                     key: key.clone(),
                     aspects: aspects(),
-                },
+                }),
             );
         }
     }
@@ -341,34 +392,14 @@ impl Engine {
                 );
             }
         }
-        // Label.getDisplayForm(main repository mapping): the text output's
-        // `Target:` spelling (LabelPrinter.displayForm).
-        let mut apparent: BTreeMap<&str, &str> = BTreeMap::new();
-        for (name, canonical) in &graph.repository_mapping {
-            let shorter = apparent
-                .get(canonical.as_str())
-                .is_none_or(|known| name.len() < known.len());
-            if shorter {
-                apparent.insert(canonical.as_str(), name.as_str());
-            }
-        }
-        let display = |label: &Label| -> String {
-            if label.repository.is_empty() {
-                return format!("//{}:{}", label.package, label.name);
-            }
-            match apparent.get(label.repository.as_str()) {
-                Some(name) if !name.is_empty() => {
-                    format!("@{name}//{}:{}", label.package, label.name)
-                }
-                _ => label.to_string(),
-            }
-        };
+        let display = display_form(&graph);
         let mut configurations = Vec::new();
         let mut configuration_index: BTreeMap<ConfigId, usize> = BTreeMap::new();
-        let mut actions = Vec::new();
         // The owner, graph node and configuration of each planned action, in
         // plan order (configurations are numbered in first-use order).
         let mut jobs: Vec<RecordJob> = Vec::new();
+        let mut unowned: Vec<&str> = Vec::new();
+        let mut ungraphed = 0usize;
         for (index, node) in capture.nodes.iter().enumerate() {
             let id = node.action.id.as_str();
             let owner = capture.owners.get(id).or_else(|| {
@@ -376,12 +407,14 @@ impl Engine {
                     .and_then(|(prefix, _)| capture.owners.get(prefix))
             });
             let Some(owner) = owner else {
+                unowned.push(id);
                 continue;
             };
             let config = owner.key.config;
             let Some(&graph_node) =
                 nodes_by_key.get(&(owner.key.label.to_string(), config.to_string()))
             else {
+                ungraphed += 1;
                 continue;
             };
             let configuration = *configuration_index.entry(config).or_insert_with(|| {
@@ -396,62 +429,54 @@ impl Engine {
             });
             jobs.push(RecordJob {
                 index,
-                owner,
+                owner: Arc::clone(owner),
                 graph_node,
                 configuration,
             });
         }
-        // The records of each action are independent of the others' (a
-        // function of the planned action, its owner and the engine's
-        // finished analysis): described on several threads, kept in plan
-        // order.
-        let platform_infos = self.aquery_platform_infos();
-        let describe = |job: &RecordJob| -> Vec<(u32, ActionRecord)> {
-            let rule_class = match &graph.nodes[job.graph_node as usize].target {
-                crate::cquery_proto::Target::Rule(rule) => Some(rule.rule_class.clone()),
-                _ => None,
-            };
-            let display_target = display(&job.owner.key.label);
-            self.aquery_records(
-                &capture.nodes[job.index],
-                job.index,
-                job.owner,
-                rule_class,
-                job.configuration,
-                &configurations,
-                &platform_infos,
-            )
-            .into_iter()
-            .map(|mut record| {
-                record.display_target = display_target.clone();
-                record.display_execution_platform = record
-                    .execution_platform
-                    .as_deref()
-                    .and_then(|platform| Label::parse_canonical(platform).ok())
-                    .map(|platform| display(&platform));
-                (job.graph_node, record)
-            })
-            .collect()
-        };
-        actions.extend(
-            in_parallel(&jobs, self.loading_phase_threads, &describe)
-                .into_iter()
-                .flatten(),
-        );
+        // Every planned action is listed under its owner but the build's
+        // own (the workspace status actions, owned by no target): an action
+        // without an owner would be missing from the output silently.
+        let unexpected: Vec<&str> = unowned
+            .iter()
+            .copied()
+            .filter(|id| !owned_by_the_build(id))
+            .collect();
         if crate::plan_timings::enabled() {
-            // The planned actions without an owner in the universe are not
-            // listed (workspace status, actions of targets outside it).
             eprintln!(
-                "PERF-AQUERY nodes={} owners={} described={} records={}",
+                "PERF-AQUERY nodes={} owners={} described={} unowned={} unexpected={} ungraphed={ungraphed}",
                 capture.nodes.len(),
                 capture.owners.len(),
                 jobs.len(),
-                actions.len()
+                unowned.len(),
+                unexpected.len(),
             );
+        }
+        // (And an owner outside the configured graph, which holds every
+        // analyzed target.)
+        if cfg!(debug_assertions) || parity_verify() {
+            if let Some(id) = unexpected.first() {
+                return Err(format!(
+                    "internal error: aquery: the planned action {id} has no owner ({} such actions)",
+                    unexpected.len()
+                ));
+            }
+            if ungraphed > 0 {
+                return Err(format!(
+                    "internal error: aquery: {ungraphed} planned actions' owners are not in the configured graph"
+                ));
+            }
+            if jobs.len() + unowned.len() != capture.nodes.len() {
+                return Err(
+                    "internal error: aquery: a planned action neither described nor skipped"
+                        .to_owned(),
+                );
+            }
         }
         // TestRunner actions: registered with the rule's (after its
         // RunfilesSupport actions, TestActionBuilder via
         // RuleConfiguredTargetBuilder.build).
+        let mut tests = Vec::new();
         for test in &capture.tests {
             let config = test.key.config;
             let Some(&graph_node) =
@@ -484,17 +509,84 @@ impl Engine {
                     .as_deref()
                     .and_then(|platform| Label::parse_canonical(platform).ok())
                     .map(|platform| display(&platform));
-                actions.push((graph_node, record));
+                tests.push((graph_node, record));
             }
         }
-        crate::perf_mark("aquery.records");
+        drop(display);
         Ok(Analysis {
             graph,
             configurations,
-            actions,
+            actions: Vec::new(),
             top_level: capture.top_level.clone(),
             nodes: Arc::new(capture.nodes),
+            pending: Some(Pending { jobs, tests }),
         })
+    }
+
+    /// Describe the planned actions of `analysis` whose owners are in
+    /// `selected` (graph nodes; all of them without), in plan order, then
+    /// the TestRunner actions'. The records of each action are independent
+    /// of the others' (a function of the planned action, its owner and the
+    /// engine's finished analysis): described on several threads. Only the
+    /// first call describes.
+    pub fn aquery_describe(&self, analysis: &mut Analysis, selected: Option<&BTreeSet<u32>>) {
+        let Some(Pending { jobs, tests }) = analysis.pending.take() else {
+            return;
+        };
+        let wanted =
+            |graph_node: u32| selected.is_none_or(|selected| selected.contains(&graph_node));
+        let jobs: Vec<RecordJob> = jobs
+            .into_iter()
+            .filter(|job| wanted(job.graph_node))
+            .collect();
+        let graph = &analysis.graph;
+        let nodes = &analysis.nodes;
+        let configurations = &analysis.configurations;
+        let display = display_form(graph);
+        let platform_infos = self.aquery_platform_infos();
+        let describe = |job: &RecordJob| -> Vec<(u32, ActionRecord)> {
+            let rule_class = match &graph.nodes[job.graph_node as usize].target {
+                crate::cquery_proto::Target::Rule(rule) => Some(rule.rule_class.clone()),
+                _ => None,
+            };
+            let display_target = display(&job.owner.key.label);
+            self.aquery_records(
+                &nodes[job.index],
+                job.index,
+                &job.owner,
+                rule_class,
+                job.configuration,
+                configurations,
+                &platform_infos,
+            )
+            .into_iter()
+            .map(|mut record| {
+                record.display_target = display_target.clone();
+                record.display_execution_platform = record
+                    .execution_platform
+                    .as_deref()
+                    .and_then(|platform| Label::parse_canonical(platform).ok())
+                    .map(|platform| display(&platform));
+                (job.graph_node, record)
+            })
+            .collect()
+        };
+        let mut actions: Vec<(u32, ActionRecord)> =
+            in_parallel(&jobs, self.loading_phase_threads, &describe)
+                .into_iter()
+                .flatten()
+                .collect();
+        drop(display);
+        actions.extend(tests.into_iter().filter(|(node, _)| wanted(*node)));
+        if crate::plan_timings::enabled() {
+            eprintln!(
+                "PERF-AQUERY described={} records={}",
+                jobs.len(),
+                actions.len()
+            );
+        }
+        analysis.actions = actions;
+        crate::perf_mark("aquery.records");
     }
 
     /// The execution platform of an action: its exec group's, a native
@@ -649,7 +741,7 @@ impl Engine {
                     } else {
                         action.extra.mnemonic.clone()
                     };
-                    record.param_file = Some(param.arguments.clone());
+                    record.param_file = Some(param.arguments.to_vec());
                     record.action_key = crate::aquery_key::action_key(
                         &KeyKind::ParamFileWrite {
                             file_type: param.file_type,
@@ -854,8 +946,8 @@ impl Engine {
                 record.mnemonic = action.extra.mnemonic.clone();
                 let arguments = meta
                     .arguments
-                    .clone()
-                    .unwrap_or_else(|| crate::action::arguments(action));
+                    .as_ref()
+                    .map_or_else(|| crate::action::arguments(action), PackedStrings::to_vec);
                 let raw = match (&meta.progress, record.mnemonic.as_str()) {
                     (Some(raw), _) => raw.clone(),
                     (None, "Genrule") => "Executing genrule %{label}".to_owned(),
@@ -888,13 +980,17 @@ impl Engine {
                     }
                     _ => progress(&raw),
                 };
-                record.environment = meta.environment.clone().unwrap_or_else(|| {
-                    action
-                        .environment
-                        .iter()
-                        .map(|(key, value)| (key.clone(), value.clone()))
-                        .collect()
-                });
+                record.environment = meta
+                    .environment
+                    .as_deref()
+                    .map(<[_]>::to_vec)
+                    .unwrap_or_else(|| {
+                        action
+                            .environment
+                            .iter()
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect()
+                    });
                 // TargetUtils.getFilteredExecutionInfo (packages/TargetUtils.java
                 // :285-306): the legal requirements, then each propagated tag
                 // as `tag: ""`, sorted (crate::shared_actions keys the same map).

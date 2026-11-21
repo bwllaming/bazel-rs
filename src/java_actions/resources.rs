@@ -207,7 +207,7 @@ pub(super) fn register<'v>(
         arguments.extend(flags.iter().cloned());
         crate::aquery::Meta {
             progress: Some("Building Java resource jar".into()),
-            arguments: Some(arguments),
+            arguments: Some(arguments.into()),
             compute_key: Some(command::spawn_key(
                 &[
                     (&executable_line, None),

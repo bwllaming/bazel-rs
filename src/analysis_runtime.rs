@@ -1457,9 +1457,9 @@ fn register_spawn(
         }));
         Arc::new(crate::aquery::Meta {
             progress: raw_progress,
-            environment: Some(fixed),
+            environment: Some(crate::aquery::shared_environment(fixed)),
             command_lines: Some(command_lines),
-            arguments: Some(bazel_arguments),
+            arguments: Some(bazel_arguments.into()),
             expansion_error,
             // StarlarkActionFactory: the inputs, then the tools (a File
             // executable is one); aquery reads the first only.
@@ -1792,7 +1792,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
                     param_write: Some(crate::aquery::ParamWrite {
                         file_type,
                         recipe,
-                        arguments: expanded.unwrap_or_default(),
+                        arguments: expanded.unwrap_or_default().into(),
                     }),
                     expansion_error,
                     ..Default::default()

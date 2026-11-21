@@ -481,7 +481,7 @@ pub(crate) fn create_compilation<'v>(
                 source_jars.len(),
                 &plugins.classes,
             )),
-            arguments: Some(arguments),
+            arguments: Some(arguments.into()),
             compute_key: Some(command::java_compile_key(
                 if bazel { 2 } else { 0 },
                 &executable,
@@ -591,8 +591,8 @@ fn gen_jar_action<'v>(
         };
         crate::aquery::Meta {
             progress: Some("Building genclass jar %{output}".into()),
-            arguments: Some(arguments),
-            environment: Some(Vec::new()),
+            arguments: Some(arguments.into()),
+            environment: Some(crate::aquery::shared_environment(Vec::new())),
             compute_key: Some(command::spawn_key(
                 &[(&executable, None), (&flags, None)],
                 "JavaSourceJar",

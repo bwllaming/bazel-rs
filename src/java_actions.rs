@@ -619,7 +619,7 @@ pub(crate) fn create_header<'v>(
             display_info.push(("internal-inline-outputs".to_owned(), jdeps.path.clone()));
             meta = Some(crate::aquery::Meta {
                 progress: Some(progress.clone()),
-                arguments: Some(arguments),
+                arguments: Some(arguments.into()),
                 compute_key: Some(command::java_compile_key(
                     if bazel { 2 } else { 0 },
                     &executable,
@@ -729,7 +729,7 @@ pub(crate) fn create_header<'v>(
         all.extend(flags.expand());
         meta = Some(crate::aquery::Meta {
             progress: Some(progress),
-            arguments: Some(all),
+            arguments: Some(all.into()),
             compute_key: Some(command::spawn_key(
                 &[
                     (&executable, None),

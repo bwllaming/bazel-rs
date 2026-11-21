@@ -1472,6 +1472,17 @@ fn run() -> Result<(), String> {
         for warning in engine.take_warnings() {
             warn(&warning);
         }
+        // Only the selected targets' actions are printed: only theirs are
+        // described (all of them for --print_action).
+        let selection = (!print_action).then(|| {
+            aquery_selection(&analysis, &expression, &aquery_options, &relative_directory)
+        });
+        engine.aquery_describe(
+            &mut analysis,
+            selection
+                .as_ref()
+                .and_then(|selected| selected.as_ref().ok()),
+        );
         drop(std::mem::ManuallyDrop::into_inner(engine));
         bazel_rs::perf_mark("aquery.engine_dropped");
         lockfile_gate.open();
@@ -1494,13 +1505,8 @@ fn run() -> Result<(), String> {
                 }
             }
         }
-        let printed = aquery_output(
-            &analysis,
-            &expression,
-            &filters,
-            &aquery_options,
-            &relative_directory,
-        )?;
+        let selected = selection.unwrap_or_else(|| Ok(Default::default()))?;
+        let printed = aquery_output(&analysis, &selected, &filters, &aquery_options)?;
         bazel_rs::perf_mark("aquery.written");
         snapshot.finish();
         if !printed {
@@ -3383,26 +3389,35 @@ fn analyzes(command: &str) -> bool {
 
 /// AqueryProcessor: the action filters, the configured targets the
 /// expression selects and their actions in the requested format.
-fn aquery_output(
+/// The configured targets an aquery expression selects (its action
+/// filters stripped).
+fn aquery_selection(
     analysis: &bazel_rs::engine::aquery::Analysis,
     expression: &bazel_rs::query_language::Expr,
-    filters: &bazel_rs::aquery::Filters,
     options: &bazel_rs::aquery::Options,
     relative: &str,
-) -> Result<bool, String> {
+) -> Result<std::collections::BTreeSet<u32>, String> {
     let stripped = bazel_rs::aquery::strip_filters(expression).map_err(|error| {
         format!(
             "Error doing post analysis query: Evaluation of query \"{expression}\" failed: {error}"
         )
     })?;
-    let selected = analysis.graph.evaluate(
+    analysis.graph.evaluate(
         &stripped,
         &options.query,
         relative,
         &mut std::collections::BTreeMap::new(),
-    )?;
+    )
+}
+
+fn aquery_output(
+    analysis: &bazel_rs::engine::aquery::Analysis,
+    selected: &std::collections::BTreeSet<u32>,
+    filters: &bazel_rs::aquery::Filters,
+    options: &bazel_rs::aquery::Options,
+) -> Result<bool, String> {
     bazel_rs::perf_mark("aquery.selected");
-    let dump = analysis.dump(&selected, options.query.include_aspects);
+    let dump = analysis.dump(selected, options.query.include_aspects);
     if bazel_rs::aquery::interrupted(&dump, filters, options) {
         return Ok(false);
     }

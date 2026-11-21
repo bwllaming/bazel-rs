@@ -11,6 +11,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::aquery_key::{ArgsRecipe, CommandLinePart};
@@ -53,13 +54,14 @@ pub struct Meta {
     /// The raw progress message (`%{label}`, `%{output}`, `%{input}`
     /// placeholders); `None`: the class default.
     pub progress: Option<String>,
-    /// The fixed environment in Bazel's insertion order.
-    pub environment: Option<Vec<(String, String)>>,
+    /// The fixed environment in Bazel's insertion order (one shared copy
+    /// of each distinct environment: [`shared_environment`]).
+    pub environment: Option<Arc<[(String, String)]>>,
     /// The spawn's CommandLines as SpawnAction.computeKey sees them.
     pub command_lines: Option<Vec<CommandLinePart>>,
     /// CommandAction.getArguments (CommandLines.allArguments: parameter
-    /// file contents inline).
-    pub arguments: Option<Vec<String>>,
+    /// file contents inline), packed.
+    pub arguments: Option<PackedStrings>,
     /// A ParameterFileWriteAction (`ctx.actions.write` of an Args).
     pub param_write: Option<ParamWrite>,
     /// A RepoMappingManifestAction (`py_internal.create_repo_mapping_manifest`).
@@ -100,7 +102,63 @@ impl Meta {
 pub struct ParamWrite {
     pub file_type: &'static str,
     pub recipe: ArgsRecipe,
-    pub arguments: Vec<String>,
+    pub arguments: PackedStrings,
+}
+
+/// One shared copy of each distinct fixed environment (most spawns have
+/// the default shell environment's).
+pub fn shared_environment(environment: Vec<(String, String)>) -> Arc<[(String, String)]> {
+    type Known = std::collections::HashSet<Arc<[(String, String)]>>;
+    static KNOWN: std::sync::Mutex<Option<Known>> = std::sync::Mutex::new(None);
+    let mut known = KNOWN.lock().unwrap_or_else(|e| e.into_inner());
+    let known = known.get_or_insert_with(Default::default);
+    if let Some(shared) = known.get(environment.as_slice()) {
+        return Arc::clone(shared);
+    }
+    let shared: Arc<[(String, String)]> = Arc::from(environment);
+    known.insert(Arc::clone(&shared));
+    shared
+}
+
+/// A list of strings in one allocation (with their ends): what aquery
+/// keeps of every action's arguments until it describes the action
+/// (~/code `aquery 'kind("cc_.*", //src/...)'`: 133k spawns' arguments
+/// held 420 MB as `Vec<String>`, an allocation per argument).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PackedStrings {
+    text: Box<str>,
+    ends: Box<[u32]>,
+}
+
+impl PackedStrings {
+    /// The strings, in order.
+    pub fn iter(&self) -> impl Iterator<Item = &str> + '_ {
+        let mut start = 0usize;
+        self.ends.iter().map(move |&end| {
+            let item = &self.text[start..end as usize];
+            start = end as usize;
+            item
+        })
+    }
+
+    pub fn to_vec(&self) -> Vec<String> {
+        self.iter().map(str::to_owned).collect()
+    }
+}
+
+impl From<Vec<String>> for PackedStrings {
+    fn from(items: Vec<String>) -> Self {
+        let mut text = String::with_capacity(items.iter().map(String::len).sum());
+        let mut ends = Vec::with_capacity(items.len());
+        for item in &items {
+            text.push_str(item);
+            ends.push(u32::try_from(text.len()).expect("aquery arguments under 4 GiB"));
+        }
+        Self {
+            text: text.into_boxed_str(),
+            ends: ends.into_boxed_slice(),
+        }
+    }
 }
 
 /// AqueryOptions plus the common post-analysis query options.
