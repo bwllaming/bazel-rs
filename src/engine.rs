@@ -8483,7 +8483,19 @@ impl Engine {
         if Self::target_incompatibility_in(cx, configured, label, edge_config)?.is_some() {
             return Self::incompatible_dependency_view_in(cx, configured, label, edge_config);
         }
-        let artifacts = Self::shared_artifacts_in(cx, label, edge_config, reads)?;
+        let mut artifacts = Self::shared_artifacts_in(cx, label, edge_config, reads)?;
+        // A list made for this view (a source or output file's, not a
+        // planned target's files to build): its source artifacts are the
+        // index's equal ones where registered.
+        if let Some(list) = Arc::get_mut(&mut artifacts) {
+            for artifact in list.iter_mut() {
+                if artifact.producer.is_none()
+                    && let Some(known) = cx.known_source(artifact)
+                {
+                    *artifact = known;
+                }
+            }
+        }
         if order_audit::enabled() {
             order_audit::note_view_artifacts(&artifacts);
         }

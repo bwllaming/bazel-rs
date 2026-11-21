@@ -52,6 +52,12 @@ pub(super) trait ViewCx: Lookup {
     fn ahead(&self) -> bool;
     /// Register an artifact in the build's index (register_artifact).
     fn register(&mut self, file: &File, artifact: &Artifact);
+    /// The index's artifact equal to source artifact `artifact` made for a
+    /// view (shared instead of a copy per view), if it is registered.
+    fn known_source(&self, artifact: &Artifact) -> Option<Artifact> {
+        let _ = artifact;
+        None
+    }
     /// The artifacts the view registered ahead of its turn
     /// (Engine::view_artifacts).
     fn note_view_artifacts(&mut self, key: ConfiguredTargetKey, artifacts: Artifacts);
@@ -773,6 +779,15 @@ impl Lookup for SharedPrepare<'_> {
 impl ViewCx for SharedPrepare<'_> {
     fn ahead(&self) -> bool {
         true
+    }
+
+    /// (A worker's views stay in the walk's memo with their artifacts
+    /// until its end: one copy of a source file's artifact per view held
+    /// ~0.1 GB at ~/code cquery's walk end.)
+    fn known_source(&self, artifact: &Artifact) -> Option<Artifact> {
+        self.index
+            .get(&artifact.file)
+            .filter(|known| known.producer.is_none() && same_artifact(known, artifact))
     }
 
     fn register(&mut self, file: &File, artifact: &Artifact) {
