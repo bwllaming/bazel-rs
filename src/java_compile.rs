@@ -165,7 +165,9 @@ impl JavaCompileSpec {
         };
         let (arguments, files) = spec.expand(None)?;
         let mut action = logical.clone();
-        action.arguments.extend(arguments);
+        action
+            .arguments
+            .extend(arguments.iter().map(crate::interner::IStr::from));
         action.extra.param_files = files;
         let selected: HashSet<&Path> = self
             .mandatory_inputs

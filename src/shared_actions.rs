@@ -459,10 +459,10 @@ impl Fingerprint {
         }
     }
 
-    fn strings<'a>(&mut self, strings: impl ExactSizeIterator<Item = &'a String>) {
+    fn strings<'a, S: AsRef<str> + 'a>(&mut self, strings: impl ExactSizeIterator<Item = &'a S>) {
         self.count(strings.len());
         for text in strings {
-            self.str(text);
+            self.str(text.as_ref());
         }
     }
 
@@ -851,7 +851,7 @@ mod tests {
         Action {
             id: id.to_owned(),
             program: Some("bazel-out/k8-opt-exec/bin/tool".to_owned()),
-            arguments: vec![argument.to_owned()],
+            arguments: vec![argument.into()],
             outputs: vec!["bazel-out/k8-fastbuild/bin/p/out".into()],
             extra: ActionExtra {
                 mnemonic: "Run".to_owned(),

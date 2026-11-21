@@ -27,7 +27,9 @@ use std::thread;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Dependency {
-    pub action_id: String,
+    /// The producer's action id, interned (crate::interner): an action's
+    /// outputs are inputs of many actions.
+    pub action_id: crate::interner::IStr,
     /// Index in the producer's declared outputs, not sorted output order.
     pub output_index: usize,
     #[serde(with = "crate::snapshot::codec::path")]
@@ -133,7 +135,7 @@ impl Deferred {
                 let (arguments, param_files) = spec
                     .expand(Some(&lookup))
                     .map_err(|e| format!("{progress} failed: {e}"))?;
-                action.arguments = arguments;
+                action.arguments = crate::interner::IStr::all(arguments);
                 action.extra.param_files = param_files;
                 action
                     .extra
@@ -804,7 +806,7 @@ fn validate(nodes: Vec<PlannedAction>, jobs: usize) -> Result<Graph, String> {
     let checks = action::try_map_ordered(&ordered, |&(id, node)| {
         for dependency in node.all_dependencies() {
             let producer = index
-                .get(&dependency.action_id)
+                .get(dependency.action_id.as_str())
                 .map(|&position| &nodes[position])
                 .ok_or_else(|| {
                     format!(
@@ -830,7 +832,7 @@ fn validate(nodes: Vec<PlannedAction>, jobs: usize) -> Result<Graph, String> {
         let mut count = 0;
         for dependency in node.all_dependencies() {
             consumers
-                .entry(dependency.action_id.clone())
+                .entry(dependency.action_id.to_string())
                 .or_default()
                 .push(id.clone());
             count += 1;
@@ -1127,7 +1129,7 @@ where
     let traced = (crate::profile::recording() || crate::bep::active()).then(|| {
         let dependencies: Vec<String> = node
             .all_dependencies()
-            .map(|dependency| dependency.action_id.clone())
+            .map(|dependency| dependency.action_id.to_string())
             .collect();
         (
             std::time::Instant::now(),
@@ -1466,7 +1468,7 @@ where
                             .expect("ready node exists");
                         let producers = node
                             .all_dependencies()
-                            .map(|dependency| results.get(&dependency.action_id).cloned())
+                            .map(|dependency| results.get(dependency.action_id.as_str()).cloned())
                             .collect();
                         running.insert(id.clone());
                         Work::Action(Box::new(Job {

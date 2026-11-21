@@ -589,7 +589,7 @@ impl Context {
             shell_strict: false,
             shell_pad,
             executable_file,
-            arguments,
+            arguments: crate::interner::IStr::all(arguments),
             environment,
             extra,
             ..Action::default()

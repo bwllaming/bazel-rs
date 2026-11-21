@@ -2151,7 +2151,7 @@ mod tests {
         };
         deferred.apply(&listings, &mut action).unwrap();
         (
-            action.arguments,
+            action.arguments.into_iter().map(String::from).collect(),
             action.extra.param_files,
             action.write.map(|write| write.content).unwrap_or_default(),
         )

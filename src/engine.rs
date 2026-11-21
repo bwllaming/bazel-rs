@@ -13173,7 +13173,7 @@ impl Engine {
                     if !failed.contains(&node.action.id)
                         && node
                             .all_dependencies()
-                            .any(|dependency| failed.contains(&dependency.action_id))
+                            .any(|dependency| failed.contains(dependency.action_id.as_str()))
                     {
                         failed.insert(node.action.id.clone());
                     }
@@ -14564,7 +14564,7 @@ fn input_group(
         }
         if let Some((action_id, output_index)) = &artifact.producer {
             dependencies.push(Dependency {
-                action_id: action_id.clone(),
+                action_id: action_id.into(),
                 output_index: *output_index,
                 destination: artifact.exec.clone(),
             });
@@ -15769,7 +15769,7 @@ fn plan_listed_action(
         }
         if let Some((action_id, output_index)) = &artifact.producer {
             dependencies.push(Dependency {
-                action_id: action_id.clone(),
+                action_id: action_id.into(),
                 output_index: *output_index,
                 destination: artifact.exec.clone(),
             });

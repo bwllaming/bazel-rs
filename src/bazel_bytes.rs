@@ -121,7 +121,7 @@ pub fn platform_action(action: &crate::action::Action) -> Cow<'_, crate::action:
     converted.arguments = action
         .arguments
         .iter()
-        .map(|argument| platform(argument).into_owned())
+        .map(|argument| crate::interner::IStr::new(&platform(argument)))
         .collect();
     converted.environment = action
         .environment
@@ -181,7 +181,7 @@ mod tests {
         assert!(matches!(platform_action(&action), Cow::Borrowed(_)));
         let mut bytes = action.clone();
         bytes.command = format!("printf {ff}");
-        bytes.arguments = vec![format!("a{ff}")];
+        bytes.arguments = vec![format!("a{ff}").into()];
         bytes.environment = [(format!("K{ff}"), format!("v{ff}"))].into();
         bytes.outputs = vec![PathBuf::from(format!("bazel-out/bin/{ff}.txt"))];
         bytes.inputs = vec![(

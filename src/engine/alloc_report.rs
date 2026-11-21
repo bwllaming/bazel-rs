@@ -748,6 +748,14 @@ impl Footprint for String {
     }
 }
 
+/// An interned string's text is shared by the whole process (counted
+/// nowhere); the reference is inline.
+impl Footprint for crate::interner::IStr {
+    fn heap(&self, _walker: &mut Walker<'_, '_>) -> usize {
+        0
+    }
+}
+
 impl Footprint for PathBuf {
     fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
         walker.alloc(self.capacity())

@@ -87,6 +87,15 @@ impl<'a> Strings<'a> {
         self.owned(text.as_bytes(), text.capacity());
     }
 
+    /// An interned string: its arena copy counted once.
+    fn interned(&mut self, text: &'a crate::interner::IStr) {
+        let text: &'static str = text.as_str();
+        if self.allocations.insert(text.as_ptr() as usize) {
+            self.bytes += 8 + text.len().div_ceil(8) as u64 * 8;
+        }
+        self.content(text.as_bytes());
+    }
+
     fn path_buf(&mut self, path: &'a PathBuf) {
         self.owned(path.as_os_str().as_bytes(), path.capacity());
     }
@@ -150,7 +159,7 @@ fn map_bytes(map: &BTreeMap<String, String>) -> u64 {
 #[derive(Default)]
 struct Census<'a> {
     categories: BTreeMap<&'static str, Strings<'a>>,
-    argument_lists: Wholes<'a, [String]>,
+    argument_lists: Wholes<'a, [crate::interner::IStr]>,
     environment_maps: Wholes<'a, BTreeMap<String, String>>,
     execution_info_maps: Wholes<'a, BTreeMap<String, String>>,
     execution_requirement_sets: Wholes<'a, BTreeSet<String>>,
@@ -204,10 +213,10 @@ impl<'a> Census<'a> {
             self.category("action.program").string(program);
         }
         for argument in &action.arguments {
-            self.category("action.arguments").string(argument);
+            self.category("action.arguments").interned(argument);
         }
         let list_bytes =
-            size_class(action.arguments.capacity() * 24) + strings_bytes(action.arguments.iter());
+            size_class(action.arguments.capacity() * size_of::<crate::interner::IStr>());
         self.argument_lists.add(&action.arguments[..], list_bytes);
         for (name, value) in &action.environment {
             self.category("action.environment.name").string(name);
@@ -287,7 +296,7 @@ impl<'a> Census<'a> {
         }
         for dependency in &planned.dependencies {
             self.category("dependency.action_id")
-                .string(&dependency.action_id);
+                .interned(&dependency.action_id);
             self.category("dependency.destination")
                 .shared_path(&dependency.destination);
         }

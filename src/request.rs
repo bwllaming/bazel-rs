@@ -503,7 +503,7 @@ impl PlannedRequest {
                         });
                     }
                     for dependency in &mut node.dependencies {
-                        redirect_stable(&mut dependency.action_id);
+                        redirect_stable_dependency(&mut dependency.action_id);
                     }
                 }
                 self.redirect_stable_in_groups();
@@ -560,7 +560,7 @@ impl PlannedRequest {
                 let (_, copy) = redirected.entry(Arc::as_ptr(group)).or_insert_with(|| {
                     let mut copy = InputGroup::clone(group);
                     for dependency in &mut copy.dependencies {
-                        redirect_stable(&mut dependency.action_id);
+                        redirect_stable_dependency(&mut dependency.action_id);
                     }
                     (Arc::clone(group), Arc::new(copy))
                 });
@@ -575,6 +575,13 @@ impl PlannedRequest {
 fn redirect_stable(id: &mut String) {
     if id == STABLE_STATUS_ID {
         *id = VOLATILE_STATUS_ID.to_owned();
+    }
+}
+
+/// [`redirect_stable`] of a dependency's producer id.
+fn redirect_stable_dependency(id: &mut crate::interner::IStr) {
+    if *id == STABLE_STATUS_ID {
+        *id = VOLATILE_STATUS_ID.into();
     }
 }
 
@@ -1024,7 +1031,7 @@ pub fn execute_with_tests(
                 (
                     node.action.id.clone(),
                     node.all_dependencies()
-                        .map(|dependency| dependency.action_id.clone())
+                        .map(|dependency| dependency.action_id.to_string())
                         .collect(),
                 )
             })
@@ -1320,7 +1327,7 @@ fn tool_runfiles_trees(nodes: &[PlannedAction]) -> Vec<String> {
                 .iter()
                 .find(|dependency| dependency.action_id.ends_with("#repo_mapping"))
             {
-                trees.push(dependency.action_id.clone());
+                trees.push(dependency.action_id.to_string());
             }
         }
     }
@@ -1563,7 +1570,7 @@ mod tests {
             dependencies: dependencies
                 .iter()
                 .map(|id| Dependency {
-                    action_id: (*id).to_owned(),
+                    action_id: (*id).into(),
                     output_index: 0,
                     destination: PathBuf::from("bazel-out/stable-status.txt").into(),
                 })
@@ -1790,7 +1797,7 @@ mod tests {
             runfiles: true,
             inputs: Vec::new(),
             dependencies: vec![Dependency {
-                action_id: producer.to_owned(),
+                action_id: producer.into(),
                 output_index: 0,
                 destination: PathBuf::from("bazel-out/tool.runfiles")
                     .join(destination)

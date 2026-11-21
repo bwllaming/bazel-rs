@@ -191,8 +191,10 @@ pub struct Action {
     pub write: Option<WriteAction>,
     /// Direct executable; `None` selects Bash unless this is a native write.
     pub program: Option<String>,
-    /// Literal process arguments, or shell positional parameters starting at `$1`.
-    pub arguments: Vec<String>,
+    /// Literal process arguments, or shell positional parameters starting at
+    /// `$1`; interned (crate::interner: a package's compiles repeat the same
+    /// flags thousands of times).
+    pub arguments: Vec<crate::interner::IStr>,
     /// The fixed part of the action environment (a TMPDIR entry is keyed
     /// but replaced by the local TMPDIR, [`local_tmpdir`]).
     pub environment: BTreeMap<String, String>,
@@ -252,7 +254,7 @@ pub fn arguments(action: &Action) -> Vec<String> {
             }
         }
     }
-    argv.extend(action.arguments.iter().cloned());
+    argv.extend(action.arguments.iter().map(|argument| argument.to_string()));
     argv
 }
 
@@ -9915,7 +9917,7 @@ mod tests {
             let mut action = original.clone();
             match case {
                 0 => action.command = "true".into(),
-                1 => action.arguments.push(String::new()),
+                1 => action.arguments.push(Default::default()),
                 2 => {
                     action.environment.insert("KEY".into(), "value".into());
                 }
@@ -9948,18 +9950,18 @@ mod tests {
         );
         let marker = fixture.0.join("expanded");
         action.arguments = vec![
-            String::new(),
+            String::new().into(),
             "雪 'quotes'".into(),
             "$HOME *".into(),
-            format!("$(touch '{}')", marker.display()),
+            format!("$(touch '{}')", marker.display()).into(),
         ];
         action
             .environment
             .insert("VALUE".into(), "$literal 雪".into());
         let first = execute(&fixture.cache(), &action).unwrap();
-        let expected: Vec<u8> = std::iter::once(action.program.as_ref().unwrap())
-            .chain(action.arguments.iter())
-            .chain(std::iter::once(&action.environment["VALUE"]))
+        let expected: Vec<u8> = std::iter::once(action.program.as_deref().unwrap())
+            .chain(action.arguments.iter().map(|argument| argument.as_str()))
+            .chain(std::iter::once(action.environment["VALUE"].as_str()))
             .flat_map(|value| value.bytes().chain(std::iter::once(0)))
             .collect();
         assert_eq!(fs::read(&first.outputs[0]).unwrap(), expected);
@@ -10161,10 +10163,10 @@ mod tests {
         action.shell_pad = true;
         let marker = fixture.0.join("argument-ran");
         action.arguments = vec![
-            String::new(),
+            String::new().into(),
             "雪 🦀".into(),
             "$HOME 'quoted' \\\n".into(),
-            format!("$(touch '{}')", marker.display()),
+            format!("$(touch '{}')", marker.display()).into(),
         ];
         action.command = "test \"$0\" = '' && test \"$#\" = 4 && printf '%s\\0' \"$1\" \"$2\" \"$3\" \"$4\" > out/result".into();
         let expected: Vec<u8> = action
@@ -10787,7 +10789,8 @@ mod tests {
                 barrier.wait();
                 for round in 0..ROUNDS {
                     // Every round gets a fresh cache key and copied executable.
-                    action.arguments = vec![round.to_string(), marker.to_str().unwrap().into()];
+                    action.arguments =
+                        vec![round.to_string().into(), marker.to_str().unwrap().into()];
                     let first = execute(&fixture.cache(), &action).unwrap();
                     assert!(!first.cache_hit);
                     assert_eq!(

@@ -363,7 +363,7 @@ impl Local<'_> {
         own.action.extra.owner = None;
         own.action.extra.progress = None;
         for dependency in &mut own.dependencies {
-            dependency.action_id.clear();
+            dependency.action_id = Default::default();
         }
         normalized_value(&mut hash, &own, self.root);
         for (source, _) in &node.action.inputs {

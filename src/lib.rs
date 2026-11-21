@@ -96,6 +96,7 @@ mod implicit_outputs;
 pub mod info;
 mod instrumented_files;
 pub mod internal_error;
+pub mod interner;
 mod java_actions;
 mod java_classpath;
 pub mod java_compile;

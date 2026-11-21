@@ -3170,7 +3170,7 @@ fn reach(
             if required.insert(id) {
                 todo.extend(
                     node.all_dependencies()
-                        .map(|dependency| dependency.action_id.clone()),
+                        .map(|dependency| dependency.action_id.to_string()),
                 );
             }
         }

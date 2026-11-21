@@ -453,7 +453,7 @@ pub fn derive(
         for id in &required {
             if by_id.get(id).is_some_and(|node| {
                 node.all_dependencies()
-                    .any(|dependency| is_status(&dependency.action_id))
+                    .any(|dependency| is_status(dependency.action_id.as_str()))
             }) {
                 return Err(format!(
                     "{id} reads the workspace status, which a --nobuild plan does not produce"

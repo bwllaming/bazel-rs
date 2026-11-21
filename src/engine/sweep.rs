@@ -366,8 +366,8 @@ impl Rewrite {
 
     fn dependencies(&self, dependencies: &mut [scheduler::Dependency]) {
         for dependency in dependencies {
-            if let Some(to) = self.aliases.get(&dependency.action_id) {
-                dependency.action_id = to.clone();
+            if let Some(to) = self.aliases.get(dependency.action_id.as_str()) {
+                dependency.action_id = to.into();
             }
         }
     }
@@ -376,7 +376,7 @@ impl Rewrite {
         group
             .dependencies
             .iter()
-            .any(|dependency| self.aliases.contains_key(&dependency.action_id))
+            .any(|dependency| self.aliases.contains_key(dependency.action_id.as_str()))
     }
 
     fn group(&self, group: &mut Arc<scheduler::InputGroup>) {
@@ -512,7 +512,7 @@ impl Rewrite {
                     .dependencies
                     .iter()
                     .chain(planned.groups.iter().flat_map(|group| &group.dependencies))
-                    .any(|dependency| self.aliases.contains_key(&dependency.action_id)),
+                    .any(|dependency| self.aliases.contains_key(dependency.action_id.as_str())),
             "internal error: the sweep placed {} unrewritten",
             planned.action.id
         );
@@ -666,7 +666,7 @@ fn check_rewritten(delta: &delta::TargetDelta, rewrite: &Rewrite) {
             .iter()
             .chain(planned.groups.iter().flat_map(|group| &group.dependencies))
         {
-            if rewrite.aliases.contains_key(&dependency.action_id) {
+            if rewrite.aliases.contains_key(dependency.action_id.as_str()) {
                 fail(format!(
                     "input {} of {} naming {}",
                     dependency.destination.display(),
@@ -901,7 +901,7 @@ pub(super) fn check_ids(state: &ActionPlanning, action_executions: &ActionExecut
             .iter()
             .chain(node.groups.iter().flat_map(|group| &group.dependencies))
         {
-            if !known(&dependency.action_id) {
+            if !known(dependency.action_id.as_str()) {
                 fail(format!(
                     "input {} of {} ({})",
                     dependency.destination.display(),
