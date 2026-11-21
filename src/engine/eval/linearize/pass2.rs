@@ -203,6 +203,19 @@ pub(in crate::engine) struct Pending {
 }
 
 impl Pending {
+    /// Give the room of the applied ops back: the queue holds every op of
+    /// the deferred flushes when their walk starts (~/code `aquery
+    /// 'kind("cc_.*", //src/...)'`: 768 MB, most of it the cquery capture's
+    /// edges), and the walk's planning state grows as it drains. Halved
+    /// once a quarter is in use (each op moved at most a few times).
+    fn release_applied(&mut self) {
+        const MIN: usize = 1 << 16;
+        let (len, capacity) = (self.ops.len(), self.ops.capacity());
+        if capacity > MIN && len < capacity / 4 {
+            self.ops.shrink_to((len * 2).max(MIN));
+        }
+    }
+
     /// Whether ops apply before the turn of `index`.
     pub(crate) fn due(&self, index: usize) -> bool {
         self.ops
@@ -256,6 +269,9 @@ impl Engine {
             if let Some((_, op)) = pending.ops.pop_front() {
                 self.apply_pass2_op(op);
             }
+        }
+        if due {
+            pending.release_applied();
         }
         self.eval_pass2 = Some(pending);
         due
