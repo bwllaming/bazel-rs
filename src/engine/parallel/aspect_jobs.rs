@@ -61,6 +61,15 @@ pub(in crate::engine) fn enabled() -> bool {
     mode() != 0 && !order_audit::enabled()
 }
 
+/// [`enabled`] for `engine`'s walks: not for a query's (cquery/aquery,
+/// a configured-graph capture), whose rules with attribute aspects are
+/// planned at their turn. Their jobs' walks and applications held ~0.1 GB
+/// more at the walk's end than at its turn (~/code `cquery
+/// 'deps(//src/...)'`: 8.0 -> 7.9 GB, the same wall time).
+pub(in crate::engine) fn enabled_for(engine: &Engine) -> bool {
+    enabled() && engine.cquery_capture.is_none()
+}
+
 /// `BAZEL_RS_T3_ASPECT_DELTAS=1`: an aspect job builds its rule's delta
 /// too (merged after its applications' placement).
 pub(super) fn worker_deltas() -> bool {
@@ -545,7 +554,7 @@ impl prepare::Lookup for FrozenAspects<'_, '_> {
 
 impl AspectTable {
     pub(in crate::engine) fn new(engine: &Engine, state: &ActionPlanning) -> Self {
-        if !enabled() {
+        if !enabled_for(engine) {
             return Self::default();
         }
         let mut table = Self {
@@ -1340,7 +1349,7 @@ impl Engine {
         variant: &str,
         fill: &mut dyn FnMut() -> Arc<crate::starlark_types::Target>,
     ) -> Option<Arc<crate::starlark_types::Target>> {
-        if !enabled() {
+        if !enabled_for(self) {
             return None;
         }
         let frozen = self.frozen_walk.as_ref()?;
@@ -1370,7 +1379,7 @@ impl Engine {
         identities: &AspectTargetIdentities,
         memo: &BTreeMap<AspectApplicationKey, AspectProviders>,
     ) -> Option<(Box<crate::analysis::AnalysisResult>, Vec<String>)> {
-        if !enabled() {
+        if !enabled_for(self) {
             return None;
         }
         let frozen = self.frozen_walk.as_ref()?;

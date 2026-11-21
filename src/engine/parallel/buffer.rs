@@ -45,6 +45,24 @@ pub(super) fn enabled() -> bool {
     *ENABLED
 }
 
+/// cquery/aquery (a configured-graph capture): how far past the cursor
+/// entries are classified (`BAZEL_RS_T3_QUERY_WINDOW`). A query's universe
+/// is the build's and more (~/code `aquery 'kind("cc_.*", //src/...)'`:
+/// 223k configured targets): unbounded, the results its workers finished
+/// ahead of the cursor held ~1.3 GB at its peak (1,024: the same wall
+/// time).
+fn query_window() -> usize {
+    static WINDOW: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling bound; the output is the same either way.
+        std::env::var("BAZEL_RS_T3_QUERY_WINDOW")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1_024usize)
+            .max(1)
+    });
+    *WINDOW
+}
+
 /// How far past the cursor entries are classified (and so computed).
 fn window() -> usize {
     static WINDOW: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
@@ -1683,7 +1701,7 @@ fn classify_why(
         let Some(custom) = rule.custom.as_ref() else {
             return turn("no_custom");
         };
-        if !super::aspect_jobs::enabled()
+        if !super::aspect_jobs::enabled_for(engine)
             && custom
                 .schema
                 .values()
@@ -1696,7 +1714,7 @@ fn classify_why(
     }
     let isolation = Isolation::enter();
     let mut cx = prepare::SharedPrepare::frozen(frozen, index);
-    cx.aspect_jobs = super::aspect_jobs::enabled();
+    cx.aspect_jobs = super::aspect_jobs::enabled_for(engine);
     let keys = requirements(engine, &mut cx, key, rule, starlark);
     let aborted = cx.record.abort.is_some();
     let (effects, sentinel) = isolation.finish();
@@ -1822,6 +1840,11 @@ impl Board {
                 .enumerate()
                 .map(|(slot, (key, _))| (key.clone(), start + slot)),
         );
+        let window = if frozen.engine.cquery_capture.is_some() {
+            query_window()
+        } else {
+            window()
+        };
         Arc::new(Board {
             frozen,
             plan,
@@ -1846,7 +1869,7 @@ impl Board {
             chunks_left: std::sync::atomic::AtomicUsize::new(len.div_ceil(CHUNK)),
             chain: std::sync::OnceLock::new(),
             cursor: std::sync::atomic::AtomicUsize::new(start),
-            window: window(),
+            window,
             work: (0..len).map(|_| AtomicU64::new(0)).collect(),
             edges_kept: Default::default(),
             parked: Default::default(),
@@ -2252,7 +2275,10 @@ impl Engine {
         // The per-target tables the merges fill, sized once for the walk
         // (growing them rehashed every entry on the cursor).
         state.dry.reserve(len);
-        state.repositories.reserve(len);
+        // (A semantic commit, cquery, keeps no transitive repositories.)
+        if !self.semantic_only() {
+            state.repositories.reserve(len);
+        }
         state.custom_providers.reserve(len);
         state.provider_keys.reserve(len);
         state.runfiles_info.reserve(len);
