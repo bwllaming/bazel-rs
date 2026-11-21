@@ -2563,12 +2563,18 @@ pub(super) fn rendered(op: &DeltaOp) -> String {
                 .map(|files_to_run| files_to_run.executable().cloned())
         ),
         DeltaOp::RunfilesNodes(nodes) => format!("runfiles nodes {nodes:?}"),
+        // A shared input group by its content: two equal groups built
+        // apart (a memo fill another worker dropped) are one group.
         DeltaOp::Node(planned, sources) => format!(
             "node {planned:?} {:?}",
             sources.as_ref().map(|(id, sources)| (
                 id,
                 &sources.own,
-                sources.groups.iter().map(Arc::as_ptr).collect::<Vec<_>>()
+                sources
+                    .groups
+                    .iter()
+                    .map(|group| group_digest(group))
+                    .collect::<Vec<_>>()
             ))
         ),
         DeltaOp::Lowering(..) | DeltaOp::Rewritten(..) => "lowering".to_owned(),
@@ -2577,6 +2583,26 @@ pub(super) fn rendered(op: &DeltaOp) -> String {
         DeltaOp::Dry(defaults) => format!("dry {defaults:?}"),
         DeltaOp::ListedTreeAction => "listed".to_owned(),
     }
+}
+
+/// The content of a shared input group as a digest (BAZEL_RS_VERIFY_DELTA:
+/// its root, entries, generated inputs and special destinations).
+fn group_digest(group: &scheduler::InputGroup) -> u64 {
+    use std::hash::{BuildHasher, Hash, Hasher};
+    let mut hasher = crate::fast_hash::FxBuildHasher::default().build_hasher();
+    group.root.hash(&mut hasher);
+    group.runfiles.hash(&mut hasher);
+    group.inputs.hash(&mut hasher);
+    for dependency in &group.dependencies {
+        dependency.action_id.hash(&mut hasher);
+        dependency.output_index.hash(&mut hasher);
+        dependency.destination.hash(&mut hasher);
+    }
+    group.tree_inputs.hash(&mut hasher);
+    group.symlink_inputs.hash(&mut hasher);
+    group.constant_metadata.hash(&mut hasher);
+    group.empty_files.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// BAZEL_RS_VERIFY_DELTA's comparison: the delta a worker built for `key`
