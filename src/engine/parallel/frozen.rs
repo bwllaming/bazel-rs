@@ -361,13 +361,14 @@ impl PlannedResults {
         &self,
         key: &ConfiguredTargetKey,
         delta: &delta::TargetDelta,
-        transitive: Option<&BTreeSet<String>>,
+        transitive: Option<&Arc<BTreeSet<String>>>,
         artifacts: &ConcurrentArtifactIndex,
         stamp: u32,
         shared: &HashMap<File, Artifact>,
     ) {
         let mut results = KeyResults {
-            repositories: transitive.map(|transitive| Arc::new(transitive.clone())),
+            // The prepare's closure, shared with its commit's.
+            repositories: transitive.map(Arc::clone),
             ..KeyResults::default()
         };
         let resolve = |artifact: &Artifact| {
@@ -1023,7 +1024,7 @@ pub(super) fn run_frozen(
             class,
         );
         let mut cx = prepare::SharedPrepare::frozen(frozen, index);
-        cx.aspect_jobs = super::aspect_jobs::enabled();
+        cx.aspect_jobs = super::aspect_jobs::enabled_for(&frozen.engine);
         // Task B: an aspect job resolves the source files its applications
         // look up (applied at its merge, AspectRecord::sources); a job of
         // the merge buffer the source files its prepare looks up
@@ -1284,7 +1285,8 @@ pub(super) fn run_native(
                 runfiles_info: plain.runfiles_info,
                 validation,
                 // A semantic commit keeps no transitive repositories.
-                repositories: (!engine.semantic_only()).then(|| Arc::new(transitive)),
+                repositories: (!engine.semantic_only())
+                    .then(|| super::super::intern_repositories(transitive)),
             },
             registered,
             declared: declared
@@ -1753,7 +1755,7 @@ fn package_group_results(
             provider_keys: None,
             runfiles_info: None,
             validation: None,
-            repositories: Some(Arc::new(transitive)),
+            repositories: Some(super::super::intern_repositories(transitive)),
         },
         registered: Vec::new(),
         declared: Vec::new(),
@@ -2202,7 +2204,7 @@ mod tests {
         let path = generating.exec.to_path_buf();
         let results = PlannedResults::new();
         let index = ConcurrentArtifactIndex::default();
-        let transitive = BTreeSet::new();
+        let transitive = Arc::new(BTreeSet::new());
         let w = ConfiguredTargetKey::new(
             Label::parse_canonical("//pkg:w").unwrap(),
             crate::config_registry::no_config().id,

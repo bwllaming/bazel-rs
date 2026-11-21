@@ -409,6 +409,30 @@ impl Declared {
 /// order is observed).
 type KeyMap<V> = crate::fast_hash::FxHashMap<ConfiguredTargetKey, V>;
 type ResolvedInputs = Vec<Artifact>;
+
+/// One shared copy of each distinct transitive repository closure
+/// (`PreparedTarget::transitive`, `ActionPlanning::repositories`): most
+/// configured targets' closures are equal (~/code `aquery 'kind("cc_.*",
+/// //src/...)'`: 224k targets' sets held 257 MB). Kept for the process.
+fn intern_repositories(set: BTreeSet<String>) -> Arc<BTreeSet<String>> {
+    const SHARDS: usize = 64;
+    type Shard = std::sync::Mutex<crate::fast_hash::FxHashSet<Arc<BTreeSet<String>>>>;
+    static INTERNED: std::sync::LazyLock<Box<[Shard]>> =
+        std::sync::LazyLock::new(|| (0..SHARDS).map(|_| Default::default()).collect());
+    let hash = {
+        use std::hash::BuildHasher;
+        crate::fast_hash::FxBuildHasher::default().hash_one(&set)
+    };
+    let mut shard = INTERNED[crate::fast_hash::shard_of(hash, SHARDS)]
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(known) = shard.get(&set) {
+        return Arc::clone(known);
+    }
+    let set = Arc::new(set);
+    shard.insert(Arc::clone(&set));
+    set
+}
 /// [`Engine`]'s `action_executions`.
 type ActionExecutions = crate::fast_hash::FxHashMap<String, crate::exec_groups::ActionExecution>;
 
@@ -3080,8 +3104,9 @@ struct PreparedTarget {
     main_ignored: Arc<IgnoredSubdirectories>,
     /// The transitive repository closure of the target's dependency
     /// edges (Starlark rules refine it from their resolved
-    /// dependencies; the commit inserts it).
-    transitive: BTreeSet<String>,
+    /// dependencies; the commit inserts it). Shared with what a worker
+    /// publishes of it (`PlannedResults`): one copy.
+    transitive: Arc<BTreeSet<String>>,
     kind: PreparedKind,
 }
 
@@ -8910,7 +8935,7 @@ impl Engine {
                 action_owner,
                 exec_config,
                 main_ignored,
-                transitive,
+                transitive: intern_repositories(transitive),
                 kind: PreparedKind::PackageGroup,
             });
         }
@@ -8922,7 +8947,7 @@ impl Engine {
             action_owner,
             exec_config,
             main_ignored,
-            transitive,
+            transitive: intern_repositories(transitive),
             kind: PreparedKind::Native,
         })
     }
@@ -9262,7 +9287,7 @@ impl Engine {
             action_owner,
             exec_config,
             main_ignored,
-            transitive,
+            transitive: intern_repositories(transitive),
             kind: PreparedKind::Custom(Box::new(CustomPrepared {
                 snapshot,
                 action_execution,
@@ -9300,7 +9325,7 @@ impl Engine {
         if !self.semantic_only() {
             state
                 .repositories
-                .insert(key.clone(), Arc::new(transitive.clone()));
+                .insert(key.clone(), Arc::clone(&transitive));
         }
         match kind {
             PreparedKind::PackageGroup => {
@@ -9455,7 +9480,7 @@ impl Engine {
         output_root: String,
         action_owner: String,
         main_ignored: Arc<IgnoredSubdirectories>,
-        transitive: BTreeSet<String>,
+        transitive: Arc<BTreeSet<String>>,
         rule: &Rule,
         snapshot: ComputeSnapshot,
         action_execution: Vec<crate::exec_groups::ActionExecution>,

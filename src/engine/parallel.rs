@@ -841,7 +841,7 @@ struct PreparedParts {
     action_owner: String,
     exec_config: ConfigId,
     main_ignored: Arc<IgnoredSubdirectories>,
-    transitive: BTreeSet<String>,
+    transitive: Arc<BTreeSet<String>>,
     action_execution: Vec<crate::exec_groups::ActionExecution>,
 }
 
@@ -2968,7 +2968,7 @@ impl Engine {
     fn dispatch(
         &self,
         snapshot: ComputeSnapshot,
-        transitive: BTreeSet<String>,
+        transitive: Arc<BTreeSet<String>>,
         index: usize,
         class: u32,
         delta: Option<Box<delta::DeltaInputs>>,

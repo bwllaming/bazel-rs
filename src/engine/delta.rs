@@ -2304,7 +2304,7 @@ pub(super) struct DeltaInputs {
     pub(super) output_root: String,
     pub(super) action_owner: String,
     pub(super) main_ignored: Arc<IgnoredSubdirectories>,
-    pub(super) transitive: BTreeSet<String>,
+    pub(super) transitive: Arc<BTreeSet<String>>,
     pub(super) action_execution: Vec<crate::exec_groups::ActionExecution>,
     pub(super) platforms: RemotePlatforms,
     pub(super) class: u32,
