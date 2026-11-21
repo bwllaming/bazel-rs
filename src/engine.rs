@@ -52,6 +52,7 @@ pub(crate) mod query_attrs;
 pub mod root_checkpoint;
 mod split;
 mod starlark_doc_extract;
+mod string_census;
 mod sweep;
 
 /// `BAZEL_RS_ANALYSIS_ORDER` is this binary's default (docs/EVALUATOR.md
@@ -11641,6 +11642,8 @@ impl Engine {
         }
         // W0-A: retained-memory breakdown (BAZEL_RS_TIMING_ALLOC=1 only).
         alloc_report::report_if_enabled(self, &state, &plan, &configured);
+        // String census (BAZEL_RS_STRING_CENSUS=1 only).
+        string_census::report_if_enabled(self, &state, &plan, &configured);
         // N58: the top-level aspects of `--aspects` (and the appended
         // ValidateTarget of `--experimental_use_validation_aspect`) applied
         // to each requested target (ToplevelStarlarkAspectFunction): the
