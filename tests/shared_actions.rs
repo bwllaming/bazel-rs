@@ -548,3 +548,90 @@ consumer = rule(
     let write = node("bazel-out/k8-fastbuild/bin/tagged/base.aspect_write");
     assert!(!write.contains("execution-info"), "{write}");
 }
+
+/// aquery on the build's fast paths (commits ahead, worker deltas, frozen
+/// walks) lists what its sequential path lists, byte for byte: every
+/// output format, aspects included (`--keep_going` fails closed in both:
+/// configured queries do not implement it), the shared actions
+/// under the owner that planned them whatever order the targets come in
+/// (the owner of a shared action is the first in plan order, as the
+/// action's id). The sequential path: no commit ahead, no worker deltas
+/// (BAZEL_RS_NO_COMMIT_AHEAD, BAZEL_RS_NO_WORKER_DELTAS: no frozen walk);
+/// the fast one forced on these small walks (BAZEL_RS_EVAL_FROZEN_PREPARES=all).
+#[test]
+fn aquery_fast_paths_list_what_the_sequential_path_lists() {
+    let sequential: &[(&str, &str)] = &[
+        ("BAZEL_RS_NO_COMMIT_AHEAD", "1"),
+        ("BAZEL_RS_NO_WORKER_DELTAS", "1"),
+        ("BAZEL_RS_EVAL_FROZEN_PREPARES", "0"),
+    ];
+    let fast: &[&[(&str, &str)]] = &[
+        &[],
+        &[("BAZEL_RS_EVAL_FROZEN_PREPARES", "all")],
+        &[
+            ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all"),
+            ("BAZEL_RS_EVAL_JITTER", "300"),
+        ],
+    ];
+    let ws = Workspace::new();
+    // (The forced fast path walks frozen: its jobs prepare on the workers.)
+    let timed = ws.run(
+        &["aquery".to_owned(), "//pkg:both".to_owned()],
+        &[
+            ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all"),
+            ("BAZEL_RS_TIMING", "1"),
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&timed.stderr);
+    let prepared = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("PERF-PARALLEL frozen prepared="))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|count| count.parse::<usize>().ok());
+    assert!(prepared.is_some_and(|count| count > 0), "{stderr}");
+    for targets in [
+        "set(//pkg:a //pkg:b //pkg:both //pkg:aspect_both //pkg:tree_both)",
+        "set(//pkg:both //pkg:b //pkg:a //pkg:tree_both //pkg:aspect_both)",
+    ] {
+        for format in ["text", "jsonproto", "proto", "summary"] {
+            for flags in [&[][..], &["--include_aspects"]] {
+                let mut argv = vec![
+                    "aquery".to_owned(),
+                    format!("--output={format}"),
+                    "--include_artifacts".to_owned(),
+                ];
+                argv.extend(flags.iter().map(|flag| (*flag).to_owned()));
+                argv.push(targets.to_owned());
+                let run = |env: &[(&str, &str)]| {
+                    let output = ws.run(&argv, env);
+                    assert!(
+                        output.status.success(),
+                        "{argv:?} {env:?}: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    output.stdout
+                };
+                let expected = run(sequential);
+                assert!(!expected.is_empty(), "{argv:?}");
+                if format == "text" {
+                    let text = String::from_utf8_lossy(&expected);
+                    // The shared __init__ action is listed once.
+                    let producers = text
+                        .lines()
+                        .filter(|line| {
+                            line.trim_start().starts_with("Outputs: [")
+                                && line.contains("pkg/__pycache__/__init__.tag.pyc")
+                        })
+                        .count();
+                    assert_eq!(producers, 1, "{text}");
+                }
+                for env in fast {
+                    assert!(
+                        run(env) == expected,
+                        "{argv:?} {env:?}: differs from the sequential path"
+                    );
+                }
+            }
+        }
+    }
+}

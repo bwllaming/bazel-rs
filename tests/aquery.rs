@@ -64,6 +64,10 @@ impl Workspace {
     }
 
     fn command(&self, command: &str, args: &[&str]) -> Output {
+        self.command_with(command, args, &[])
+    }
+
+    fn command_with(&self, command: &str, args: &[&str], env: &[(&str, &str)]) -> Output {
         let registry = builtin_registry_flag();
         let output = Command::new("timeout")
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
@@ -71,6 +75,7 @@ impl Workspace {
             .args(["--experimental-builtin-modules", registry.as_str()])
             .args(args)
             .current_dir(self.0.path())
+            .envs(env.iter().copied())
             .seeded_archives()
             .output()
             .unwrap();
@@ -280,6 +285,61 @@ fn count_actions(bytes: &[u8], delimited: bool) -> usize {
         at += length;
     }
     actions
+}
+
+/// The build's fast paths (commits ahead, worker deltas, frozen walks;
+/// forced on this small universe) list what the sequential path (no
+/// commit ahead, no worker deltas, no frozen walk) lists, byte for byte:
+/// every output format, aspects (an attribute aspect), param files and
+/// file writes. (Shared actions: tests/shared_actions.rs.)
+#[test]
+fn aquery_fast_paths_list_what_the_sequential_path_lists() {
+    let ws = Workspace::new();
+    let sequential: &[(&str, &str)] = &[
+        ("BAZEL_RS_NO_COMMIT_AHEAD", "1"),
+        ("BAZEL_RS_NO_WORKER_DELTAS", "1"),
+        ("BAZEL_RS_EVAL_FROZEN_PREPARES", "0"),
+    ];
+    let fast: &[&[(&str, &str)]] = &[
+        &[],
+        &[("BAZEL_RS_EVAL_FROZEN_PREPARES", "all")],
+        &[
+            ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all"),
+            ("BAZEL_RS_EVAL_JITTER", "300"),
+        ],
+    ];
+    for format in [
+        "text",
+        "jsonproto",
+        "proto",
+        "textproto",
+        "commands",
+        "summary",
+    ] {
+        let output = format!("--output={format}");
+        let args = [
+            "deps(//pkg:all)",
+            output.as_str(),
+            "--include_aspects",
+            "--include_artifacts",
+            "--include_param_files",
+            "--include_file_write_contents",
+        ];
+        let run = |env: &[(&str, &str)]| {
+            let output = ws.command_with("aquery", &args, env);
+            assert!(
+                output.status.success(),
+                "{args:?} {env:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            output.stdout
+        };
+        let expected = run(sequential);
+        assert!(!expected.is_empty(), "{format}");
+        for env in fast {
+            assert!(run(env) == expected, "{format} {env:?}: differs");
+        }
+    }
 }
 
 #[test]

@@ -44,6 +44,10 @@ impl Workspace {
     }
 
     fn run(&self, args: &[String]) -> std::process::Output {
+        self.run_with(args, &[])
+    }
+
+    fn run_with(&self, args: &[String], env: &[(&str, &str)]) -> std::process::Output {
         Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .current_dir(self.0.path().join("ws"))
             .env("BAZEL_RS_SNAPSHOT", "on")
@@ -61,6 +65,7 @@ impl Workspace {
                 "--host_platform=//:linux",
             ])
             .args(args)
+            .envs(env.iter().copied())
             .output()
             .unwrap()
     }
@@ -424,4 +429,95 @@ fn fragments_and_transitions_match_genuine() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// cquery on the build's fast paths (frozen walks through the merge
+/// buffer, semantic deltas and plain native rules' results built on the
+/// workers; forced on this small universe) prints what its sequential path
+/// (no commit ahead, no worker deltas, no frozen walk) prints, byte for
+/// byte, in every output format, with transitions, aspects and a
+/// dependent reading a genrule's output file by its label (whose
+/// declaration a merge at its turn publishes before dispatching it).
+#[test]
+fn fast_paths_print_what_the_sequential_path_prints() {
+    let ws = Workspace::new();
+    let reader = ws.0.path().join("ws/reader");
+    std::fs::create_dir_all(&reader).unwrap();
+    std::fs::write(
+        reader.join("BUILD.bazel"),
+        "load(\"//:defs.bzl\", \"lib\")\n\n\
+         lib(name = \"r\", srcs = [\"//:gen.txt\"], deps = [\"//:gen\"])\n\n\
+         filegroup(name = \"rf\", srcs = [\"//:gen.txt\", \":r\"])\n\n\
+         alias(name = \"ra\", actual = \"//:gen.txt\")\n\n\
+         lib(name = \"rr\", srcs = [\":ra\"], deps = [\":rf\", \"//:top\"])\n",
+    )
+    .unwrap();
+    let sequential: &[(&str, &str)] = &[
+        ("BAZEL_RS_SNAPSHOT", "off"),
+        ("BAZEL_RS_NO_COMMIT_AHEAD", "1"),
+        ("BAZEL_RS_NO_WORKER_DELTAS", "1"),
+        ("BAZEL_RS_EVAL_FROZEN_PREPARES", "0"),
+    ];
+    let fast: &[&[(&str, &str)]] = &[
+        &[("BAZEL_RS_SNAPSHOT", "off")],
+        &[
+            ("BAZEL_RS_SNAPSHOT", "off"),
+            ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all"),
+        ],
+        &[
+            ("BAZEL_RS_SNAPSHOT", "off"),
+            ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all"),
+            ("BAZEL_RS_EVAL_JITTER", "300"),
+        ],
+    ];
+    // (The forced fast path walks frozen: its jobs prepare on the workers.)
+    let timed = ws.run_with(
+        &["deps(//reader:rr)".to_owned()],
+        &[
+            ("BAZEL_RS_SNAPSHOT", "off"),
+            ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all"),
+            ("BAZEL_RS_TIMING", "1"),
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&timed.stderr);
+    let prepared = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("PERF-PARALLEL frozen prepared="))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|count| count.parse::<usize>().ok());
+    assert!(prepared.is_some_and(|count| count > 0), "{stderr}");
+    let cases: &[&[&str]] = &[
+        &["--output=label"],
+        &["--output=label_kind"],
+        &["--output=build"],
+        &["--output=proto"],
+        &["--output=streamed_proto"],
+        &["--output=textproto"],
+        &["--output=jsonproto"],
+        &["--output=files"],
+        &["--output=graph"],
+        &["--output=starlark", "--starlark:file=fmt.star"],
+        &["--output=starlark"],
+        &["--transitions=full"],
+        &["--transitions=lite"],
+        &["--noimplicit_deps", "--output=label_kind"],
+    ];
+    for case in cases {
+        let mut args: Vec<String> = case.iter().map(|arg| (*arg).to_owned()).collect();
+        args.push("deps(//reader:rr + //:fg + //:windows_only)".to_owned());
+        let run = |env: &[(&str, &str)]| {
+            let output = ws.run_with(&args, env);
+            assert!(
+                output.status.success(),
+                "{args:?} {env:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            output.stdout
+        };
+        let expected = run(sequential);
+        assert!(!expected.is_empty(), "{args:?}");
+        for env in fast {
+            assert!(run(env) == expected, "{args:?} {env:?}: differs");
+        }
+    }
 }
