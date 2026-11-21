@@ -452,6 +452,9 @@ impl PlannedResults {
     /// The results committed since the last walk (`state.dry` only grows;
     /// the declarations by their journal).
     pub(super) fn catch_up(&self, state: &ActionPlanning, engine: &Engine) {
+        // The declarations first: a reader finding a key's results (an
+        // early board's job may still run) finds its output files'.
+        self.publish_declared(state, engine);
         // Each key's lookup and publication is its own (sharded, keyed):
         // a large planning state's on scoped threads (~/code: the planning
         // tail's freeze looked up ~130k keys on one).
@@ -479,7 +482,6 @@ impl PlannedResults {
                 }
             });
         }
-        self.publish_declared(state, engine);
     }
 
     /// Every result of `state` (the targets committed before the walk).
