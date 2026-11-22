@@ -309,7 +309,8 @@ repository, package and name (`Label` is 24 bytes instead of 72 and its clone co
 label parsed and dropped adds nothing new: the distinct label texts of a build are a few MB.
 
 Result (non-LTO builds of main db047837 and the branch, alternating, three rounds, load 15–66; private caches;
-peak RSS of the bazel-rs process; MB):
+peak RSS of the bazel-rs process; MB). The branch's third cold round ran while the host was overloaded (load ~670,
+8 hours) and was repeated with a fourth main round at load 15–25; the cold runs are dominated by downloads:
 
 | run | main | string-interning |
 |---|---|---|
@@ -317,7 +318,7 @@ peak RSS of the bazel-rs process; MB):
 | ~/code snapshot hit | 0.6 / 0.6 / 0.7 s, 1,157 / 1,158 / 1,171 | 0.7 / 0.6 / 0.7 s, 1,048 / 1,059 / 1,042 |
 | OpenROAD `--nobuild //...`, snapshot miss | 31.9 / 32.0 / 30.9 s, 6,875 / 6,883 / 6,875 | 29.5 / 28.0 / 29.0 s, 5,606 / 5,645 / 5,622 |
 | OpenROAD snapshot hit | 1.2 / 1.2 / 1.3 s, 1,802 / 1,801 / 1,801 | 1.2 / 1.3 / 1.2 s, 1,546 / 1,538 / 1,541 |
-| OpenROAD cold (fetches everything) | 71.3 / 76.0 / 95.0 s, 6,926 / 6,932 / 6,929 | COLD_V3 |
+| OpenROAD cold (fetches everything) | 71.3 / 76.0 / 95.0 / 67.6 s, 6,926 / 6,932 / 6,929 / 6,935 | 75.2 / 75.6 / 70.7 s, 5,668 / 5,677 / 5,619 |
 
 The saving is larger than the census rows: every `Label` copy outside the measured maps (attribute values,
 dependency edges, providers' owners, query and planning tables) shrank too. The action dumps of ~/code `//src/...`
