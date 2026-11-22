@@ -263,3 +263,71 @@ Test cache keys are unchanged (the same `tests/<key>` entries); the staged set i
 path is kept, a second identical one skipped, a different one fails as before). What remains at the peak
 (~2.1 GB live): the tests mid-staging (their expanded tree entries, ~0.9 GB), the executed actions' cache
 validation (`cache_valid`, tree stamps, ~0.5 GB) and the decoded plan.
+
+## String interning (string-interning, ~/code and OpenROAD)
+
+Sharing by `Arc` only helps when one value is handed around; equal strings computed independently were each
+their own allocation. `BAZEL_RS_STRING_CENSUS=1` (crate::engine::string_census) walks the planned actions, the
+labels of the main planning maps and the planned artifacts at the end of phase 2 and prints, per category, the
+strings' count, their heap bytes (allocator size classes, an `Arc`-shared string once), their distinct contents
+and what content interning would save (`bytes - (unique_bytes + 16 * unique)`; inline sizes not included).
+Snapshot-miss `build --nobuild` (the largest rows; MB):
+
+| category (~/code `//src/...`) | count | heap | distinct | saving |
+|---|---|---|---|---|
+| `Dependency::action_id` | 1,028,197 | 77.5 | 4.1 | 72.4 |
+| action tree/symlink/constant-metadata paths | 451,409 | 73.2 | 10.0 | 62.1 |
+| `Label` name / repository / package | 1,338,886 each | 59.8 / 50.1 / 10.0 | 6.2 / 0.3 / 0.1 | 51.6 / 49.7 / 9.9 |
+| `Action::arguments` | 1,056,511 | 70.6 | 17.5 | 50.9 |
+| artifact real/exec paths | 425,830 | 68.6 | 19.2 | 47.1 |
+| parameter file contents | 32,965 | 191.3 | 160.4 | 30.4 |
+| environment maps (whole) / execution-info maps (whole) | 95,524 | 22.8 / 19.5 | 1.8 / 0.0 | 21.0 / 19.5 |
+
+| category (OpenROAD `//...`) | count | heap | distinct | saving |
+|---|---|---|---|---|
+| `Action::arguments` | 5,294,430 | 166.4 | 8.1 | 156.8 |
+| write-action contents | 19,150 | 107.1 | 23.7 | 83.3 |
+| `Dependency::action_id` | 1,457,326 | 81.3 | 2.2 | 78.5 |
+| `Label` name / repository / package | 648,161 each | 27.9 / 16.3 / 6.7 | 3.4 / 0.0 / 0.0 | 23.1 / 16.3 / 6.6 |
+| parameter file contents | 11,999 | 89.0 | 72.1 | 16.7 |
+
+Whole argument lists are not shared: the distinct lists are all the non-empty ones (every compile names its own
+source and output). The census counts labels only as keys of the main maps (plan, configured nodes and rules,
+packages, the `action_planning` key maps, target identities); a `Label` value is held in many more places. The
+frozen Starlark heaps (a measurement-only walk of every string value in the 315,000 / 296,000 heaps reachable from
+the planning structures) hold 136 / 106 MB of strings, of which 127 / 95 MB are copies of a string in another heap
+(none within one heap); deduplicating across frozen heaps would need values of one heap pointing into another and
+is not done.
+
+`crate::interner::IStr` is a process-global, sharded (64 mutexes, picked by the text's hash) interner of strings
+copied into leaked arena chunks: an `IStr` is one pointer (8 bytes, the text's length word and bytes behind it) and
+equal texts are one copy, so equality is pointer equality. It hashes, orders, prints (`Display`, `Debug`) and
+serializes exactly as the `String` of its text, so maps keep their order, action keys and the snapshot's encoded
+bytes are unchanged, and a snapshot decode interns what it reads (a hit shares the texts too). It never frees: it
+holds only long-lived, repeating strings — a planned action's arguments, a dependency's producer id, a `Label`'s
+repository, package and name (`Label` is 24 bytes instead of 72 and its clone copies three pointers). A transient
+label parsed and dropped adds nothing new: the distinct label texts of a build are a few MB.
+
+Result (non-LTO builds of main db047837 and the branch, alternating, three rounds, load 15–66; private caches;
+peak RSS of the bazel-rs process; MB):
+
+| run | main | string-interning |
+|---|---|---|
+| ~/code `--nobuild //src/...`, snapshot miss | 22.0 / 23.0 / 22.8 s, 7,835 / 7,887 / 7,880 | 19.7 / 18.9 / 21.2 s, 6,861 / 6,791 / 6,797 |
+| ~/code snapshot hit | 0.6 / 0.6 / 0.7 s, 1,157 / 1,158 / 1,171 | 0.7 / 0.6 / 0.7 s, 1,048 / 1,059 / 1,042 |
+| OpenROAD `--nobuild //...`, snapshot miss | 31.9 / 32.0 / 30.9 s, 6,875 / 6,883 / 6,875 | 29.5 / 28.0 / 29.0 s, 5,606 / 5,645 / 5,622 |
+| OpenROAD snapshot hit | 1.2 / 1.2 / 1.3 s, 1,802 / 1,801 / 1,801 | 1.2 / 1.3 / 1.2 s, 1,546 / 1,538 / 1,541 |
+| OpenROAD cold (fetches everything) | 71.3 / 76.0 / 95.0 s, 6,926 / 6,932 / 6,929 | COLD_V3 |
+
+The saving is larger than the census rows: every `Label` copy outside the measured maps (attribute values,
+dependency edges, providers' owners, query and planning tables) shrank too. The action dumps of ~/code `//src/...`
+(5.7 M lines) and OpenROAD `//:openroad` (17.6 M lines) and the aquery output (text and jsonproto; OpenROAD
+`//src/utl:utl`, ~/code `//src/rust/...`) are byte-identical.
+
+Not done (each under ~80 MB on either workload): sharing equal environment and execution-info maps through one
+`Arc` (~40 MB on ~/code), write-action contents (83 MB on OpenROAD), the artifacts' owner strings and File paths,
+the Starlark `Label` value (`LabelValue`, three Strings in the frozen heaps; it is part of the frozen-heap page
+format). Lazily expanded command lines (keeping a Starlark spawn's `Args` with its depsets and expanding argv only
+for the key, the execution and aquery) would now save at most the 8-byte argument slots (OpenROAD: 42 MB of
+5.3 M arguments) and the 8 MB of distinct texts, while every key computation, snapshot encode and aquery would
+expand again and byte identity would rest on a second expansion path; not worth it.
