@@ -32,6 +32,7 @@ use crate::shared_path::SharedPath;
 /// `BAZEL_RS_STRING_CENSUS` set to anything but empty or `0`.
 pub(super) fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
+    // snapshot-unrecorded: a diagnostics switch printing a report on stderr; no result depends on it.
     *ENABLED.get_or_init(|| crate::diagnostic_switch(std::env::var_os("BAZEL_RS_STRING_CENSUS")))
 }
 
