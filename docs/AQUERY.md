@@ -263,6 +263,36 @@ Of the 160 s before, the analysis took ~100 s and the records 41 s; after,
 ~27 s and 2.5 s. The extra memory is the frozen walk's (its view and the
 deltas in flight), as for `build --nobuild`.
 
+Memory (query-speed, second pass): the fast paths first peaked at 13.7 GB
+on that query (10.7 GB before them). Brought back under it by:
+
+* query walks classify at most 1,024 entries past the cursor
+  (`BAZEL_RS_T3_QUERY_WINDOW`; unbounded, finished jobs' results waited
+  for the cursor: ~1.3 GB) and plan rules with attribute aspects at their
+  turn (no aspect jobs for queries);
+* the deferred flushes' pending ops queue (768 MB at its walk's start, the
+  cquery capture's edges mostly) shrinks as the walk drains it;
+* one interned transitive-repository set per distinct closure, shared by
+  a target's prepare, commit and published results (each target's set
+  was held twice: 257 MB in the planning state alone);
+* a worker's source-file views use the index's artifact instead of a copy
+  per view;
+* only the selected targets' actions are described (after the
+  expression's selection), `Meta::arguments` packed in one allocation
+  (`PackedStrings`; 420 MB as `Vec<String>`), the fixed environment shared
+  per distinct value.
+
+Every planned action is described or skipped as the build's own (the
+workspace status actions): an action without an owner, or whose owner is
+not in the configured graph, is an internal error in debug builds and
+under `BAZEL_RS_PARITY_VERIFY=1`. Differential tests compare the fast
+paths (default, frozen walks forced, with jitter) with the sequential path
+(`BAZEL_RS_NO_COMMIT_AHEAD=1 BAZEL_RS_NO_WORKER_DELTAS=1
+BAZEL_RS_EVAL_FROZEN_PREPARES=0`) byte for byte: tests/aquery.rs (every
+format, aspects, param files, writes) and tests/shared_actions.rs (shared
+actions in two target orders: one owner each). `--keep_going` fails closed
+for configured queries on both paths.
+
 aquery has no analysis snapshot: a repeated aquery analyzes again (genuine
 answers it from its warm server). Its records list inputs from the planned
 actions, which no snapshot keeps.

@@ -244,6 +244,14 @@ streamed_proto, textproto, jsonproto, files, graph, starlark,
 `--transitions=lite`). A configured-graph snapshot hit is unchanged
 (~2.3 s); `BAZEL_RS_SNAPSHOT=verify` agrees.
 
+Memory: the semantic walks hold their memos and published results beside
+the planning state; with the query window, no aspect jobs, the drained ops
+queue and shared source-file artifacts in views, `deps(//src/...)`'s walk
+stays under its phase-1 peak (the command's peak, as before).
+tests/cquery_output_formats.rs compares the fast paths with the sequential
+path in every output format, `--transitions=full|lite`, starlark, and a
+dependent reading a genrule's output file by its label.
+
 ## Validation and measured performance
 
 The pinned official target-determinator v0.34.0 binary was run with
