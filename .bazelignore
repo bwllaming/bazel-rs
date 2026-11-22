@@ -169,6 +169,7 @@ tests/fixtures/symbolic_macro_attrs/workspace
 tests/fixtures/target_compatible_with/workspace
 tests/fixtures/td_support
 tests/fixtures/test_args/workspace
+tests/fixtures/test_exec_env/workspace
 tests/fixtures/test_flags/stubs
 tests/fixtures/test_suite/workspace
 tests/fixtures/tree_relative_path/workspace

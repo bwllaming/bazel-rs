@@ -1,0 +1,5 @@
+load(":defs.bzl", "argv_test")
+
+platform(name = "p")
+
+argv_test(name = "root_test")

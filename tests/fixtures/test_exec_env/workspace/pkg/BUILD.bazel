@@ -1,0 +1,3 @@
+load("//:defs.bzl", "argv_test")
+
+argv_test(name = "pkg_test")

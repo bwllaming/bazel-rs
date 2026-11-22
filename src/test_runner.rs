@@ -262,7 +262,9 @@ pub fn test_arguments(spec: &TestSpec, options: &TestOptions) -> Vec<String> {
     if let Some(run_under) = &options.run_under {
         args.extend(run_under.test_prefix(spec.run_under_executable.as_deref(), &options.shell));
     }
-    args.push(spec.binary.clone());
+    // The runfiles path as PathFragment.getCallablePathString (:237): a test
+    // of the main repository's root package is `./name`.
+    args.push(crate::test_command::callable_path(&spec.binary).into_owned());
     args.extend(spec.args.iter().cloned());
     args.extend(options.args.iter().cloned());
     args

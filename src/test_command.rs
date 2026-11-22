@@ -1291,8 +1291,9 @@ pub struct EnvInputs<'a> {
 /// PathFragment.getCallablePathString (vfs/PathFragment.java:735-745), the
 /// form TestRunnerAction gives TEST_BINARY: a single-segment relative path
 /// (a test of the main repository's root package) gains `./`, so a shell
-/// running `$TEST_BINARY` does not search PATH for it.
-fn callable_path(path: &str) -> std::borrow::Cow<'_, str> {
+/// running `$TEST_BINARY` does not search PATH for it. TestStrategy.getArgs
+/// (analysis/test/TestStrategy.java:237) passes test-setup.sh the same form.
+pub(crate) fn callable_path(path: &str) -> std::borrow::Cow<'_, str> {
     if path.is_empty() {
         ".".into()
     } else if !path.starts_with('/') && !path.contains('/') {
