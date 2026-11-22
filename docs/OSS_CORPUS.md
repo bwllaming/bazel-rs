@@ -207,7 +207,7 @@ counted). `query //...` labels match on all 37 projects.
 | rules_jvm_external-simple | DIFF¹² | 72.9† / 38.1† | 4.2† / 0.4† / 1.8† | 4.0† / 1.5† | 1625 / 655 | 0, 0, 0, 0 | — | B47 |
 | rules_cc | DIFF | 18.8† / 20.5† | 5.7† / 0.6† / 5.7† | 51.3† / 56.0† | 2655 / 1696 | 1669, 315, 0, 1 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:1 FAILED TO BUILD:2 PASSED:346 SKIPPED:2 | B32 |
 | protobuf | DIFF¹³ | 43.7† / 73.3† | 6.2† / 0.6† / 14.8† | 290.5† / 302.1† | 2970 / 3625 | 19840, 21247, 0, 0 | — | B33, C2, C5 |
-| rules_kotlin | DIFF¹⁴ | 38.0 / 42.0 | 5.0 / 0.6 / 0.3 | 59.2 / 59.7 | 2113 / 2082 | 2235, 1116, 0, 1 | genuine 772 s, FAILED:2 PASSED:266 / 20-minute cap at 224 of 268 | C2, B53 |
+| rules_kotlin | DIFF¹⁴ | 46.0 / 47.7 | 4.5 / 0.3 / 0.2 | 62.0 / 63.7 | 2426 / 2098 | 2235, 1116, 0, 1 | 30-minute cap on both: genuine at 244, bazel-rs at 224 of 268 (B53) | C2, B53 |
 | rules_zig | RS-FAIL | 38.0 / 37.5† | 14.1 / 0.3 / 12.0† | 38.0 / 12.2† | 2517 / 1933 | 0, 1292, 0, 0 | PASSED:211 SKIPPED:4 / SKIPPED:4 | B13c |
 
 Notes:
@@ -264,9 +264,13 @@ Notes:
 14. corpus-parity6 (B51 fixed): `build //...` succeeds on both; the
     only-genuine files are C2's `_javac` classes, the hash difference a
     KSP-generated srcjar. `test //...` runs nested Bazel integration tests
-    (`//examples:*_test`): genuine finishes in 772 s (2 of them fail);
-    bazel-rs hits the 20-minute cap with 224 of 268 tests done (B53), so
-    the test statuses are not compared.
+    (`//examples:*_test`): genuine finished in 772 s (2 of them fail);
+    bazel-rs hit the 20-minute cap with 224 of 268 tests done (B53).
+    test-exec-speed (2026-11-22) reran it (row above) with a 30-minute
+    cap, started at a load below 40: both tools hit the cap (genuine 244,
+    bazel-rs 224 of 268 tests done; bazel-rs had finished more of the
+    nested tests, 16 against 11), so the test statuses are not compared.
+    B53 is not a bazel-rs difference: see its row.
 
 **Summary.** 37 projects ran, all with no workaround edits for bazel-rs
 bugs:
@@ -286,7 +290,7 @@ bugs:
   rules_python-bzlmod (B34), with_cfg-examples (C2, B43), flatbuffers (B12)
   and rules_jvm_external-simple (B47) where genuine fails too, rules_cc
   (B32: 346 of genuine's 453 tests pass), protobuf (B33), rules_kotlin
-  (builds; its `test //...` does not finish in 20 minutes, B53).
+  (builds; its `test //...` does not finish in 30 minutes on either tool, B53).
 - **1 blocked**: rules_zig (B13c ends analysis).
 
 corpus-parity6 (2026-11-21, its LTO release binary) reran protobuf,
@@ -308,7 +312,7 @@ ranked by the projects they affect in that run, then the fixed ones.
 
 | id | status (corpus-rerun) | summary |
 |---|---|---|
-| B53 | open, 1 (rules_kotlin); `test //...` | rules_kotlin's `test //...` (nested Bazel integration tests `//examples:*_test`) hits the 20-minute cap on bazel-rs with 224 of 268 tests done; genuine finishes in 772 s (`//examples:android_8.x_test` 670 s, `android_.bazelversion_test` 122 s; on bazel-rs the latter ran over 840 s). Not investigated (the nested builds' sandboxing, scheduling or parallelism) |
+| B53 | not a bazel-rs bug (test-exec-speed); 1 (rules_kotlin); `test //...` | rules_kotlin's `test //...` runs 51 nested Bazel integration tests (`//examples:*_test`), each a genuine Bazel 7/8/9 whose server sizes itself to the whole host (64 CPUs) and builds with its own cold caches. One test alone takes the same under both tools (`android_.bazelversion_test` 280 s genuine, 279 s bazel-rs), and so does the batch of 51 at 16 jobs (445 s genuine, 412 s bazel-rs, low outside load). The test environment matches too (env, TEST_TMPDIR layout, limits, cgroup, namespaces, network). Small differences: stdin is /dev/null rather than a closed pipe, NoNewPrivs is set (Landlock), and test-setup.sh got `name` where genuine passes `./name`; that last one is fixed, fixture tests/fixtures/test_exec_env. In the full `test //...`, each tool runs 16 nested servers at once (both tools are scheduled alike). The 64-core machine then reaches a load of about 1,300 and almost stops making new processes, and both tools hit the 30-minute cap (genuine at 244/268 in run3 and run4, bazel-rs at 224/268). Genuine's 772 s in corpus-parity6 was a luckier window. oss_corpus.py now kills the nested servers that outlive a timed-out command: they had kept building for hours and skewed later measurements |
 | B13c | open, 1 (rules_zig); blocking | one toolchain implementation for two execution platforms in one configuration (ConfiguredTargetKey.executionPlatformLabel), a fatal error (needs the execution platform in the configured-target key; design below) |
 | B32 | open, 1 (rules_cc's own tests: 346 of genuine's 453 pass) | rules_cc's own analysis tests. Fixed on corpus-parity4: `--fission`, `--build_test_dwp`, `--legacy_whole_archive`, `--incompatible_remove_legacy_whole_archive` are configuration options and `--dynamic_mode` is transitionable; a fission compile's `.dwo` is declared where genuine declares it. Fixed on corpus-parity5: `cc_internal.freeze` is Bazel's shallow immutable copy (the vendored starlark's immutable list/dict that is not frozen yet, docs/DEPSETS.md; the 38 thin-LTO and linkstamp targets), `create_header_info_with_deps` adds the merged deps' headers (cc_import's `direct_public_headers`), a toolchain's `artifact_name_pattern` applies (mingw/msvc dll names), `objc.target_should_alwayslink` of an explicit `alwayslink`, map_each's `must be declared by a top-level def statement` error, structs/providers with frozen list fields are hashable, and transitions on `instrumentation_filter`, `save_temps`, `start_end_lib`, `interface_shared_objects`, `process_headers_in_dependencies` (tests/fixtures/corpus_parity5). Left (tests): the LTO backends (`cc_internal.collect_per_file_lto_backend_opts`, `create_lto_backend_action*`, compile actions with shareable artifacts: ~37, also the linkstamp compile), the FDO/Propeller/memprof options (`fdo_optimize`, `fdo_profile`, `fdo_instrument`, `cs_fdo_profile`, `xbinary_fdo`, `fdo_prefetch_hints`, `propeller_optimize*`: ~37), `experimental_cpp_modules` (10), `custom_malloc` (5, a late-bound dependency per configuration), `cc_internal.expand_and_tokenize` (3 objc tests), `action_env` and `grte_top` transitions (2 each), `ltoindexopt`/`ltobackendopt`/`per_file_ltobackendopt`, and two builds: cc_static_library's `test_output_groups` builds a compile of a missing `file.cc` (the analysis test's target's validation outputs; genuine does not) and `validate_static_library_env_test`'s archive is not created |
 | B33 | open, 1 (protobuf); 1 target | protobuf analysis. Fixed on corpus-parity4: symbolic-macro visibility delegation and alias select() keys under `--incompatible_config_setting_private_default_visibility` (5 visibility errors), `declare_file(sibling=)` from another package, per-attribute aspect views of aspects propagating over one attribute (`UpbMinitableCcInfo`/`JavaInfo` on proto_library targets), `Target.actions` of targets merged with aspects and of a rule under test's dependencies, `--dynamic_mode` transitions (rules_fuzzing). Fixed on corpus-parity5: transitions writing `instrumentation_filter` (`generated_sources_not_coverage_instrumented`; the filter is per configuration natively too). Left: `experimental_output_paths=strip` with `modify_execution_info` (`test_compile_path_mapping`): its `Target.actions` argv shows path-mapped `bazel-out/cfg/bin` paths, so path mapping would have to be modelled for execution too (not attempted) |
@@ -1095,8 +1099,10 @@ From the corpus-rerun run (2026-11-20):
 
 1. The blocked project: B13c (rules_zig; the design above). (B48–B52
    are fixed on corpus-parity6.)
-2. B53: rules_kotlin's `test //...` (nested Bazel integration tests) does
-   not finish in 20 minutes on bazel-rs; genuine takes 772 s.
+2. B53 (not a bazel-rs bug): rules_kotlin's `test //...` runs 16 nested
+   host-sized Bazel servers at once and overloads the machine under both
+   tools; comparing its test statuses needs a longer cap or fewer
+   concurrent tests (e.g. `--local_test_jobs=4` for both tools).
 3. Output parity left: B43, B34, and the rules_cc/protobuf analysis gaps
    B32 and B33.
 4. Performance: OpenROAD cold analysis (P7) and peak RSS (6.9 GB against
