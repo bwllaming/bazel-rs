@@ -236,3 +236,17 @@ class ListOutputsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TimeoutTests(unittest.TestCase):
+    def test_timeout_kills_daemonized_leftovers_under_the_state_dir(self):
+        # A nested Bazel server escapes the killed session (setsid); after the
+        # timeout nothing running under the state dir may survive (B53).
+        with tempfile.TemporaryDirectory() as state:
+            ws = os.path.join(state, "ws")
+            os.makedirs(ws)
+            log = os.path.join(state, "cmd")
+            rec = oc.run_cmd(["sh", "-c", "setsid sleep 300 & sleep 300"], ws,
+                             {"PATH": "/usr/bin:/bin"}, log, 1, state)
+            self.assertEqual(rec["exit"], "timeout")
+            self.assertEqual(oc.leftover_pids(state), [])

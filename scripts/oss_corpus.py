@@ -290,8 +290,9 @@ def proc_hwm_kb(pid):
     return None
 
 
-def run_cmd(argv, cwd, env, log_prefix, timeout):
-    """Run one command; returns the measurement record."""
+def run_cmd(argv, cwd, env, log_prefix, timeout, state=None):
+    """Run one command; returns the measurement record. After a timeout every
+    process under `state` (the tool's private state dir) is killed too."""
     out_path, err_path = log_prefix + ".out", log_prefix + ".err"
     t0 = time.monotonic()
     with open(out_path, "wb") as out, open(err_path, "wb") as err:
@@ -322,6 +323,8 @@ def run_cmd(argv, cwd, env, log_prefix, timeout):
             except OSError:
                 pass
             _, status, ru = os.wait4(proc.pid, 0)
+            if state:
+                kill_leftovers(state)
         proc.returncode = os.waitstatus_to_exitcode(status)
         done.set()
         th.join()
@@ -337,6 +340,43 @@ def run_cmd(argv, cwd, env, log_prefix, timeout):
         "max_child_rss_kb": ru.ru_maxrss,
         "stderr_tail": ANSI_RE.sub("", tail),
     }
+
+
+def leftover_pids(state):
+    """Processes outside the killed session that still belong to a timed-out
+    command: anything whose command line or working directory lies under
+    `state`, e.g. the daemonized servers of nested Bazel integration tests
+    (B53), which otherwise keep building and load the machine for hours."""
+    marker = os.path.abspath(state).encode()
+    pids = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as fh:
+                cmdline = fh.read()
+            try:
+                cwd = os.readlink(f"/proc/{entry}/cwd").encode()
+            except OSError:
+                cwd = b""
+        except OSError:
+            continue
+        if marker in cmdline or cwd == marker or cwd.startswith(marker + b"/"):
+            pids.append(int(entry))
+    return pids
+
+
+def kill_leftovers(state):
+    for _ in range(20):
+        pids = leftover_pids(state)
+        if not pids:
+            return
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        time.sleep(0.5)
 
 
 def wait_timeout(proc, timeout):
@@ -502,7 +542,7 @@ class ProjectRun:
         argv = tool_argv(tool, self.bins[tool], self.state(tool), command, flags, targets, batch)
         log = os.path.join(self.state(tool), "logs", tag or phase)
         print(f"  [{self.p['name']}] {tool} {tag or phase}: {' '.join(argv[1:])}", flush=True)
-        rec = run_cmd(argv, self.ws(tool), self.env(tool), log, self.args.timeout)
+        rec = run_cmd(argv, self.ws(tool), self.env(tool), log, self.args.timeout, self.state(tool))
         rec["log"] = log
         if tag != "server2":
             print(f"    exit={rec['exit']} wall={rec['wall']}s rss={fmt_mb(rec)}MB", flush=True)
