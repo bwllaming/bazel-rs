@@ -678,7 +678,7 @@ impl SharedPrepare<'_> {
         let package_id = label.package_id();
         let package = self.engine.packages.get(&package_id)?;
         let declared = package.exports.contains_key(label)
-            || (!package.macro_names.contains(&label.name)
+            || (!package.macro_names.contains(label.name.as_str())
                 && self
                     .inputs
                     .entry(package_id.clone())

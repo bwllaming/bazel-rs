@@ -2182,7 +2182,7 @@ fn py_unbound_argument<'v, T>(
 /// (RepositoryName.getRunfilesPath), the package itself in the main one.
 fn package_runfiles_path(label: &crate::label::Label) -> String {
     match (label.repository.is_empty(), label.package.is_empty()) {
-        (true, _) => label.package.clone(),
+        (true, _) => label.package.to_string(),
         (false, true) => format!("../{}", label.repository),
         (false, false) => format!("../{}/{}", label.repository, label.package),
     }

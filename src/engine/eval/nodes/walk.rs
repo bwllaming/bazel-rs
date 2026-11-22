@@ -409,7 +409,11 @@ impl Host for Walk<'_> {
                 if self.engine.prefetch_followed.insert(label.clone())
                     && let Some(prefetch) = &self.engine.prefetch
                 {
-                    prefetch.submit_targets([(label.package_id(), Some(label.name))], 1, true);
+                    prefetch.submit_targets(
+                        [(label.package_id(), Some(label.name.to_string()))],
+                        1,
+                        true,
+                    );
                 }
             }
         }
@@ -603,9 +607,9 @@ impl Host for Walk<'_> {
             .computing_toolchains
             .push(ConfiguredTargetKey::new(
                 Label {
-                    repository: String::new(),
-                    package: String::new(),
-                    name: String::new(),
+                    repository: Default::default(),
+                    package: Default::default(),
+                    name: Default::default(),
                 },
                 config,
             ));

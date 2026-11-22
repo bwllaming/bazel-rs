@@ -823,7 +823,7 @@ fn resolve_v1(
         let label = Label::parse_canonical(recorded).map_err(|error| error.to_string())?;
         let root = repositories.root(&label.repository)?.to_path_buf();
         let relative = if label.package.is_empty() {
-            label.name.clone()
+            label.name.to_string()
         } else {
             format!("{}/{}", label.package, label.name)
         };

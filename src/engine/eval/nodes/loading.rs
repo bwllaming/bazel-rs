@@ -169,7 +169,7 @@ impl PkgValue {
         if self.package.exports.contains_key(label) {
             return true;
         }
-        if self.package.macro_names.contains(&label.name) {
+        if self.package.macro_names.contains(label.name.as_str()) {
             return false;
         }
         self.declared

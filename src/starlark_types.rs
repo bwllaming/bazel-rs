@@ -545,9 +545,9 @@ impl LabelValue {
         }
         let label = crate::label::Label::parse_canonical(input).map_err(anyhow::Error::msg)?;
         Ok(Self {
-            repository: label.repository,
-            package: label.package,
-            name: label.name,
+            repository: label.repository.to_string(),
+            package: label.package.to_string(),
+            name: label.name.to_string(),
         })
     }
 }
@@ -664,9 +664,9 @@ pub fn unpack_label(value: Value<'_>) -> Option<String> {
     let label = LabelValue::from_value(value)?;
     Some(
         crate::label::Label {
-            repository: label.repository.clone(),
-            package: label.package.clone(),
-            name: label.name.clone(),
+            repository: label.repository.as_str().into(),
+            package: label.package.as_str().into(),
+            name: label.name.as_str().into(),
         }
         .to_string(),
     )
@@ -836,9 +836,9 @@ fn label_methods(builder: &mut MethodsBuilder) {
             .map_err(anyhow::Error::msg)?
         };
         Ok(LabelValue {
-            repository: resolved.repository,
-            package: resolved.package,
-            name: resolved.name,
+            repository: resolved.repository.to_string(),
+            package: resolved.package.to_string(),
+            name: resolved.name.to_string(),
         })
     }
 
@@ -850,16 +850,16 @@ fn label_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = pos)] target_name: &str,
     ) -> anyhow::Result<LabelValue> {
         let created = crate::label::Label {
-            repository: this.repository.clone(),
-            package: this.package.clone(),
-            name: this.name.clone(),
+            repository: this.repository.as_str().into(),
+            package: this.package.as_str().into(),
+            name: this.name.as_str().into(),
         }
         .with_name(target_name)
         .map_err(anyhow::Error::msg)?;
         Ok(LabelValue {
-            repository: created.repository,
-            package: created.package,
-            name: created.name,
+            repository: created.repository.to_string(),
+            package: created.package.to_string(),
+            name: created.name.to_string(),
         })
     }
 }

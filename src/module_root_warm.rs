@@ -277,14 +277,17 @@ fn enqueue(state: &mut State, set: &RepositorySet, label: &Label) {
     if state.width == 0 {
         return;
     }
-    let file = (label.package.clone(), label.name.clone());
-    if !state.files.insert((label.repository.clone(), file.clone())) {
+    let file = (label.package.to_string(), label.name.to_string());
+    if !state
+        .files
+        .insert((label.repository.to_string(), file.clone()))
+    {
         return;
     }
-    match state.roots.get_mut(&label.repository) {
+    match state.roots.get_mut(label.repository.as_str()) {
         Some(Root::Warming(files)) => files.push(file),
         Some(Root::Ready(_)) => state.queue.push_back(Job {
-            repository: label.repository.clone(),
+            repository: label.repository.to_string(),
             files: vec![file],
         }),
         Some(Root::Unavailable) => {}
@@ -292,14 +295,14 @@ fn enqueue(state: &mut State, set: &RepositorySet, label: &Label) {
             if !set.warmable_root(&label.repository) {
                 state
                     .roots
-                    .insert(label.repository.clone(), Root::Unavailable);
+                    .insert(label.repository.to_string(), Root::Unavailable);
                 return;
             }
             state
                 .roots
-                .insert(label.repository.clone(), Root::Warming(Vec::new()));
+                .insert(label.repository.to_string(), Root::Warming(Vec::new()));
             state.queue.push_back(Job {
-                repository: label.repository.clone(),
+                repository: label.repository.to_string(),
                 files: vec![file],
             });
         }

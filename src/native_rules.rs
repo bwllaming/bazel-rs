@@ -935,7 +935,7 @@ impl Converter<'_> {
         if label.repository != self.package.repository || label.package != self.package.package {
             bail!("label '{shown}' is not in the current package");
         }
-        Ok(label.name)
+        Ok(label.name.to_string())
     }
 
     /// BuildType.LabelType.convert (packages/BuildType.java:412-429) with the
@@ -949,9 +949,9 @@ impl Converter<'_> {
                 self.charge(part)?;
             }
             return Ok(Label {
-                repository: repository.to_owned(),
-                package: package.to_owned(),
-                name: name.to_owned(),
+                repository: repository.into(),
+                package: package.into(),
+                name: name.into(),
             }
             .to_string());
         }
@@ -1483,8 +1483,7 @@ fn sort_order_independent(value: &mut AttrValue) {
             let key = |text: &str| {
                 Label::parse_canonical(text).ok().or_else(|| {
                     crate::label::deferred_label(text, "", "").map(|label| Label {
-                        repository: crate::label::repository_sort_name(&label.repository)
-                            .to_owned(),
+                        repository: crate::label::repository_sort_name(&label.repository).into(),
                         ..label
                     })
                 })
@@ -1623,9 +1622,9 @@ pub(crate) fn instantiate<'v>(
         bail!("illegal rule name: {name}: {error}");
     }
     let label = Label {
-        repository: package.repository.clone(),
-        package: package.package.clone(),
-        name: name.to_owned(),
+        repository: package.repository.as_str().into(),
+        package: package.package.as_str().into(),
+        name: name.into(),
     };
     let shown = crate::rule_declarations::canonical_form(&label);
     let mut converter = Converter {

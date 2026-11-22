@@ -3662,7 +3662,7 @@ impl RepositorySet {
                             lock_ignoring_poison(&self.state.pending_speculation)
                                 .entry(id.clone())
                                 .or_default()
-                                .push(label.repository.clone());
+                                .push(label.repository.to_string());
                         }
                     }
                 }
@@ -3709,7 +3709,7 @@ impl RepositorySet {
                 }
                 for name in ["BUILD.bazel", "BUILD"] {
                     files.push(Label {
-                        name: name.to_owned(),
+                        name: name.into(),
                         ..label.clone()
                     });
                 }
@@ -3761,7 +3761,7 @@ impl RepositorySet {
                     };
                     self.parse(&format!("{base}:BUILD"), repository, "")
                         .ok()
-                        .map(|label| label.repository)
+                        .map(|label| label.repository.to_string())
                 })
                 .collect()
         });
@@ -5292,9 +5292,9 @@ impl RepositorySet {
             self.state.root_warmer.request(
                 self,
                 ["BUILD.bazel", "BUILD"].map(|name| Label {
-                    repository: repository.to_owned(),
-                    package: String::new(),
-                    name: name.to_owned(),
+                    repository: repository.into(),
+                    package: Default::default(),
+                    name: name.into(),
                 }),
             );
         }
@@ -5504,14 +5504,14 @@ impl RepositorySet {
             .get()
             .and_then(|graph| graph.as_ref().ok());
         for repository in repositories {
-            if modules.is_some_and(|graph| graph.modules.contains_key(&repository)) {
+            if modules.is_some_and(|graph| graph.modules.contains_key(repository.as_str())) {
                 if self.state.root_warmer.enabled() {
                     self.state.root_warmer.request(
                         self,
                         ["BUILD.bazel", "BUILD"].map(|name| Label {
                             repository: repository.clone(),
-                            package: String::new(),
-                            name: name.to_owned(),
+                            package: Default::default(),
+                            name: name.into(),
                         }),
                     );
                 }
@@ -10386,7 +10386,7 @@ mod tests {
                     .unwrap()
                     .catalog
                     .repositories
-                    .contains_key(&a),
+                    .contains_key(a.as_str()),
                 !generated
             );
             cold.root(&a).unwrap();
@@ -10699,7 +10699,7 @@ mod tests {
                     let _guard = no_demand();
                     let _reuse = reuse_only();
                     let root_package = PackageId {
-                        repository: a.clone(),
+                        repository: a.to_string(),
                         package: String::new(),
                     };
                     let unit = crate::package::evaluate_load_unit(warm.clone(), &root_package);
@@ -10868,7 +10868,9 @@ mod tests {
             } else {
                 let runtime = repos.direct_runtime().unwrap();
                 repos
-                    .prepare_direct_group(&runtime.catalog.repositories[&canonical].group_id)
+                    .prepare_direct_group(
+                        &runtime.catalog.repositories[canonical.as_str()].group_id,
+                    )
                     .unwrap();
             }
             assert_eq!(reader.calls.load(Ordering::SeqCst), 0);

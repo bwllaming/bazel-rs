@@ -33,8 +33,9 @@ const CHUNK_WORDS: usize = 1 << 15;
 const LARGE_WORDS: usize = CHUNK_WORDS / 8;
 
 /// An interned string: a pointer to its length word, followed by its UTF-8
-/// bytes, in a leaked arena.
-#[derive(Clone, Copy)]
+/// bytes, in a leaked arena. Cloning copies the pointer (not `Copy`, so
+/// that a field changing from `String` keeps its `clone()` calls).
+#[derive(Clone)]
 pub struct IStr(NonNull<u64>);
 
 // SAFETY: an IStr points to immutable, never-freed memory.
@@ -126,12 +127,12 @@ impl IStr {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(found) = shard.table.find(hash, |entry| entry.as_str() == text) {
-            return *found;
+            return found.clone();
         }
         let interned = shard.store(text);
         shard
             .table
-            .insert_unique(hash, interned, |entry| hash_text(entry.as_str()));
+            .insert_unique(hash, interned.clone(), |entry| hash_text(entry.as_str()));
         interned
     }
 
@@ -381,7 +382,7 @@ mod tests {
             let string = text.to_owned();
             assert_eq!(interned.as_str(), text);
             assert_eq!(hash_of(&interned), hash_of(&string));
-            assert_eq!(format!("{interned}"), format!("{string}"));
+            assert_eq!(format!("{interned}"), string);
             assert_eq!(format!("{interned:?}"), format!("{string:?}"));
             assert_eq!(
                 postcard::to_stdvec(&interned).unwrap(),

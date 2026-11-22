@@ -620,7 +620,7 @@ impl Declarations {
                 .filter(|input| {
                     input.repository == label.repository && input.package == label.package
                 })
-                .map(|input| input.name)
+                .map(|input| input.name.to_string())
                 .collect::<Vec<_>>()
         };
         self.recorder
@@ -839,8 +839,8 @@ fn call_site(eval: &Evaluator<'_, '_, '_>, calls: &CallExpressions) -> Option<Ca
 fn local_label(name: &str, package: &PackageId, what: &str) -> anyhow::Result<Label> {
     // Prefixing ':' ensures names cannot change the package or repository.
     Label {
-        repository: package.repository.clone(),
-        package: package.package.clone(),
+        repository: package.repository.as_str().into(),
+        package: package.package.as_str().into(),
         name: "__package__".into(),
     }
     .with_name(name)
@@ -906,9 +906,9 @@ fn rule_visibility(
             anyhow!(
                 "{} {text}",
                 crate::rule_declarations::canonical_form(&Label {
-                    repository: context.repository.clone(),
-                    package: context.package.clone(),
-                    name: name.to_owned(),
+                    repository: context.repository.as_str().into(),
+                    package: context.package.as_str().into(),
+                    name: name.into(),
                 })
             )
         } else {
@@ -934,9 +934,9 @@ fn visibility_labels(value: Value<'_>, context: &Declarations) -> anyhow::Result
                     budget.string(part).map_err(anyhow::Error::msg)?;
                 }
                 Ok(Label {
-                    repository: repository.to_owned(),
-                    package: package.to_owned(),
-                    name: name.to_owned(),
+                    repository: repository.into(),
+                    package: package.into(),
+                    name: name.into(),
                 })
             } else if let Some(text) = value.unpack_str() {
                 let bytes = context
@@ -1326,9 +1326,9 @@ pub(crate) fn invoke_symbolic_macro<'v>(
 fn collect_labels(value: Value<'_>, out: &mut BTreeSet<Label>) {
     if let Some((repository, pkg, name)) = crate::starlark_types::label_parts(value) {
         out.insert(Label {
-            repository: repository.to_owned(),
-            package: pkg.to_owned(),
-            name: name.to_owned(),
+            repository: repository.into(),
+            package: pkg.into(),
+            name: name.into(),
         });
     } else if let Some(pieces) = crate::rule_declarations::select_pieces(value) {
         for piece in pieces {
@@ -1357,9 +1357,9 @@ fn collect_package_labels(value: Value<'_>, package: &PackageId, out: &mut BTree
     if let Some((repository, pkg, name)) = crate::starlark_types::label_parts(value) {
         if repository == package.repository && pkg == package.package {
             out.insert(Label {
-                repository: repository.to_owned(),
-                package: pkg.to_owned(),
-                name: name.to_owned(),
+                repository: repository.into(),
+                package: pkg.into(),
+                name: name.into(),
             });
         }
     } else if let Some(pieces) = crate::rule_declarations::select_pieces(value) {
@@ -1740,9 +1740,9 @@ fn rule_globals(builder: &mut GlobalsBuilder) {
                     crate::starlark_types::label_parts(*value)
                 {
                     Ok(Label {
-                        repository: repository.to_owned(),
-                        package: package.to_owned(),
-                        name: name.to_owned(),
+                        repository: repository.into(),
+                        package: package.into(),
+                        name: name.into(),
                     })
                 } else {
                     // A label list (Label.parseWithPackageContext): an
@@ -1829,7 +1829,7 @@ impl Declarations {
                     None => rule.rule_class_name().to_owned(),
                 };
                 tracker.table.push(crate::existing_rules::Entry {
-                    name: rule.label.name.clone(),
+                    name: rule.label.name.to_string(),
                     kind,
                     rule: rule.clone(),
                     custom: pending.map(|pending| {

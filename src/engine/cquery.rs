@@ -2013,7 +2013,7 @@ impl Engine {
                     }
                     attributes.push(wire::Attribute::new(
                         "name",
-                        wire::AttributeValue::String(label.name.clone()),
+                        wire::AttributeValue::String(label.name.to_string()),
                         true,
                     ));
                     if rule.custom.is_none()
@@ -2407,7 +2407,7 @@ impl Engine {
 /// exec root, external ones under `external/<canonical name>`.
 fn source_exec_path(label: &Label) -> String {
     let relative = if label.package.is_empty() {
-        label.name.clone()
+        label.name.to_string()
     } else {
         format!("{}/{}", label.package, label.name)
     };

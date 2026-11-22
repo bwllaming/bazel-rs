@@ -396,7 +396,7 @@ fn expansion(
                 (
                     condition,
                     rule.label.package_id(),
-                    rule.label.name.clone(),
+                    rule.label.name.to_string(),
                     depth,
                 )
             }));
@@ -407,12 +407,12 @@ fn expansion(
         for label in rule_dependency_labels(rule) {
             let id = label.package_id();
             let certain = certain.contains(&label);
-            reached.push((id, Some(label.name), depth, certain));
+            reached.push((id, Some(label.name.to_string()), depth, certain));
         }
     };
     if wanted.all {
         for rule in package.values().filter(|rule| !is_test(rule)) {
-            let certain = wanted.certain.contains(&rule.label.name);
+            let certain = wanted.certain.contains(rule.label.name.as_str());
             follow(rule, certain);
         }
         return reached;
@@ -425,7 +425,7 @@ fn expansion(
         let label = Label {
             repository: any.label.repository.clone(),
             package: any.label.package.clone(),
-            name: name.clone(),
+            name: name.as_str().into(),
         };
         match package.get(&label) {
             Some(rule) => follow(rule, certain),
@@ -640,7 +640,7 @@ impl Prefetcher {
                     (
                         condition,
                         rule.label.package_id(),
-                        rule.label.name.clone(),
+                        rule.label.name.to_string(),
                         1,
                     )
                 })
@@ -652,7 +652,7 @@ impl Prefetcher {
             .into_iter()
             .map(|label| {
                 let certain = certain.contains(&label);
-                (label.package_id(), Some(label.name), 1, certain)
+                (label.package_id(), Some(label.name.to_string()), 1, certain)
             })
             .collect();
         work.reverse();
@@ -1234,9 +1234,9 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{package}: inline: {error}"))
                 .rules;
             let label = Label {
-                repository: String::new(),
-                package: package.to_owned(),
-                name: target.to_owned(),
+                repository: String::new().into(),
+                package: package.to_owned().into(),
+                name: target.to_owned().into(),
             };
             let rule = rules
                 .get(&label)

@@ -940,7 +940,7 @@ impl Env<'_> {
         self.print_label(&Label {
             repository: owner.repository.clone(),
             package: owner.package.clone(),
-            name: name.to_owned(),
+            name: name.into(),
         })
     }
 

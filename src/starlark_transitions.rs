@@ -297,9 +297,9 @@ impl fmt::Debug for TransitionDef {
 fn sort_key(key: &SettingKey) -> Label {
     match key {
         SettingKey::Native(name) => Label {
-            repository: String::new(),
-            package: "command_line_option".to_owned(),
-            name: name.clone(),
+            repository: Default::default(),
+            package: "command_line_option".into(),
+            name: name.as_str().into(),
         },
         SettingKey::Starlark(label) => label.clone(),
     }

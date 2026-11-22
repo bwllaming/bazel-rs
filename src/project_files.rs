@@ -58,9 +58,9 @@ fn innermost_project_file(
         let path = root.join(directory).join(PROJECT_FILE_NAME);
         match crate::observed_fs::metadata(&path) {
             Ok(metadata) if metadata.is_file() => Some(Label {
-                repository: String::new(),
-                package: directory.to_owned(),
-                name: PROJECT_FILE_NAME.to_owned(),
+                repository: Default::default(),
+                package: directory.into(),
+                name: PROJECT_FILE_NAME.into(),
             }),
             Ok(_) => {
                 let relative = if directory.is_empty() {

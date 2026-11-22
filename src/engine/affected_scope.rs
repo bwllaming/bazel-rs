@@ -123,7 +123,7 @@ fn value_labels(value: &AttrValue, out: &mut Vec<String>) {
 /// The workspace path of a main-repository source file label.
 fn scope_path(label: &Label) -> String {
     if label.package.is_empty() {
-        label.name.clone()
+        label.name.to_string()
     } else {
         format!("{}/{}", label.package, label.name)
     }
@@ -305,7 +305,7 @@ impl Engine {
         };
         let path = |load: &Label| {
             if load.package.is_empty() {
-                load.name.clone()
+                load.name.to_string()
             } else {
                 format!("{}/{}", load.package, load.name)
             }

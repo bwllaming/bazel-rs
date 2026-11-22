@@ -921,7 +921,7 @@ fn output_name(value: Value<'_>, resolver: Option<&LabelResolver<'_>>) -> anyhow
     if label.repository != base.repository || label.package != base.package {
         bail!("label '{shown}' is not in the current package");
     }
-    Ok(label.name)
+    Ok(label.name.to_string())
 }
 
 impl AttrKind {
@@ -1737,9 +1737,9 @@ mod values {
                 .and_then(|(_, value, _)| value.unpack_str())
                 .map(|name| {
                     crate::rule_declarations::canonical_form(&crate::label::Label {
-                        repository: package.repository.clone(),
-                        package: package.package.clone(),
-                        name: name.to_owned(),
+                        repository: package.repository.as_str().into(),
+                        package: package.package.as_str().into(),
+                        name: name.into(),
                     })
                 })
                 .unwrap_or_default();
@@ -1925,9 +1925,9 @@ mod values {
                 starlark::Error::new_other(anyhow!("missing required attribute name"))
             })?;
             let target = crate::label::Label {
-                repository: package.repository.clone(),
-                package: package.package.clone(),
-                name: name.to_owned(),
+                repository: package.repository.as_str().into(),
+                package: package.package.as_str().into(),
+                name: name.into(),
             };
             // Only explicitly supplied values (call or initializer) and select()
             // branches are checked; defaults never are (AttributeProvider.java:288-290).
@@ -3598,7 +3598,7 @@ fn implicit_output_values(
     let label_name = |text: &str| {
         let name = crate::label::Label::parse_canonical(text)
             .map(|label| label.name)
-            .unwrap_or_else(|_| text.rsplit(':').next().unwrap_or(text).to_owned());
+            .unwrap_or_else(|_| text.rsplit(':').next().unwrap_or(text).into());
         crate::implicit_outputs::remove_extension(&name).to_owned()
     };
     let unset_label = || {

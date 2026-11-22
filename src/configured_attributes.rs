@@ -677,7 +677,7 @@ pub fn transition_attributes(
 ) -> Vec<(String, Option<AttrValue>)> {
     let mut values = vec![(
         "name".to_owned(),
-        Some(AttrValue::String(rule.label.name.clone())),
+        Some(AttrValue::String(rule.label.name.to_string())),
     )];
     let Some(custom) = &rule.custom else {
         return values;

@@ -246,8 +246,8 @@ pub(crate) fn parse_specs(
                 let dummy = format!("{path}:x");
                 let label = repos.parse(&dummy, &package.repository, &package.package)?;
                 Specification::Package {
-                    repository: label.repository,
-                    package: label.package,
+                    repository: label.repository.to_string(),
+                    package: label.package.to_string(),
                     subtree,
                 }
             }
@@ -354,7 +354,7 @@ fn bzl_spec_label(
         None => Some(repository.to_owned()),
         Some(canonical) if parts.repo_is_canonical => Some(canonical.to_owned()),
         Some(apparent) => match repos.parse(&format!("@{apparent}//:x"), repository, "") {
-            Ok(label) => Some(label.repository),
+            Ok(label) => Some(label.repository.to_string()),
             Err(error) if error.starts_with("unknown apparent repository") => None,
             Err(error) => return Err(SpecLabelError::Resolution(error)),
         },
@@ -552,8 +552,8 @@ fn info_methods(builder: &mut MethodsBuilder) {
                 // `@repo` alone is `@@repo//:repo`.
                 let label = Label::parse_canonical(text).map_err(anyhow::Error::msg)?;
                 PackageId {
-                    repository: label.repository,
-                    package: label.package,
+                    repository: label.repository.to_string(),
+                    package: label.package.to_string(),
                 }
             } else {
                 bail!(

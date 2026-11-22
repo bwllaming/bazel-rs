@@ -131,9 +131,9 @@ mod tests {
 
     fn key(i: u32) -> NodeKey {
         NodeKey::Tgt(crate::label::Label {
-            repository: String::new(),
+            repository: String::new().into(),
             package: "c".into(),
-            name: i.to_string(),
+            name: i.to_string().into(),
         })
     }
 

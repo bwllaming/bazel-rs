@@ -302,7 +302,7 @@ impl Engine {
             .as_ref()
             .map_or(platform_label, |info| info.label.clone());
         let package = if test.key.label.repository.is_empty() {
-            test.key.label.package.clone()
+            test.key.label.package.to_string()
         } else if test.key.label.package.is_empty() {
             format!("external/{}", test.key.label.repository)
         } else {

@@ -1091,7 +1091,7 @@ impl Pipeline {
             self.add_known(index, Arc::new(OutputSummary::default()));
         } else {
             self.pending_packages
-                .entry((label.repository.clone(), label.package.clone()))
+                .entry((label.repository.to_string(), label.package.to_string()))
                 .or_default()
                 .insert(index);
         }
@@ -1101,7 +1101,7 @@ impl Pipeline {
     }
 
     fn remove_unknown(&mut self, index: usize, label: &Label) -> bool {
-        let package = (label.repository.clone(), label.package.clone());
+        let package = (label.repository.to_string(), label.package.to_string());
         let Some(pending) = self.pending_packages.get_mut(&package) else {
             return false;
         };
@@ -1240,7 +1240,7 @@ impl Pipeline {
         loop {
             if let Some(blocker) = self
                 .pending_packages
-                .get(&(repository.clone(), package.to_owned()))
+                .get(&(repository.to_string(), package.to_owned()))
                 .and_then(earlier)
             {
                 return Some((if package == label.package { 0 } else { 1 }, blocker));
@@ -1259,7 +1259,7 @@ impl Pipeline {
         };
         let end = format!("{}\u{10FFFF}", below);
         self.pending_packages
-            .range((repository.clone(), below)..(repository.clone(), end))
+            .range((repository.to_string(), below)..(repository.to_string(), end))
             .filter(|((_, package), _)| package != &label.package)
             .find_map(|(_, pending)| earlier(pending))
             .map(|blocker| (2, blocker))

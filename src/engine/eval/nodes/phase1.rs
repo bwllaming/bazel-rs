@@ -1303,8 +1303,8 @@ pub(crate) trait Phase1: Host {
         seen: &mut BTreeSet<(ConfiguredTargetKey, Vec<String>)>,
     ) -> Result<(), String> {
         let authority = crate::label::PackageId {
-            repository: owner.definition_label.repository.clone(),
-            package: owner.definition_label.package.clone(),
+            repository: owner.definition_label.repository.to_string(),
+            package: owner.definition_label.package.to_string(),
         };
         let failure = |error: String| {
             format!(

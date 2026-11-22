@@ -63,7 +63,7 @@ fn dict(target: &NativeTarget, name: &str) -> Vec<(String, String)> {
 /// ConfigSetting.toOptionLabel (ConfigSetting.java:581-587): `//command_line_option:NAME`.
 fn option_label(name: &str) -> Label {
     Label {
-        repository: String::new(),
+        repository: Default::default(),
         package: "command_line_option".into(),
         name: name.into(),
     }
@@ -207,8 +207,11 @@ fn diff_constraint_values(
         if platform_value.as_ref() != Some(value) {
             diffs.push(Diff {
                 what: value.setting.label.clone(),
-                want: value.label.name.clone(),
-                got: platform_value.map_or_else(|| "<unset>".to_owned(), |value| value.label.name),
+                want: value.label.name.to_string(),
+                got: platform_value.map_or_else(
+                    || "<unset>".to_owned(),
+                    |value| value.label.name.to_string(),
+                ),
             });
         }
     }

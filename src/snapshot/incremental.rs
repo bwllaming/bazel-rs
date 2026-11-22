@@ -355,9 +355,9 @@ pub fn module_code() -> std::collections::HashMap<Label, Option<[u8; 32]>> {
 /// index naming it attributes no `.bzl` edit.
 pub fn unattributed_module() -> Label {
     Label {
-        repository: String::new(),
-        package: String::new(),
-        name: "<unattributed>".to_owned(),
+        repository: Default::default(),
+        package: Default::default(),
+        name: "<unattributed>".into(),
     }
 }
 

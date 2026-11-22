@@ -1806,7 +1806,8 @@ fn global_make_environment(surface: &CtxSurface) -> anyhow::Result<Vec<(String, 
             TargetPlatform::Absent => String::new(),
             TargetPlatform::Resolved(platform) => cpu_value(&platform.constraints)
                 .map(|value| value.label.name)
-                .unwrap_or_default(),
+                .unwrap_or_default()
+                .to_string(),
         }
     };
     Ok(vec![

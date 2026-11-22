@@ -74,8 +74,8 @@ impl Visibility {
     /// Add an exact authority grant without changing the declared scope sequence.
     pub(crate) fn with_package(&self, package: &PackageId) -> Self {
         let exact = Label {
-            repository: package.repository.clone(),
-            package: package.package.clone(),
+            repository: package.repository.as_str().into(),
+            package: package.package.as_str().into(),
             name: "__pkg__".into(),
         };
         match self {
@@ -95,7 +95,7 @@ impl Visibility {
     pub(crate) fn declared_labels(&self) -> Vec<Label> {
         match self {
             Self::Public | Self::Private => vec![Label {
-                repository: String::new(),
+                repository: Default::default(),
                 package: "visibility".into(),
                 name: if matches!(self, Self::Public) {
                     "public"
@@ -175,8 +175,8 @@ pub(crate) fn macro_visibility_labels(
         return Ok(Visibility::Public.declared_labels());
     }
     let caller = Label {
-        repository: caller.repository.clone(),
-        package: caller.package.clone(),
+        repository: caller.repository.as_str().into(),
+        package: caller.package.as_str().into(),
         name: "__pkg__".into(),
     };
     if !normalized.contains(&caller) {

@@ -179,7 +179,7 @@ impl TestSpec {
             ));
         };
         let package = if label.repository.is_empty() {
-            label.package.clone()
+            label.package.to_string()
         } else if label.package.is_empty() {
             format!("external/{}", label.repository)
         } else {

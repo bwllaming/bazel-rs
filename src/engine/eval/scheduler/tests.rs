@@ -13,15 +13,15 @@ use crate::label::Label;
 
 fn tgt(i: usize) -> NodeKey {
     NodeKey::Tgt(Label {
-        repository: String::new(),
+        repository: String::new().into(),
         package: "g".into(),
-        name: i.to_string(),
+        name: i.to_string().into(),
     })
 }
 
 fn memo(name: &str) -> NodeKey {
     NodeKey::FlagScope(Label {
-        repository: String::new(),
+        repository: String::new().into(),
         package: "m".into(),
         name: name.into(),
     })

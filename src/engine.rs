@@ -2658,9 +2658,9 @@ fn validate_output_directory_with(
                 // ContainingPackageLookupValue
                 // .getErrorMessageForLabelCrossingPackageBoundary (:63-97).
                 let label = Label {
-                    repository: package.repository.clone(),
-                    package: package.package.clone(),
-                    name: out.to_owned(),
+                    repository: package.repository.as_str().into(),
+                    package: package.package.as_str().into(),
+                    name: out.into(),
                 };
                 let containing = if package.repository.is_empty() {
                     relative.clone()
@@ -4793,7 +4793,7 @@ impl Engine {
         if package.exports.contains_key(label) {
             return true;
         }
-        if package.macro_names.contains(&label.name) {
+        if package.macro_names.contains(label.name.as_str()) {
             return false;
         }
         if !self.declared_inputs.contains_key(package_id) {
@@ -5036,7 +5036,7 @@ impl Engine {
                 let ids: Vec<PackageId> = packages
                     .into_iter()
                     .map(|package| PackageId {
-                        repository: context.repository.clone(),
+                        repository: context.repository.to_string(),
                         package,
                     })
                     .collect();
@@ -5072,9 +5072,9 @@ impl Engine {
                         "The target pattern '{original}' is ambiguous: ':{suffix}' is both a wildcard, and the name of an existing {kind}; using the latter interpretation"
                     ));
                     found.insert(Label {
-                        repository: id.repository.clone(),
-                        package: id.package.clone(),
-                        name: suffix.clone(),
+                        repository: id.repository.as_str().into(),
+                        package: id.package.as_str().into(),
+                        name: suffix.as_str().into(),
                     });
                     return Ok(found);
                 }
@@ -5131,9 +5131,9 @@ impl Engine {
             if is_package(&package)? {
                 let target = pieces[split..].join("/");
                 return Label {
-                    repository: String::new(),
-                    package,
-                    name: String::new(),
+                    repository: Default::default(),
+                    package: package.into(),
+                    name: Default::default(),
                 }
                 .with_name(&target)
                 .map_err(Parsing);
@@ -5157,9 +5157,9 @@ impl Engine {
             return Ok(None);
         }
         let label = Label {
-            repository: id.repository.clone(),
-            package: id.package.clone(),
-            name: name.to_owned(),
+            repository: id.repository.as_str().into(),
+            package: id.package.as_str().into(),
+            name: name.into(),
         };
         if !self.package_target_names(id).contains(name) {
             return Ok(None);
@@ -5215,9 +5215,9 @@ impl Engine {
             .into_iter()
             .filter(|name| !manual.contains(name.as_str()))
             .map(|name| Label {
-                repository: id.repository.clone(),
-                package: id.package.clone(),
-                name,
+                repository: id.repository.as_str().into(),
+                package: id.package.as_str().into(),
+                name: name.into(),
             })
             .collect())
     }
@@ -7356,7 +7356,7 @@ impl Engine {
         label: Label,
         config: Option<ConfigId>,
     ) -> BTreeSet<String> {
-        let own = BTreeSet::from([label.repository.clone()]);
+        let own = BTreeSet::from([label.repository.to_string()]);
         let Some(config) = config else {
             return own;
         };
@@ -7508,7 +7508,7 @@ impl Engine {
             prefetch.submit_targets(
                 [(
                     declared.resolved.package_id(),
-                    Some(declared.resolved.name.clone()),
+                    Some(declared.resolved.name.to_string()),
                 )],
                 1,
                 false,
@@ -7547,7 +7547,7 @@ impl Engine {
                     _ => false,
                 };
                 if let Ok(label) = self.repositories.parse(pattern, repository, "") {
-                    let name = (!all).then(|| label.name.clone());
+                    let name = (!all).then(|| label.name.to_string());
                     targets.push((label.package_id(), name));
                 }
             }
@@ -8903,7 +8903,7 @@ impl Engine {
         // instead; this loop only reads planning state, so it is skipped
         // there (W1a).
         let mut transitive: BTreeSet<String> = if execution_plan {
-            BTreeSet::from([rule.label.repository.clone()])
+            BTreeSet::from([rule.label.repository.to_string()])
         } else {
             BTreeSet::new()
         };
@@ -9019,7 +9019,7 @@ impl Engine {
         } = Self::custom_dependencies_in(cx, rule, &key, &edges, exec_config)?;
         let mut transitive: BTreeSet<String> = BTreeSet::new();
         if execution_plan {
-            transitive.insert(rule.label.repository.clone());
+            transitive.insert(rule.label.repository.to_string());
             for (label, edge_config, _, _) in &dependency_labels {
                 transitive.extend(cx.engine().dependency_repositories_in(
                     cx.reads(),
@@ -12910,7 +12910,7 @@ impl Engine {
                     // N28d).
                     let label = source_directories.get(real)?.iter().next()?;
                     let root_relative = if label.package.is_empty() {
-                        label.name.clone()
+                        label.name.to_string()
                     } else {
                         format!("{}/{}", label.package, label.name)
                     };
@@ -18171,10 +18171,10 @@ m = macro(implementation=emit)
         let output = test_label("//app:reserved_output");
         Arc::make_mut(engine.packages.get_mut(&label.package_id()).unwrap())
             .macro_names
-            .insert(output.name.clone());
+            .insert(output.name.to_string());
         engine
             .generated
-            .insert(output.clone(), (label, output.name.clone()));
+            .insert(output.clone(), (label, output.name.to_string()));
         assert!(matches!(engine.target(&output), Ok(Target::Output(_, _))));
     }
 
@@ -18988,10 +18988,15 @@ fn package_target_names_in(
     let Some(rules) = loaded else {
         return names;
     };
-    names.extend(rules.exports.keys().map(|label| label.name.clone()));
-    names.extend(rules.macro_inputs.iter().map(|label| label.name.clone()));
+    names.extend(rules.exports.keys().map(|label| label.name.to_string()));
+    names.extend(
+        rules
+            .macro_inputs
+            .iter()
+            .map(|label| label.name.to_string()),
+    );
     for rule in rules.values() {
-        names.insert(rule.label.name.clone());
+        names.insert(rule.label.name.to_string());
         names.extend(rule.outs.iter().cloned());
         if rule.macro_owner.is_some() || matches!(rule.kind, RuleKind::PackageGroup(_)) {
             continue;
@@ -19025,7 +19030,7 @@ fn package_target_names_in(
             labels
                 .into_iter()
                 .filter(|label| label.package_id() == *package)
-                .map(|label| label.name),
+                .map(|label| label.name.to_string()),
         );
     }
     names
@@ -19127,7 +19132,7 @@ fn source_target_with(
     }
     let ignored = repositories.ignored_subdirectories(&label.repository)?;
     let mut path = package_dir.clone();
-    let mut relative = label.package.clone();
+    let mut relative = label.package.to_string();
     let mut linked = false;
     let mut last_metadata = None;
     let parts: Vec<_> = Path::new(&label.name).components().collect();
@@ -19610,7 +19615,7 @@ fn expand_registration_patterns_in(
             let mut found = Vec::new();
             for package in packages {
                 let id = PackageId {
-                    repository: context.repository.clone(),
+                    repository: context.repository.to_string(),
                     package,
                 };
                 let package = loader.load(&id).map_err(invalid)?;

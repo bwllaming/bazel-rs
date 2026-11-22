@@ -175,9 +175,10 @@ impl<'a> Census<'a> {
 
     fn label(&mut self, label: &'a Label) {
         self.labels += 1;
-        self.category("label.repository").string(&label.repository);
-        self.category("label.package").string(&label.package);
-        self.category("label.name").string(&label.name);
+        self.category("label.repository")
+            .interned(&label.repository);
+        self.category("label.package").interned(&label.package);
+        self.category("label.name").interned(&label.name);
     }
 
     fn artifact(&mut self, artifact: &'a Artifact) {

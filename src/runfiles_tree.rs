@@ -144,7 +144,7 @@ fn owner_repository(owner: &str) -> Option<String> {
     }
     let repository = Label::parse_canonical(owner)
         .ok()
-        .map(|label| label.repository);
+        .map(|label| label.repository.to_string());
     shard
         .lock()
         .unwrap_or_else(|e| e.into_inner())

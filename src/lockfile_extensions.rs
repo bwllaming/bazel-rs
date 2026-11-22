@@ -514,9 +514,9 @@ impl FriendlyPath {
     /// (`@@foo//abc/def:ghi.bzl` is stored as `@@foo//abc/def/ghi.bzl`).
     pub(crate) fn of_label(label: &Label) -> Self {
         Self {
-            repository: Some(label.repository.clone()),
+            repository: Some(label.repository.to_string()),
             path: if label.package.is_empty() {
-                label.name.clone()
+                label.name.to_string()
             } else {
                 format!("{}/{}", label.package, label.name)
             },

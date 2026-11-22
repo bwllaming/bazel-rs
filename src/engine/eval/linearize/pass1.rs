@@ -1451,7 +1451,9 @@ pub(crate) mod tests {
     }
 
     fn names(plan: &[CtKey]) -> Vec<String> {
-        plan.iter().map(|key| key.key.label.name.clone()).collect()
+        plan.iter()
+            .map(|key| key.key.label.name.to_string())
+            .collect()
     }
 
     #[test]

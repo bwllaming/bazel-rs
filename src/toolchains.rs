@@ -184,7 +184,7 @@ pub fn target_settings_match(
                     .find(|(name, _)| *name == setting.label.name)
                 {
                     Some((_, seen)) => seen.extend(messages.iter().cloned()),
-                    None => errors.push((setting.label.name.clone(), messages.clone())),
+                    None => errors.push((setting.label.name.to_string(), messages.clone())),
                 }
             }
         }

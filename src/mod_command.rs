@@ -760,9 +760,9 @@ fn usages(
             }
             let label = if usage.identity.is_repo_rule() {
                 crate::label::Label {
-                    repository: owner.to_owned(),
-                    package: String::new(),
-                    name: "MODULE.bazel".to_owned(),
+                    repository: owner.into(),
+                    package: Default::default(),
+                    name: "MODULE.bazel".into(),
                 }
             } else {
                 let raw = &usage.identity.label;

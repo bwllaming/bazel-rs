@@ -1021,9 +1021,10 @@ pub(crate) fn convert_label(
                 repository: format!(
                     "[unknown repo '{}' requested from @@]",
                     parts.repo.unwrap_or_default()
-                ),
-                package: parts.pkg.to_owned(),
-                name: parts.target.to_owned(),
+                )
+                .into(),
+                package: parts.pkg.into(),
+                name: parts.target.into(),
             })
         }
         result => result,

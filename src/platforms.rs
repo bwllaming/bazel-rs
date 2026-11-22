@@ -83,8 +83,11 @@ impl ConstraintValueInfo {
         } else {
             MatchResult::NoMatch(vec![Diff {
                 what: self.setting.label.clone(),
-                got: platform_value.map_or_else(|| "<unset>".to_owned(), |value| value.label.name),
-                want: self.label.name.clone(),
+                got: platform_value.map_or_else(
+                    || "<unset>".to_owned(),
+                    |value| value.label.name.to_string(),
+                ),
+                want: self.label.name.to_string(),
             }])
         };
         ConfigMatching {

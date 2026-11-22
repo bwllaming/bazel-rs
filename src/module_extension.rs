@@ -1397,9 +1397,9 @@ mod tests {
         for value in [json!({"l":":x"}), json!({"ls":[":x"]})] {
             assert!(
                 bind_tag(&schema, "t", &raw(value), |_| Ok(Label {
-                    repository: String::new(),
-                    package: "é".to_owned(),
-                    name: "x".to_owned()
+                    repository: String::new().into(),
+                    package: "é".to_owned().into(),
+                    name: "x".to_owned().into()
                 }))
                 .unwrap_err()
                 .contains("non-ASCII tag attribute")

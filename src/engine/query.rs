@@ -1107,7 +1107,7 @@ impl Env<'_> {
             ty: query_attrs::AttrType::String,
             explicit: true,
             tool: false,
-            value: Some(AttrValue::String(label.name.clone())),
+            value: Some(AttrValue::String(label.name.to_string())),
             select: None,
             default: None,
             aspects: Vec::new(),
@@ -1558,9 +1558,9 @@ impl Env<'_> {
                         && parsed.repo.is_none()
                     {
                         let label = Label {
-                            repository: String::new(),
-                            package: parsed.package.clone(),
-                            name: target.clone(),
+                            repository: Default::default(),
+                            package: parsed.package.as_str().into(),
+                            name: target.as_str().into(),
                         };
                         if self.build_file_name(&label.package_id()).as_deref()
                             == Some(label.name.as_str())
@@ -2104,7 +2104,7 @@ impl Env<'_> {
             .find(|target| !self.universe_packages.contains(&target.package_id()))
         {
             let package = if outside.repository.is_empty() {
-                outside.package.clone()
+                outside.package.to_string()
             } else {
                 format!("@@{}//{}", outside.repository, outside.package)
             };
@@ -2174,9 +2174,9 @@ impl Env<'_> {
             }
             if matched {
                 let label = Label {
-                    repository: id.repository.clone(),
-                    package: id.package.clone(),
-                    name: build,
+                    repository: id.repository.as_str().into(),
+                    package: id.package.as_str().into(),
+                    name: build.into(),
                 };
                 if self.lookup(&label)?.is_ok() {
                     result.insert(label);
@@ -2215,9 +2215,9 @@ impl Env<'_> {
         let mut labels = Vec::new();
         for name in names {
             let label = Label {
-                repository: id.repository.clone(),
-                package: id.package.clone(),
-                name,
+                repository: id.repository.as_str().into(),
+                package: id.package.as_str().into(),
+                name: name.into(),
             };
             if self.lookup(&label)?.is_ok() {
                 labels.push(label);
@@ -2424,9 +2424,9 @@ impl Env<'_> {
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "BUILD".to_owned());
                 let label = Label {
-                    repository: id.repository.clone(),
-                    package: id.package.clone(),
-                    name,
+                    repository: id.repository.as_str().into(),
+                    package: id.package.as_str().into(),
+                    name: name.into(),
                 };
                 self.add_load_target(&mut result, label, &id);
             }
@@ -2447,9 +2447,9 @@ impl Env<'_> {
                             .map(|name| name.to_string_lossy().into_owned())
                             .unwrap_or_default();
                         let label = Label {
-                            repository: bzl_package.repository.clone(),
-                            package: bzl_package.package.clone(),
-                            name,
+                            repository: bzl_package.repository.as_str().into(),
+                            package: bzl_package.package.as_str().into(),
+                            name: name.into(),
                         };
                         self.add_load_target(&mut result, label, &id);
                     }
@@ -3075,7 +3075,7 @@ impl Env<'_> {
             starlark_repr_string(&self.print_label(&Label {
                 repository: owner.repository.clone(),
                 package: owner.package.clone(),
-                name: name.clone(),
+                name: name.as_str().into(),
             }))
         };
         let list = |items: Vec<String>| format!("[{}]", items.join(", "));
@@ -3301,7 +3301,7 @@ fn java_string(value: &AttrValue, shape: Shape, owner: &Label) -> Option<String>
         crate::rule_declarations::canonical_form(&Label {
             repository: owner.repository.clone(),
             package: owner.package.clone(),
-            name: name.clone(),
+            name: name.as_str().into(),
         })
     };
     let list = |items: Vec<String>| format!("[{}]", items.join(", "));

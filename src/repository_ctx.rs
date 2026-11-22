@@ -1759,9 +1759,9 @@ impl Context {
         name: &str,
     ) -> anyhow::Result<(PathBuf, Label)> {
         let label = Label {
-            repository: repository.to_owned(),
-            package: package.to_owned(),
-            name: name.to_owned(),
+            repository: repository.into(),
+            package: package.into(),
+            name: name.into(),
         };
         if !repository.is_empty() {
             // A rule resolving one label of a label list resolves them all

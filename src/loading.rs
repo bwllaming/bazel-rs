@@ -428,7 +428,7 @@ pub(crate) fn apparent_repository(text: &str) -> Option<&str> {
 /// The canonical name a resolved label's repository records, None when the
 /// apparent name was not visible (RepositoryName.isVisible).
 fn recorded_canonical(label: &Label) -> Option<String> {
-    (!label.repository.starts_with('[')).then(|| label.repository.clone())
+    (!label.repository.starts_with('[')).then(|| label.repository.to_string())
 }
 
 /// What `Label("@<apparent>//…")` in repository `from` resolves to now, as
@@ -944,9 +944,9 @@ fn load_build_file_modules_with<'a>(
         .and_then(|name| name.to_str())
         .unwrap_or("BUILD");
     let build = Label {
-        repository: package.repository.clone(),
-        package: package.package.clone(),
-        name: build_name.to_owned(),
+        repository: package.repository.as_str().into(),
+        package: package.package.as_str().into(),
+        name: build_name.into(),
     };
     loader.check_load_visibilities(package, &format!("file {build}"), file_span.filename(), ast)?;
     Ok(LoadedModules {
@@ -1182,7 +1182,7 @@ impl BzlCache {
         };
         let mut evicted: std::collections::HashSet<Label> = modules
             .keys()
-            .filter(|label| repositories.contains(&label.repository))
+            .filter(|label| repositories.contains(label.repository.as_str()))
             .cloned()
             .collect();
         loop {
@@ -2361,7 +2361,7 @@ impl<'a> Loader<'a> {
             for (load, resolved) in ast.loads().iter().zip(&dependencies) {
                 if let Some(apparent) = apparent_repository(load.module_id) {
                     self.repo_mappings.push(RecordedRepoMapping {
-                        from: label.repository.clone(),
+                        from: label.repository.to_string(),
                         apparent: apparent.to_owned(),
                         canonical: recorded_canonical(resolved),
                         lockfile: true,
@@ -2578,7 +2578,7 @@ impl<'a> Loader<'a> {
         }
         package_build_file(root, &label.package)?;
         let mut path = root.join(&label.package);
-        let mut relative = label.package.clone();
+        let mut relative = label.package.to_string();
         let mut components = label.name.split('/').peekable();
         // Bazel reads a .bzl through symlinks (its FileValue follows them);
         // package boundaries stay checked on the logical label path, as for
@@ -2712,7 +2712,7 @@ fn ignored_package_load_error(
         }) else {
             break None;
         };
-        current = parent;
+        current = parent.into();
         if ignored.matching_entry(&current).is_none()
             && crate::workspace::is_package(root, &current)?
         {

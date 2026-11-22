@@ -1172,7 +1172,7 @@ pub(super) fn run_native(
         // T3: its declared source files resolved here (applied at its
         // merge, NativePublished::sources).
         cx.resolve_sources = true;
-        let mut transitive = BTreeSet::from([rule.label.repository.clone()]);
+        let mut transitive = BTreeSet::from([rule.label.repository.to_string()]);
         let edges = engine.rule_edges(rule, key.config);
         engine.native_transitive_in(reads, rule, key, &edges, &mut transitive);
         if matches!(rule.kind, RuleKind::PackageGroup(_)) {

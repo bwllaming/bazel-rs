@@ -301,7 +301,7 @@ pub(crate) fn parse_bzl_label(
 ) -> anyhow::Result<Label> {
     crate::bazel_label::Parts::parse(text).map_err(|error| anyhow!("{error}"))?;
     let (repository, package) = if text.starts_with("@@") {
-        (String::new(), String::new())
+        (Default::default(), Default::default())
     } else {
         let caller = caller_bzl(text, location)?;
         (caller.repository, caller.package)
@@ -343,7 +343,7 @@ impl ToolchainContextData {
             crate::bazel_label::Parts::parse(text).map_err(invalid)?;
             // A canonical repository does not depend on the caller.
             let (repository, package) = if text.starts_with("@@") {
-                (String::new(), String::new())
+                (Default::default(), Default::default())
             } else {
                 let caller = caller_bzl(text, location)?;
                 (caller.repository, caller.package)

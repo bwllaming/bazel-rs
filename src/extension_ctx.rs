@@ -1046,7 +1046,7 @@ fn bind_modules(
                                     from: participant.owner.clone(),
                                     apparent: apparent.to_owned(),
                                     canonical: (!label.repository.starts_with('['))
-                                        .then(|| label.repository.clone()),
+                                        .then(|| label.repository.to_string()),
                                     lockfile: true,
                                 });
                         }

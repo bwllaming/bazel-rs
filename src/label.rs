@@ -223,9 +223,9 @@ pub struct PackageId {
 )]
 pub struct Label {
     /// Canonical repository name; empty for the main repository.
-    pub repository: String,
-    pub package: String,
-    pub name: String,
+    pub repository: crate::interner::IStr,
+    pub package: crate::interner::IStr,
+    pub name: crate::interner::IStr,
 }
 
 impl Label {
@@ -344,9 +344,9 @@ impl Label {
             validate_repository_name(unresolvable.name)?;
             let parts = absolute_parts(&input[input.len() - rest.len() - 2..])?;
             return Ok(Label {
-                repository: canonical.to_owned(),
-                package: parts.pkg.to_owned(),
-                name: parts.target.to_owned(),
+                repository: canonical.into(),
+                package: parts.pkg.into(),
+                name: parts.target.into(),
             });
         }
         let parts = Parts::parse(input)?;
@@ -380,16 +380,16 @@ impl Label {
             current_package
         };
         Ok(Label {
-            repository: repository.to_owned(),
-            package: package.to_owned(),
-            name: parts.target.to_owned(),
+            repository: repository.into(),
+            package: package.into(),
+            name: parts.target.into(),
         })
     }
 
     pub fn package_id(&self) -> PackageId {
         PackageId {
-            repository: self.repository.clone(),
-            package: self.package.clone(),
+            repository: self.repository.to_string(),
+            package: self.package.to_string(),
         }
     }
 
@@ -414,7 +414,7 @@ impl Label {
         validate_package_path(&self.package)?;
         crate::bazel_label::validate_and_process_target_name(&self.package, name)?;
         Ok(Self {
-            name: name.strip_suffix("/.").unwrap_or(name).to_owned(),
+            name: name.strip_suffix("/.").unwrap_or(name).into(),
             ..self.clone()
         })
     }
@@ -606,9 +606,9 @@ pub fn deferred_label(text: &str, requester: &str, suggestion: &str) -> Option<L
         return None;
     }
     Some(Label {
-        repository: unknown_repository(name, requester, suggestion),
-        package: parts.pkg.to_owned(),
-        name: parts.target.to_owned(),
+        repository: unknown_repository(name, requester, suggestion).into(),
+        package: parts.pkg.into(),
+        name: parts.target.into(),
     })
 }
 
