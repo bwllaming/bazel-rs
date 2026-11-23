@@ -1600,6 +1600,40 @@ impl Depset {
                         memoized_walk(&self.node)
                     }
                     .map(|files| (files, Arc::as_ptr(&self.node)));
+                    // A node of this run on its first request (a target's
+                    // own compilation context over its dependencies'
+                    // headers, listed by its first compile — the only one
+                    // of a single-source cc_test): the run below it, as
+                    // MemoUse::FirstChild chooses it (its first child from
+                    // another target's analysis, shared by every action
+                    // over that dependency) rather than all of its files
+                    // listed as the action's own.
+                    if memo.is_none()
+                        && AnalysisScope::created_here(&self.node)
+                        && self
+                            .node
+                            .flat_walks
+                            .load(std::sync::atomic::Ordering::Acquire)
+                            == FLAT_WALKED
+                    {
+                        let mut node: &Arc<DepsetNode> = &self.node;
+                        while let Some(child) = first_child(node) {
+                            chain.push(node);
+                            if !AnalysisScope::created_here(child) {
+                                memo =
+                                    memoized_walk(child).map(|files| (files, Arc::as_ptr(child)));
+                                break;
+                            }
+                            if let Some(files) = memoized_own_walk(child) {
+                                memo = Some((files, Arc::as_ptr(child)));
+                                break;
+                            }
+                            node = child;
+                        }
+                        if memo.is_none() {
+                            chain.clear();
+                        }
+                    }
                 }
                 MemoUse::FirstChild => {
                     // Down the first children: a node from another target's
