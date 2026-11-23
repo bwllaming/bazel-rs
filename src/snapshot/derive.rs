@@ -128,9 +128,8 @@ pub fn take_planned() -> Option<Coverage> {
 
 /// The DERIVE section's bytes (compressed like the plan).
 pub fn encode(coverage: &Coverage) -> Result<Vec<u8>, String> {
-    let bytes = postcard::to_stdvec(coverage).map_err(|error| error.to_string())?;
-    // (The frames deflated on threads: the same bytes as one part's.)
-    Ok(crate::snapshot::format::compress_plan(&bytes))
+    // (Compressed as it is encoded: the bytes compress_plan stores.)
+    crate::snapshot::codec::encode_compressed(coverage).map_err(|error| error.to_string())
 }
 
 /// [`encode`]'s inverse (the section's checksum already passed).

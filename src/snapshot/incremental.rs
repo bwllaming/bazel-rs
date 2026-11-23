@@ -578,9 +578,8 @@ mod path_bytes {
 
 /// The INDEX section's stored bytes: postcard, compressed like the plan.
 pub fn encode_index(index: &Index) -> Result<Vec<u8>, String> {
-    let bytes = postcard::to_stdvec(index).map_err(|error| error.to_string())?;
-    // (The frames deflated on threads: the same bytes as one part's.)
-    Ok(crate::snapshot::format::compress_plan(&bytes))
+    // (Compressed as it is encoded: the bytes compress_plan stores.)
+    crate::snapshot::codec::encode_compressed(index).map_err(|error| error.to_string())
 }
 
 /// [`encode_index`]'s inverse (the section's checksum already passed).

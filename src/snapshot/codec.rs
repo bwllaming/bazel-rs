@@ -1217,7 +1217,9 @@ impl Bytes {
 /// (by content), later listings as its index.
 #[derive(Default)]
 struct PathTable {
-    positions: crate::fast_hash::FxHashMap<Box<[u8]>, u32>,
+    /// The entries by their bytes' hash: indices into `entries` (each
+    /// path's bytes once).
+    positions: hashbrown::HashTable<u32>,
     entries: Vec<Box<[u8]>>,
     /// The lists written so far (kept alive: their addresses stay theirs).
     lists: Vec<crate::action::RunfilesEntries>,
@@ -1247,17 +1249,26 @@ fn table_index(bytes: &[u8]) -> Option<u32> {
     ENCODING.with(|table| {
         let mut table = table.borrow_mut();
         let table = table.as_mut()?;
-        Some(match table.positions.get(bytes) {
-            Some(&index) => index,
-            None => {
-                let index = u32::try_from(table.entries.len())
-                    .expect("fewer than 2^32 paths in one section");
-                table.entries.push(bytes.into());
-                table.positions.insert(bytes.into(), index);
-                index
-            }
-        })
+        let hash = path_table_hash(bytes);
+        let PathTable {
+            positions, entries, ..
+        } = table;
+        if let Some(&index) = positions.find(hash, |&index| *entries[index as usize] == *bytes) {
+            return Some(index);
+        }
+        let index = u32::try_from(entries.len()).expect("fewer than 2^32 paths in one section");
+        entries.push(bytes.into());
+        positions.insert_unique(hash, index, |&index| {
+            path_table_hash(&entries[index as usize])
+        });
+        Some(index)
     })
+}
+
+/// A path's hash in a [`PathTable`].
+fn path_table_hash(bytes: &[u8]) -> u64 {
+    use std::hash::BuildHasher;
+    crate::fast_hash::FxBuildHasher::default().hash_one(bytes)
 }
 
 /// Whether this thread decodes a section.
@@ -1313,6 +1324,19 @@ fn to_section_streamed<T: Serialize + ?Sized>(
     Ok((len, table, body))
 }
 
+/// `value`'s postcard bytes stored as
+/// crate::snapshot::format::compress_plan stores them (the same bytes),
+/// compressed frame by frame as they are written: a large section (the
+/// DERIVE and INDEX sections, ~/code: ~150 MB raw each) is never held raw.
+pub(crate) fn encode_compressed<T: Serialize + ?Sized>(
+    value: &T,
+) -> Result<Vec<u8>, postcard::Error> {
+    use crate::snapshot::format;
+    let (_, frames, _, _) =
+        postcard::serialize_with_flavor(value, FrameSink::new(format::FRAME, &format::deflate))?;
+    Ok(format::assemble_compressed(vec![frames]))
+}
+
 /// Compressed frames: (raw bytes, compressed bytes) each.
 pub type Frames = Vec<(usize, Vec<u8>)>;
 
@@ -1357,6 +1381,10 @@ impl<'a> postcard::ser_flavors::Flavor for FrameSink<'a> {
     );
 
     fn try_extend(&mut self, mut data: &[u8]) -> postcard::Result<()> {
+        if self.buffer.capacity() == 0 {
+            // One buffer for the whole section, at its full size at once.
+            self.buffer.reserve_exact(self.frame.min(1 << 22));
+        }
         while !data.is_empty() {
             let room = self.frame - self.buffer.len();
             let (now, rest) = data.split_at(room.min(data.len()));
@@ -3112,6 +3140,27 @@ mod tests {
         damaged[last] ^= 0xff;
         assert!(decode_stored(&damaged, &never).is_err());
         assert!(decode_stored(&stored[..stored.len() - 1], &never).is_err());
+    }
+
+    /// A section compressed as it is encoded is stored exactly as the
+    /// whole encoding compressed afterwards (DERIVE, INDEX).
+    #[test]
+    fn compressed_encoding_is_the_stored_encoding() {
+        use crate::snapshot::format::compress_plan;
+        let large: Vec<(u32, String)> = (0..400_000u32)
+            .map(|index| {
+                (
+                    index,
+                    format!("bazel-out/k8/bin/pkg{}/file{index}.o", index % 97),
+                )
+            })
+            .collect();
+        for value in [Vec::new(), vec![(1, "a".to_owned())], large] {
+            assert_eq!(
+                encode_compressed(&value).unwrap(),
+                compress_plan(&postcard::to_stdvec(&value).unwrap())
+            );
+        }
     }
 
     /// The streamed encoding (the analysis snapshot's save): its frames

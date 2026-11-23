@@ -329,6 +329,11 @@ impl Save {
         // DERIVE sections: taken, selected and encoded on threads of their
         // own from here on, beside the plan's encoding below and the
         // actions (the writer joins them).
+        // The INPUTS section waits for the plan's encoding: both are
+        // transient peaks over the analysis still in memory (~/code: the
+        // sorted recording, ~150 MB; the encoders' path tables and frames,
+        // ~250 MB), one after the other rather than at once.
+        let (encoded, plan_encoded) = std::sync::mpsc::channel::<()>();
         let sections = Sections::start(
             recorder,
             seed,
@@ -337,6 +342,7 @@ impl Save {
             workspace_status,
             index,
             derive,
+            plan_encoded,
         );
         // The plan's parts are compressed as they are encoded, on the
         // encoding threads: a plan of GBs is never held uncompressed while
@@ -346,6 +352,7 @@ impl Save {
         let (plan, plan_stats) =
             crate::snapshot::codec::encode_parts_framed(request, format::FRAME, format::deflate)
                 .map_err(|error| error.to_string())?;
+        drop(encoded);
         crate::perf_mark("snapshot.save.plan_encoded");
         let plan_len = plan_stats.bytes;
         let compressed_ms = compressing.elapsed().as_secs_f64() * 1000.0;
@@ -515,6 +522,7 @@ struct Sections {
 }
 
 impl Sections {
+    #[allow(clippy::too_many_arguments)]
     fn start(
         recorder: &'static observed_fs::Recorder,
         seed: Option<Box<Seed>>,
@@ -523,6 +531,7 @@ impl Sections {
         workspace_status: bool,
         index: Option<crate::snapshot::incremental::PlannedIndex>,
         derive: Option<crate::snapshot::derive::Coverage>,
+        plan_encoded: std::sync::mpsc::Receiver<()>,
     ) -> Self {
         let replay_records = records.len();
         // In the caller's arena, as the plan's encoders
@@ -536,6 +545,9 @@ impl Sections {
         };
         let inputs = std::thread::spawn(move || {
             bind();
+            // (Disconnected once the plan is encoded, or its encoding
+            // failed.)
+            let _ = plan_encoded.recv();
             let started = Instant::now();
             let recording = recorder.take();
             let policy = Policy::current();
