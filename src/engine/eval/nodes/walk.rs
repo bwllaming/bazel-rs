@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use crate::config_registry::ExecPlatform;
 use crate::configuration::{ConfigId, Configuration};
 use crate::label::{Label, PackageId};
 use crate::package::Rule;
@@ -63,7 +64,7 @@ impl<'a> Walk<'a> {
             0,
             outermost,
         );
-        let result = Host::analyze_key(self, label, config, true);
+        let result = Host::analyze_key(self, label, config, true, None);
         if timing {
             self.engine.analyze_depth -= 1;
             if self.plan.len() > before {
@@ -202,11 +203,12 @@ impl Host for Walk<'_> {
         label: &Label,
         config: ConfigId,
         apply_rule_transition: bool,
+        exec_platform: Option<ExecPlatform>,
     ) -> Result<(), String> {
         // Incremental analysis: the frame `analyze_key_body` pushes for the
         // key it analyzes ends with it.
         let depth = self.engine.track_depth();
-        let result = self.analyze_key_body(label, config, apply_rule_transition);
+        let result = self.analyze_key_body(label, config, apply_rule_transition, exec_platform);
         self.engine.track_restore(depth);
         result
     }
@@ -518,14 +520,13 @@ impl Host for Walk<'_> {
     fn capture_cquery_edge(
         &mut self,
         from: &ConfiguredTargetKey,
-        label: Label,
-        config: ConfigId,
+        to: ConfiguredTargetKey,
         attribute: &str,
         tool: bool,
         aspect: bool,
     ) {
         self.engine
-            .capture_cquery_edge(from, label, config, attribute, tool, aspect);
+            .capture_cquery_edge(from, to, attribute, tool, aspect);
     }
 
     fn capture_cquery_aspect_toolchain_context(

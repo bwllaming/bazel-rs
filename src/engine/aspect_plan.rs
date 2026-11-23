@@ -1274,20 +1274,25 @@ fn plan_application<C: AspectCx>(
             let propagating = crate::aspects::propagating_to_toolchain(&incoming, &type_labels);
             let mut providers = BTreeMap::new();
             if !propagating.is_empty() {
-                let (_, applications) =
-                    match plan_dependency(cx, &implementation, base_key.config, propagating) {
-                        Err(error) if error == parallel::aspects::PENDING => {
-                            pending = true;
-                            continue;
-                        }
-                        planned => planned?,
-                    };
+                crate::aspects::check_toolchain_key(base_key, &implementation)?;
+                let (_, applications) = match plan_dependency(
+                    cx,
+                    &implementation.label,
+                    base_key.config,
+                    propagating,
+                ) {
+                    Err(error) if error == parallel::aspects::PENDING => {
+                        pending = true;
+                        continue;
+                    }
+                    planned => planned?,
+                };
                 providers = crate::aspects::merge_providers(&BTreeMap::new(), &[], &applications)?
                     .with_groups();
             }
             let entry = crate::toolchain_info::ToolchainAspectsProviders {
                 providers,
-                label: implementation.clone(),
+                label: implementation.label.clone(),
             }
             .owned()
             .map_err(|error| error.to_string())?;
@@ -1418,7 +1423,7 @@ fn plan_application<C: AspectCx>(
         for (_, implementation) in &context.resolved {
             let provider = cx.with_reads(|reads| {
                 reads.provider(
-                    &ConfiguredTargetKey::new(implementation.clone(), base_key.config),
+                    &context.implementation_key(implementation.clone(), base_key.config),
                     crate::template_variable_info::PROVIDER_ID,
                 )
             });

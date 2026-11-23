@@ -284,9 +284,34 @@ pub struct UnloadedToolchainContext {
     pub requested: Vec<(Label, ToolchainTypeInfo)>,
     /// toolchainTypeToResolved for the selected execution platform.
     pub resolved: Vec<(ToolchainTypeInfo, Label)>,
+    /// The execution platform of the configured-target keys of this
+    /// context's toolchain dependencies (B13c; ConfiguredTargetKey's
+    /// executionPlatformLabel, DependencyProducer.java:160-175): the
+    /// selected execution platform, normalized to `None` when it is the
+    /// configuration's first execution platform candidate (the registered
+    /// platforms, then the host platform: PlatformKeys.build). That
+    /// candidate list is a function of the configuration alone, so every
+    /// toolchain edge of one configuration agrees on which platform keeps
+    /// the plain key; set by the engine's resolution, not by [`resolve`].
+    pub key_exec_platform: Option<crate::config_registry::ExecPlatform>,
 }
 
 impl UnloadedToolchainContext {
+    /// The configured-target key of the toolchain implementation
+    /// `implementation` resolved by this context in `config` (a toolchain
+    /// dependency edge).
+    pub fn implementation_key(
+        &self,
+        implementation: Label,
+        config: crate::configuration::ConfigId,
+    ) -> crate::config_registry::ConfiguredTargetKey {
+        crate::config_registry::ConfiguredTargetKey::toolchain(
+            implementation,
+            config,
+            self.key_exec_platform,
+        )
+    }
+
     /// The distinct implementation labels, in type order.
     pub fn resolved_labels(&self) -> Vec<Label> {
         let mut labels: Vec<Label> = Vec::new();
@@ -953,6 +978,7 @@ pub fn resolve(
         toolchain_types,
         requested,
         resolved,
+        key_exec_platform: None,
     })
 }
 

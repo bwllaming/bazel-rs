@@ -10,6 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use crate::config_registry::ExecPlatform;
 use crate::configuration::{ConfigId, Configuration};
 use crate::label::{Label, PackageId};
 use crate::package::{Rule, RuleKind};
@@ -766,6 +767,7 @@ impl Host for EvalHost<'_, '_> {
         label: &Label,
         config: ConfigId,
         apply_rule_transition: bool,
+        exec_platform: Option<ExecPlatform>,
     ) -> Result<(), String> {
         let rule = match self.target(label)? {
             Target::Rule(rule) | Target::Output(rule, _) => rule,
@@ -775,6 +777,7 @@ impl Host for EvalHost<'_, '_> {
             label: rule.label.clone(),
             config,
             apply_rule_transition,
+            exec_platform,
         };
         self.need_ct1(&rule, key, true)
     }
@@ -1035,8 +1038,7 @@ impl Host for EvalHost<'_, '_> {
     fn capture_cquery_edge(
         &mut self,
         from: &ConfiguredTargetKey,
-        label: Label,
-        config: ConfigId,
+        to: ConfiguredTargetKey,
         attribute: &str,
         tool: bool,
         aspect: bool,
@@ -1044,8 +1046,7 @@ impl Host for EvalHost<'_, '_> {
         if self.shared.options.cquery {
             self.emit(Event::CqueryEdge(Box::new(CqueryEdge {
                 from: from.clone(),
-                to: label,
-                config,
+                to,
                 attribute: attribute.to_owned(),
                 tool,
                 aspect,
@@ -1153,12 +1154,13 @@ impl Host for EvalHost<'_, '_> {
         }
     }
 
-    fn cquery_aspect_target(&mut self, id: u32, label: Label, config: ConfigId) {
+    fn cquery_aspect_target(&mut self, id: u32, key: ConfiguredTargetKey) {
         if self.shared.options.cquery {
             self.emit(Event::Cquery(Box::new(CqueryOp::AspectTarget {
                 id,
-                label,
-                config,
+                label: key.label,
+                config: key.config,
+                exec_platform: key.exec_platform,
             })));
         }
     }

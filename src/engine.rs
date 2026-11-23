@@ -1,8 +1,8 @@
 //! A deliberately small native analysis/execution pipeline, not Skyframe.
 use crate::action::{self, Action};
 use crate::analysis::{self, DependencyTarget};
-use crate::config_registry::Configurations;
 pub use crate::config_registry::ConfiguredTargetKey;
+use crate::config_registry::{Configurations, ExecPlatform};
 use crate::configuration::{ConfigId, Configuration, LabelParser, SettingValue};
 use crate::configured_attributes::{self, ConfigMatching};
 use crate::ignored::IgnoredSubdirectories;
@@ -5349,8 +5349,11 @@ impl Engine {
     /// context and the exec groups' contexts): each resolved
     /// implementation once per type, with the type label and its requested
     /// aliases.
-    fn base_target_toolchains(&self, key: &ConfiguredTargetKey) -> Vec<(Label, Vec<Label>)> {
-        let mut result: Vec<(Label, Vec<Label>)> = Vec::new();
+    fn base_target_toolchains(
+        &self,
+        key: &ConfiguredTargetKey,
+    ) -> Vec<(ConfiguredTargetKey, Vec<Label>)> {
+        let mut result: Vec<(ConfiguredTargetKey, Vec<Label>)> = Vec::new();
         let contexts = self
             .toolchain_contexts
             .get(key)
@@ -5375,11 +5378,12 @@ impl Engine {
                         labels.push(requested.clone());
                     }
                 }
+                let implementation = context.implementation_key(implementation.clone(), key.config);
                 if !result
                     .iter()
-                    .any(|(seen, seen_labels)| seen == implementation && *seen_labels == labels)
+                    .any(|(seen, seen_labels)| *seen == implementation && *seen_labels == labels)
                 {
-                    result.push((implementation.clone(), labels));
+                    result.push((implementation, labels));
                 }
             }
         }
@@ -5404,7 +5408,7 @@ impl Engine {
         if let Some(context) = context {
             for (info, implementation) in &context.resolved {
                 let Some(provider) = reads.provider(
-                    &ConfiguredTargetKey::new(implementation.clone(), config),
+                    &context.implementation_key(implementation.clone(), config),
                     crate::toolchain_info::PROVIDER_ID,
                 ) else {
                     return Err(self.toolchain_error(
@@ -5441,9 +5445,10 @@ impl Engine {
     fn action_execution_table(
         &self,
         rule: &Rule,
-        config: ConfigId,
+        key: &ConfiguredTargetKey,
         groups: Option<&crate::exec_groups::TargetExecGroups>,
     ) -> Result<Vec<crate::exec_groups::ActionExecution>, String> {
+        let config = key.config;
         let raw = match rule.custom.as_ref().and_then(|custom| {
             custom
                 .declaration
@@ -5462,11 +5467,10 @@ impl Engine {
                 ));
             }
         };
-        let key = ConfiguredTargetKey::new(rule.label.clone(), config);
         self.execution_table(
             config,
             &raw,
-            self.toolchain_contexts.get(&key).map(Arc::as_ref),
+            self.toolchain_contexts.get(key).map(Arc::as_ref),
             groups,
             &self.display_form(&rule.label),
         )
@@ -7378,6 +7382,50 @@ impl Engine {
             .unwrap_or(own)
     }
 
+    /// [`Self::dependency_repositories_in`] of a toolchain dependency keyed
+    /// by an execution platform (B13c): its rule's own key, delegated by a
+    /// rule transition.
+    fn toolchain_dependency_repositories_in(
+        &self,
+        reads: &dyn PlanReads,
+        dependency: &ConfiguredTargetKey,
+    ) -> BTreeSet<String> {
+        let label = match self.generated.get(&dependency.label) {
+            Some((owner, _)) => owner.clone(),
+            None => dependency.label.clone(),
+        };
+        let key =
+            ConfiguredTargetKey::toolchain(label, dependency.config, dependency.exec_platform);
+        let key = self.rule_delegations.get(&key).cloned().unwrap_or(key);
+        reads.repositories(&key).map_or_else(
+            || BTreeSet::from([dependency.label.repository.to_string()]),
+            |known| (*known).clone(),
+        )
+    }
+
+    /// The keys of the toolchain dependencies of the configured target
+    /// `key` (B13c: each implementation under its toolchain key), the
+    /// default context's first, then each exec group's, in resolution
+    /// order (duplicates kept).
+    fn toolchain_dependency_keys(&self, key: &ConfiguredTargetKey) -> Vec<ConfiguredTargetKey> {
+        let mut keys = Vec::new();
+        let groups = self.exec_group_contexts.get(key);
+        for context in std::iter::once(self.toolchain_contexts.get(key).map(Arc::as_ref))
+            .flatten()
+            .chain(groups.iter().flat_map(|groups| {
+                groups
+                    .groups
+                    .iter()
+                    .filter_map(|group| group.context.as_ref())
+            }))
+        {
+            for (_, implementation) in &context.resolved {
+                keys.push(context.implementation_key(implementation.clone(), key.config));
+            }
+        }
+        keys
+    }
+
     /// The configuration `key`'s configured target was analyzed under: a
     /// rule transition's delegated (post-transition) configuration
     /// (TargetAndConfigurationProducer.delegateTo, :244-251, returns the
@@ -8844,6 +8892,14 @@ impl Engine {
             )
             .flatten()
         {
+            // B13c: a toolchain dependency keyed by an execution platform
+            // has no dependency view (views are per label and
+            // configuration); the consumer reads its providers by key
+            // (Self::load_toolchain_context) and waits for it by key
+            // (the requirement lists: Self::toolchain_dependency_keys).
+            if context.key_exec_platform.is_some() {
+                continue;
+            }
             for implementation in context.resolved_labels() {
                 add_target(implementation);
             }
@@ -9030,6 +9086,16 @@ impl Engine {
                     Some(*edge_config),
                 ));
             }
+            // The toolchain dependencies keyed by an execution platform
+            // (not among the dependency labels: B13c).
+            for dependency in cx.engine().toolchain_dependency_keys(&key) {
+                if dependency.exec_platform.is_some() {
+                    transitive.extend(
+                        cx.engine()
+                            .toolchain_dependency_repositories_in(cx.reads(), &dependency),
+                    );
+                }
+            }
             cx.engine()
                 .config_condition_transitive_in(cx.reads(), rule, config, &mut transitive);
         }
@@ -9182,7 +9248,7 @@ impl Engine {
                     for (_, implementation) in &context.resolved {
                         if let Some(variables) = reads
                             .provider(
-                                &dependency_key(implementation.clone()),
+                                &context.implementation_key(implementation.clone(), config),
                                 crate::template_variable_info::PROVIDER_ID,
                             )
                             .and_then(|provider| {
@@ -9287,7 +9353,7 @@ impl Engine {
             }
             action_execution = engine.action_execution_table(
                 rule,
-                config,
+                &key,
                 target_exec_groups.as_ref().filter(|_| uses_toolchains),
             )?;
             // Each action's key takes its exec group's execution
@@ -9937,6 +10003,16 @@ impl Engine {
                 tool_dependencies.push((self.resolve_rule_src(rule, &text)?, config, false));
             }
             if let Some(context) = self.toolchain_contexts.get(&key) {
+                // B13c: tool dependencies are read per label and
+                // configuration; a toolchain keyed by an execution platform
+                // is an explicit gap.
+                if let Some(platform) = context.key_exec_platform {
+                    return Err(format!(
+                        "{}: a genrule whose toolchains resolve for the execution platform {} (not its configuration's first execution platform) is not implemented in the native profile (configured targets keyed by their execution platform: B13c)",
+                        crate::rule_declarations::canonical_form(&rule.label),
+                        crate::rule_declarations::canonical_form(&platform.label()),
+                    ));
+                }
                 for implementation in context.resolved_labels() {
                     tool_dependencies.push((implementation, config, false));
                 }

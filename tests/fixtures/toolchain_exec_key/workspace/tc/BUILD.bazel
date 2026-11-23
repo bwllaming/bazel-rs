@@ -1,0 +1,108 @@
+load(":defs.bzl", "exec_platform", "my_toolchain", "use_alias", "use_clash", "use_tc")
+
+constraint_setting(name = "side")
+
+constraint_value(
+    name = "ca",
+    constraint_setting = ":side",
+)
+
+constraint_value(
+    name = "cb",
+    constraint_setting = ":side",
+)
+
+platform(
+    name = "ea",
+    constraint_values = [":ca"],
+)
+
+platform(
+    name = "eb",
+    constraint_values = [":cb"],
+)
+
+exec_platform(name = "exec_platform")
+
+toolchain_type(name = "type")
+
+my_toolchain(name = "impl")
+
+toolchain(
+    name = "tc",
+    toolchain = ":impl",
+    toolchain_type = ":type",
+)
+
+toolchain_type(name = "clash_type")
+
+my_toolchain(
+    name = "clash_impl",
+    clash = True,
+)
+
+toolchain(
+    name = "clash_tc",
+    toolchain = ":clash_impl",
+    toolchain_type = ":clash_type",
+)
+
+use_tc(
+    name = "use_a",
+    exec_compatible_with = [":ca"],
+)
+
+use_tc(
+    name = "use_b",
+    exec_compatible_with = [":cb"],
+)
+
+use_tc(
+    name = "use_a2",
+    exec_compatible_with = [":ca"],
+)
+
+filegroup(
+    name = "both",
+    srcs = [
+        ":use_a",
+        ":use_b",
+    ],
+)
+
+use_clash(
+    name = "clash_a",
+    exec_compatible_with = [":ca"],
+)
+
+use_clash(
+    name = "clash_b",
+    exec_compatible_with = [":cb"],
+)
+
+# An alias toolchain implementation: the alias is keyed by the execution
+# platform, its actual target (an attribute edge) is not.
+toolchain_type(name = "alias_type")
+
+my_toolchain(name = "aliased_impl")
+
+alias(
+    name = "impl_alias",
+    actual = ":aliased_impl",
+)
+
+toolchain(
+    name = "alias_tc",
+    toolchain = ":impl_alias",
+    toolchain_type = ":alias_type",
+)
+
+use_alias(
+    name = "alias_a",
+    exec_compatible_with = [":ca"],
+)
+
+use_alias(
+    name = "alias_b",
+    exec_compatible_with = [":cb"],
+)

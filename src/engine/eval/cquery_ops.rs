@@ -56,6 +56,8 @@ pub(crate) enum CqueryOp {
         id: u32,
         label: Label,
         config: ConfigId,
+        /// A toolchain dependency's execution platform (B13c).
+        exec_platform: Option<crate::config_registry::ExecPlatform>,
     },
     /// `capture.propagated(ids, collection, children, attribute, attached)`.
     Propagated {
@@ -108,8 +110,21 @@ impl CqueryOp {
             Self::AspectTargets { id, dependencies } => {
                 format!("aspect_targets {id} {dependencies:?}")
             }
-            Self::AspectTarget { id, label, config } => {
+            Self::AspectTarget {
+                id,
+                label,
+                config,
+                exec_platform: None,
+            } => {
                 format!("aspect_target {id} {label} {config:?}")
+            }
+            Self::AspectTarget {
+                id,
+                label,
+                config,
+                exec_platform: Some(platform),
+            } => {
+                format!("aspect_target {id} {label} {config:?} {platform:?}")
             }
             Self::Propagated {
                 ids,

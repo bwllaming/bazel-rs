@@ -1,0 +1,3 @@
+module(name = "toolchain_exec_key")
+
+register_toolchains("//tc:tc", "//tc:clash_tc", "//tc:alias_tc")

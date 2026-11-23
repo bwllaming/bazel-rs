@@ -472,6 +472,25 @@ pub(crate) fn propagating_over_aspect_attribute(
     kept
 }
 
+/// B13c: aspects propagated over a toolchain dependency (`toolchains_aspects`)
+/// apply to the implementation's plain configured target only; one keyed by
+/// an execution platform (ConfiguredTargetKey::exec_platform) is an explicit
+/// gap rather than an application on the wrong configured target.
+pub(crate) fn check_toolchain_key(
+    base: &crate::config_registry::ConfiguredTargetKey,
+    implementation: &crate::config_registry::ConfiguredTargetKey,
+) -> Result<(), String> {
+    match implementation.exec_platform {
+        None => Ok(()),
+        Some(platform) => Err(format!(
+            "aspects propagated by toolchains_aspects from {} to its toolchain {}, resolved for the execution platform {} (not its configuration's first execution platform), are not implemented in the native profile (configured targets keyed by their execution platform: B13c)",
+            crate::rule_declarations::canonical_form(&base.label),
+            crate::rule_declarations::canonical_form(&implementation.label),
+            crate::rule_declarations::canonical_form(&platform.label()),
+        )),
+    }
+}
+
 /// The aspects of a target's path (`path`, bottom up) that propagate to
 /// the target's resolved toolchain of a type requested as any of
 /// `type_labels` (the type label and every requested alias of it;

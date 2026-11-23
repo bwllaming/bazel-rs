@@ -22,7 +22,11 @@ use crate::configuration::{ConfigId, Configuration, NativeOptions, SettingValue}
 use crate::label::Label;
 
 /// A target in a configuration (ConfiguredTargetKey).
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// Ordered by label, configuration, rule-transition flag, then execution
+/// platform (absent first: TransitiveDependencyState's comparator,
+/// analysis/TransitiveDependencyState.java:197-202).
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ConfiguredTargetKey {
     pub label: Label,
     pub config: ConfigId,
@@ -32,6 +36,118 @@ pub struct ConfiguredTargetKey {
     /// which is analyzed in the transitioned configuration without applying
     /// the transition again. Every dependency edge requests `true`.
     pub apply_rule_transition: bool,
+    /// ConfiguredTargetKey.executionPlatformLabel (B13c, docs/OSS_CORPUS.md;
+    /// analysis/producers/DependencyProducer.java:160-175,
+    /// PrerequisitesProducer.getPrerequisiteKey): set only on a toolchain
+    /// dependency edge, to the parent exec group's execution platform —
+    /// except when that platform is its configuration's first execution
+    /// platform candidate, which keeps the plain key (`None`): see
+    /// crate::toolchains::UnloadedToolchainContext::key_exec_platform. So a
+    /// build whose toolchain implementations are each needed for one
+    /// execution platform per configuration (the common case) keeps the
+    /// keys, action owners and encodings it had without this field.
+    pub exec_platform: Option<ExecPlatform>,
+}
+
+/// An execution platform label of a [`ConfiguredTargetKey`], interned
+/// process-wide in a small table (a build has a handful of execution
+/// platforms): two bytes, so the key keeps its size.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ExecPlatform(std::num::NonZeroU16);
+
+/// The interned execution platform labels (index `id - 1`).
+static EXEC_PLATFORMS: std::sync::RwLock<Vec<Label>> = std::sync::RwLock::new(Vec::new());
+
+impl ExecPlatform {
+    /// The tag of `label` (interned on first use).
+    pub fn intern(label: &Label) -> Self {
+        let position = |labels: &[Label]| labels.iter().position(|known| known == label);
+        {
+            let labels = EXEC_PLATFORMS
+                .read()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(index) = position(&labels) {
+                return Self::from_index(index);
+            }
+        }
+        let mut labels = EXEC_PLATFORMS
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(index) = position(&labels) {
+            return Self::from_index(index);
+        }
+        labels.push(label.clone());
+        Self::from_index(labels.len() - 1)
+    }
+
+    fn from_index(index: usize) -> Self {
+        let id = u16::try_from(index + 1)
+            .ok()
+            .and_then(std::num::NonZeroU16::new)
+            .expect(
+                "internal error: more than 65535 execution platforms in configured target keys",
+            );
+        Self(id)
+    }
+
+    /// The platform's label.
+    pub fn label(self) -> Label {
+        EXEC_PLATFORMS
+            .read()
+            .unwrap_or_else(|error| error.into_inner())[usize::from(self.0.get()) - 1]
+            .clone()
+    }
+}
+
+impl Ord for ExecPlatform {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if self == other {
+            return std::cmp::Ordering::Equal;
+        }
+        self.label().cmp(&other.label())
+    }
+}
+
+impl PartialOrd for ExecPlatform {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl fmt::Debug for ExecPlatform {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.label())
+    }
+}
+
+impl Ord for ConfiguredTargetKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.label
+            .cmp(&other.label)
+            .then_with(|| self.config.cmp(&other.config))
+            .then_with(|| self.apply_rule_transition.cmp(&other.apply_rule_transition))
+            .then_with(|| self.exec_platform.cmp(&other.exec_platform))
+    }
+}
+
+impl PartialOrd for ConfiguredTargetKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl fmt::Debug for ConfiguredTargetKey {
+    /// The derived form; the execution platform only when present.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut out = f.debug_struct("ConfiguredTargetKey");
+        out.field("label", &self.label)
+            .field("config", &self.config)
+            .field("apply_rule_transition", &self.apply_rule_transition);
+        if let Some(platform) = &self.exec_platform {
+            out.field("exec_platform", platform);
+        }
+        out.finish()
+    }
 }
 
 impl ConfiguredTargetKey {
@@ -40,6 +156,7 @@ impl ConfiguredTargetKey {
             label,
             config,
             apply_rule_transition: true,
+            exec_platform: None,
         }
     }
 
@@ -50,18 +167,50 @@ impl ConfiguredTargetKey {
             label,
             config,
             apply_rule_transition: false,
+            exec_platform: None,
+        }
+    }
+
+    /// The key of a toolchain dependency edge: `label` in `config` keyed by
+    /// the parent's execution platform `exec_platform` (already normalized:
+    /// `None` for the configuration's first candidate).
+    pub fn toolchain(label: Label, config: ConfigId, exec_platform: Option<ExecPlatform>) -> Self {
+        Self {
+            label,
+            config,
+            apply_rule_transition: true,
+            exec_platform,
+        }
+    }
+
+    /// This key without its execution platform (the target's plain key).
+    pub fn plain(&self) -> Self {
+        Self {
+            label: self.label.clone(),
+            config: self.config,
+            apply_rule_transition: self.apply_rule_transition,
+            exec_platform: None,
         }
     }
 
     /// The owner part of the action identifiers of this target: the label in
     /// the top-level configuration (`L`, so action ids `L#n` and the action
     /// cache keys of existing builds are unchanged), `L[<config8>]`
-    /// elsewhere (the first eight hex digits of the ConfigId).
+    /// elsewhere (the first eight hex digits of the ConfigId). A key with an
+    /// execution platform appends `@<platform>` inside the brackets
+    /// (`L[@P]`, `L[<config8>@P]`): its copies in one configuration own
+    /// distinct actions (genuine's ActionLookupKey is the whole key).
     pub fn action_owner(&self, top: ConfigId) -> String {
-        if self.config == top {
-            self.label.to_string()
-        } else {
-            format!("{}[{}]", self.label, &self.config.to_string()[..8])
+        match (&self.exec_platform, self.config == top) {
+            (None, true) => self.label.to_string(),
+            (None, false) => format!("{}[{}]", self.label, &self.config.to_string()[..8]),
+            (Some(platform), true) => format!("{}[@{}]", self.label, platform.label()),
+            (Some(platform), false) => format!(
+                "{}[{}@{}]",
+                self.label,
+                &self.config.to_string()[..8],
+                platform.label()
+            ),
         }
     }
 }
@@ -1547,6 +1696,25 @@ mod tests {
             format!("//p:a[{}]", &dbg.to_string()[..8])
         );
         assert_eq!(a_dbg.action_owner(dbg), "//p:a");
+        // B13c: a toolchain dependency's key with an execution platform
+        // sorts after the plain key and owns distinct actions; the key's
+        // size is unchanged by the field.
+        let platform = ExecPlatform::intern(&label("//e:b"));
+        assert_eq!(ExecPlatform::intern(&label("//e:b")), platform);
+        let a_b = ConfiguredTargetKey::toolchain(label("//p:a"), top, Some(platform));
+        let a_c = ConfiguredTargetKey::toolchain(
+            label("//p:a"),
+            top,
+            Some(ExecPlatform::intern(&label("//e:c"))),
+        );
+        assert!(a < a_b && a_b < a_c && a_c < b && a_b.plain() == a);
+        assert_eq!(a_b.action_owner(top), "//p:a[@//e:b]");
+        assert_eq!(
+            ConfiguredTargetKey::toolchain(label("//p:a"), dbg, Some(platform)).action_owner(top),
+            format!("//p:a[{}@//e:b]", &dbg.to_string()[..8])
+        );
+        assert_eq!(a_b.to_string(), a.to_string());
+        assert_eq!(std::mem::size_of::<ConfiguredTargetKey>(), 48);
         let configurations = Configurations::default();
         assert_eq!(configurations.top_key(label("//p:a")), a);
         assert!(Arc::ptr_eq(

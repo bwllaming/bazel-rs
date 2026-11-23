@@ -6,6 +6,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use super::host::Host;
+use crate::config_registry::ExecPlatform;
 use crate::engine::*;
 
 pub(crate) trait Phase1: Host {
@@ -66,6 +67,7 @@ pub(crate) trait Phase1: Host {
         label: &Label,
         config: ConfigId,
         apply_rule_transition: bool,
+        exec_platform: Option<ExecPlatform>,
     ) -> Result<(), String> {
         if self.source_analyzed(label) {
             self.track_source(label);
@@ -93,6 +95,7 @@ pub(crate) trait Phase1: Host {
             label: rule.label.clone(),
             config,
             apply_rule_transition,
+            exec_platform,
         };
         let tracked = self.track_key(&key);
         self.record_keep_going_edge(&key);
@@ -156,8 +159,16 @@ pub(crate) trait Phase1: Host {
         {
             self.active_push(&key);
             let delegate = self.rule_transition(&rule, config)?;
-            if let Some(owner) = delegate {
-                self.analyze_key(&rule.label, owner.config, owner.apply_rule_transition)?;
+            if let Some(mut owner) = delegate {
+                // The delegate keeps the execution platform
+                // (RuleTransitionApplier.java:150-160).
+                owner.exec_platform = key.exec_platform;
+                self.analyze_key(
+                    &rule.label,
+                    owner.config,
+                    owner.apply_rule_transition,
+                    owner.exec_platform,
+                )?;
                 self.active_pop();
                 let node = self.configured_node(&owner).unwrap_or_default();
                 self.publish_node(&key, node);
@@ -178,9 +189,20 @@ pub(crate) trait Phase1: Host {
         {
             let no_config = self.intern_no_config();
             if no_config != config {
-                let owner = ConfiguredTargetKey::new(rule.label.clone(), no_config);
+                // The delegate keeps the execution platform
+                // (TargetAndConfigurationProducer.java:300-310).
+                let owner = ConfiguredTargetKey::toolchain(
+                    rule.label.clone(),
+                    no_config,
+                    key.exec_platform,
+                );
                 self.active_push(&key);
-                self.analyze_key(&rule.label, owner.config, owner.apply_rule_transition)?;
+                self.analyze_key(
+                    &rule.label,
+                    owner.config,
+                    owner.apply_rule_transition,
+                    owner.exec_platform,
+                )?;
                 self.active_pop();
                 let node = self.configured_node(&owner).unwrap_or_default();
                 self.publish_node(&key, node);
@@ -196,7 +218,13 @@ pub(crate) trait Phase1: Host {
         {
             for include in &group.includes {
                 self.analyze(include, config)?;
-                self.capture_cquery_edge(&key, include.clone(), config, "includes", false, false);
+                self.capture_cquery_edge(
+                    &key,
+                    ConfiguredTargetKey::new(include.clone(), config),
+                    "includes",
+                    false,
+                    false,
+                );
             }
         }
         // constraint_setting and constraint_value are analyzed under
@@ -262,8 +290,7 @@ pub(crate) trait Phase1: Host {
                 let dependency = self.resolve_rule_src(&rule, condition)?;
                 self.capture_cquery_edge(
                     &key,
-                    dependency,
-                    config,
+                    ConfiguredTargetKey::new(dependency, config),
                     "$config_dependencies",
                     false,
                     false,
@@ -274,7 +301,7 @@ pub(crate) trait Phase1: Host {
         // conditions, before toolchain resolution and every other dependency
         // (DependencyContextProducerWithCompatibilityCheck.java:159-189).
         let compatibility =
-            self.check_target_compatibility(&rule, config, &ordered, uses_toolchains)?;
+            self.check_target_compatibility(&rule, &key, &ordered, uses_toolchains)?;
         if let Some(incompatible) = compatibility.incompatible {
             self.publish_incompatible(key, rule, ordered, incompatible);
             self.active_pop();
@@ -283,8 +310,7 @@ pub(crate) trait Phase1: Host {
         if self.cquery() && uses_toolchains {
             self.capture_cquery_edge(
                 &key,
-                configuration.native.target_platform().clone(),
-                config,
+                ConfiguredTargetKey::new(configuration.native.target_platform().clone(), config),
                 "$target_platform",
                 true,
                 false,
@@ -300,7 +326,7 @@ pub(crate) trait Phase1: Host {
         // no toolchain types (ToolchainContextUtil.createDefaultToolchainContextKey,
         // :120-144).
         let toolchain_context = if uses_toolchains {
-            let mut key = self.toolchain_context_key(&rule, config)?;
+            let mut key = self.toolchain_context_key(&rule, &key)?;
             if use_auto_exec_groups {
                 key.types.clear();
             }
@@ -391,7 +417,13 @@ pub(crate) trait Phase1: Host {
         {
             let setup = Label::parse_canonical("@@bazel_tools//tools/genrule:genrule-setup.sh")?;
             self.analyze(&setup, config)?;
-            self.capture_cquery_edge(&key, setup, config, "$genrule_setup", true, false);
+            self.capture_cquery_edge(
+                &key,
+                ConfiguredTargetKey::new(setup, config),
+                "$genrule_setup",
+                true,
+                false,
+            );
         }
         // ExecutionTransitionFactory.create (analysis/config/ExecutionTransitionFactory.java:76-114):
         // in the no-config (and a platform's empty) configuration
@@ -515,8 +547,7 @@ pub(crate) trait Phase1: Host {
                 if self.cquery() {
                     self.capture_cquery_edge(
                         &key,
-                        dependency.clone(),
-                        dep_config,
+                        ConfiguredTargetKey::new(dependency.clone(), dep_config),
                         if forwards(&rule) {
                             if late_bound_rule { ":alias" } else { "actual" }
                         } else {
@@ -576,28 +607,17 @@ pub(crate) trait Phase1: Host {
             .flatten()
         {
             for implementation in context.resolved_labels() {
-                self.toolchain_implementation(
-                    &implementation,
-                    config,
-                    &context.exec_platform.label,
-                    rule.location.as_deref(),
-                )
-                .map_err(|error| located(rule.location.as_deref(), error))?;
-                self.target(&implementation)
-                    .map_err(|error| self.missing_edge_error(&rule, &implementation, error))?;
-                self.analyze(&implementation, config)?;
-                if let Some(cause) = self.target_incompatibility(&implementation, config)? {
-                    incompatible_deps.push((
-                        ConfiguredTargetKey::new(implementation.clone(), config),
-                        cause,
-                    ));
+                let dependency =
+                    self.analyze_toolchain_dependency(&rule, context, &implementation, config)?;
+                if let Some(cause) = self.key_incompatibility(&dependency)? {
+                    incompatible_deps.push((dependency.clone(), cause));
                 }
-                self.capture_cquery_edge(&key, implementation, config, "$toolchains", true, false);
+                self.capture_cquery_edge(&key, dependency, "$toolchains", true, false);
             }
         }
         let platform_attributes = platform_prerequisite_attributes(&rule);
         let platform_prerequisites =
-            self.resolve_native_prerequisites(&rule, config, &platform_attributes)?;
+            self.resolve_native_prerequisites(&rule, &key, &platform_attributes)?;
         for dependency in platform_prerequisites.iter().flatten() {
             if let Some(cause) = self.target_incompatibility(dependency, config)? {
                 incompatible_deps
@@ -1128,7 +1148,8 @@ pub(crate) trait Phase1: Host {
                     .flatten()
                 {
                     for label in context.resolved_labels() {
-                        self.cquery_aspect_target(application, label, config);
+                        let target = context.implementation_key(label, config);
+                        self.cquery_aspect_target(application, target);
                     }
                 }
             }
@@ -1239,7 +1260,8 @@ pub(crate) trait Phase1: Host {
             if propagating.is_empty() {
                 continue;
             }
-            self.analyze_aspect_applications(&implementation, config, propagating, seen)?;
+            crate::aspects::check_toolchain_key(&base_key, &implementation)?;
+            self.analyze_aspect_applications(&implementation.label, config, propagating, seen)?;
         }
         Ok(applications)
     }
@@ -1249,8 +1271,11 @@ pub(crate) trait Phase1: Host {
     /// context and the exec groups' contexts): each resolved
     /// implementation once per type, with the type label and its requested
     /// aliases.
-    fn base_target_toolchains(&mut self, key: &ConfiguredTargetKey) -> Vec<(Label, Vec<Label>)> {
-        let mut result: Vec<(Label, Vec<Label>)> = Vec::new();
+    fn base_target_toolchains(
+        &mut self,
+        key: &ConfiguredTargetKey,
+    ) -> Vec<(ConfiguredTargetKey, Vec<Label>)> {
+        let mut result: Vec<(ConfiguredTargetKey, Vec<Label>)> = Vec::new();
         let default = self.toolchain_context_of(key);
         let groups = self.exec_groups_of(key);
         let contexts = default
@@ -1270,11 +1295,12 @@ pub(crate) trait Phase1: Host {
                         labels.push(requested.clone());
                     }
                 }
+                let implementation = context.implementation_key(implementation.clone(), key.config);
                 if !result
                     .iter()
-                    .any(|(seen, seen_labels)| seen == implementation && *seen_labels == labels)
+                    .any(|(seen, seen_labels)| *seen == implementation && *seen_labels == labels)
                 {
-                    result.push((implementation.clone(), labels));
+                    result.push((implementation, labels));
                 }
             }
         }
@@ -1337,7 +1363,10 @@ pub(crate) trait Phase1: Host {
                     self.analyze(&dependency, attribute_config)
                         .map_err(failure)?;
                     if let Some(index) = capture {
-                        self.cquery_aspect_target(index, dependency.clone(), attribute_config);
+                        self.cquery_aspect_target(
+                            index,
+                            ConfiguredTargetKey::new(dependency.clone(), attribute_config),
+                        );
                     }
                     if !propagating.is_empty() {
                         self.analyze_aspect_applications(
@@ -1619,20 +1648,11 @@ pub(crate) trait Phase1: Host {
                     context
                         .resolved_labels()
                         .into_iter()
-                        .map(|label| (label, context.exec_platform.label.clone()))
+                        .map(|label| (label, context.clone()))
                 })
                 .collect::<Vec<_>>();
-            for (implementation, exec_platform) in implementations {
-                self.toolchain_implementation(
-                    &implementation,
-                    config,
-                    &exec_platform,
-                    base_rule.location.as_deref(),
-                )
-                .map_err(|error| located(base_rule.location.as_deref(), error))?;
-                self.target(&implementation)
-                    .map_err(|error| self.missing_edge_error(base_rule, &implementation, error))?;
-                self.analyze(&implementation, config)?;
+            for (implementation, context) in implementations {
+                self.analyze_toolchain_dependency(base_rule, &context, &implementation, config)?;
             }
         }
         Ok(toolchains)
@@ -2640,8 +2660,7 @@ pub(crate) trait Phase1: Host {
                 if attribute != "flag_values" || explicit_flag_labels.contains(&dependency) {
                     self.capture_cquery_edge(
                         &ConfiguredTargetKey::new(rule.label.clone(), config),
-                        dependency.clone(),
-                        config,
+                        ConfiguredTargetKey::new(dependency.clone(), config),
                         attribute,
                         false,
                         false,
@@ -2650,8 +2669,7 @@ pub(crate) trait Phase1: Host {
                 if attribute == "flag_values" && alias_labels.contains(&dependency) {
                     self.capture_cquery_edge(
                         &ConfiguredTargetKey::new(rule.label.clone(), config),
-                        dependency.clone(),
-                        config,
+                        ConfiguredTargetKey::new(dependency.clone(), config),
                         ":flag_alias_settings",
                         true,
                         false,
@@ -2726,9 +2744,10 @@ pub(crate) trait Phase1: Host {
     fn resolve_native_prerequisites(
         &mut self,
         rule: &Rule,
-        config: ConfigId,
+        own: &ConfiguredTargetKey,
         attributes: &[PrerequisiteAttribute],
     ) -> Result<Vec<Vec<Label>>, String> {
+        let config = own.config;
         let mut resolved = Vec::new();
         for attribute in attributes {
             let mut labels = Vec::new();
@@ -2739,9 +2758,8 @@ pub(crate) trait Phase1: Host {
                 self.analyze(&dependency, config)?;
                 if self.cquery() {
                     self.capture_cquery_edge(
-                        &ConfiguredTargetKey::new(rule.label.clone(), config),
-                        dependency.clone(),
-                        config,
+                        own,
+                        ConfiguredTargetKey::new(dependency.clone(), config),
                         attribute.name,
                         false,
                         false,
@@ -3074,13 +3092,65 @@ pub(crate) trait Phase1: Host {
         }
     }
 
-    /// Record `implementation` as a toolchain implementation of a parent
-    /// whose execution platform is `exec_platform`. Bazel keys the
-    /// implementation's configured target by that platform
-    /// (ConfiguredTargetKey.executionPlatformLabel, DependencyResolver.java:835-866);
-    /// the native key has no execution platform, so one implementation
-    /// needed for two execution platforms in one configuration fails
-    /// explicitly.
+    /// A toolchain dependency edge of `rule` (or of an aspect applied to
+    /// it): the implementation `implementation` that `context` resolved,
+    /// analyzed in `config` under its toolchain key (B13c:
+    /// ConfiguredTargetKey.executionPlatformLabel, DependencyProducer.java:160-175).
+    /// A key with an execution platform forces that platform itself
+    /// (Self::toolchain_context_key); the plain key — the configuration's
+    /// first candidate platform — keeps the first-claim record below.
+    fn analyze_toolchain_dependency(
+        &mut self,
+        rule: &Rule,
+        context: &UnloadedToolchainContext,
+        implementation: &Label,
+        config: ConfigId,
+    ) -> Result<ConfiguredTargetKey, String> {
+        let key = context.implementation_key(implementation.clone(), config);
+        if key.exec_platform.is_none() {
+            self.toolchain_implementation(
+                implementation,
+                config,
+                &context.exec_platform.label,
+                rule.location.as_deref(),
+            )
+            .map_err(|error| located(rule.location.as_deref(), error))?;
+        }
+        self.target(implementation)
+            .map_err(|error| self.missing_edge_error(rule, implementation, error))?;
+        match key.exec_platform {
+            None => self.analyze(implementation, config)?,
+            Some(platform) => self.analyze_key(implementation, config, true, Some(platform))?,
+        }
+        Ok(key)
+    }
+
+    /// [`Self::target_incompatibility`] of a full key (an output file's
+    /// key names its rule; the execution platform is kept).
+    fn key_incompatibility(
+        &mut self,
+        key: &ConfiguredTargetKey,
+    ) -> Result<Option<Arc<compatibility::Incompatibility>>, String> {
+        let owner = match self.target(&key.label)? {
+            Target::Output(rule, _) => rule.label.clone(),
+            _ => key.label.clone(),
+        };
+        Ok(self
+            .configured_node(&ConfiguredTargetKey::toolchain(
+                owner,
+                key.config,
+                key.exec_platform,
+            ))
+            .and_then(|node| node.incompatible))
+    }
+
+    /// Record `implementation` as a toolchain implementation, under its
+    /// plain key, of a parent whose execution platform is `exec_platform`,
+    /// which the implementation's own resolution then forces
+    /// (ToolchainContextUtil.java:136-141). Only the configuration's first
+    /// candidate platform keeps the plain key
+    /// (UnloadedToolchainContext::key_exec_platform), so two claims of one
+    /// key always agree; a disagreement is an internal error.
     fn toolchain_implementation(
         &mut self,
         implementation: &Label,
@@ -3091,12 +3161,13 @@ pub(crate) trait Phase1: Host {
         let _shared = incremental::SharedScope::enter("toolchain_implementation");
         let key = ConfiguredTargetKey::new(implementation.clone(), config);
         match self.claim_toolchain_implementation(key, exec_platform, location) {
-            Some(existing) if existing != *exec_platform => Err(format!(
-                "toolchain implementation {} is needed for the execution platforms {} and {} in one configuration: configured targets keyed by their execution platform (ConfiguredTargetKey.executionPlatformLabel) are not implemented in the native profile",
-                crate::rule_declarations::canonical_form(implementation),
-                crate::rule_declarations::canonical_form(&existing),
-                crate::rule_declarations::canonical_form(exec_platform),
-            )),
+            Some(existing) if existing != *exec_platform => {
+                Err(crate::engine::eval::linearize::pass1::toolchain_conflict(
+                    implementation,
+                    &existing,
+                    exec_platform,
+                ))
+            }
             Some(_) | None => Ok(()),
         }
     }
@@ -3108,10 +3179,16 @@ pub(crate) trait Phase1: Host {
     fn toolchain_context_key(
         &mut self,
         rule: &Rule,
-        config: ConfigId,
+        own: &ConfiguredTargetKey,
     ) -> Result<ToolchainContextKey, String> {
+        // A toolchain dependency's key with an execution platform forces
+        // it (B13c); the plain key forces its first claim's.
+        let forced_exec = match own.exec_platform {
+            Some(platform) => Some(platform.label()),
+            None => self.forced_exec(own),
+        };
         let mut key = ToolchainContextKey {
-            forced_exec: self.forced_exec(&ConfiguredTargetKey::new(rule.label.clone(), config)),
+            forced_exec,
             ..Default::default()
         };
         if let Some(custom) = &rule.custom {
@@ -3454,6 +3531,9 @@ pub(crate) trait Phase1: Host {
         {
             candidates.push(host_info.clone());
         }
+        // B13c: the configuration's first candidate keeps the plain key of
+        // the toolchain dependencies (UnloadedToolchainContext::key_exec_platform).
+        let first_candidate = candidates[0].label.clone();
         // Phase-1 prefetch: from here on, the implementation of every
         // toolchain compatible with these platforms is queued as soon as
         // the toolchain is analyzed (`prefetch_compatible_toolchain`).
@@ -3548,6 +3628,10 @@ pub(crate) trait Phase1: Host {
         // `--extra_execution_platforms`).
         if !key.needs_platforms() && resolved.exec_platform.label == host_info.label {
             return Ok(None);
+        }
+        let mut resolved = resolved;
+        if resolved.exec_platform.label != first_candidate {
+            resolved.key_exec_platform = Some(ExecPlatform::intern(&resolved.exec_platform.label));
         }
         // Phase-1 prefetch: the selected implementations are analyzed after
         // the rule's attribute dependencies.
@@ -4353,10 +4437,11 @@ pub(crate) trait Phase1: Host {
     fn check_target_compatibility(
         &mut self,
         rule: &Rule,
-        config: ConfigId,
+        own: &ConfiguredTargetKey,
         conditions: &[(String, ConfigMatching)],
         checked: bool,
     ) -> Result<compatibility::DirectCheck, String> {
+        let config = own.config;
         // The toolchain rule's own target_compatible_with is a toolchain
         // resolution input (platform_prerequisite_attributes).
         if matches!(rule.kind, RuleKind::Native("toolchain")) {
@@ -4391,9 +4476,8 @@ pub(crate) trait Phase1: Host {
             self.analyze(&label, config)?;
             if self.cquery() {
                 self.capture_cquery_edge(
-                    &ConfiguredTargetKey::new(rule.label.clone(), config),
-                    label.clone(),
-                    config,
+                    own,
+                    ConfiguredTargetKey::new(label.clone(), config),
                     "target_compatible_with",
                     false,
                     false,

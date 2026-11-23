@@ -216,14 +216,16 @@ pub(crate) struct Linearized {
     pub(crate) stop: Option<String>,
 }
 
-/// The walk's conflict error of `toolchain_implementation`.
+/// The walk's conflict error of `toolchain_implementation`: two claims of
+/// one plain key with different platforms (B13c: only the configuration's
+/// first candidate platform keeps the plain key, so this cannot happen).
 pub(crate) fn toolchain_conflict(
     implementation: &Label,
     existing: &Label,
     exec_platform: &Label,
 ) -> String {
     format!(
-        "toolchain implementation {} is needed for the execution platforms {} and {} in one configuration: configured targets keyed by their execution platform (ConfiguredTargetKey.executionPlatformLabel) are not implemented in the native profile",
+        "internal error: toolchain implementation {} claimed under its plain configured-target key for the execution platforms {} and {} in one configuration (only the configuration's first execution platform candidate keeps the plain key)",
         crate::rule_declarations::canonical_form(implementation),
         crate::rule_declarations::canonical_form(existing),
         crate::rule_declarations::canonical_form(exec_platform),

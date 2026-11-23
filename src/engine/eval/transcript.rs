@@ -11,7 +11,6 @@
 //!
 //! Owner: worker C (pass 1, pass 2). Frozen in S0: B emits these events.
 
-use crate::configuration::ConfigId;
 use crate::label::{Label, PackageId};
 
 use super::super::ConfiguredTargetKey;
@@ -135,8 +134,7 @@ impl From<Label> for Accessed {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct CqueryEdge {
     pub(crate) from: ConfiguredTargetKey,
-    pub(crate) to: Label,
-    pub(crate) config: ConfigId,
+    pub(crate) to: ConfiguredTargetKey,
     pub(crate) attribute: String,
     /// A tool (exec) dependency.
     pub(crate) tool: bool,

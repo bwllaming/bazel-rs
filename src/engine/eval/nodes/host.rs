@@ -10,6 +10,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use crate::config_registry::ExecPlatform;
 use crate::configuration::{ConfigId, Configuration};
 use crate::label::{Label, PackageId};
 use crate::package::Rule;
@@ -103,11 +104,14 @@ pub(crate) trait Host {
     fn analyze(&mut self, label: &Label, config: ConfigId) -> Result<(), String>;
     /// [`Self::analyze`] with an explicit `shouldApplyRuleTransition` (a
     /// rule transition's delegate).
+    /// `exec_platform`: a toolchain dependency edge's execution platform
+    /// (ConfiguredTargetKey::exec_platform).
     fn analyze_key(
         &mut self,
         label: &Label,
         config: ConfigId,
         apply_rule_transition: bool,
+        exec_platform: Option<ExecPlatform>,
     ) -> Result<(), String>;
     /// [`Self::analyze`] from a fresh active chain (registration and
     /// platform analyses).
@@ -227,8 +231,7 @@ pub(crate) trait Host {
     fn capture_cquery_edge(
         &mut self,
         from: &ConfiguredTargetKey,
-        label: Label,
-        config: ConfigId,
+        to: ConfiguredTargetKey,
         attribute: &str,
         tool: bool,
         aspect: bool,
@@ -284,10 +287,10 @@ pub(crate) trait Host {
             capture.aspect_targets(id, dependencies);
         }
     }
-    /// cquery: the application `id` depends on `label` in `config`.
-    fn cquery_aspect_target(&mut self, id: u32, label: Label, config: ConfigId) {
+    /// cquery: the application `id` depends on the configured target `key`.
+    fn cquery_aspect_target(&mut self, id: u32, key: ConfiguredTargetKey) {
         if let Some(capture) = self.cquery_capture() {
-            capture.aspect_target(id, label, config);
+            capture.aspect_target(id, key);
         }
     }
     /// cquery: the applications `children` propagated from `ids` along

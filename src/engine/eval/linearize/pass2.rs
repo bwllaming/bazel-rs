@@ -238,7 +238,6 @@ impl Engine {
             Op::CqueryEdge(edge) => self.capture_cquery_edge(
                 &edge.from,
                 edge.to,
-                edge.config,
                 &edge.attribute,
                 edge.tool,
                 edge.aspect,

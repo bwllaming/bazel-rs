@@ -3601,6 +3601,7 @@ impl Engine {
             .get(key)
             .copied()
             .unwrap_or(key.config);
+        // (label, configuration, execution platform of a toolchain key: B13c).
         let mut labels = Vec::with_capacity(edges.len());
         for edge in &edges {
             let label = self.resolve_rule_src(rule, &edge.label).ok()?;
@@ -3615,21 +3616,27 @@ impl Engine {
                 EdgeCfg::NoConfig => self.configurations.intern_no_config(),
                 EdgeCfg::Starlark(_) => return None,
             };
-            labels.push((label, config));
+            labels.push((label, config, None));
         }
         if let Some(context) = self.toolchain_contexts.get(key) {
             for implementation in context.resolved_labels() {
-                labels.push((implementation, key.config));
+                labels.push((implementation, key.config, context.key_exec_platform));
             }
         }
         let mut keys = Vec::with_capacity(labels.len());
-        for (label, config) in labels {
+        for (label, config, exec_platform) in labels {
             match self.target(&label).ok()? {
                 Target::Source(_) => {}
                 Target::Output(generating, _) => {
-                    keys.push(ConfiguredTargetKey::new(generating.label.clone(), config));
+                    keys.push(ConfiguredTargetKey::toolchain(
+                        generating.label.clone(),
+                        config,
+                        exec_platform,
+                    ));
                 }
-                Target::Rule(_) => keys.push(ConfiguredTargetKey::new(label, config)),
+                Target::Rule(_) => {
+                    keys.push(ConfiguredTargetKey::toolchain(label, config, exec_platform))
+                }
             }
         }
         // Waited for in reverse (Self::wait_or_ready pops).
@@ -3800,36 +3807,33 @@ impl Engine {
         if !dependencies.edge_aspects.is_empty() {
             return None;
         }
-        let mut labels: Vec<(Label, ConfigId)> = dependencies
+        // (label, configuration, execution platform of a toolchain key: B13c).
+        let mut labels: Vec<(Label, ConfigId, Option<ExecPlatform>)> = dependencies
             .labels
             .into_iter()
-            .map(|(label, config, _, _)| (label, config))
+            .map(|(label, config, _, _)| (label, config, None))
             .collect();
-        let groups = self.exec_group_contexts.get(key).cloned();
-        for context in std::iter::once(
-            self.toolchain_contexts
-                .get(key)
-                .map(|context| (**context).clone()),
-        )
-        .chain(
-            groups
-                .iter()
-                .flat_map(|groups| groups.groups.iter().map(|group| group.context.clone())),
-        )
-        .flatten()
-        {
-            for (_, implementation) in &context.resolved {
-                labels.push((implementation.clone(), key.config));
-            }
+        for dependency in self.toolchain_dependency_keys(key) {
+            labels.push((
+                dependency.label,
+                dependency.config,
+                dependency.exec_platform,
+            ));
         }
         let mut keys = Vec::with_capacity(labels.len());
-        for (label, config) in labels {
+        for (label, config, exec_platform) in labels {
             match self.target(&label).ok()? {
                 Target::Source(_) => {}
                 Target::Output(generating, _) => {
-                    keys.push(ConfiguredTargetKey::new(generating.label.clone(), config));
+                    keys.push(ConfiguredTargetKey::toolchain(
+                        generating.label.clone(),
+                        config,
+                        exec_platform,
+                    ));
                 }
-                Target::Rule(_) => keys.push(ConfiguredTargetKey::new(label, config)),
+                Target::Rule(_) => {
+                    keys.push(ConfiguredTargetKey::toolchain(label, config, exec_platform))
+                }
             }
         }
         // Waited for in reverse (Self::wait_or_ready pops): the first

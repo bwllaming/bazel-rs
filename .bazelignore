@@ -175,6 +175,7 @@ tests/fixtures/test_exec_env/workspace
 tests/fixtures/test_flags/stubs
 tests/fixtures/test_source_writes/workspace
 tests/fixtures/test_suite/workspace
+tests/fixtures/toolchain_exec_key/workspace
 tests/fixtures/tree_relative_path/workspace
 tests/fixtures/tree_symlinks/workspace
 tests/fixtures/unresolved_symlinks/workspace

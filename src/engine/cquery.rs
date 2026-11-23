@@ -21,7 +21,7 @@ pub(super) struct Capture {
     /// Formatter facts of each configured identity, read from the live
     /// analysis state at the cquery boundary (provider key names, important
     /// output files). Not providers: their values never enter the graph.
-    facts: BTreeMap<(Label, Option<ConfigId>), Result<Facts, String>>,
+    facts: BTreeMap<CqueryIdentity, Result<Facts, String>>,
     provider_lists: HashSet<Arc<[String]>>,
     /// The evaluator's capture symbols, mapped where their ops are
     /// replayed (`eval::cquery_ops`).
@@ -208,8 +208,8 @@ impl Capture {
         }
     }
 
-    pub(super) fn aspect_target(&mut self, id: u32, label: Label, config: ConfigId) {
-        let target = self.target(ConfiguredTargetKey::new(label, config));
+    pub(super) fn aspect_target(&mut self, id: u32, key: ConfiguredTargetKey) {
+        let target = self.target(key);
         self.aspect_targets(id, &[target]);
     }
 
@@ -254,6 +254,13 @@ impl Capture {
         }
     }
 }
+
+/// A configured identity of the cquery graph: the label, its configuration
+/// (`None`: a source file or package group) and a toolchain dependency's
+/// execution platform (B13c: genuine's ConfiguredTargetKey keeps both
+/// copies of a toolchain resolved for two execution platforms; each is its
+/// own result, printed with the same label and configuration).
+type CqueryIdentity = (Label, Option<ConfigId>, Option<ExecPlatform>);
 
 struct CapturedEdge {
     from: u32,
@@ -1332,9 +1339,17 @@ impl Engine {
                     let dependencies = capture.replay.map(dependencies)?;
                     capture.aspect_targets(id, &dependencies);
                 }
-                CqueryOp::AspectTarget { id, label, config } => {
+                CqueryOp::AspectTarget {
+                    id,
+                    label,
+                    config,
+                    exec_platform,
+                } => {
                     let id = capture.replay.one(*id)?;
-                    capture.aspect_target(id, label.clone(), *config);
+                    capture.aspect_target(
+                        id,
+                        ConfiguredTargetKey::toolchain(label.clone(), *config, *exec_platform),
+                    );
                 }
                 CqueryOp::Propagated {
                     ids,
@@ -1359,8 +1374,7 @@ impl Engine {
     pub(super) fn capture_cquery_edge(
         &mut self,
         from: &ConfiguredTargetKey,
-        label: Label,
-        config: ConfigId,
+        to: ConfiguredTargetKey,
         attribute: &str,
         tool: bool,
         aspect: bool,
@@ -1370,7 +1384,7 @@ impl Engine {
                 Some(id) => *id,
                 None => capture.target(from.clone()),
             };
-            let to = capture.target(ConfiguredTargetKey::new(label, config));
+            let to = capture.target(to);
             let attribute = capture.string(attribute);
             capture.edges.push(CapturedEdge {
                 from,
@@ -1433,10 +1447,16 @@ impl Engine {
         key: &ConfiguredTargetKey,
         selected: &BTreeSet<String>,
     ) -> Result<Facts, String> {
-        if self
-            .target_incompatibility(configured, &key.label, key.config)?
-            .is_some()
-        {
+        let incompatible = if key.exec_platform.is_some() {
+            // A toolchain dependency's key (B13c): its own node.
+            configured
+                .get(key)
+                .is_some_and(|node| node.incompatible.is_some())
+        } else {
+            self.target_incompatibility(configured, &key.label, key.config)?
+                .is_some()
+        };
+        if incompatible {
             // The graph's own incompatibility answers (IncompatiblePlatformProvider).
             return Ok(Facts::default());
         }
@@ -1447,7 +1467,13 @@ impl Engine {
             declared,
             ..
         } = state.plan_state();
-        let artifacts = if self.cquery_files {
+        let artifacts = if self.cquery_files && key.exec_platform.is_some() {
+            // A toolchain dependency's key (B13c): its own files to build
+            // (a rule's; an output file's key names its rule).
+            dry.get(key)
+                .cloned()
+                .ok_or_else(|| format!("internal analysis order error: {}", key.label))?
+        } else if self.cquery_files {
             self.shared_artifacts(&key.label, key.config, dry, declared)?
         } else {
             Arc::new(Vec::new())
@@ -1712,20 +1738,19 @@ impl Engine {
         Ok(super::root_checkpoint::Outcome::Continue(graph))
     }
 
-    fn cquery_key(
-        &mut self,
-        key: &ConfiguredTargetKey,
-    ) -> Result<(Label, Option<ConfigId>), String> {
+    fn cquery_key(&mut self, key: &ConfiguredTargetKey) -> Result<CqueryIdentity, String> {
         let owner = match self.target(&key.label)? {
-            Target::Source(_) => return Ok((key.label.clone(), None)),
+            Target::Source(_) => return Ok((key.label.clone(), None, None)),
             Target::Rule(rule) if matches!(rule.kind, RuleKind::PackageGroup(_)) => {
-                return Ok((key.label.clone(), None));
+                return Ok((key.label.clone(), None, None));
             }
-            Target::Output(rule, _) => ConfiguredTargetKey::new(rule.label.clone(), key.config),
+            Target::Output(rule, _) => {
+                ConfiguredTargetKey::toolchain(rule.label.clone(), key.config, key.exec_platform)
+            }
             _ => key.clone(),
         };
         let delegated = self.rule_delegations.get(&owner).unwrap_or(&owner);
-        Ok((key.label.clone(), Some(delegated.config)))
+        Ok((key.label.clone(), Some(delegated.config), key.exec_platform))
     }
 
     fn finish_cquery_graph(
@@ -1739,7 +1764,7 @@ impl Engine {
         capture.target_ids.clear();
         capture.application_ids.clear();
         capture.strings.clear();
-        let mut ids: BTreeMap<(Label, Option<ConfigId>), u32> = BTreeMap::new();
+        let mut ids: BTreeMap<CqueryIdentity, u32> = BTreeMap::new();
         let mut intern = |key| -> Result<u32, String> {
             let next = ids.len();
             match ids.entry(key) {
@@ -1774,6 +1799,18 @@ impl Engine {
         let mapped: Vec<u32> = mapped.into_iter().map(Option::unwrap).collect();
         for label in roots {
             intern(self.cquery_key(&self.configurations.top_key(label.clone()))?)?;
+        }
+        // aquery: the nodes of toolchain dependencies keyed by an execution
+        // platform, which the graph's (label, configuration) identity does
+        // not tell apart (B13c).
+        if let Some(aquery) = &mut self.aquery_capture {
+            for ((label, config, exec_platform), id) in &ids {
+                if let (Some(config), Some(platform)) = (config, exec_platform) {
+                    aquery
+                        .exec_platform_nodes
+                        .insert((label.clone(), *config, *platform), *id);
+                }
+            }
         }
         let mut configurations = Vec::new();
         let mut build_options = Vec::new();
@@ -1899,7 +1936,7 @@ impl Engine {
             Vec::new()
         };
         let mut build_blocks = BTreeMap::new();
-        for ((label, config), _) in ordered {
+        for ((label, config, exec_platform), _) in ordered {
             let mut attribute_errors = BTreeMap::new();
             // `--output=build`: the rule's query attributes with selects
             // resolved, rendered after the match (Engine::configured_build_block).
@@ -1909,11 +1946,13 @@ impl Engine {
                 _ => label.clone(),
             };
             let captured_key = config.map(|id| {
-                let key = ConfiguredTargetKey::new(owner.clone(), id);
+                let key = ConfiguredTargetKey::toolchain(owner.clone(), id, *exec_platform);
                 if capture.rules.contains_key(&key) {
                     key
                 } else {
-                    ConfiguredTargetKey::without_rule_transition(owner.clone(), id)
+                    let mut key = ConfiguredTargetKey::without_rule_transition(owner.clone(), id);
+                    key.exec_platform = *exec_platform;
+                    key
                 }
             });
             let incompatible = captured_key
@@ -1946,17 +1985,15 @@ impl Engine {
                 }
                 Target::Rule(declaration) => {
                     let config = config.ok_or("rule has null configuration")?;
-                    let key = ConfiguredTargetKey::new(label.clone(), config);
+                    let key = ConfiguredTargetKey::toolchain(label.clone(), config, *exec_platform);
                     let rule = capture
                         .rules
                         .get(&key)
                         .or_else(|| {
-                            capture
-                                .rules
-                                .get(&ConfiguredTargetKey::without_rule_transition(
-                                    label.clone(),
-                                    config,
-                                ))
+                            let mut key =
+                                ConfiguredTargetKey::without_rule_transition(label.clone(), config);
+                            key.exec_platform = *exec_platform;
+                            capture.rules.get(&key)
                         })
                         .ok_or_else(|| format!("cquery missing analyzed rule {key}"))?;
                     let package = self
@@ -2147,7 +2184,7 @@ impl Engine {
                     ),
                     Vec::new(),
                 ),
-                _ => match capture.facts.get(&(label.clone(), *config)) {
+                _ => match capture.facts.get(&(label.clone(), *config, *exec_platform)) {
                     Some(Ok(facts)) => (Some(facts.providers.to_vec()), facts.files.clone()),
                     Some(Err(error)) => {
                         fact_errors.insert(nodes.len() as u32, error.clone());
@@ -2271,7 +2308,7 @@ impl Engine {
         }
         // An output file points to its generating rule in the same configured
         // identity. It never impersonates that rule or drops its owner edge.
-        for ((label, config), id) in &ids {
+        for ((label, config, exec_platform), id) in &ids {
             if let Target::Output(rule, _) = self.target(label)? {
                 if config.is_some_and(|config| {
                     capture
@@ -2290,7 +2327,7 @@ impl Engine {
                     continue;
                 }
                 let to = ids
-                    .get(&(rule.label.clone(), *config))
+                    .get(&(rule.label.clone(), *config, *exec_platform))
                     .ok_or("cquery output has no generating rule")?;
                 nodes[*id as usize].edges.push(GraphEdge {
                     to: *to,
@@ -2305,7 +2342,7 @@ impl Engine {
         // kinds. In particular exec-labelled source files remain visible from
         // target-config parents, and exec parents retain only exec children.
         let mut tools = vec![false; nodes.len()];
-        for ((label, config), id) in &ids {
+        for ((label, config, _), id) in &ids {
             tools[*id as usize] = config.is_some_and(|config| {
                 // Platforms and their prerequisites are analyzed in the empty
                 // configuration. Native preserves their incoming ConfigIds;
@@ -2327,7 +2364,7 @@ impl Engine {
             graph_patterns.insert(
                 pattern,
                 ids.iter()
-                    .filter(|((label, _), _)| labels.contains(label))
+                    .filter(|((label, _, _), _)| labels.contains(label))
                     .map(|(_, id)| *id)
                     .collect(),
             );
@@ -2358,7 +2395,7 @@ impl Engine {
                     );
                 }
             }
-            for ((label, config), id) in &ids {
+            for ((label, config, _), id) in &ids {
                 let Ok(Target::Rule(rule)) = self.target(label) else {
                     continue;
                 };

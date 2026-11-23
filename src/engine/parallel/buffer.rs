@@ -1755,7 +1755,8 @@ fn requirements(
         .get(key)
         .copied()
         .unwrap_or(key.config);
-    let mut labels: Vec<(Label, ConfigId)> = Vec::with_capacity(edges.len());
+    // (label, configuration, execution platform of a toolchain key: B13c).
+    let mut labels: Vec<(Label, ConfigId, Option<ExecPlatform>)> = Vec::with_capacity(edges.len());
     if starlark {
         let dependencies =
             Engine::custom_dependencies_in(cx, rule, key, &edges, exec_config).ok()?;
@@ -1768,21 +1769,14 @@ fn requirements(
             dependencies
                 .labels
                 .into_iter()
-                .map(|(label, config, _, _)| (label, config)),
+                .map(|(label, config, _, _)| (label, config, None)),
         );
-        let groups = engine.exec_group_contexts.get(key);
-        for context in std::iter::once(engine.toolchain_contexts.get(key).map(Arc::as_ref))
-            .flatten()
-            .chain(groups.iter().flat_map(|groups| {
-                groups
-                    .groups
-                    .iter()
-                    .filter_map(|group| group.context.as_ref())
-            }))
-        {
-            for (_, implementation) in &context.resolved {
-                labels.push((implementation.clone(), key.config));
-            }
+        for dependency in engine.toolchain_dependency_keys(key) {
+            labels.push((
+                dependency.label,
+                dependency.config,
+                dependency.exec_platform,
+            ));
         }
     } else {
         for edge in &edges {
@@ -1798,24 +1792,28 @@ fn requirements(
                 EdgeCfg::NoConfig => prepare::Lookup::no_config(cx).ok()?,
                 EdgeCfg::Starlark(_) => return None,
             };
-            labels.push((label, config));
+            labels.push((label, config, None));
         }
         if let Some(context) = engine.toolchain_contexts.get(key) {
             for implementation in context.resolved_labels() {
-                labels.push((implementation, key.config));
+                labels.push((implementation, key.config, context.key_exec_platform));
             }
         }
     }
     let mut keys = Vec::with_capacity(labels.len());
-    for (label, config) in labels {
+    for (label, config, exec_platform) in labels {
         // Only rules and output files have results: a label of a loaded
         // package that is neither is a source file (or missing: its
         // prepare reports it), whether or not its lookup was memoized.
         let package = engine.packages.get(&label.package_id())?;
         if package.get(&label).is_some() {
-            keys.push(ConfiguredTargetKey::new(label, config));
+            keys.push(ConfiguredTargetKey::toolchain(label, config, exec_platform));
         } else if let Some((owner, _)) = engine.generated.get(&label) {
-            keys.push(ConfiguredTargetKey::new(owner.clone(), config));
+            keys.push(ConfiguredTargetKey::toolchain(
+                owner.clone(),
+                config,
+                exec_platform,
+            ));
         }
     }
     Some(keys)

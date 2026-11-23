@@ -15,6 +15,10 @@ pub(super) struct Capture {
     top_level: Vec<TopLevel>,
     /// The analyzed test rules (their TestRunner actions, super::aquery_test).
     pub(super) tests: Vec<super::aquery_test::TestCapture>,
+    /// The configured graph's nodes of toolchain dependencies keyed by an
+    /// execution platform (B13c), by (label, configuration, platform): the
+    /// graph itself identifies a node by label and configuration only.
+    pub(super) exec_platform_nodes: HashMap<(Label, ConfigId, ExecPlatform), u32>,
 }
 
 /// A requested (top-level) configured target as `print_action` reads it
@@ -378,8 +382,13 @@ impl Engine {
         let capture = self.aquery_capture.take().unwrap_or_default();
         let graph = graph?;
         crate::perf_mark("aquery.graph");
+        let exec_platform_nodes = capture.exec_platform_nodes.clone();
+        let exec_platform_ids: HashSet<u32> = exec_platform_nodes.values().copied().collect();
         let mut nodes_by_key: HashMap<(String, String), u32> = HashMap::new();
         for (id, node) in graph.nodes.iter().enumerate() {
+            if exec_platform_ids.contains(&(id as u32)) {
+                continue;
+            }
             if let Some(configuration) = node.configuration {
                 nodes_by_key.insert(
                     (
@@ -411,9 +420,13 @@ impl Engine {
                 continue;
             };
             let config = owner.key.config;
-            let Some(&graph_node) =
-                nodes_by_key.get(&(owner.key.label.to_string(), config.to_string()))
-            else {
+            let graph_node = match owner.key.exec_platform {
+                Some(platform) => {
+                    exec_platform_nodes.get(&(owner.key.label.clone(), config, platform))
+                }
+                None => nodes_by_key.get(&(owner.key.label.to_string(), config.to_string())),
+            };
+            let Some(&graph_node) = graph_node else {
                 ungraphed += 1;
                 continue;
             };
@@ -479,9 +492,13 @@ impl Engine {
         let mut tests = Vec::new();
         for test in &capture.tests {
             let config = test.key.config;
-            let Some(&graph_node) =
-                nodes_by_key.get(&(test.key.label.to_string(), config.to_string()))
-            else {
+            let graph_node = match test.key.exec_platform {
+                Some(platform) => {
+                    exec_platform_nodes.get(&(test.key.label.clone(), config, platform))
+                }
+                None => nodes_by_key.get(&(test.key.label.to_string(), config.to_string())),
+            };
+            let Some(&graph_node) = graph_node else {
                 continue;
             };
             let configuration = *configuration_index.entry(config).or_insert_with(|| {
