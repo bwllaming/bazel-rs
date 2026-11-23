@@ -15524,12 +15524,6 @@ fn input_occurrences(inputs: &[Artifact]) -> Result<Vec<Occurrence>, String> {
     Ok(occurrences)
 }
 
-/// FxHash of a path's bytes ([`SharedInputs::first`]).
-fn path_hash(bytes: &[u8]) -> u64 {
-    use std::hash::BuildHasher;
-    crate::fast_hash::FxBuildHasher::default().hash_one(bytes)
-}
-
 /// A shared run's group, or none when it cannot be one ([`SharedInputs::group_beside`]).
 type RunGroup = Option<Arc<scheduler::InputGroup>>;
 
@@ -15542,13 +15536,15 @@ struct SharedInputs {
     /// Keeps the walk (and so its address, the memo's key) alive.
     _files: Arc<crate::starlark_types::FlatFiles>,
     artifacts: Vec<Artifact>,
-    namespace: action::InputNamespace,
+    /// The namespace of their execution paths, which also indexes each
+    /// path's first occurrence by its hash ([`SharedInputs::first`]): the
+    /// walk's own ([`crate::starlark_types::FlatFiles::namespace`], the same
+    /// paths: computed once for the analysis's checks and the planning's)
+    /// unless an artifact's execution path is not its File's.
+    namespace: Option<action::InputNamespace>,
     /// The run's own occurrences; `None` when two of its artifacts share an
     /// execution path (the action's planning reports it).
     occurrences: Option<Vec<Occurrence>>,
-    /// The index of each execution path's first occurrence in the run, by
-    /// the path's hash ([`SharedInputs::first`]).
-    first: crate::fast_hash::FxHashMap<u64, u32>,
     /// Whether no shared execution path is, contains or lies below a
     /// group root ([`scheduler::groups_apart`]), by root.
     apart: std::sync::Mutex<HashMap<PathBuf, bool>>,
@@ -15594,19 +15590,35 @@ impl SharedInputs {
             .iter()
             .map(lookup)
             .collect::<Option<Vec<_>>>()?;
-        let namespace = action::InputNamespace::of(artifacts.len(), &|index| {
-            artifacts[index].exec.as_os_str().as_bytes()
-        });
+        let exec = |index: usize| artifacts[index].exec.as_os_str().as_bytes();
+        let paths = files.files();
+        let namespace =
+            if artifacts.iter().zip(paths).all(|(artifact, file)| {
+                artifact.exec.as_os_str().as_bytes() == file.path.as_bytes()
+            }) {
+                // The same function of the same paths as the walk's own.
+                files.namespace.get_or_init(|| {
+                    action::InputNamespace::of(paths.len(), &|index| paths[index].path.as_bytes())
+                });
+                None
+            } else {
+                Some(action::InputNamespace::of(artifacts.len(), &exec))
+            };
         let mut occurrences = input_occurrences(&artifacts).ok();
-        let mut first = crate::fast_hash::FxHashMap::default();
-        for (index, artifact) in artifacts.iter().enumerate() {
-            let exec = artifact.exec.as_os_str().as_bytes();
-            let known = *first.entry(path_hash(exec)).or_insert(index as u32);
-            // Two paths of one hash: the run's occurrences are not reused.
-            if artifacts[known as usize].exec.as_os_str().as_bytes() != exec
-                || u32::try_from(index).is_err()
-            {
-                occurrences = None;
+        {
+            let namespace = namespace
+                .as_ref()
+                .or_else(|| files.namespace.get())
+                .expect("the namespace was computed");
+            for index in 0..artifacts.len() {
+                let bytes = exec(index);
+                let known = namespace
+                    .first_by_hash(bytes)
+                    .expect("every path is in its namespace");
+                // Two paths of one hash: the run's occurrences are not reused.
+                if exec(known as usize) != bytes || u32::try_from(index).is_err() {
+                    occurrences = None;
+                }
             }
         }
         Some(SharedInputs {
@@ -15614,7 +15626,6 @@ impl SharedInputs {
             artifacts,
             namespace,
             occurrences,
-            first,
             apart: Default::default(),
             reads: Arc::from(Vec::new()),
             group: std::sync::OnceLock::new(),
@@ -15729,10 +15740,18 @@ impl SharedInputs {
             .clone()
     }
 
+    /// The namespace of the run's execution paths ([`SharedInputs::namespace`]).
+    fn namespace(&self) -> &action::InputNamespace {
+        self.namespace
+            .as_ref()
+            .or_else(|| self._files.namespace.get())
+            .expect("a shared run's namespace is computed with it")
+    }
+
     /// The index of the run's first input at execution path `exec`.
     fn first(&self, exec: &[u8]) -> Option<usize> {
         use std::os::unix::ffi::OsStrExt;
-        let index = *self.first.get(&path_hash(exec))? as usize;
+        let index = self.namespace().first_by_hash(exec)? as usize;
         (self.artifacts[index].exec.as_os_str().as_bytes() == exec).then_some(index)
     }
 
@@ -15744,7 +15763,7 @@ impl SharedInputs {
         action::validate_structure_with(
             action,
             &action::SharedPaths {
-                namespace: &self.namespace,
+                namespace: self.namespace(),
                 path: &path,
             },
         )

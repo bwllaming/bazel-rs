@@ -3727,6 +3727,12 @@ fn path_hash(bytes: &[u8]) -> u64 {
 }
 
 impl InputNamespace {
+    /// The index of the first destination whose bytes hash as `bytes`
+    /// (the caller compares the bytes).
+    pub(crate) fn first_by_hash(&self, bytes: &[u8]) -> Option<u32> {
+        self.paths.get(&path_hash(bytes)).copied()
+    }
+
     /// The summary of the run's destinations, `path(i)` for `i < count`.
     pub(crate) fn of<'a>(count: usize, path: &dyn Fn(usize) -> &'a [u8]) -> Self {
         let mut valid = u32::try_from(count).is_ok();

@@ -1907,6 +1907,12 @@ struct Events {
 }
 
 impl Events {
+    /// Without the vectors' growth room (a set held until a merge).
+    fn shrink(&mut self) {
+        self.events.shrink_to_fit();
+        self.children.shrink_to_fit();
+    }
+
     fn is_empty(&self) -> bool {
         self.events.is_empty() && self.children.is_empty()
     }
@@ -2017,8 +2023,7 @@ impl Captured {
     fn new(mut events: Events) -> Arc<Self> {
         // Held until its frame's owner merges (a worker's analysis waiting
         // for the cursor): without the growth room of its recording.
-        events.events.shrink_to_fit();
-        events.children.shrink_to_fit();
+        events.shrink();
         let order_dependent = events.order_dependent();
         let supersedes = events.supersedes();
         Arc::new(Self {
@@ -2193,7 +2198,11 @@ pub fn unit_scope() -> UnitScope {
 impl UnitScope {
     /// Close the frame: what the unit observed, for its commit.
     pub fn finish(self) -> Observations {
-        Observations(self.0.map(FrameGuard::close).unwrap_or_default())
+        let mut events = self.0.map(FrameGuard::close).unwrap_or_default();
+        // Held until the unit's owner merges (a worker's analysis waiting
+        // for the cursor): without the growth room of its recording.
+        events.shrink();
+        Observations(events)
     }
 }
 
