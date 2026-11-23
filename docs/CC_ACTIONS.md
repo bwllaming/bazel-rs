@@ -214,6 +214,10 @@ tests/cc_compile.rs `thin_lto_actions_match_genuine` and
   byte-identically to genuine, and the `_build_info_files`
   `volatile_file.h`/`non_volatile_file.h` are byte-exact under a fixed
   `--workspace_status_command` script + `SOURCE_DATE_EPOCH`.
-- **Windows/macOS toolchains** and `expand_and_tokenize` (objc flag
-  expansion) fail explicitly; the profile runs the Linux `@local_config_cc`
-  toolchain only.
+- **Windows/macOS toolchains** fail explicitly; the profile runs the Linux
+  `@local_config_cc` toolchain only. `expand_and_tokenize` (objc flag
+  expansion, CcStarlarkInternal.java:1262-1297) is the rule context's
+  Expander over the `srcs`/`non_arc_srcs`/`hdrs`/`data`/
+  `additional_linker_inputs` label map with exec paths and the `data`
+  locations, then ShellUtils.tokenize, an immutable list (B32; rules_cc's
+  objc local_defines tests).

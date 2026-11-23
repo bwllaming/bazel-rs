@@ -3013,6 +3013,8 @@ struct ComputeSnapshot {
     evaluating_for_analysis_test: bool,
     /// ConfiguredOutputs.retain_actions.
     retain_actions: bool,
+    /// ConfiguredOutputs.prerequisite_failures.
+    prerequisite_failures: Vec<String>,
 }
 
 /// The compute of one custom rule: the analysis result (or error) and
@@ -8685,6 +8687,7 @@ impl Engine {
             allow_analysis_failures: snapshot.allow_analysis_failures,
             evaluating_for_analysis_test: snapshot.evaluating_for_analysis_test,
             retain_actions: snapshot.retain_actions,
+            prerequisite_failures: snapshot.prerequisite_failures.clone(),
         };
         crate::platforms::take_deferred_read();
         let (analyzed, printed) = analysis::analyze_buffered(
@@ -9072,7 +9075,48 @@ impl Engine {
         // so before the compute, which may run on another thread in
         // P3): a speculative implementation never fetches in a build
         // that sequentially stopped at this error (review follow-up).
-        cx.prerequisite_errors(rule, &key, exec_config, &dependency_targets)?;
+        // In a configuration that allows analysis failures they are the
+        // target's suppressed errors (ConfiguredOutputs.prerequisite_failures),
+        // without their location prefix (an AnalysisFailure's message is the
+        // event's).
+        let mut prerequisite_failures = Vec::new();
+        if let Err(errors) = cx.prerequisite_errors(rule, &key, exec_config, &dependency_targets) {
+            let allowed = cx
+                .engine()
+                .configurations
+                .get(config)
+                .native
+                .value("allow_analysis_failures")
+                == Some(crate::configuration::OptionValue::Bool(true));
+            if !allowed || !crate::analysis_failures::suppressible(&errors) {
+                return Err(errors);
+            }
+            // RuleContext.getSuppressedErrorMessages: the attribute error's
+            // own message, without the `in ATTR attribute of KIND rule L: `
+            // context of the reported event.
+            let prefix = rule
+                .location
+                .as_deref()
+                .map(|location| format!("{location}: "));
+            let context = format!(
+                " rule {}: ",
+                crate::rule_declarations::canonical_form(&rule.label)
+            );
+            prerequisite_failures = errors
+                .lines()
+                .map(|line| {
+                    let line = prefix
+                        .as_deref()
+                        .and_then(|prefix| line.strip_prefix(prefix))
+                        .unwrap_or(line);
+                    match line.find(&context) {
+                        Some(at) if line.starts_with("in ") => &line[at + context.len()..],
+                        _ => line,
+                    }
+                    .to_owned()
+                })
+                .collect();
+        }
         // Everything below reads the engine and the planning state only.
         let engine = cx.engine();
         let reads = cx.reads();
@@ -9300,6 +9344,7 @@ impl Engine {
                     .get(config)
                     .native
                     .evaluating_for_analysis_test,
+            prerequisite_failures,
         };
         Ok(PreparedTarget {
             key,

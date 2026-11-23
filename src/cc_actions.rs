@@ -406,13 +406,11 @@ pub(crate) fn call<'v>(
                         .ok()
                         .flatten()
                         .and_then(|ids| {
-                            ids.iterate(heap)
-                                .ok()
-                                .and_then(|values| {
-                                    values
-                                        .map(|value| value.unpack_str().map(str::to_owned))
-                                        .collect::<Option<Vec<_>>>()
-                                })
+                            ids.iterate(heap).ok().and_then(|values| {
+                                values
+                                    .map(|value| value.unpack_str().map(str::to_owned))
+                                    .collect::<Option<Vec<_>>>()
+                            })
                         })
                 })
                 .and_then(|ids| ids.last().cloned())
@@ -535,7 +533,9 @@ pub(crate) fn call<'v>(
             )?;
             let actions = bound[0].expect("required");
             if let Some(config) = bound[1].filter(|value| !value.is_none())
-                && config.downcast_ref::<crate::ctx_surface::Configuration>().is_none()
+                && config
+                    .downcast_ref::<crate::ctx_surface::Configuration>()
+                    .is_none()
             {
                 return Err(type_error(
                     method,
@@ -689,7 +689,12 @@ pub(crate) fn call<'v>(
             let configuration = feature_configuration(method, bound[1].expect("required"))?;
             let variables = bound[2].expect("required");
             if !crate::cc_variables::is_variables(variables) {
-                return Err(type_error(method, "build_variables", variables, "Variables"));
+                return Err(type_error(
+                    method,
+                    "build_variables",
+                    variables,
+                    "Variables",
+                ));
             }
             let parameter_file_type_value = bound[3].expect("required");
             // The argument is required, but None leaves splitCommandLine
@@ -750,9 +755,8 @@ pub(crate) fn call<'v>(
                     crate::args::set_key_param_file_type(args, "GCC_QUOTED");
                 }
             }
-            crate::args::add_strings(args, flags).map_err(|error| {
-                failure(format!("cc_internal.{method}: {error}"))
-            })?;
+            crate::args::add_strings(args, flags)
+                .map_err(|error| failure(format!("cc_internal.{method}: {error}")))?;
             Ok(args_value)
         }
         "dynamic_library_soname" => {
@@ -775,11 +779,7 @@ pub(crate) fn call<'v>(
             let preserve = preserve_value
                 .unpack_bool()
                 .ok_or_else(|| type_error(method, "preserve_name", preserve_value, "bool"))?;
-            Ok(heap.alloc(dynamic_library_soname(
-                path,
-                preserve,
-                &context.output_root,
-            )))
+            Ok(heap.alloc(dynamic_library_soname(path, preserve, &context.output_root)))
         }
         "dynamic_library_symlink" | "dynamic_library_symlink2" => {
             // CcStarlarkInternal (:204-237) over
@@ -832,7 +832,10 @@ pub(crate) fn call<'v>(
                     prefix_consumer,
                 )
             };
-            Ok(alloc_file(heap, solib_symlink(context, &library, &link_path)?))
+            Ok(alloc_file(
+                heap,
+                solib_symlink(context, &library, &link_path)?,
+            ))
         }
         "solib_symlink_action" => {
             // CcStarlarkInternal.solibSymlinkAction (:186-202) over
@@ -867,7 +870,10 @@ pub(crate) fn call<'v>(
             } else {
                 format!("{solib}/{base}")
             };
-            Ok(alloc_file(heap, solib_symlink(context, &library, &link_path)?))
+            Ok(alloc_file(
+                heap,
+                solib_symlink(context, &library, &link_path)?,
+            ))
         }
         "absolute_symlink" => {
             // CcStarlarkInternal.absoluteSymlink (:376-395): a SymlinkAction
@@ -1010,9 +1016,92 @@ pub(crate) fn call<'v>(
                 "cc_internal.{method} is not implemented in the native profile ({what})"
             )))
         }
-        "expand_and_tokenize" => Err(failure(
-            "cc_internal.expand_and_tokenize is not implemented in the native profile (objc flag expansion)".to_owned(),
-        )),
+        "expand_and_tokenize" => {
+            // CcStarlarkInternal.expandAndTokenize (:1262-1297): an empty
+            // list is returned as is; else RuleContext.getExpander over the
+            // label map of the `srcs`, `non_arc_srcs`, `hdrs`, `data` and
+            // `additional_linker_inputs` prerequisites, withDataExecLocations
+            // (exec paths, the `data` prerequisites), then `tokenized`: each
+            // flag's `$(location)`s and Make variables expanded, then
+            // ShellUtils.tokenize (failures are attribute errors).
+            let _ = context;
+            let bound = bind(
+                method,
+                &[
+                    param("ctx", false, true, true),
+                    param("attr", false, true, true),
+                    param("flags", false, true, false),
+                ],
+                args,
+                heap,
+            )?;
+            let ctx = bound[0].expect("required");
+            let attr_value = bound[1].expect("required");
+            let attribute = attr_value
+                .unpack_str()
+                .ok_or_else(|| type_error(method, "attr", attr_value, "string"))?;
+            let flags_value = bound[2].unwrap_or_else(|| heap.alloc(Vec::<String>::new()));
+            let flags = sequence(method, "flags", flags_value)?;
+            if flags.is_empty() {
+                return Ok(flags_value);
+            }
+            let flags = flags
+                .iter()
+                .map(|flag| {
+                    flag.unpack_str().map(str::to_owned).ok_or_else(|| {
+                        failure(format!(
+                            "at index 0 of {attribute}, got element of type {}, want string",
+                            flag.get_type()
+                        ))
+                    })
+                })
+                .collect::<starlark::Result<Vec<_>>>()?;
+            let rule = crate::analysis_ctx::current_surface(ctx)
+                .map_err(|error| failure(format!("cc_internal.{method}: {error}")))?;
+            // StarlarkRuleContext.makeLabelMap (:1284-1313) over the
+            // prerequisites, then the `data` locations.
+            let mut entries: Vec<(String, Vec<File>)> = Vec::new();
+            if let Some(attrs) = ctx.get_attr("attr", heap).ok().flatten() {
+                for name in [
+                    "srcs",
+                    "non_arc_srcs",
+                    "hdrs",
+                    "data",
+                    "additional_linker_inputs",
+                ] {
+                    let Some(value) = attrs.get_attr(name, heap).ok().flatten() else {
+                        continue;
+                    };
+                    let targets: Vec<Value<'v>> =
+                        match starlark::values::list::ListRef::from_value(value) {
+                            Some(list) => list.iter().collect(),
+                            None if value.is_none() => Vec::new(),
+                            None => vec![value],
+                        };
+                    for target in targets {
+                        if let Some(entry) = crate::starlark_types::target_location_entry(target)
+                            && !entries.iter().any(|(label, _)| *label == entry.0)
+                        {
+                            entries.push(entry);
+                        }
+                    }
+                }
+            }
+            for entry in &rule.data_locations {
+                if !entries.iter().any(|(label, _)| *label == entry.0) {
+                    entries.push(entry.clone());
+                }
+            }
+            let expanded =
+                crate::ctx_surface::expand_options(rule, attribute, &flags, &entries, true, true)
+                    .map_err(|error| failure(format!("cc_internal.{method}: {error}")))?;
+            // StarlarkList.immutableCopyOf.
+            let items: Vec<Value<'v>> = expanded
+                .iter()
+                .map(|flag| heap.alloc(flag.as_str()))
+                .collect();
+            Ok(heap.alloc_immutable_list(&items))
+        }
         other => Err(failure(format!(
             "cc_internal.{other} is not implemented in the native profile (analysis-time C++ API)"
         ))),

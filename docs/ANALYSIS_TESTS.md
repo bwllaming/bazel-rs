@@ -155,6 +155,20 @@ In a configuration that allows analysis failures:
   does not run its implementation. It propagates the prerequisites' causes
   (`depAnalysisFailures`, `erroredConfiguredTargetWithFailures`, :410-417,
   545-583).
+- A Starlark rule's prerequisite validation errors (a file of a type the
+  attribute does not allow, a missing input file:
+  RuleContext.Builder.validateDirectPrerequisite) are its suppressed
+  errors: the target does not run its implementation and its `causes` are
+  the attribute errors' own messages, without the `in ATTR attribute of
+  KIND rule L: ` context (B32; rules_cc's
+  `test_wrong_cc_import_definitions_fails`).
+- An aspect applied to a target that carries an `AnalysisFailureInfo` is
+  the errored aspect: no validation, no implementation, the base target's
+  causes (ConfiguredTargetFactory.createAspect :724-727); the merged
+  target's `AnalysisFailureInfo` joins the base's and the aspects' causes
+  (MergedConfiguredTarget.getAnalysisFailures :335-350).
+  tests/fixtures/corpus_rulescc `prerequisite_failures_allowed` is the
+  genuine capture.
 
 The message of an implementation error is genuine's `"\n" +
 getMessageWithStack()`. That is `Traceback (most recent call last):`, then
@@ -172,9 +186,9 @@ These errors are never suppressed, so they cannot pass as expected failures:
 
 Not modelled:
 
-- Errors raised before the implementation runs (missing mandatory
-  providers, visibility) stay ordinary failures. In genuine they are rule
-  errors and are suppressed too.
+- Other errors raised before the implementation runs (visibility, errors
+  of the dependency resolution) stay ordinary failures. In genuine they are
+  rule errors and are suppressed too.
 - Native rules never become failure targets.
 - `AnalysisFailure` elements are struct-like provider instances. Their
   fields are right, but `type()` and `repr()` differ from genuine's.

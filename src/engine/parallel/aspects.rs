@@ -709,6 +709,7 @@ fn analyze(job: Job) -> Outcome {
         allow_analysis_failures: false,
         evaluating_for_analysis_test: false,
         retain_actions: false,
+        prerequisite_failures: Vec::new(),
         output_root: &output_root,
         action_owner: &action_owner,
         action_env,

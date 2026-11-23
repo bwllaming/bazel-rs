@@ -1,0 +1,25 @@
+load(":defs.bzl", "failure_test", "picky")
+
+exports_files(["present.txt"])
+
+picky(
+    name = "missing",
+    lib = "libfoo.so",
+    tags = ["manual"],
+)
+
+picky(
+    name = "present",
+    libs = ["present.txt"],
+    tags = ["manual"],
+)
+
+failure_test(
+    name = "missing_test",
+    dep = ":missing",
+)
+
+failure_test(
+    name = "present_test",
+    dep = ":present",
+)

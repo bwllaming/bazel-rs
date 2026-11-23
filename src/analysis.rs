@@ -2082,6 +2082,7 @@ pub fn analyze_in(
         allow_analysis_failures: false,
         evaluating_for_analysis_test: false,
         retain_actions: true,
+        prerequisite_failures: Vec::new(),
         output_root: crate::label::GENERATED_EXEC_ROOT,
         action_owner: &owner,
         action_env: Arc::new(crate::configuration::NativeOptions::default().action_environment()),
@@ -2171,6 +2172,21 @@ pub(crate) fn analyze_aspect_buffered(
     target: &ConfiguredOutputs<'_>,
 ) -> (Result<AnalysisResult, String>, Vec<String>) {
     let prints = BufferedPrints::default();
+    // ConfiguredTargetFactory.createAspect (:724-727): a base target that
+    // carries an AnalysisFailureInfo (analyzed with
+    // --allow_analysis_failures) gets an errored aspect with its failures,
+    // before any validation or implementation (erroredConfiguredAspectWithFailures).
+    if let Some(causes) = application
+        .target
+        .providers
+        .get(crate::analysis_failures::PROVIDER_ID)
+        .and_then(crate::analysis_failures::causes)
+    {
+        let result = crate::analysis_failures::propagated(vec![causes])
+            .map(failure_result)
+            .map_err(|error| format!("analysis of {}: {error:#}", application.rule.label));
+        return (result, Vec::new());
+    }
     let result = analyze_aspect_inner(application, target, &prints).map_err(|error| {
         match error.downcast_ref::<crate::rule_errors::ReportedErrors>() {
             Some(reported) => reported.0.clone(),
@@ -2869,6 +2885,12 @@ pub(crate) struct ConfiguredOutputs<'a> {
     /// Keep the target's `Target.actions` views (crate::target_actions):
     /// an analysis test of the request names it.
     pub retain_actions: bool,
+    /// The target's prerequisite validation errors
+    /// (RuleContext.Builder.validateDirectPrerequisite) when its
+    /// configuration allows analysis failures: suppressed rule errors, so
+    /// the target provides `AnalysisFailureInfo` with them as causes
+    /// (ConfiguredTargetFactory.erroredConfiguredTarget, B32).
+    pub prerequisite_failures: Vec<String>,
 }
 
 /// The suppressed rule errors of a target analyzed with
@@ -2959,6 +2981,13 @@ pub(crate) fn analyze_buffered(
                 .map_err(|error| format!("analysis of {}: {error:#}", rule.label));
             return (result, Vec::new());
         }
+    }
+    if target.allow_analysis_failures && !target.prerequisite_failures.is_empty() {
+        let result =
+            crate::analysis_failures::failure_info(&rule.label, &target.prerequisite_failures)
+                .map(failure_result)
+                .map_err(|error| format!("analysis of {}: {error:#}", rule.label));
+        return (result, Vec::new());
     }
     let result = analyze_inner(rule, dependencies, repositories, target, &prints);
     let result = match result {

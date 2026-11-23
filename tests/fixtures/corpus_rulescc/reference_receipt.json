@@ -211,6 +211,40 @@
    ],
    "workspace": "workspace"
   },
+  "prerequisite_failures_allowed": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/failures/missing_test.sh": "#!/bin/sh\necho \nexit 0",
+    "k8-fastbuild/bin/failures/present_test.sh": "#!/bin/sh\necho \nexit 0"
+   },
+   "startup": [],
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/failures/defs.bzl:20:10: CAUSES [(\"@@//failures:missing\", \"target '//failures:libfoo.so' does not exist\"), (\"@@//failures:missing\", \"'//failures:libfoo.so' does not produce any picky lib files (expected .a or .lib)\")]",
+     "pattern": "CAUSES .*missing"
+    },
+    {
+     "line": "DEBUG: <WS>/failures/defs.bzl:20:10: CAUSES [(\"@@//failures:present\", \"source file '//failures:present.txt' is misplaced here (expected .so)\"), (\"@@//failures:present\", \"'//failures:present.txt' does not produce any picky libs files (expected .so)\")]",
+     "pattern": "CAUSES .*present"
+    },
+    {
+     "line": "DEBUG: <WS>/failures/defs.bzl:21:10: PROBE False",
+     "pattern": "PROBE"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//failures:missing_test",
+    "//failures:present_test"
+   ],
+   "workspace": "workspace"
+  },
   "xbinary_fdo_on_the_command_line": {
    "bin_paths": {},
    "command": "build",

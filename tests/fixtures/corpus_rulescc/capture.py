@@ -49,6 +49,9 @@ CASES = {
         [], 'build', BUILD + ['--grte_top=fdo:libc'], ['//fdo:leaf'], [r'grte_top'], []),
     'action_env_transition': (
         [], 'build', BUILD + ['--action_env=X=0'], ['//fdo:env', '//fdo:env_leaf'], [r'READ_ENV'], ['env_leaf.txt']),
+    'prerequisite_failures_allowed': (
+        [], 'build', BUILD, ['//failures:missing_test', '//failures:present_test'],
+        [r'CAUSES .*missing', r'CAUSES .*present', r'PROBE'], ['missing_test.sh', 'present_test.sh']),
     'exec_grte_top': (
         [], 'build', BUILD + ['--host_grte_top=//fdo:libc', '--grte_top=//fdo:prof'],
         ['//fdo:exec_user', '//fdo:leaf'], [], ['leaf.txt']),

@@ -613,10 +613,23 @@ pub(crate) fn merge_providers(
     // Target.actions: the aspects' actions in order, then the base
     // target's (MergedConfiguredTarget.rawGetStarlarkProvider).
     let mut aspect_actions: Vec<OwnedFrozenValue> = Vec::new();
+    // MergedConfiguredTarget.getAnalysisFailures (:335-350): the base
+    // target's AnalysisFailureInfo causes, then each aspect's, merged.
+    let mut failures: Vec<std::sync::Arc<crate::starlark_types::DepsetNode>> = providers
+        .get(crate::analysis_failures::PROVIDER_ID)
+        .and_then(crate::analysis_failures::causes)
+        .into_iter()
+        .collect();
+    let mut aspect_failures = false;
     for (_, aspect_providers) in aspects {
         for (id, value) in aspect_providers {
             if id == crate::target_actions::PROVIDER_ID {
                 aspect_actions.push(value.clone());
+                continue;
+            }
+            if id == crate::analysis_failures::PROVIDER_ID {
+                failures.extend(crate::analysis_failures::causes(value));
+                aspect_failures = true;
                 continue;
             }
             if id == crate::output_group_info::PROVIDER_ID {
@@ -687,6 +700,12 @@ pub(crate) fn merge_providers(
         )
     {
         providers.insert(crate::target_actions::PROVIDER_ID.to_owned(), merged);
+    }
+    if aspect_failures {
+        providers.insert(
+            crate::analysis_failures::PROVIDER_ID.to_owned(),
+            crate::analysis_failures::propagated(failures).map_err(|error| error.to_string())?,
+        );
     }
     let groups = crate::output_group_info::merge_group_sets(&group_sets);
     Ok(MergedProviders {
