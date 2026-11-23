@@ -1379,6 +1379,7 @@ r = rule(implementation=impl, subrules=[S])
             retained_mappers: Default::default(),
             super_chain: Default::default(),
             analysis_test: false,
+            retain_actions: false,
         };
         Module::with_temp_heap(|module| {
             let heap = module.heap();
@@ -1544,6 +1545,7 @@ S = subrule(implementation=callback)
             retained_mappers: Default::default(),
             super_chain: Default::default(),
             analysis_test: false,
+            retain_actions: false,
         };
         Module::with_temp_heap(|module| {
             let s = module.heap().access_owned_frozen_value(&owned);

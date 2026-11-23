@@ -97,6 +97,12 @@ mod values {
         /// FilesToRunProvider.getFilesToRun without the runfiles tree artifact
         /// (an action tool adds them, StarlarkAction.Builder.addTool).
         pub(in crate::runfiles) files: Vec<File>,
+        /// The runfiles tree artifact (`<executable>.runfiles`,
+        /// RunfilesSupport.getRunfilesTreeArtifact) and its index in the
+        /// whole getFilesToRun: after the files to build, before an
+        /// executable that is not one of them
+        /// (RuleConfiguredTargetBuilder.buildFilesToRun :433-443).
+        pub(in crate::runfiles) runfiles_tree: Option<(usize, File)>,
         /// Bazel compares FilesToRunProvider objects by identity: a value of
         /// the process-wide counter NEXT_FILES_TO_RUN, unique in this
         /// process and never reused. It means nothing in another process
@@ -151,6 +157,7 @@ impl Default for FilesToRun {
             repo_mapping_manifest: None,
             runfiles: None,
             files: Vec::new(),
+            runfiles_tree: None,
             id: NEXT_FILES_TO_RUN.fetch_add(1, Ordering::Relaxed),
             fresh: false,
         }
@@ -1010,11 +1017,11 @@ impl FilesToRun {
     /// FilesToRunProvider.create (FilesToRunProvider.java:40-58).
     fn create(
         files_to_run: &[File],
-        tree: bool,
+        tree: Option<(usize, File)>,
         support: Option<(Runfiles, Option<File>, File)>,
         executable: Option<File>,
     ) -> Self {
-        let count = files_to_run.len() + usize::from(tree);
+        let count = files_to_run.len() + usize::from(tree.is_some());
         if count == 0 {
             return Self::default();
         }
@@ -1043,6 +1050,7 @@ impl FilesToRun {
             repo_mapping_manifest,
             runfiles,
             files: files_to_run.to_vec(),
+            runfiles_tree: tree,
             ..Self::default()
         }
     }
@@ -1075,6 +1083,14 @@ impl FilesToRun {
     /// FilesToRunProvider.getFilesToRun without the runfiles tree artifact.
     pub fn files(&self) -> &[File] {
         &self.files
+    }
+
+    /// The runfiles tree artifact with its index in the whole
+    /// FilesToRunProvider.getFilesToRun ([`Self::files`] lacks it).
+    pub fn runfiles_tree(&self) -> Option<(usize, &File)> {
+        self.runfiles_tree
+            .as_ref()
+            .map(|(index, file)| (*index, file))
     }
 
     /// A FullFilesToRunProvider of `executable` with `runfiles` and no
@@ -1301,14 +1317,14 @@ impl TargetRunfiles {
     pub fn files_to_run(&self, files: &[File]) -> FilesToRun {
         self.files_to_run
             .clone()
-            .unwrap_or_else(|| FilesToRun::create(files, false, None, None))
+            .unwrap_or_else(|| FilesToRun::create(files, None, None, None))
     }
 
     /// A rule target's FilesToRunProvider is one stored object
     /// (RuleConfiguredTargetBuilder.java:150-154).
     pub fn with_files_to_run(mut self, files: &[File]) -> Self {
         if self.files_to_run.is_none() {
-            self.files_to_run = Some(FilesToRun::create(files, false, None, None));
+            self.files_to_run = Some(FilesToRun::create(files, None, None, None));
         }
         self
     }
@@ -1364,7 +1380,7 @@ impl TargetRunfiles {
                 default: Runfiles::empty(),
                 data: data.build()?,
             }),
-            files_to_run: Some(FilesToRun::create(outputs, false, None, executable)),
+            files_to_run: Some(FilesToRun::create(outputs, None, None, executable)),
             run: RunSettings::default(),
             test_coverage: None,
         })
@@ -1400,7 +1416,7 @@ impl TargetRunfiles {
                 default,
                 data: data.build()?,
             }),
-            files_to_run: Some(FilesToRun::create(files, false, None, executable)),
+            files_to_run: Some(FilesToRun::create(files, None, None, executable)),
             run: RunSettings::default(),
             test_coverage: None,
         })
@@ -1423,7 +1439,7 @@ impl TargetRunfiles {
                 default: Runfiles::empty(),
                 data: collect(&prerequisites, &[], Mapping::Data)?,
             }),
-            files_to_run: Some(FilesToRun::create(&[], false, None, None)),
+            files_to_run: Some(FilesToRun::create(&[], None, None, None)),
             run: RunSettings::default(),
             test_coverage: None,
         })
@@ -2029,10 +2045,15 @@ pub(crate) fn configure_target(
         {
             to_run.push(file.clone());
         }
-        let tree = support.is_some();
+        // RunfilesSupport.declareRunfilesTreeArtifact: `<executable>.runfiles`,
+        // after the files to build (RuleConfiguredTargetBuilder.buildFilesToRun).
+        let tree = match (&support, &executable) {
+            (Some(_), Some(file)) => Some((files.len(), suffixed(file, ".runfiles", rule.label))),
+            _ => None,
+        };
         FilesToRun::create(&to_run, tree, support, executable)
     } else {
-        FilesToRun::create(&files, false, None, None)
+        FilesToRun::create(&files, None, None, None)
     };
     Ok((
         files,
@@ -2359,17 +2380,17 @@ mod tests {
         let a = file("pkg/a", "//pkg:a");
         let b = file("pkg/b", "//pkg:b");
         assert_eq!(
-            FilesToRun::create(&[], false, None, None).kind,
+            FilesToRun::create(&[], None, None, None).kind,
             FilesToRunKind::Base
         );
         assert_eq!(
-            FilesToRun::create(&[a.clone(), b.clone()], false, None, None).kind,
+            FilesToRun::create(&[a.clone(), b.clone()], None, None, None).kind,
             FilesToRunKind::Base
         );
-        let single = FilesToRun::create(std::slice::from_ref(&a), false, None, Some(a.clone()));
+        let single = FilesToRun::create(std::slice::from_ref(&a), None, None, Some(a.clone()));
         assert_eq!(single.kind, FilesToRunKind::Single);
         assert_eq!(single.executable.as_ref(), Some(&a));
-        let multiple = FilesToRun::create(&[a.clone(), b.clone()], false, None, Some(a.clone()));
+        let multiple = FilesToRun::create(&[a.clone(), b.clone()], None, None, Some(a.clone()));
         assert_eq!(multiple.kind, FilesToRunKind::Full);
         assert!(multiple.runfiles_manifest.is_none());
         assert_eq!(

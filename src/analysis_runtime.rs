@@ -121,6 +121,12 @@ pub struct RegisteredAction {
     /// many actions share (crate::starlark_types::FlatFiles): the
     /// registration and the commit reuse its per-input checks.
     pub(crate) input_memo: Option<(usize, Arc<crate::starlark_types::FlatFiles>)>,
+    /// A Starlark spawn's inputs as Bazel's inputs NestedSet lists them
+    /// (`Target.actions`' `inputs`: the declared inputs, then the tools,
+    /// runfiles tree artifacts included; [`spawn_input_order`]), recorded
+    /// only for a target whose actions are kept ([`Context::retain_actions`]);
+    /// `None`: `inputs` in their order.
+    pub starlark_inputs: Option<Arc<[File]>>,
     pub outputs: Vec<File>,
     /// Execution-time completion (tree artifact expansion).
     pub deferred: Option<Deferred>,
@@ -233,6 +239,10 @@ mod owned {
         /// `rule(analysis_test=True)`: the implementation may not register
         /// actions (StarlarkActionFactory.validateActionCreation, :533-548).
         pub analysis_test: bool,
+        /// The target's `Target.actions` are kept (an analysis test of the
+        /// request inspects it, crate::target_actions): its Starlark spawns
+        /// record their inputs in Bazel's order ([`RegisteredAction::starlark_inputs`]).
+        pub retain_actions: bool,
         /// `ctx.super()` of an extending rule (rule(parent=...)).
         pub super_chain: RefCell<SuperChain>,
     }
@@ -496,7 +506,23 @@ impl Context {
                 "implementation function of a rule with analysis_test=true may not register actions. Analysis test rules may only return success/failure information via AnalysisTestResultInfo."
             );
         }
-        self.register_action_memo_unchecked(registration, input_memo)
+        self.register_action_memo_unchecked(registration, input_memo, None)
+    }
+
+    /// [`Self::register_action_with_memo`] of a Starlark spawn with its
+    /// inputs in Bazel's order (`Target.actions`, [`RegisteredAction::starlark_inputs`]).
+    fn register_spawn_action(
+        &self,
+        registration: Registration,
+        input_memo: Option<(usize, Arc<crate::starlark_types::FlatFiles>)>,
+        starlark_inputs: Option<Arc<[File]>>,
+    ) -> anyhow::Result<()> {
+        if self.analysis_test {
+            bail!(
+                "implementation function of a rule with analysis_test=true may not register actions. Analysis test rules may only return success/failure information via AnalysisTestResultInfo."
+            );
+        }
+        self.register_action_memo_unchecked(registration, input_memo, starlark_inputs)
     }
 
     /// [`Self::register_action`] without the analysis-test check: the
@@ -505,13 +531,14 @@ impl Context {
         &self,
         registration: Registration,
     ) -> anyhow::Result<()> {
-        self.register_action_memo_unchecked(registration, None)
+        self.register_action_memo_unchecked(registration, None, None)
     }
 
     fn register_action_memo_unchecked(
         &self,
         registration: Registration,
         input_memo: Option<(usize, Arc<crate::starlark_types::FlatFiles>)>,
+        starlark_inputs: Option<Arc<[File]>>,
     ) -> anyhow::Result<()> {
         let Registration {
             outputs,
@@ -683,6 +710,7 @@ impl Context {
             action,
             inputs,
             input_memo,
+            starlark_inputs,
             outputs,
             deferred,
             exec_group,
@@ -1303,7 +1331,7 @@ struct SpawnOptions<'v> {
 fn register_spawn(
     context: &Context,
     options: SpawnOptions<'_>,
-    mut inputs: Vec<File>,
+    (mut inputs, executable_provider): (Vec<File>, Option<&crate::runfiles::FilesToRun>),
     mut runfiles_trees: Vec<Arc<ToolRunfilesTree>>,
     executable: Vec<String>,
     command: String,
@@ -1340,13 +1368,35 @@ fn register_spawn(
         })
         .transpose()?
         .unwrap_or_default();
+    let listed_end = initial_inputs + listed.len();
     inputs.extend(listed);
     let input_memo = memo.map(|files| (initial_inputs, files));
+    // Bazel's order of the inputs (spawn_input_order): the declared inputs;
+    // the tools' transitive sets (an executable's FilesToRunProvider
+    // first); the direct tools (a File executable without one first).
+    let mut tools_order = ToolsOrder::default();
+    if initial_inputs > 0 {
+        match executable_provider {
+            Some(provider) => provider_pieces(0, provider, &mut tools_order.transitive),
+            None => tools_order
+                .direct
+                .push(InputPiece::Range(0, initial_inputs)),
+        }
+    }
     if let Some(tools) = options.tools {
-        let (files, trees) = action_tools(context, tools, function, &options.groups)?;
+        let (files, trees) = action_tools(
+            context,
+            tools,
+            function,
+            &options.groups,
+            (inputs.len(), &mut tools_order),
+        )?;
         inputs.extend(files);
         runfiles_trees.extend(trees);
     }
+    let mut input_order = vec![InputPiece::Range(initial_inputs, listed_end)];
+    input_order.append(&mut tools_order.transitive);
+    input_order.append(&mut tools_order.direct);
     // StarlarkActionFactory.determineExecGroup after the tools (N35).
     let exec_group = options.groups.determine()?;
     let parts = match options.arguments {
@@ -1401,11 +1451,7 @@ fn register_spawn(
     // executable last) resolved now, `%{label}`/`%{output}` when printed.
     let console_progress = raw_progress.as_deref().map(|raw| {
         if raw.contains("%{input}") {
-            match inputs[initial_inputs..]
-                .iter()
-                .chain(&inputs[..initial_inputs])
-                .next()
-            {
+            match spawn_input_order(&inputs, &input_order).next() {
                 Some(input) => raw.replace("%{input}", crate::aquery::root_relative(&input.path)),
                 None => raw.to_owned(),
             }
@@ -1464,9 +1510,7 @@ fn register_spawn(
             // StarlarkActionFactory: the inputs, then the tools (a File
             // executable is one); aquery reads the first only.
             input_order: Some(
-                inputs[initial_inputs..]
-                    .iter()
-                    .chain(&inputs[..initial_inputs])
+                spawn_input_order(&inputs, &input_order)
                     .take(if crate::aquery::whole_input_order() {
                         usize::MAX
                     } else {
@@ -1495,7 +1539,10 @@ fn register_spawn(
         let (arguments, files) = spec.expand(None).map_err(anyhow::Error::msg)?;
         (arguments, files, None)
     };
-    context.register_action_with_memo(
+    let starlark_inputs = context
+        .retain_actions
+        .then(|| spawn_input_order(&inputs, &input_order).cloned().collect());
+    context.register_spawn_action(
         Registration {
             outputs,
             inputs,
@@ -1517,7 +1564,68 @@ fn register_spawn(
             shareable: true,
         },
         input_memo,
+        starlark_inputs,
     )
+}
+
+/// One part of a Starlark spawn's inputs in Bazel's order ([`spawn_input_order`]).
+#[derive(Clone, Debug)]
+enum InputPiece {
+    /// The registered inputs `inputs[start..end]`.
+    Range(usize, usize),
+    /// A tool's runfiles tree artifact, which the registered inputs lack
+    /// (its runfiles tree is the action's, [`ToolRunfilesTree`]).
+    Tree(File),
+}
+
+/// The tools' parts of a Starlark spawn's inputs: SpawnAction.Builder's
+/// toolsBuilder is a STABLE_ORDER NestedSet, so its transitive members (a
+/// FilesToRunProvider's files to run, a depset) precede its direct ones
+/// (a File executable, File tools) whatever the order they were added in.
+#[derive(Default)]
+struct ToolsOrder {
+    transitive: Vec<InputPiece>,
+    direct: Vec<InputPiece>,
+}
+
+/// The pieces of FilesToRunProvider.getFilesToRun for a provider whose
+/// [`crate::runfiles::FilesToRun::files`] are the registered inputs from
+/// `offset` on: its runfiles tree artifact among them.
+fn provider_pieces(
+    offset: usize,
+    files_to_run: &crate::runfiles::FilesToRun,
+    pieces: &mut Vec<InputPiece>,
+) {
+    let count = files_to_run.files().len();
+    match files_to_run.runfiles_tree() {
+        Some((index, tree)) => {
+            let index = index.min(count);
+            pieces.push(InputPiece::Range(offset, offset + index));
+            pieces.push(InputPiece::Tree(tree.clone()));
+            pieces.push(InputPiece::Range(offset + index, offset + count));
+        }
+        None => pieces.push(InputPiece::Range(offset, offset + count)),
+    }
+}
+
+/// A Starlark spawn's inputs as Bazel lists them (SpawnAction.Builder
+/// .buildSpawnAction, analysis/actions/SpawnAction.java:741-760): a
+/// STABLE_ORDER NestedSet of the declared inputs, then the tools
+/// ([`ToolsOrder`]), each file once. `Target.actions`' `inputs`, aquery's
+/// primary input and print_action's input files read it; the registered
+/// inputs keep their own order (the action key and the input memo).
+fn spawn_input_order<'a>(
+    inputs: &'a [File],
+    pieces: &'a [InputPiece],
+) -> impl Iterator<Item = &'a File> + 'a {
+    let mut seen = std::collections::HashSet::new();
+    pieces
+        .iter()
+        .flat_map(move |piece| match piece {
+            InputPiece::Range(start, end) => &inputs[*start..*end],
+            InputPiece::Tree(tree) => std::slice::from_ref(tree),
+        })
+        .filter(move |file| seen.insert(file.path.as_str()))
 }
 
 /// The runfiles tree a FilesToRunProvider with runfiles support attaches to
@@ -1898,7 +2006,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
                 // run_shell has no such parameter (StarlarkActionFactory.java:675).
                 unused_inputs_list: None,
             },
-            Vec::new(),
+            (Vec::new(), None),
             Vec::new(),
             executable,
             command.to_owned(),
@@ -1921,15 +2029,28 @@ fn action_tools(
     tools: Value<'_>,
     function: &str,
     groups: &GroupArguments,
+    (base, order): (usize, &mut ToolsOrder),
 ) -> anyhow::Result<(Vec<File>, Vec<Arc<ToolRunfilesTree>>)> {
     const WANT: &str = "expected value of type 'File, FilesToRunProvider or Depset of Files' for a member of parameter 'tools' but";
     let mut files = Vec::new();
     let mut trees = Vec::new();
-    let attach = |files: &mut Vec<File>, trees: &mut Vec<Arc<ToolRunfilesTree>>, file: &File| {
+    // Each tool's part of Bazel's input order ([`ToolsOrder`]): a File is
+    // a direct tool, its executable attribute's FilesToRunProvider (if
+    // any), a FilesToRunProvider and a depset member transitive ones.
+    let attach = |files: &mut Vec<File>,
+                  trees: &mut Vec<Arc<ToolRunfilesTree>>,
+                  order: &mut ToolsOrder,
+                  file: &File| {
         if let Some(files_to_run) = context.runfiles.executables.borrow().get(file) {
+            provider_pieces(base + files.len(), files_to_run, &mut order.transitive);
             files.extend(files_to_run.files().iter().cloned());
             trees.extend(tool_runfiles_tree(files_to_run));
         }
+    };
+    let direct = |files: &mut Vec<File>, order: &mut ToolsOrder, file: File| {
+        let at = base + files.len();
+        order.direct.push(InputPiece::Range(at, at + 1));
+        files.push(file);
     };
     let items: Vec<Value<'_>> = if let Some(list) = ListRef::from_value(tools) {
         list.iter().collect()
@@ -1949,8 +2070,8 @@ fn action_tools(
             }
         }
         for file in depset_files {
-            attach(&mut files, &mut trees, &file);
-            files.push(file);
+            attach(&mut files, &mut trees, order, &file);
+            direct(&mut files, order, file);
         }
         return Ok((files, trees));
     } else {
@@ -1964,12 +2085,13 @@ fn action_tools(
             if !context.runfiles.is_executable(file) {
                 groups.check_tool()?;
             }
-            files.push(file.clone());
-            attach(&mut files, &mut trees, file);
+            direct(&mut files, order, file.clone());
+            attach(&mut files, &mut trees, order, file);
         } else if let Some(files_to_run) = crate::runfiles::FilesToRun::from_value(item) {
             if !context.runfiles.is_from_dependencies(files_to_run) {
                 groups.check_tool()?;
             }
+            provider_pieces(base + files.len(), files_to_run, &mut order.transitive);
             files.extend(files_to_run.files().iter().cloned());
             trees.extend(tool_runfiles_tree(files_to_run));
         } else if crate::starlark_types::is_depset(item) {
@@ -1979,7 +2101,11 @@ fn action_tools(
             {
                 bail!("{WANT} got a depset of '{kind}', expected a depset of 'File'");
             }
+            let at = base + files.len();
             files.extend(file_list(item)?);
+            order
+                .transitive
+                .push(InputPiece::Range(at, base + files.len()));
         } else {
             bail!("{WANT} got {} instead", item.get_type());
         }
@@ -2042,6 +2168,7 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
         // (crate::action::Action::executable_file, N41).
         let executable_file = executable.unpack_str().is_none();
         let mut trees = Vec::new();
+        let mut provider = None;
         let (program, bazel_executable) = if let Some(program) = executable.unpack_str() {
             (program.to_owned(), program.to_owned())
         } else {
@@ -2049,7 +2176,7 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
             // adds the provider's files to run (and its runfiles tree) as
             // tools; a File of an executable attribute uses its provider
             // (StarlarkActionFactory.java:433-441).
-            let provider = match crate::runfiles::FilesToRun::from_value(executable) {
+            provider = match crate::runfiles::FilesToRun::from_value(executable) {
                 Some(files_to_run) => Some(files_to_run.clone()),
                 None => context
                     .runfiles
@@ -2094,7 +2221,7 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
                 mnemonic: mnemonic.unwrap_or_else(|| "Action".to_owned()),
                 unused_inputs_list,
             },
-            extra_inputs,
+            (extra_inputs, provider.as_ref()),
             trees,
             vec![bazel_executable],
             String::new(),
@@ -2705,6 +2832,7 @@ mod tests {
             retained_mappers: Default::default(),
             super_chain: Default::default(),
             analysis_test: false,
+            retain_actions: false,
         }
     }
 
@@ -3059,6 +3187,7 @@ r=rule(implementation=_rule,subrules=[S])
             retained_mappers: Default::default(),
             super_chain: Default::default(),
             analysis_test: false,
+            retain_actions: false,
         };
         let owner = make_context();
         let foreign = make_context();

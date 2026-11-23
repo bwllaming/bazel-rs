@@ -145,7 +145,12 @@ impl ActionView {
             argv,
             content,
             substitutions,
-            inputs: registered.inputs.clone(),
+            // A Starlark spawn's inputs in Bazel's order (the declared
+            // inputs, then the tools; B57), else as registered.
+            inputs: match &registered.starlark_inputs {
+                Some(inputs) => inputs.to_vec(),
+                None => registered.inputs.clone(),
+            },
             outputs: registered.outputs.clone(),
             env: action
                 .environment

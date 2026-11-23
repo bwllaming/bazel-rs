@@ -2314,6 +2314,7 @@ fn analyze_aspect_inner(
         retained_mappers: Default::default(),
         super_chain: Default::default(),
         analysis_test: false,
+        retain_actions: target.retain_actions,
     };
     Module::with_temp_heap(|module| -> anyhow::Result<_> {
         // Depset elements may hold this analysis's functions until the
@@ -3158,6 +3159,7 @@ fn analyze_inner(
             ..Default::default()
         }),
         analysis_test: invocation.declaration.analysis_test,
+        retain_actions: target.retain_actions,
     };
     for output in &rule.outs {
         context.declare(output)?;
@@ -4321,6 +4323,7 @@ r = rule(implementation=impl, attrs={
             retained_mappers: Default::default(),
             super_chain: Default::default(),
             analysis_test: false,
+            retain_actions: false,
         }
     }
 

@@ -16712,6 +16712,7 @@ mod tests {
             },
             inputs: Vec::new(),
             input_memo: None,
+            starlark_inputs: None,
             outputs,
             deferred: None,
             exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),

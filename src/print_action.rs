@@ -51,13 +51,26 @@ pub fn expression(patterns: &[String]) -> String {
 /// Spawn.getInputFiles in NestedSet order: a Starlark spawn's recorded
 /// order; otherwise the generated inputs before the source ones (the
 /// order C++ archive and link actions list them), each once.
+///
+/// SpawnInfo leaves out a Starlark spawn's runfiles trees (SpawnAction
+/// .getSpawnForExtraActionSpawnInfo: ActionSpawn drops the runfiles tree
+/// artifacts): `<executable>.runfiles` of a tool whose executable is an
+/// input.
 fn ordered_inputs(action: &ActionRecord) -> Vec<String> {
     let known: BTreeSet<&str> = action.inputs.iter().map(String::as_str).collect();
+    let runfiles_tree = |input: &str| {
+        action.input_order.is_some()
+            && input.starts_with("bazel-out/")
+            && input
+                .strip_suffix(".runfiles")
+                .is_some_and(|executable| known.contains(executable))
+    };
     let mut seen = BTreeSet::new();
     let mut ordered = Vec::new();
     if let Some(order) = &action.input_order {
         for input in order {
-            if known.contains(input.as_str()) && seen.insert(input.clone()) {
+            if known.contains(input.as_str()) && !runfiles_tree(input) && seen.insert(input.clone())
+            {
                 ordered.push(input.clone());
             }
         }
@@ -67,7 +80,7 @@ fn ordered_inputs(action: &ActionRecord) -> Vec<String> {
         .iter()
         .partition(|input| input.starts_with("bazel-out/"));
     for input in generated.into_iter().chain(sources) {
-        if seen.insert(input.clone()) {
+        if !runfiles_tree(input) && seen.insert(input.clone()) {
             ordered.push(input.clone());
         }
     }
