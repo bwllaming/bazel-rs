@@ -132,6 +132,7 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "grte_top",
     "host_grte_top",
     "experimental_cpp_modules",
+    "apple_generate_dsym",
 ];
 
 /// Table-driven options (crate::configuration::VALUE_OPTIONS) read and
@@ -201,6 +202,10 @@ const GENERIC_VALUE_OPTIONS: &[(&str, &str)] = &[
     (
         "experimental_cpp_modules",
         "rules.cpp.CppOptions.experimentalCppModules",
+    ),
+    (
+        "apple_generate_dsym",
+        "rules.cpp.CppOptions.appleGenerateDsym",
     ),
 ];
 

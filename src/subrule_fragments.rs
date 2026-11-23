@@ -418,8 +418,7 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
     /// CppConfiguration.java:305, 809-812; --apple_generate_dsym default false.
     #[starlark(attribute)]
     fn apple_generate_dsym<'v>(this: Value<'v>) -> anyhow::Result<bool> {
-        receiver(this)?;
-        Ok(false)
+        Ok(receiver(this)?.view.apple_generate_dsym)
     }
     /// CppConfiguration.java:443-451; --build_test_dwp.
     fn build_test_dwp<'v>(

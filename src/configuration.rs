@@ -1305,6 +1305,26 @@ pub const VALUE_OPTIONS: &[ValueOption] = &[
         exec: ExecValue::Propagate,
         exec_source: "builtin_exec_platforms.bzl:304",
     },
+    // CppOptions.appleGenerateDsym (`--apple_generate_dsym`):
+    // `cpp.apple_generate_dsym` (CppConfiguration.java:305, 809-812), which
+    // rules_cc's configure_features turns into the `generate_dsym_file`
+    // feature; rules_zig's dsym tests transition on it (B56).
+    ValueOption {
+        option: OptionDef {
+            name: "apple_generate_dsym",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "false",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:850-856",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
 ];
 
 /// The table-driven option named `name` (its canonical name only).
@@ -4259,7 +4279,8 @@ mod tests {
                 "custom_malloc",
                 "grte_top",
                 "host_grte_top",
-                "experimental_cpp_modules"
+                "experimental_cpp_modules",
+                "apple_generate_dsym"
             ]
         );
         let defaults = NativeOptions::default();

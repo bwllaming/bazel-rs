@@ -1,0 +1,26 @@
+load(":defs.bzl", "check", "subject", "tool")
+
+tool(
+    name = "tool",
+    data = ["data.txt"],
+)
+
+tool(name = "other")
+
+subject(
+    name = "subject",
+    srcs = [
+        "a.txt",
+        "b.txt",
+        "c.txt",
+        "d.txt",
+    ],
+    other = ":other",
+    script = "script.sh",
+    tool = ":tool",
+)
+
+check(
+    name = "inputs_test",
+    target = ":subject",
+)

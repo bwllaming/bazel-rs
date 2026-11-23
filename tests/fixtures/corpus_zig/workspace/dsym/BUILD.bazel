@@ -1,0 +1,31 @@
+load(":defs.bzl", "check_test", "leaf", "top")
+
+config_setting(
+    name = "dsym",
+    values = {"apple_generate_dsym": "true"},
+)
+
+leaf(
+    name = "leaf",
+    flags = select({
+        ":dsym": ["dsym"],
+        "//conditions:default": [],
+    }),
+)
+
+top(
+    name = "on",
+    dep = ":leaf",
+    dsym = True,
+)
+
+top(
+    name = "off",
+    dep = ":leaf",
+    dsym = False,
+)
+
+check_test(
+    name = "check_test",
+    target_under_test = ":leaf",
+)

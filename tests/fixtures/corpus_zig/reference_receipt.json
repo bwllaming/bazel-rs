@@ -1,0 +1,97 @@
+{
+ "bazel": "9.3.1",
+ "cases": {
+  "dsym_in_transitions": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild-ST-4d1e43fbb373/bin/dsym/leaf.txt": "bazel-out/k8-fastbuild-ST-4d1e43fbb373/bin/dsym/leaf.txt True [\"dsym\"]\n",
+    "k8-fastbuild/bin/dsym/check_test.sh": "#!/bin/sh\necho \\F\\I\\L\\E\\S\\ \\[\\\"\\b\\a\\z\\e\\l\\-\\o\\u\\t\\/\\k\\8\\-\\f\\a\\s\\t\\b\\u\\i\\l\\d\\-\\S\\T\\-\\e\\9\\4\\0\\5\\6\\3\\d\\b\\d\\e\\1\\/\\b\\i\\n\\/\\d\\s\\y\\m\\/\\l\\e\\a\\f\\.\\t\\x\\t\\\"\\]\nexit 0",
+    "k8-fastbuild/bin/dsym/leaf.txt": "bazel-out/k8-fastbuild/bin/dsym/leaf.txt False []\n"
+   },
+   "startup": [],
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/dsym/defs.bzl:13:10: READ False",
+     "pattern": "READ"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//dsym:on",
+    "//dsym:off",
+    "//dsym:check_test"
+   ],
+   "workspace": "workspace"
+  },
+  "dsym_on_the_command_line": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--apple_generate_dsym"
+   ],
+   "outputs": {
+    "k8-fastbuild-ST-1693516ba3c2/bin/dsym/leaf.txt": "bazel-out/k8-fastbuild-ST-1693516ba3c2/bin/dsym/leaf.txt False []\n",
+    "k8-fastbuild/bin/dsym/leaf.txt": "bazel-out/k8-fastbuild/bin/dsym/leaf.txt True [\"dsym\"]\n"
+   },
+   "startup": [],
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/dsym/defs.bzl:13:10: READ True",
+     "pattern": "READ True"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//dsym:leaf",
+    "//dsym:off"
+   ],
+   "workspace": "workspace"
+  },
+  "spawn_input_order": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/inputs/inputs_test.sh": "#!/bin/sh\necho \\F\\i\\l\\e\\E\\x\\e\\ \\[\\\"\\i\\n\\p\\u\\t\\s\\/\\a\\.\\t\\x\\t\\\"\\,\\ \\\"\\i\\n\\p\\u\\t\\s\\/\\b\\.\\t\\x\\t\\\"\\,\\ \\\"\\i\\n\\p\\u\\t\\s\\/\\s\\c\\r\\i\\p\\t\\.\\s\\h\\\"\\,\\ \\\"\\i\\n\\p\\u\\t\\s\\/\\d\\.\\t\\x\\t\\\"\\]\necho \\P\\r\\o\\v\\i\\d\\e\\r\\E\\x\\e\\ \\[\\\"\\i\\n\\p\\u\\t\\s\\/\\b\\.\\t\\x\\t\\\"\\,\\ \\\"\\i\\n\\p\\u\\t\\s\\/\\a\\.\\t\\x\\t\\\"\\,\\ \\\"\\b\\a\\z\\e\\l\\-\\o\\u\\t\\/\\p\\-\\o\\p\\t\\-\\e\\x\\e\\c\\/\\b\\i\\n\\/\\i\\n\\p\\u\\t\\s\\/\\t\\o\\o\\l\\.\\s\\h\\\"\\,\\ \\\"\\b\\a\\z\\e\\l\\-\\o\\u\\t\\/\\p\\-\\o\\p\\t\\-\\e\\x\\e\\c\\/\\b\\i\\n\\/\\i\\n\\p\\u\\t\\s\\/\\t\\o\\o\\l\\.\\s\\h\\.\\r\\u\\n\\f\\i\\l\\e\\s\\\"\\,\\ \\\"\\i\\n\\p\\u\\t\\s\\/\\c\\.\\t\\x\\t\\\"\\,\\ \\\"\\b\\a\\z\\e\\l\\-\\o\\u\\t\\/\\p\\-\\o\\p\\t\\-\\e\\x\\e\\c\\/\\b\\i\\n\\/\\i\\n\\p\\u\\t\\s\\/\\o\\t\\h\\e\\r\\.\\s\\h\\\"\\,\\ \\\"\\b\\a\\z\\e\\l\\-\\o\\u\\t\\/\\p\\-\\o\\p\\t\\-\\e\\x\\e\\c\\/\\b\\i\\n\\/\\i\\n\\p\\u\\t\\s\\/\\o\\t\\h\\e\\r\\.\\s\\h\\.\\r\\u\\n\\f\\i\\l\\e\\s\\\"\\,\\ \\\"\\i\\n\\p\\u\\t\\s\\/\\d\\.\\t\\x\\t\\\"\\]\necho \\F\\i\\l\\e\\s\\T\\o\\R\\u\\n\\E\\x\\e\\ \\[\\\"\\b\\a\\z\\e\\l\\-\\o\\u\\t\\/\\p\\-\\o\\p\\t\\-\\e\\x\\e\\c\\/\\b\\i\\n\\/\\i\\n\\p\\u\\t\\s\\/\\o\\t\\h\\e\\r\\.\\s\\h\\\"\\,\\ \\\"\\b\\a\\z\\e\\l\\-\\o\\u\\t\\/\\p\\-\\o\\p\\t\\-\\e\\x\\e\\c\\/\\b\\i\\n\\/\\i\\n\\p\\u\\t\\s\\/\\o\\t\\h\\e\\r\\.\\s\\h\\.\\r\\u\\n\\f\\i\\l\\e\\s\\\"\\,\\ \\\"\\i\\n\\p\\u\\t\\s\\/\\s\\c\\r\\i\\p\\t\\.\\s\\h\\\"\\]\necho \\S\\h\\e\\l\\l\\ \\[\\\"\\i\\n\\p\\u\\t\\s\\/\\b\\.\\t\\x\\t\\\"\\,\\ \\\"\\i\\n\\p\\u\\t\\s\\/\\a\\.\\t\\x\\t\\\"\\,\\ \\\"\\b\\a\\z\\e\\l\\-\\o\\u\\t\\/\\p\\-\\o\\p\\t\\-\\e\\x\\e\\c\\/\\b\\i\\n\\/\\i\\n\\p\\u\\t\\s\\/\\t\\o\\o\\l\\.\\s\\h\\\"\\,\\ \\\"\\b\\a\\z\\e\\l\\-\\o\\u\\t\\/\\p\\-\\o\\p\\t\\-\\e\\x\\e\\c\\/\\b\\i\\n\\/\\i\\n\\p\\u\\t\\s\\/\\t\\o\\o\\l\\.\\s\\h\\.\\r\\u\\n\\f\\i\\l\\e\\s\\\"\\,\\ \\\"\\i\\n\\p\\u\\t\\s\\/\\d\\.\\t\\x\\t\\\"\\,\\ \\\"\\i\\n\\p\\u\\t\\s\\/\\c\\.\\t\\x\\t\\\"\\]\necho \\D\\u\\p\\l\\i\\c\\a\\t\\e\\s\\ \\[\\\"\\i\\n\\p\\u\\t\\s\\/\\s\\c\\r\\i\\p\\t\\.\\s\\h\\\"\\,\\ \\\"\\i\\n\\p\\u\\t\\s\\/\\a\\.\\t\\x\\t\\\"\\,\\ \\\"\\i\\n\\p\\u\\t\\s\\/\\c\\.\\t\\x\\t\\\"\\]\necho \\B\\a\\r\\e\\ \\[\\\"\\i\\n\\p\\u\\t\\s\\/\\s\\c\\r\\i\\p\\t\\.\\s\\h\\\"\\]\nexit 0"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//inputs:inputs_test"
+   ],
+   "workspace": "workspace"
+  },
+  "spawn_input_order_print_action": {
+   "bin_paths": {},
+   "command": "print_action",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [],
+   "stdout": "action {\n  action {\n    owner: \"//inputs:subject\"\n    id: \"aa6dad3a85e748d8ea613c99ca52243414628bb5f220c9131836d110ffd5affd\"\n    mnemonic: \"FileExe\"\n    [blaze.SpawnInfo.spawn_info] {\n      argument: \"inputs/script.sh\"\n      argument: \"bazel-out/k8-fastbuild/bin/inputs/subject.file_exe\"\n      input_file: \"inputs/a.txt\"\n      input_file: \"inputs/b.txt\"\n      input_file: \"inputs/script.sh\"\n      input_file: \"inputs/d.txt\"\n      output_file: \"bazel-out/k8-fastbuild/bin/inputs/subject.file_exe\"\n    }\n  }\n}\naction {\n  action {\n    owner: \"//inputs:subject\"\n    id: \"f423b4cbafb4ecd74efe996f0553208c7659b04b64cdc8f122788967612502be\"\n    mnemonic: \"ProviderExe\"\n    [blaze.SpawnInfo.spawn_info] {\n      argument: \"bazel-out/p-opt-exec/bin/inputs/tool.sh\"\n      argument: \"bazel-out/k8-fastbuild/bin/inputs/subject.provider_exe\"\n      input_file: \"inputs/b.txt\"\n      input_file: \"inputs/a.txt\"\n      input_file: \"bazel-out/p-opt-exec/bin/inputs/tool.sh\"\n      input_file: \"inputs/c.txt\"\n      input_file: \"bazel-out/p-opt-exec/bin/inputs/other.sh\"\n      input_file: \"inputs/d.txt\"\n      output_file: \"bazel-out/k8-fastbuild/bin/inputs/subject.provider_exe\"\n    }\n  }\n}\naction {\n  action {\n    owner: \"//inputs:subject\"\n    id: \"c0fab672ad1722b890601ffa10662e43f6937d53254bccccc9ee169512135eaf\"\n    mnemonic: \"FilesToRunExe\"\n    [blaze.SpawnInfo.spawn_info] {\n      argument: \"bazel-out/p-opt-exec/bin/inputs/other.sh\"\n      argument: \"bazel-out/k8-fastbuild/bin/inputs/subject.files_to_run_exe\"\n      input_file: \"bazel-out/p-opt-exec/bin/inputs/other.sh\"\n      input_file: \"inputs/script.sh\"\n      output_file: \"bazel-out/k8-fastbuild/bin/inputs/subject.files_to_run_exe\"\n    }\n  }\n}\naction {\n  action {\n    owner: \"//inputs:subject\"\n    id: \"4f16886718b88197d9dfa63fcf32095be6ad23b48c9f3971cdb51253116a733a\"\n    mnemonic: \"Shell\"\n    [blaze.SpawnInfo.spawn_info] {\n      argument: \"/bin/bash\"\n      argument: \"-c\"\n      argument: \"touch $1\"\n      argument: \"\"\n      argument: \"bazel-out/k8-fastbuild/bin/inputs/subject.shell\"\n      input_file: \"inputs/b.txt\"\n      input_file: \"inputs/a.txt\"\n      input_file: \"bazel-out/p-opt-exec/bin/inputs/tool.sh\"\n      input_file: \"inputs/d.txt\"\n      input_file: \"inputs/c.txt\"\n      output_file: \"bazel-out/k8-fastbuild/bin/inputs/subject.shell\"\n    }\n  }\n}\naction {\n  action {\n    owner: \"//inputs:subject\"\n    id: \"5ec0b3768ec151c9119b4ce8983530e519afb5ce7e075ef3d46bcef9ca0116b6\"\n    mnemonic: \"Duplicates\"\n    [blaze.SpawnInfo.spawn_info] {\n      argument: \"inputs/script.sh\"\n      argument: \"bazel-out/k8-fastbuild/bin/inputs/subject.duplicates\"\n      input_file: \"inputs/script.sh\"\n      input_file: \"inputs/a.txt\"\n      input_file: \"inputs/c.txt\"\n      output_file: \"bazel-out/k8-fastbuild/bin/inputs/subject.duplicates\"\n    }\n  }\n}\naction {\n  action {\n    owner: \"//inputs:subject\"\n    id: \"e810344e789aee3f0c591a0027cd1090d45a178dbdffa4846a752c3112339302\"\n    mnemonic: \"Bare\"\n    [blaze.SpawnInfo.spawn_info] {\n      argument: \"inputs/script.sh\"\n      argument: \"bazel-out/k8-fastbuild/bin/inputs/subject.bare\"\n      input_file: \"inputs/script.sh\"\n      output_file: \"bazel-out/k8-fastbuild/bin/inputs/subject.bare\"\n    }\n  }\n}\n",
+   "targets": [
+    "//inputs:subject"
+   ],
+   "workspace": "workspace"
+  }
+ },
+ "elf_sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c"
+}

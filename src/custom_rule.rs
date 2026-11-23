@@ -582,6 +582,8 @@ pub struct CppConfigurationView {
     pub libc_top_label: Option<String>,
     /// CppOptions.experimentalCppModules (`--experimental_cpp_modules`).
     pub experimental_cpp_modules: bool,
+    /// CppOptions.appleGenerateDsym (`--apple_generate_dsym`).
+    pub apple_generate_dsym: bool,
 }
 
 impl Default for CppConfigurationView {
@@ -619,6 +621,7 @@ impl Default for CppConfigurationView {
             custom_malloc: None,
             libc_top_label: None,
             experimental_cpp_modules: false,
+            apple_generate_dsym: false,
         }
     }
 }
@@ -694,6 +697,8 @@ impl CppConfigurationView {
                 .nullable_label("grte_top")
                 .map(|label| label.to_string()),
             experimental_cpp_modules: native.raw_value("experimental_cpp_modules")
+                == Some(crate::configuration::OptionValue::Bool(true)),
+            apple_generate_dsym: native.raw_value("apple_generate_dsym")
                 == Some(crate::configuration::OptionValue::Bool(true)),
         }
     }
