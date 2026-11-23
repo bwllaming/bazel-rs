@@ -4,7 +4,7 @@
 //! its configured targets and aspect applications. Nothing executes: no
 //! workspace status, no input digests, no scheduler.
 use super::*;
-use crate::aquery::{ActionRecord, Aspect, Dump, Meta, PackedStrings};
+use crate::aquery::{ActionRecord, Aspect, Dump, InternedStrings, Meta};
 use crate::aquery_key::{CommandLinePart, KeyKind, KeyPlatform};
 
 /// The owner of each action id prefix, and the planned actions.
@@ -947,7 +947,7 @@ impl Engine {
                 let arguments = meta
                     .arguments
                     .as_ref()
-                    .map_or_else(|| crate::action::arguments(action), PackedStrings::to_vec);
+                    .map_or_else(|| crate::action::arguments(action), InternedStrings::to_vec);
                 let raw = match (&meta.progress, record.mnemonic.as_str()) {
                     (Some(raw), _) => raw.clone(),
                     (None, "Genrule") => "Executing genrule %{label}".to_owned(),

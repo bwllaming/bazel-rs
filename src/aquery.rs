@@ -60,8 +60,8 @@ pub struct Meta {
     /// The spawn's CommandLines as SpawnAction.computeKey sees them.
     pub command_lines: Option<Vec<CommandLinePart>>,
     /// CommandAction.getArguments (CommandLines.allArguments: parameter
-    /// file contents inline), packed.
-    pub arguments: Option<PackedStrings>,
+    /// file contents inline), interned.
+    pub arguments: Option<InternedStrings>,
     /// A ParameterFileWriteAction (`ctx.actions.write` of an Args).
     pub param_write: Option<ParamWrite>,
     /// A RepoMappingManifestAction (`py_internal.create_repo_mapping_manifest`).
@@ -102,7 +102,7 @@ impl Meta {
 pub struct ParamWrite {
     pub file_type: &'static str,
     pub recipe: ArgsRecipe,
-    pub arguments: PackedStrings,
+    pub arguments: InternedStrings,
 }
 
 /// One shared copy of each distinct fixed environment (most spawns have
@@ -120,25 +120,18 @@ pub fn shared_environment(environment: Vec<(String, String)>) -> Arc<[(String, S
     shared
 }
 
-/// A list of strings in one allocation (with their ends): what aquery
-/// keeps of every action's arguments until it describes the action
-/// (~/code `aquery 'kind("cc_.*", //src/...)'`: 133k spawns' arguments
-/// held 420 MB as `Vec<String>`, an allocation per argument).
+/// A list of interned strings (crate::interner): what aquery keeps of every
+/// action's arguments until it describes the action (~/code
+/// `aquery 'kind("cc_.*", //src/...)'`: 133k spawns' arguments held 420 MB
+/// as `Vec<String>`, an allocation per argument; a compile's flags repeat
+/// across the compiles of a package, so each distinct text is held once).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct PackedStrings {
-    text: Box<str>,
-    ends: Box<[u32]>,
-}
+pub struct InternedStrings(Box<[crate::interner::IStr]>);
 
-impl PackedStrings {
+impl InternedStrings {
     /// The strings, in order.
     pub fn iter(&self) -> impl Iterator<Item = &str> + '_ {
-        let mut start = 0usize;
-        self.ends.iter().map(move |&end| {
-            let item = &self.text[start..end as usize];
-            start = end as usize;
-            item
-        })
+        self.0.iter().map(|text| -> &str { text.as_str() })
     }
 
     pub fn to_vec(&self) -> Vec<String> {
@@ -146,18 +139,9 @@ impl PackedStrings {
     }
 }
 
-impl From<Vec<String>> for PackedStrings {
+impl From<Vec<String>> for InternedStrings {
     fn from(items: Vec<String>) -> Self {
-        let mut text = String::with_capacity(items.iter().map(String::len).sum());
-        let mut ends = Vec::with_capacity(items.len());
-        for item in &items {
-            text.push_str(item);
-            ends.push(u32::try_from(text.len()).expect("aquery arguments under 4 GiB"));
-        }
-        Self {
-            text: text.into_boxed_str(),
-            ends: ends.into_boxed_slice(),
-        }
+        Self(crate::interner::IStr::all(items).into_boxed_slice())
     }
 }
 

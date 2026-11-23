@@ -278,9 +278,9 @@ on that query (10.7 GB before them). Brought back under it by:
 * a worker's source-file views use the index's artifact instead of a copy
   per view;
 * only the selected targets' actions are described (after the
-  expression's selection), `Meta::arguments` packed in one allocation
-  (`PackedStrings`; 420 MB as `Vec<String>`), the fixed environment shared
-  per distinct value.
+  expression's selection), `Meta::arguments` interned
+  (`InternedStrings`, crate::interner; 420 MB as `Vec<String>`), the fixed
+  environment shared per distinct value.
 
 Every planned action is described or skipped as the build's own (the
 workspace status actions): an action without an owner, or whose owner is
