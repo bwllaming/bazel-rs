@@ -1,8 +1,8 @@
 //! Process-global string interning (docs/MEMORY.md, "String interning").
 //!
-//! An [`IStr`] is a reference to an interned copy of its text: equal texts
-//! interned anywhere in the process are one copy, and an `IStr` costs 16
-//! bytes where a `String` costs 24 plus its own heap allocation. The copies
+//! An [`IStr`] is the 4-byte id of an interned copy of its text: equal texts
+//! interned anywhere in the process are one copy and one id, and an `IStr`
+//! costs 4 bytes where a `String` costs 24 plus its own heap allocation. The copies
 //! live in leaked arena chunks for the rest of the process (every command is
 //! its own process), so intern only long-lived strings that repeat — a
 //! planned action's arguments (OpenROAD: 5.3 M argument strings, 92 K
@@ -14,15 +14,19 @@
 //!
 //! The table is sharded ([`SHARDS`] mutexes, picked by the text's hash): an
 //! intern takes one shard's lock for a lookup and, for a new text, a copy
-//! into that shard's arena chunk. Safe code only: a chunk is a leaked byte
-//! slice, each text is split off its front and validated back into a `str`.
+//! into that shard's arena chunk. An id names a slot of a table of
+//! [`SEGMENTS`] (each twice the size of the one before, allocated on first
+//! use), set once when the text is interned and read lock-free. Safe code
+//! only: a chunk is a leaked byte slice, each text is split off its front and
+//! validated back into a `str`, and a slot is a `OnceLock`.
 
 use std::borrow::Borrow;
 use std::ffi::OsStr;
 use std::hash::{Hash, Hasher};
+use std::num::NonZeroU32;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 /// Shards of the table (a power of two).
 const SHARDS: usize = 64;
@@ -31,12 +35,44 @@ const CHUNK_BYTES: usize = 1 << 16;
 /// Texts above this many bytes get an allocation of their own.
 const LARGE_BYTES: usize = CHUNK_BYTES / 16;
 
-/// An interned string: its text, in memory that lives for the rest of the
-/// process. Equal texts are one copy, so equality is identity. Cloning
-/// copies the reference (not `Copy`, so that a field changing from `String`
-/// keeps its `clone()` calls).
-#[derive(Clone, Default)]
-pub struct IStr(&'static str);
+/// An interned string: the id of its text, which lives for the rest of the
+/// process. Equal texts are one id, so equality is the ids'. Cloning copies
+/// the id (not `Copy`, so that a field changing from `String` keeps its
+/// `clone()` calls).
+#[derive(Clone)]
+pub struct IStr(NonZeroU32);
+
+/// The empty text's id (it has no slot).
+const EMPTY: NonZeroU32 = NonZeroU32::MIN;
+/// Segment `k` holds `2^(k + FIRST_SEGMENT_BITS)` slots; ids start at 2.
+const FIRST_SEGMENT_BITS: u32 = 10;
+/// Enough segments for every `u32` id.
+const SEGMENTS: usize = 23;
+
+/// The texts by id.
+static SLOTS: [OnceLock<Box<[OnceLock<&'static str>]>>; SEGMENTS] =
+    [const { OnceLock::new() }; SEGMENTS];
+/// The next id to hand out.
+static NEXT_ID: AtomicU32 = AtomicU32::new(2);
+
+/// The segment and the index in it of an id's slot.
+fn slot_of(id: NonZeroU32) -> (usize, usize) {
+    let n = u64::from(id.get()) + (1 << FIRST_SEGMENT_BITS);
+    let bits = 63 - n.leading_zeros();
+    let segment = (bits - FIRST_SEGMENT_BITS) as usize;
+    (segment, (n - (1u64 << bits)) as usize)
+}
+
+/// An id's slot, its segment allocated on first use.
+fn slot(id: NonZeroU32) -> &'static OnceLock<&'static str> {
+    let (segment, index) = slot_of(id);
+    let slots = SLOTS[segment].get_or_init(|| {
+        (0..1usize << (segment as u32 + FIRST_SEGMENT_BITS))
+            .map(|_| OnceLock::new())
+            .collect()
+    });
+    &slots[index]
+}
 
 struct Shard {
     table: hashbrown::HashTable<IStr>,
@@ -95,7 +131,13 @@ impl Shard {
         };
         INTERNED.fetch_add(1, Ordering::Relaxed);
         INTERNED_BYTES.fetch_add(text.len() as u64, Ordering::Relaxed);
-        IStr(stored)
+        // Called under the shard's lock: each text gets one id.
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let id = NonZeroU32::new(id)
+            .filter(|id| id.get() < u32::MAX)
+            .expect("fewer than 2^32 interned strings");
+        assert!(slot(id).set(stored).is_ok(), "an id is handed out once");
+        IStr(id)
     }
 }
 
@@ -109,19 +151,28 @@ impl IStr {
         let mut shard = TABLE[shard_of(hash)]
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(found) = shard.table.find(hash, |entry| entry.0 == text) {
+        if let Some(found) = shard.table.find(hash, |entry| entry.as_str() == text) {
             return found.clone();
         }
         let interned = shard.store(text);
         shard
             .table
-            .insert_unique(hash, interned.clone(), |entry| hash_text(entry.0));
+            .insert_unique(hash, interned.clone(), |entry| hash_text(entry.as_str()));
         interned
     }
 
     /// The text (it lives for the rest of the process).
     pub fn as_str(&self) -> &'static str {
-        self.0
+        if self.0 == EMPTY {
+            return "";
+        }
+        let (segment, index) = slot_of(self.0);
+        // An IStr exists only after its slot was set (Shard::store), and
+        // whoever handed it to this thread synchronized with that thread.
+        SLOTS[segment]
+            .get()
+            .and_then(|slots| slots[index].get())
+            .expect("an interned string's slot is set")
     }
 
     /// Intern every string of `strings`, into a vector of exactly their
@@ -208,12 +259,16 @@ impl From<IStr> for String {
     }
 }
 
-// Equal non-empty texts are one interned copy (disjoint from every other),
-// so equality is identity.
+impl Default for IStr {
+    fn default() -> Self {
+        IStr(EMPTY)
+    }
+}
+
+// Equal texts are one id.
 impl PartialEq for IStr {
     fn eq(&self, other: &Self) -> bool {
-        self.0.len() == other.0.len()
-            && (self.0.is_empty() || std::ptr::eq(self.0.as_ptr(), other.0.as_ptr()))
+        self.0 == other.0
     }
 }
 
@@ -373,6 +428,26 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn ids_map_to_distinct_slots() {
+        use super::{FIRST_SEGMENT_BITS, slot_of};
+        use std::num::NonZeroU32;
+        let id = |n: u32| NonZeroU32::new(n).unwrap();
+        assert_eq!(slot_of(id(2)), (0, 2));
+        let first = (1u32 << FIRST_SEGMENT_BITS) - 1;
+        assert_eq!(slot_of(id(first)), (0, first as usize));
+        assert_eq!(slot_of(id(first + 1)), (1, 0));
+        assert_eq!(slot_of(id(u32::MAX)).0, super::SEGMENTS - 1);
+        let mut previous = slot_of(id(2));
+        for n in 3..100_000 {
+            let next = slot_of(id(n));
+            assert!(next == (previous.0, previous.1 + 1) || next == (previous.0 + 1, 0));
+            previous = next;
+        }
+        assert_eq!(std::mem::size_of::<IStr>(), 4);
+        assert_eq!(std::mem::size_of::<Option<IStr>>(), 4);
     }
 
     #[test]
