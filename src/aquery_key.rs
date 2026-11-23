@@ -575,6 +575,9 @@ pub enum KeyKind<'a> {
     },
     /// SymlinkAction.computeKey (:429-439) of toArtifact/toExecutable (no inputPath).
     Symlink,
+    /// SymlinkAction.computeKey of toAbsolutePath (:194-198): the GUID and
+    /// the absolute input path.
+    AbsoluteSymlink { target: &'a str },
     /// SolibSymlinkAction.computeKey (rules/cpp/SolibSymlinkAction.java
     /// :123-129): the symlink's and the library's exec paths, on
     /// EMPTY_PLATFORM_INFO (:327-335).
@@ -673,6 +676,10 @@ pub fn action_key(
         KeyKind::Symlink => {
             fp.string(SYMLINK_GUID);
             // SymlinkAction.getExecutionPlatform/getExecProperties (:483-492).
+            return finish(fp, KeyPlatform::Internal, &[]);
+        }
+        KeyKind::AbsoluteSymlink { target } => {
+            fp.string(SYMLINK_GUID).string(target);
             return finish(fp, KeyPlatform::Internal, &[]);
         }
         KeyKind::SolibSymlink { symlink, library } => {

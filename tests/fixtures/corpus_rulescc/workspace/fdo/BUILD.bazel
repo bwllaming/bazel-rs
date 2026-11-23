@@ -1,0 +1,124 @@
+load(":defs.bzl", "exec_user", "leaf", "read_leaf", "top")
+
+filegroup(name = "malloc")
+
+filegroup(name = "prof")
+
+filegroup(name = "cs")
+
+filegroup(name = "hints")
+
+filegroup(name = "prop")
+
+filegroup(name = "mem")
+
+filegroup(name = "everything")
+
+filegroup(name = "libc")
+
+exports_files(["profile.afdo", "x.xfdo"])
+
+config_setting(
+    name = "malloc_set",
+    values = {"custom_malloc": "//fdo:malloc"},
+)
+
+config_setting(
+    name = "abs_fdo",
+    values = {"fdo_optimize": "/abs/profile.afdo"},
+)
+
+config_setting(
+    name = "modules",
+    values = {"experimental_cpp_modules": "true"},
+)
+
+LEAF_FLAGS = select({
+    ":malloc_set": ["malloc"],
+    "//conditions:default": [],
+}) + select({
+    ":abs_fdo": ["abs_fdo"],
+    "//conditions:default": [],
+}) + select({
+    ":modules": ["modules"],
+    "//conditions:default": [],
+})
+
+leaf(
+    name = "leaf",
+    flags = LEAF_FLAGS,
+)
+
+read_leaf(
+    name = "read",
+    flags = LEAF_FLAGS,
+)
+
+top(
+    name = "labels",
+    dep = ":leaf",
+    settings = {
+        "custom_malloc": ["//fdo:malloc"],
+        "fdo_profile": ["//fdo:prof"],
+        "xbinary_fdo": ["//fdo:x.xfdo"],
+        "cs_fdo_profile": ["//fdo:cs"],
+        "fdo_prefetch_hints": ["//fdo:hints"],
+        "propeller_optimize": ["//fdo:prop"],
+        "memprof_profile": ["//fdo:mem"],
+        "grte_top": ["//fdo:libc"],
+    },
+)
+
+top(
+    name = "label_values",
+    dep = ":leaf",
+    settings = {
+        "fdo_optimize": ["//fdo:profile.afdo"],
+        "xbinary_fdo": ["L://fdo:x.xfdo"],
+        "grte_top": ["L://fdo:libc"],
+        "custom_malloc": ["L://fdo:malloc"],
+    },
+)
+
+top(
+    name = "paths",
+    dep = ":leaf",
+    settings = {
+        "fdo_optimize": ["/abs/profile.afdo"],
+        "propeller_optimize_absolute_cc_profile": ["/tmp//cc.txt"],
+        "propeller_optimize_absolute_ld_profile": ["/tmp/ld.txt"],
+        "cs_fdo_absolute_path": ["/abs/cs.profdata"],
+        "fdo_instrument": ["inst"],
+        "cs_fdo_instrument": ["csinst"],
+        "propeller_optimize": ["//fdo:prop"],
+    },
+)
+
+top(
+    name = "lists",
+    dep = ":leaf",
+    settings = {
+        "ltobackendopt": ["-a", "-b"],
+        "ltoindexopt": ["-i"],
+        "per_file_ltobackendopt": ["//fdo:.*,-//fdo:x@-x,-y"],
+        "host_grte_top": ["//fdo:libc"],
+    },
+)
+
+top(
+    name = "read_set",
+    dep = ":read",
+    settings = {
+        "fdo_optimize": ["/abs/profile.afdo"],
+        "custom_malloc": ["//fdo:malloc"],
+        "grte_top": ["//fdo:libc"],
+        "ltobackendopt": ["-a"],
+        "per_file_ltobackendopt": ["//fdo:.*@-x"],
+        "xbinary_fdo": ["L://fdo:x.xfdo"],
+    },
+)
+
+exec_user(
+    name = "exec_user",
+    tool = ":leaf",
+)

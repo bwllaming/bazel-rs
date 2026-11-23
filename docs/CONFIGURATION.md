@@ -152,6 +152,10 @@ replayed by `tests/value_options.rs`; `enable_runfiles` also by
 | `enable_runfiles` | TriState (TriStateConverter: `auto` or a boolean spelling, stored as `YES`/`NO`/`AUTO`; boolean syntax), `auto` | yes (also read by the runfiles trees, crate::runfiles_tree, and `ctx.configuration.runfiles_enabled()`) | propagated | `CoreOptions.java:954-961`, `Converters.java:133-156`, `:237` |
 | `collect_code_coverage` | Bool, `false` (the typed field a Starlark transition sets, N47) | yes (docs/COVERAGE.md) | default | `CoreOptions.java:566-578`, `:231-287` |
 | `save_temps`, `start_end_lib`, `interface_shared_objects`, `process_headers_in_dependencies` | Bool, `false`/`true`/`true`/`false` (table-driven CppOptions read by the cpp fragment; Starlark transitions read and write them; corpus-parity5, tests/fixtures/corpus_parity5) | yes | `start_end_lib` propagated, the others default | `CppOptions.java:152-237, 552-561`, `builtin_exec_platforms.bzl:305` |
+| `fdo_optimize`, `fdo_instrument`, `cs_fdo_instrument`, `cs_fdo_absolute_path`, `propeller_optimize_absolute_cc_profile`, `propeller_optimize_absolute_ld_profile` | nullable String, `null` (`ctx.fragments.cpp.fdo_path()` — `--fdo_optimize` unless a `//` label —, `cs_fdo_path()`, `propeller_optimize_absolute_*_profile()`, `fdo_instrument()`, `cs_fdo_instrument()`, normalized paths; OSS corpus B32, tests/fixtures/corpus_rulescc) | yes, except `fdo_instrument`/`cs_fdo_instrument` (their implicit `--copt=-Wno-error` is not modelled) | default | `CppOptions.java:349-405, 473-489`, `CppConfiguration.java:180-278` |
+| `fdo_profile`, `xbinary_fdo` (EmptyToNullLabelConverter), `cs_fdo_profile`, `fdo_prefetch_hints`, `propeller_optimize`, `memprof_profile`, `custom_malloc` (LabelConverter) | nullable Label, `null` (the CppConfiguration fields of late-bound `configuration_field` defaults, crate::late_bound; `ctx.fragments.cpp.custom_malloc`, `_fdo_prefetch_hints_label`; B32) | yes | default | `CppOptions.java:311-320, 407-526`, `CppConfiguration.java:422-430, 683-738` |
+| `grte_top`, `host_grte_top` | LibcTopLabelConverter (`default` is null, `Not a label` unless `//`, the package's `everything`; a Label a transition writes is stored as is), `null` (`libc_top` configuration field, `ctx.fragments.cpp.grte_top()`; B32) | yes | `grte_top` set to `--host_grte_top`, which propagates | `CppOptions.java:77-100, 669-689`, `builtin_exec_platforms.bzl:300, 336` |
+| `experimental_cpp_modules` | Bool, `false` (`ctx.fragments.cpp.experimental_cpp_modules()`; B32; like every `--experimental_*` option a `transition()` may not declare it) | yes | propagated | `CppOptions.java:981-996`, `builtin_exec_platforms.bzl:304` |
 | `apple_platform_type` | PlatformTypeConverter (ASCII lower case), `macos` | no (Apple rule transitions and `ctx.fragments.apple` are not modelled for other platform types) | set to `macos` | `rules/apple/AppleCommandLineOptions.java:194-203, 394-406`, `:185, 190` |
 
 They unblock protobuf 33.4's `bazel/private:native_bool_flag` settings
@@ -978,11 +982,21 @@ there, while `--features`/`--host_features` are accepted and ignored):
   `ctx.fragments.cpp.build_test_dwp()`, `legacy_whole_archive()`,
   `incompatible_remove_legacy_whole_archive()`. rules_cc's own tests set
   these and `--dynamic_mode` through transitions (OSS corpus B32; capture
-  tests/fixtures/corpus_parity4 `cpp_options_*`). The FDO options
-  (`--fdo_optimize`, `--fdo_profile`, `--cs_fdo_profile`, ...),
-  `--custom_malloc` (a late-bound dependency) and
-  `--instrumentation_filter` stay unmodelled: a transition on them fails
-  explicitly.
+  tests/fixtures/corpus_parity4 `cpp_options_*`). The FDO, Propeller,
+  memprof, `--custom_malloc`, `--grte_top` and `--experimental_cpp_modules`
+  options are table-driven value options (above; B32), the ThinLTO lists
+  `--ltobackendopt`, `--ltoindexopt` (List<String>) and
+  `--per_file_ltobackendopt` (PerLabelOptions) flag lists like `--copt`/
+  `--per_file_copt` (not propagated to exec; `ctx.fragments.cpp
+  .lto_backend_options`, `lto_index_options()`,
+  `cc_internal.collect_per_file_lto_backend_opts`). The late-bound
+  `configuration_field("cpp", ...)` defaults take their value in each
+  target's configuration (CppConfiguration.java:308-319, 422-430,
+  632-759: `fdo_optimize` only for a `//` label, `propeller_optimize` null
+  under `--fdo_instrument`/`--cs_fdo_instrument`, `xbinary_fdo` null under
+  `--fdo_optimize`/`--fdo_instrument`/`--fdo_profile`/coverage, `zipper`
+  `@bazel_tools//tools/zip:unzip_fdo` whenever a profile is set;
+  tests/fixtures/corpus_rulescc).
 - `--javacopt`/`--host_javacopt`: `ctx.fragments.java.default_javac_flags`
   (tokenized) and `default_javac_flags_depset` (one ShellUtils-escaped
   string; JavaHelper.detokenizeJavaOptions); the exec transition sets

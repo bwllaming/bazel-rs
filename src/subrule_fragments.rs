@@ -8,7 +8,6 @@ use anyhow::bail;
 use starlark::environment::{GlobalsBuilder, Methods, MethodsBuilder, Module};
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
-use starlark::values::none::NoneType;
 use starlark::values::{
     FrozenHeap, FrozenHeapRef, FrozenValue, Heap, NoSerialize, ProvidesStaticType,
     StarlarkPagablePanic, StarlarkValue, Trace, Value, ValueLike, starlark_value,
@@ -332,6 +331,14 @@ pub(crate) fn structure_builtins(builder: &mut GlobalsBuilder) {
 
 /// CcModule.checkPrivateStarlarkificationAllowlist (rules/cpp/CcModule.java:189-192):
 /// BuiltinRestriction.failIfCalledOutsideDefaultAllowlist for the calling `.bzl`.
+/// A nullable Label field (canonical label text) as a Label or None.
+fn optional_label<'v>(heap: Heap<'v>, label: Option<&str>) -> anyhow::Result<Value<'v>> {
+    match label {
+        Some(label) => crate::starlark_types::alloc_label(heap, label),
+        None => Ok(Value::new_none()),
+    }
+}
+
 pub(crate) fn private_api(eval: &Evaluator<'_, '_, '_>) -> starlark::Result<()> {
     crate::cc_common::check_private_api(eval, 0, &allowlist())
 }
@@ -402,9 +409,11 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
     }
     /// CppConfiguration.java:683-694; --fdo_prefetch_hints default null.
     #[starlark(attribute)]
-    fn _fdo_prefetch_hints_label<'v>(this: Value<'v>) -> anyhow::Result<NoneType> {
-        receiver(this)?;
-        Ok(NoneType)
+    fn _fdo_prefetch_hints_label<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        optional_label(
+            heap,
+            receiver(this)?.view.fdo_prefetch_hints_label.as_deref(),
+        )
     }
     /// CppConfiguration.java:305, 809-812; --apple_generate_dsym default false.
     #[starlark(attribute)]
@@ -447,25 +456,30 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
     fn cs_fdo_instrument<'v>(
         this: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
-    ) -> starlark::Result<NoneType> {
-        receiver(this).map_err(starlark::Error::new_other)?;
+    ) -> starlark::Result<Value<'v>> {
+        let cpp = receiver(this).map_err(starlark::Error::new_other)?;
         private_api(eval)?;
-        Ok(NoneType)
+        Ok(match &cpp.view.cs_fdo_instrument {
+            Some(text) => eval.heap().alloc(text.as_str()),
+            None => Value::new_none(),
+        })
     }
     /// CppConfiguration.java:648-657; --cs_fdo_absolute_path default null.
     fn cs_fdo_path<'v>(
         this: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
-    ) -> starlark::Result<NoneType> {
-        receiver(this).map_err(starlark::Error::new_other)?;
+    ) -> starlark::Result<Value<'v>> {
+        let cpp = receiver(this).map_err(starlark::Error::new_other)?;
         private_api(eval)?;
-        Ok(NoneType)
+        Ok(match &cpp.view.cs_fdo_path {
+            Some(text) => eval.heap().alloc(text.as_str()),
+            None => Value::new_none(),
+        })
     }
     /// CppConfiguration.java:424-430; --custom_malloc default null.
     #[starlark(attribute)]
-    fn custom_malloc<'v>(this: Value<'v>) -> anyhow::Result<NoneType> {
-        receiver(this)?;
-        Ok(NoneType)
+    fn custom_malloc<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        optional_label(heap, receiver(this)?.view.custom_malloc.as_deref())
     }
     /// CppConfiguration.java:293, 529-531; --cxxopt.
     #[starlark(attribute)]
@@ -505,9 +519,9 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
         this: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<bool> {
-        receiver(this).map_err(starlark::Error::new_other)?;
+        let cpp = receiver(this).map_err(starlark::Error::new_other)?;
         private_api(eval)?;
-        Ok(false)
+        Ok(cpp.view.experimental_cpp_modules)
     }
     /// CppConfiguration.java:474-476, 946-951; default true.
     fn experimental_link_static_libraries_once<'v>(
@@ -522,19 +536,25 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
     fn fdo_instrument<'v>(
         this: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
-    ) -> starlark::Result<NoneType> {
-        receiver(this).map_err(starlark::Error::new_other)?;
+    ) -> starlark::Result<Value<'v>> {
+        let cpp = receiver(this).map_err(starlark::Error::new_other)?;
         expanded_api(eval, "fdo_instrument")?;
-        Ok(NoneType)
+        Ok(match &cpp.view.fdo_instrument {
+            Some(text) => eval.heap().alloc(text.as_str()),
+            None => Value::new_none(),
+        })
     }
     /// CppConfiguration.java:621-630; --fdo_optimize default null.
     fn fdo_path<'v>(
         this: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
-    ) -> starlark::Result<NoneType> {
-        receiver(this).map_err(starlark::Error::new_other)?;
+    ) -> starlark::Result<Value<'v>> {
+        let cpp = receiver(this).map_err(starlark::Error::new_other)?;
         private_api(eval)?;
-        Ok(NoneType)
+        Ok(match &cpp.view.fdo_path {
+            Some(text) => eval.heap().alloc(text.as_str()),
+            None => Value::new_none(),
+        })
     }
     /// CppConfiguration.java:438-440, 939-944; --fission.
     fn fission_active_for_current_compilation_mode<'v>(
@@ -564,10 +584,11 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
     fn grte_top<'v>(
         this: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
-    ) -> starlark::Result<NoneType> {
-        receiver(this).map_err(starlark::Error::new_other)?;
+    ) -> starlark::Result<Value<'v>> {
+        let cpp = receiver(this).map_err(starlark::Error::new_other)?;
         private_api(eval)?;
-        Ok(NoneType)
+        optional_label(eval.heap(), cpp.view.libc_top_label.as_deref())
+            .map_err(starlark::Error::new_other)
     }
     /// CppConfiguration.java:823-831; include scanning options default false.
     fn include_scanning<'v>(
@@ -621,18 +642,17 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
     }
     /// CppConfiguration.java:297, 340-343; --ltobackendopt.
     #[starlark(attribute)]
-    fn lto_backend_options<'v>(this: Value<'v>) -> anyhow::Result<Value<'v>> {
-        receiver(this)?;
-        Ok(empty_list())
+    fn lto_backend_options<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        frozen_strings(heap, &receiver(this)?.view.lto_backend_options)
     }
     /// CppConfiguration.java:296, 332-337; --ltoindexopt.
     fn lto_index_options<'v>(
         this: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
-        receiver(this).map_err(starlark::Error::new_other)?;
+        let cpp = receiver(this).map_err(starlark::Error::new_other)?;
         private_api(eval)?;
-        Ok(empty_list())
+        frozen_strings(eval.heap(), &cpp.view.lto_index_options).map_err(starlark::Error::new_other)
     }
     /// CppConfiguration.java:345-352; --minimum_os_version default null.
     fn minimum_os_version<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
@@ -690,19 +710,25 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
     fn propeller_optimize_absolute_cc_profile<'v>(
         this: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
-    ) -> starlark::Result<NoneType> {
-        receiver(this).map_err(starlark::Error::new_other)?;
+    ) -> starlark::Result<Value<'v>> {
+        let cpp = receiver(this).map_err(starlark::Error::new_other)?;
         private_api(eval)?;
-        Ok(NoneType)
+        Ok(match &cpp.view.propeller_optimize_absolute_cc_profile {
+            Some(text) => eval.heap().alloc(text.as_str()),
+            None => Value::new_none(),
+        })
     }
     /// CppConfiguration.java:671-681.
     fn propeller_optimize_absolute_ld_profile<'v>(
         this: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
-    ) -> starlark::Result<NoneType> {
-        receiver(this).map_err(starlark::Error::new_other)?;
+    ) -> starlark::Result<Value<'v>> {
+        let cpp = receiver(this).map_err(starlark::Error::new_other)?;
         private_api(eval)?;
-        Ok(NoneType)
+        Ok(match &cpp.view.propeller_optimize_absolute_ld_profile {
+            Some(text) => eval.heap().alloc(text.as_str()),
+            None => Value::new_none(),
+        })
     }
     /// CppConfiguration.java:963-967; --proto_profile default true.
     fn proto_profile<'v>(

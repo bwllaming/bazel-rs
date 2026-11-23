@@ -71,6 +71,22 @@ _THIN_LTO = feature(
     ],
 )
 
+_AUTOFDO = feature(
+    name = "autofdo",
+    provides = ["profile"],
+    flag_sets = [
+        flag_set(
+            actions = [ACTION_NAMES.c_compile, ACTION_NAMES.cpp_compile, ACTION_NAMES.lto_backend],
+            flag_groups = [
+                flag_group(
+                    expand_if_available = "fdo_profile_path",
+                    flags = ["-fauto-profile=%{fdo_profile_path}"],
+                ),
+            ],
+        ),
+    ],
+)
+
 def _impl(ctx):
     return cc_common.create_cc_toolchain_config_info(
         ctx = ctx,
@@ -84,6 +100,7 @@ def _impl(ctx):
         abi_libc_version = "unknown",
         features = [
             _THIN_LTO,
+            _AUTOFDO,
             feature(name = "supports_start_end_lib", enabled = True),
             feature(name = "supports_pic", enabled = True),
             feature(name = "thin_lto_linkstatic_tests_use_shared_nonlto_backends"),

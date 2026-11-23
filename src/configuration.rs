@@ -60,6 +60,15 @@ pub enum OptionKind {
     /// TriState constant (`YES`, `NO`, `AUTO`: its `toString`); boolean
     /// option syntax (OptionDefinition.usesBooleanValueSyntax, :160-166).
     TriState,
+    /// CoreOptionConverters.LabelConverter (build/lib/analysis/config/CoreOptionConverters.java:129-140)
+    /// of a `Label` field with `defaultValue = "null"`: the default is null
+    /// ([`OptionValue::Null`]); with `empty_is_null`
+    /// (EmptyToNullLabelConverter, :182-194) an empty input is null too.
+    NullableLabel { empty_is_null: bool },
+    /// CppOptions.LibcTopLabelConverter (rules/cpp/CppOptions.java:77-100),
+    /// default null: `default` is null, an input not starting with `//` is
+    /// `Not a label`, else the label's package with the name `everything`.
+    LibcTopLabel,
     /// CppOptions.FissionOptionConverter (rules/cpp/CppOptions.java:39-58):
     /// `yes` (every compilation mode), `no` (none) or a comma-separated set
     /// of compilation modes, stored as the List<CompilationMode>'s Java
@@ -996,6 +1005,306 @@ pub const VALUE_OPTIONS: &[ValueOption] = &[
         exec: ExecValue::Default,
         exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
     },
+    // CppOptions.fdoInstrumentForBuild (`--fdo_instrument`): `cpp.fdo_instrument()`
+    // (CppConfiguration.java:615-618), the `fdo_instrument` feature; its
+    // implicit `--copt=-Wno-error` keeps it off the command line (B32).
+    ValueOption {
+        option: OptionDef {
+            name: "fdo_instrument",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::NullableString,
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:349-359",
+            deprecation: None,
+        },
+        command_line: false,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
+    // CppOptions.fdoOptimizeForBuild (`--fdo_optimize`): a `//` label is the
+    // `fdo_optimize` configuration field, an absolute path `cpp.fdo_path()`
+    // (CppConfiguration.java:180-209; B32).
+    ValueOption {
+        option: OptionDef {
+            name: "fdo_optimize",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::NullableString,
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:361-374",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
+    // CppOptions.csFdoInstrumentForBuild (`--cs_fdo_instrument`), implicit
+    // `--copt=-Wno-error` (B32).
+    ValueOption {
+        option: OptionDef {
+            name: "cs_fdo_instrument",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::NullableString,
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:384-394",
+            deprecation: None,
+        },
+        command_line: false,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
+    // CppOptions.csFdoAbsolutePathForBuild (`--cs_fdo_absolute_path`):
+    // `cpp.cs_fdo_path()` (CppConfiguration.java:211-230; B32).
+    ValueOption {
+        option: OptionDef {
+            name: "cs_fdo_absolute_path",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::NullableString,
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:396-405",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
+    // CppOptions.xfdoProfileLabel (`--xbinary_fdo`): the `xbinary_fdo`
+    // configuration field (CppConfiguration.java:719-730; B32).
+    ValueOption {
+        option: OptionDef {
+            name: "xbinary_fdo",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::NullableLabel {
+                empty_is_null: true,
+            },
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:407-418",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
+    // CppOptions.fdoPrefetchHintsLabel (`--fdo_prefetch_hints`): the
+    // `fdo_prefetch_hints` configuration field (CppConfiguration.java:683-694; B32).
+    ValueOption {
+        option: OptionDef {
+            name: "fdo_prefetch_hints",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::NullableLabel {
+                empty_is_null: false,
+            },
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:420-433",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
+    // CppOptions.fdoProfileLabel (`--fdo_profile`, CppConfiguration.java:696-699; B32).
+    ValueOption {
+        option: OptionDef {
+            name: "fdo_profile",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::NullableLabel {
+                empty_is_null: true,
+            },
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:435-443",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
+    // CppOptions.csFdoProfileLabel (`--cs_fdo_profile`, CppConfiguration.java:701-706; B32).
+    ValueOption {
+        option: OptionDef {
+            name: "cs_fdo_profile",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::NullableLabel {
+                empty_is_null: false,
+            },
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:445-455",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
+    // CppOptions.propellerOptimizeAbsoluteCCProfile, an absolute path
+    // (CppConfiguration.java:232-254; B32).
+    ValueOption {
+        option: OptionDef {
+            name: "propeller_optimize_absolute_cc_profile",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::NullableString,
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:473-480",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
+    // CppOptions.propellerOptimizeAbsoluteLdProfile (CppConfiguration.java:256-278; B32).
+    ValueOption {
+        option: OptionDef {
+            name: "propeller_optimize_absolute_ld_profile",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::NullableString,
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:482-489",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
+    // CppOptions.propellerOptimizeLabel (`--propeller_optimize`, CppConfiguration.java:708-717; B32).
+    ValueOption {
+        option: OptionDef {
+            name: "propeller_optimize",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::NullableLabel {
+                empty_is_null: false,
+            },
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:491-512",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
+    // CppOptions.memprofProfileLabel (`--memprof_profile`, CppConfiguration.java:732-738; B32).
+    ValueOption {
+        option: OptionDef {
+            name: "memprof_profile",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::NullableLabel {
+                empty_is_null: false,
+            },
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:518-526",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
+    // CppOptions.customMalloc (`--custom_malloc`): the `custom_malloc`
+    // configuration field (CppConfiguration.java:422-430), cc_binary's
+    // late-bound `_default_malloc` (B32).
+    ValueOption {
+        option: OptionDef {
+            name: "custom_malloc",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::NullableLabel {
+                empty_is_null: false,
+            },
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:311-320",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
+    // CppOptions.libcTopLabel (`--grte_top`): the `libc_top` configuration
+    // field (CppConfiguration.java:753-759); the exec transition sets it to
+    // `--host_grte_top` (B32).
+    ValueOption {
+        option: OptionDef {
+            name: "grte_top",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::LibcTopLabel,
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:669-678",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:336 (set to --host_grte_top, crate::config_registry)",
+    },
+    // CppOptions.hostLibcTopLabel (`--host_grte_top`), propagated (B32).
+    ValueOption {
+        option: OptionDef {
+            name: "host_grte_top",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::LibcTopLabel,
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:680-689",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:300",
+    },
+    // CppOptions.experimentalCppModules (`--experimental_cpp_modules`):
+    // `cpp.experimental_cpp_modules()` (CppConfiguration.java:876-880; B32).
+    ValueOption {
+        option: OptionDef {
+            name: "experimental_cpp_modules",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "false",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:981-996",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:304",
+    },
 ];
 
 /// The table-driven option named `name` (its canonical name only).
@@ -1008,7 +1317,13 @@ pub fn value_option(name: &str) -> Option<&'static ValueOption> {
 impl ValueOption {
     /// The converted default (`defaultValue` through the converter).
     pub fn default_value(&self) -> OptionValue {
-        if matches!(self.option.kind, OptionKind::NullableString) && self.option.default == "null" {
+        if matches!(
+            self.option.kind,
+            OptionKind::NullableString
+                | OptionKind::NullableLabel { .. }
+                | OptionKind::LibcTopLabel
+        ) && self.option.default == "null"
+        {
             return OptionValue::Null;
         }
         convert(&self.option, self.option.default, &|_| {
@@ -1303,6 +1618,27 @@ pub fn convert(
         OptionKind::DottedVersion => validate_dotted_version(input)
             .map(|()| OptionValue::DottedVersion(Some(input.to_owned()))),
         OptionKind::OptionsLabel => label(input).map(OptionValue::Label),
+        OptionKind::NullableLabel { empty_is_null } => {
+            if empty_is_null && input.is_empty() {
+                Ok(OptionValue::Null)
+            } else {
+                label(input).map(OptionValue::Label)
+            }
+        }
+        OptionKind::LibcTopLabel => {
+            if input == "default" {
+                Ok(OptionValue::Null)
+            } else if !input.starts_with("//") {
+                Err("Not a label".to_owned())
+            } else {
+                label(input).map(|label| {
+                    OptionValue::Label(Label {
+                        name: "everything".into(),
+                        ..label
+                    })
+                })
+            }
+        }
         OptionKind::CompilationModeSet => {
             let modes: Vec<&'static str> = match input {
                 "yes" => COMPILATION_MODES.to_vec(),
@@ -1519,6 +1855,22 @@ pub struct NativeOptions {
     /// [`Self::per_file_copts`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub host_per_file_copts: Vec<String>,
+    /// CppOptions.ltoindexoptList (`--ltoindexopt`, CppOptions.java:284-291):
+    /// `ctx.fragments.cpp.lto_index_options()` (CppConfiguration.java:332-337).
+    /// Not propagated to exec configurations. Omitted from the identity
+    /// when empty (B32).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ltoindexopts: Vec<String>,
+    /// CppOptions.ltobackendoptList (`--ltobackendopt`, CppOptions.java:293-300):
+    /// `ctx.fragments.cpp.lto_backend_options` (CppConfiguration.java:340-343);
+    /// see [`Self::ltoindexopts`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ltobackendopts: Vec<String>,
+    /// CppOptions.perFileLtoBackendOpts (`--per_file_ltobackendopt`,
+    /// CppOptions.java:584-600), `filter@options` like
+    /// [`Self::per_file_copts`]: `cc_internal.collect_per_file_lto_backend_opts`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub per_file_ltobackendopts: Vec<String>,
     /// CppOptions.hostLinkoptList (`--host_linkopt`, CppOptions.java:659-667);
     /// see [`Self::host_copts`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1850,6 +2202,9 @@ impl Default for NativeOptions {
             host_cxxopts: Vec::new(),
             host_conlyopts: Vec::new(),
             host_per_file_copts: Vec::new(),
+            ltoindexopts: Vec::new(),
+            ltobackendopts: Vec::new(),
+            per_file_ltobackendopts: Vec::new(),
             host_linkopts: Vec::new(),
             features: Vec::new(),
             host_features: Vec::new(),
@@ -1886,6 +2241,8 @@ impl NativeOptions {
             "host_cxxopt" => &self.host_cxxopts,
             "host_conlyopt" => &self.host_conlyopts,
             "host_linkopt" => &self.host_linkopts,
+            "ltoindexopt" => &self.ltoindexopts,
+            "ltobackendopt" => &self.ltobackendopts,
             "features" => &self.features,
             "host_features" => &self.host_features,
             "javacopt" => &self.javacopts,
@@ -1989,6 +2346,22 @@ impl NativeOptions {
         }
     }
 
+    /// A nullable String value option (`None` for null).
+    pub fn nullable_string(&self, name: &str) -> Option<String> {
+        match self.raw_value(name) {
+            Some(OptionValue::String(text)) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// A nullable Label value option (`None` for null).
+    pub fn nullable_label(&self, name: &str) -> Option<Label> {
+        match self.raw_value(name) {
+            Some(OptionValue::Label(label)) => Some(label),
+            _ => None,
+        }
+    }
+
     /// FieldOptionDefinition.getRawValue, unlike the defaulting config_setting
     /// view above. Only enable_runfiles admits a null transition value here.
     pub fn raw_value(&self, name: &str) -> Option<OptionValue> {
@@ -2016,6 +2389,13 @@ impl NativeOptions {
                     exec.set_value(option, value);
                 }
             }
+        }
+        // CppOptions' exec `func` (builtin_exec_platforms.bzl:336):
+        // `--grte_top` = `--host_grte_top`.
+        if let (Some(grte_top), Some(host)) =
+            (value_option("grte_top"), self.values.get("host_grte_top"))
+        {
+            exec.set_value(grte_top, host.clone());
         }
         exec.values
     }
@@ -2271,7 +2651,7 @@ pub struct CommandLineOptions {
 /// for `per_file_copt`) and whether `query` registers them (only
 /// CoreOptions, QueryCommand.java:59-67): CppOptions.java:236-282, 563-582,
 /// 602-667; CoreOptions.java:831-856; JavaOptions.java:50-69.
-const FLAG_LIST_OPTIONS: [(&str, bool); 16] = [
+const FLAG_LIST_OPTIONS: [(&str, bool); 19] = [
     ("copt", false),
     ("cxxopt", false),
     ("conlyopt", false),
@@ -2282,6 +2662,9 @@ const FLAG_LIST_OPTIONS: [(&str, bool); 16] = [
     ("host_conlyopt", false),
     ("host_linkopt", false),
     ("host_per_file_copt", false),
+    ("ltoindexopt", false),
+    ("ltobackendopt", false),
+    ("per_file_ltobackendopt", false),
     ("features", true),
     ("host_features", true),
     ("javacopt", false),
@@ -2676,7 +3059,7 @@ impl CommandLineOptions {
                         (value.to_owned(), format!("{arg} {value}"), true)
                     }
                 };
-                if option.ends_with("per_file_copt") {
+                if option.ends_with("per_file_copt") || *option == "per_file_ltobackendopt" {
                     // PerLabelOptionsConverter: the filter before the first
                     // `@` must be a valid RegexFilter.
                     let filter = value.split_once('@').map_or(value.as_str(), |(f, _)| f);
@@ -2743,10 +3126,21 @@ impl CommandLineOptions {
         // Non-label values convert in the first parsing round already.
         if !matches!(
             option.kind,
-            OptionKind::LabelList | OptionKind::Label | OptionKind::OptionsLabel
+            OptionKind::LabelList
+                | OptionKind::Label
+                | OptionKind::OptionsLabel
+                | OptionKind::NullableLabel { .. }
+                | OptionKind::LibcTopLabel
         ) {
             convert(option, &value, &|_| unreachable!("no labels"))
                 .map_err(|error| format!("While parsing option {form}: {error}"))?;
+        }
+        // LibcTopLabelConverter's own check precedes the label conversion.
+        if matches!(option.kind, OptionKind::LibcTopLabel)
+            && value != "default"
+            && !value.starts_with("//")
+        {
+            return Err(format!("While parsing option {form}: Not a label"));
         }
         self.entries.push((option, form, value));
         if let Some(warning) = option.deprecation {
@@ -2885,6 +3279,9 @@ impl CommandLineOptions {
                 "host_conlyopt" => &mut native.host_conlyopts,
                 "host_linkopt" => &mut native.host_linkopts,
                 "host_per_file_copt" => &mut native.host_per_file_copts,
+                "ltoindexopt" => &mut native.ltoindexopts,
+                "ltobackendopt" => &mut native.ltobackendopts,
+                "per_file_ltobackendopt" => &mut native.per_file_ltobackendopts,
                 "features" => &mut native.features,
                 "host_features" => &mut native.host_features,
                 "javacopt" => &mut native.javacopts,
@@ -3846,7 +4243,23 @@ mod tests {
                 "save_temps",
                 "start_end_lib",
                 "interface_shared_objects",
-                "process_headers_in_dependencies"
+                "process_headers_in_dependencies",
+                "fdo_instrument",
+                "fdo_optimize",
+                "cs_fdo_instrument",
+                "cs_fdo_absolute_path",
+                "xbinary_fdo",
+                "fdo_prefetch_hints",
+                "fdo_profile",
+                "cs_fdo_profile",
+                "propeller_optimize_absolute_cc_profile",
+                "propeller_optimize_absolute_ld_profile",
+                "propeller_optimize",
+                "memprof_profile",
+                "custom_malloc",
+                "grte_top",
+                "host_grte_top",
+                "experimental_cpp_modules"
             ]
         );
         let defaults = NativeOptions::default();

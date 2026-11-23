@@ -639,6 +639,67 @@ fn thin_lto_actions_match_genuine() {
     );
 }
 
+/// OSS corpus B32: AutoFDO over the `lto` toolchain (its `autofdo`
+/// feature) with `-c opt` and `--fdo_optimize` as a label (the
+/// `fdo_optimize` configuration field: the profile symlinked below the
+/// toolchain's `fdo/`) and as an absolute path (`cpp.fdo_path()`:
+/// `cc_internal.absolute_symlink`, SymlinkAction.toAbsolutePath with its
+/// unexpanded `%{input}` progress message and key). The genuine files are
+/// genuine 9.3.1's `aquery -c opt --fdo_optimize=//lto:profile.afdo` and
+/// `--fdo_optimize=/abs/dir/profile.afdo` (`--extra_toolchains=//lto:tc
+/// "mnemonic('Symlink|CppCompile|CcLtoBackendCompile', //lto:bin +
+/// //lto:cc_tc)"`) of the same package over BCR rules_cc 0.2.17.
+#[test]
+fn fdo_profiles_match_genuine() {
+    let ws = Workspace::new();
+    let blocks = |text: &str| -> Vec<String> {
+        let mut blocks: Vec<String> = text
+            .split("\n\n")
+            .filter(|block| !block.trim().is_empty())
+            .map(|block| {
+                block
+                    .lines()
+                    .filter(|line| {
+                        !line.starts_with("  Execution platform: ")
+                            && !line.starts_with("# Configuration: ")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .collect();
+        blocks.sort();
+        blocks
+    };
+    for (flag, genuine) in [
+        (
+            "--fdo_optimize=//lto:profile.afdo",
+            "genuine_aquery_fdo_label.txt",
+        ),
+        (
+            "--fdo_optimize=/abs/dir/profile.afdo",
+            "genuine_aquery_fdo_absolute.txt",
+        ),
+    ] {
+        let output = ws.aquery(
+            "cache",
+            &[
+                "-c",
+                "opt",
+                flag,
+                "--extra_toolchains=//lto:tc",
+                "mnemonic('Symlink|CppCompile|CcLtoBackendCompile', //lto:bin + //lto:cc_tc)",
+            ],
+        );
+        assert!(output.status.success(), "{flag}: {}", stderr(&output));
+        let expected = fs::read_to_string(fixture().join(genuine)).unwrap();
+        assert_eq!(
+            blocks(&String::from_utf8_lossy(&output.stdout)),
+            blocks(&expected),
+            "{flag}"
+        );
+    }
+}
+
 /// OSS corpus B13e: `cc_import` of `mylib.dll`/`mylib.lib` on a Linux target
 /// analyses (Link.SHARED_LIBRARY_FILETYPES, rules/cpp/Link.java:39-44, has
 /// .dll and the interface types .ifso/.tbd/.lib/.dll.a whatever the

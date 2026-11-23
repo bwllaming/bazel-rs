@@ -78,7 +78,12 @@ is an `alias` with a non-configurable `actual` in a package loaded by then
 B35), and the attribute labels of a Starlark rule (not an analysis test)
 that such an attribute names in the test's own package (a rule under test
 handing `ctx.attr.dep.actions` on in a provider, protobuf's
-`attach_upb_aspect`, B33). The engine decides that set from the
+`attach_upb_aspect`, B33). Every target analyzed in an analysis test's own
+configuration (`evaluating for analysis test`: the test's
+`analysis_test_transition` changed the configuration) keeps its views
+too, so a testing aspect that propagates (`attr_aspects = ["*"]`, rules_cc's
+`_propagating_testing_aspect`) reads `target.actions` of the subject's
+dependencies (B32). The engine decides that set from the
 requested labels and their packages before the analysis
 (`Engine::inspected_targets`), so it never depends on the analysis order.
 A snapshot holds no providers, and an incremental re-analysis requests
@@ -93,7 +98,9 @@ that key, and `target.actions` fails there as an unknown field. That is a
 deliberate, explicit gap: genuine answers the actions for any rule target.
 It is reached only by a rule that is not an analysis test reading
 `dep.actions`, or by an analysis test that is not requested itself (only a
-dependency of the request). skylib's and rules_testing's aspects read the
+dependency of the request), or by a propagating testing aspect past the
+test's configuration (rules_cc's `test_propeller_host_builds`: an exec
+tool's dependencies). skylib's and rules_testing's aspects read the
 direct attribute dependencies of the requested tests, which are kept.
 
 | field | value |

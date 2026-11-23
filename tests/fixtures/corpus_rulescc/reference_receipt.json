@@ -1,0 +1,213 @@
+{
+ "bazel": "9.3.1",
+ "cases": {
+  "exec_grte_top": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--host_grte_top=//fdo:libc",
+    "--grte_top=//fdo:prof"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/fdo/leaf.txt": "bazel-out/k8-fastbuild/bin/fdo/leaf.txt\n[]\ncs_fdo_profile=None\nfdo_optimize=None\nfdo_profile=None\nlibc_top=@@//fdo:everything\ncustom_malloc=None\nmemprof_profile=None\nfdo_prefetch_hints=None\npropeller_optimize=None\nxbinary_fdo=None\n",
+    "p-opt-exec/bin/fdo/leaf.txt": "bazel-out/p-opt-exec/bin/fdo/leaf.txt\n[]\ncs_fdo_profile=None\nfdo_optimize=None\nfdo_profile=None\nlibc_top=@@//fdo:everything\ncustom_malloc=None\nmemprof_profile=None\nfdo_prefetch_hints=None\npropeller_optimize=None\nxbinary_fdo=None\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//fdo:exec_user",
+    "//fdo:leaf"
+   ],
+   "workspace": "workspace"
+  },
+  "fdo_absolute_paths": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild-ST-08a4d0829d17/bin/fdo/leaf.txt": "bazel-out/k8-fastbuild-ST-08a4d0829d17/bin/fdo/leaf.txt\n[\"abs_fdo\"]\ncs_fdo_profile=None\nfdo_optimize=None\nfdo_profile=None\nlibc_top=None\ncustom_malloc=None\nmemprof_profile=None\nfdo_prefetch_hints=None\npropeller_optimize=None\nxbinary_fdo=None\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//fdo:paths"
+   ],
+   "workspace": "workspace"
+  },
+  "fdo_label_options": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild-ST-89a52d59f29c/bin/fdo/leaf.txt": "bazel-out/k8-fastbuild-ST-89a52d59f29c/bin/fdo/leaf.txt\n[\"malloc\"]\ncs_fdo_profile=@@//fdo:cs\nfdo_optimize=None\nfdo_profile=@@//fdo:prof\nlibc_top=@@//fdo:everything\ncustom_malloc=@@//fdo:malloc\nmemprof_profile=@@//fdo:mem\nfdo_prefetch_hints=@@//fdo:hints\npropeller_optimize=@@//fdo:prop\nxbinary_fdo=None\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//fdo:labels"
+   ],
+   "workspace": "workspace"
+  },
+  "fdo_label_values": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: <WS>/fdo/BUILD.bazel:47:5: in :fdo_optimize attribute of leaf rule //fdo:leaf: source file '//fdo:profile.afdo' is misplaced here (expected no files)",
+     "pattern": "misplaced here"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//fdo:label_values"
+   ],
+   "workspace": "workspace"
+  },
+  "grte_top_not_a_label": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 2,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--grte_top=fdo:libc"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: While parsing option --grte_top=fdo:libc: Not a label",
+     "pattern": "grte_top"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//fdo:leaf"
+   ],
+   "workspace": "workspace"
+  },
+  "lto_option_lists": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild-ST-2c8c3eb05be9/bin/fdo/leaf.txt": "bazel-out/k8-fastbuild-ST-2c8c3eb05be9/bin/fdo/leaf.txt\n[]\ncs_fdo_profile=None\nfdo_optimize=None\nfdo_profile=None\nlibc_top=None\ncustom_malloc=None\nmemprof_profile=None\nfdo_prefetch_hints=None\npropeller_optimize=None\nxbinary_fdo=None\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//fdo:lists"
+   ],
+   "workspace": "workspace"
+  },
+  "options_on_the_command_line": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--custom_malloc=//fdo:malloc",
+    "--grte_top=//fdo:libc",
+    "--fdo_optimize=/abs/profile.afdo",
+    "--ltobackendopt=-q",
+    "--ltoindexopt=-r",
+    "--per_file_ltobackendopt=.*@-z",
+    "--experimental_cpp_modules",
+    "--xbinary_fdo=",
+    "--fdo_prefetch_hints=//fdo:hints"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/fdo/leaf.txt": "bazel-out/k8-fastbuild/bin/fdo/leaf.txt\n[\"malloc\", \"abs_fdo\", \"modules\"]\ncs_fdo_profile=None\nfdo_optimize=None\nfdo_profile=None\nlibc_top=@@//fdo:everything\ncustom_malloc=@@//fdo:malloc\nmemprof_profile=None\nfdo_prefetch_hints=@@//fdo:hints\npropeller_optimize=None\nxbinary_fdo=None\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//fdo:leaf"
+   ],
+   "workspace": "workspace"
+  },
+  "options_read_back": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild-ST-eed5126cc707/bin/fdo/read.txt": "bazel-out/k8-fastbuild-ST-eed5126cc707/bin/fdo/read.txt\n[\"malloc\", \"abs_fdo\"]\ncs_fdo_profile=None\nfdo_optimize=None\nfdo_profile=None\nlibc_top=@@//fdo:everything\ncustom_malloc=@@//fdo:malloc\nmemprof_profile=None\nfdo_prefetch_hints=None\npropeller_optimize=None\nxbinary_fdo=None\n",
+    "k8-fastbuild/bin/fdo/read.txt": "bazel-out/k8-fastbuild/bin/fdo/read.txt\n[]\ncs_fdo_profile=None\nfdo_optimize=None\nfdo_profile=None\nlibc_top=None\ncustom_malloc=None\nmemprof_profile=None\nfdo_prefetch_hints=None\npropeller_optimize=None\nxbinary_fdo=None\n"
+   },
+   "startup": [],
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/fdo/defs.bzl:53:10: READ [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, [], [], []]",
+     "pattern": "READ \\[None, None"
+    },
+    {
+     "line": "DEBUG: <WS>/fdo/defs.bzl:53:10: READ [None, \"/abs/profile.afdo\", None, None, Label(\"//fdo:x.xfdo\"), None, None, None, None, None, None, None, Label(\"//fdo:malloc\"), Label(\"//fdo:everything\"), None, [\"-a\"], [], [\"//fdo:.*@-x\"]]",
+     "pattern": "READ \\[None, \"/abs"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//fdo:read_set",
+    "//fdo:read"
+   ],
+   "workspace": "workspace"
+  },
+  "xbinary_fdo_on_the_command_line": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--xbinary_fdo=//fdo:x.xfdo",
+    "--memprof_profile=//fdo:mem"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: <WS>/fdo/BUILD.bazel:47:5: in :xfdo attribute of leaf rule //fdo:leaf: source file '//fdo:x.xfdo' is misplaced here (expected no files)",
+     "pattern": "misplaced here"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//fdo:leaf"
+   ],
+   "workspace": "workspace"
+  }
+ },
+ "elf_sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c"
+}

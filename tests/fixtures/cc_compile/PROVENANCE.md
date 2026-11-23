@@ -57,3 +57,12 @@ and `bazel_dep(platforms, 1.1.0)` from the BCR (`--batch
 --ignore_all_rc_files`): the indexed backends (LtoBackendAction, its
 progress message and ActionKey), the LTO indexing actions and the library's
 shared non-LTO backend (`shared.nonlto/`, index `/dev/null`).
+The `lto` toolchain also has an `autofdo` feature (`-fauto-profile=%{fdo_profile_path}`
+on compiles and LTO backends) and the package exports an empty
+`profile.afdo`: `genuine_aquery_fdo_label.txt` and
+`genuine_aquery_fdo_absolute.txt` are genuine Bazel 9.3.1's
+`aquery -c opt --fdo_optimize=//lto:profile.afdo` and
+`--fdo_optimize=/abs/dir/profile.afdo` with
+`--extra_toolchains=//lto:tc "mnemonic('Symlink|CppCompile|CcLtoBackendCompile', //lto:bin + //lto:cc_tc)"`
+(the same scratch module; `genuine_aquery_lto.txt` is unchanged by the
+feature, re-captured byte-identical).

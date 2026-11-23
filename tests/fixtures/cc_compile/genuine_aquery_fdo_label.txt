@@ -1,0 +1,119 @@
+action 'Compiling lto/main.c'
+  Mnemonic: CppCompile
+  Target: //lto:bin
+  Configuration: k8-opt
+  Execution platform: @platforms//host:host
+  ActionKey: e3b047e2349831c7c6b23bbf3b937fab4ea007115086ae2245e7cdbdff92b014
+  Inputs: [bazel-out/k8-opt/bin/lto/fdo/cc_tc/profile.afdo, lto/lib.h, lto/main.c]
+  Outputs: [bazel-out/k8-opt/bin/lto/_objs/bin/main.pic.d, bazel-out/k8-opt/bin/lto/_objs/bin/main.pic.indexing.o, bazel-out/k8-opt/bin/lto/_objs/bin/main.pic.o]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /usr/bin/gcc \
+    -MD \
+    -MF \
+    bazel-out/k8-opt/bin/lto/_objs/bin/main.pic.d \
+    '-frandom-seed=bazel-out/k8-opt/bin/lto/_objs/bin/main.pic.o' \
+    -fPIC \
+    '-DBUILD_FDO_TYPE="AFDO"' \
+    -iquote \
+    . \
+    -iquote \
+    bazel-out/k8-opt/bin \
+    -iquote \
+    external/rules_cc+ \
+    -iquote \
+    bazel-out/k8-opt/bin/external/rules_cc+ \
+    -iquote \
+    external/bazel_tools \
+    -iquote \
+    bazel-out/k8-opt/bin/external/bazel_tools \
+    '-flto=thin' \
+    'lto_indexing_bitcode=bazel-out/k8-opt/bin/lto/_objs/bin/main.pic.indexing.o' \
+    '-fauto-profile=bazel-out/k8-opt/bin/lto/fdo/cc_tc/profile.afdo' \
+    -c \
+    lto/main.c \
+    -o \
+    bazel-out/k8-opt/bin/lto/_objs/bin/main.pic.o)
+# Configuration: 51687ad933d099dea254fdbffe6a9291d4bc3e5335881cf11359c63060196ce1
+# Execution platform: @@platforms//host:host
+
+action 'Compiling lto/main.c'
+  Mnemonic: CppCompile
+  Target: //lto:bin
+  Configuration: k8-opt
+  Execution platform: @platforms//host:host
+  ActionKey: 27f8ebb6057de4c6676bb291f013f11938e835340185c519ef20da50ca7e6aeb
+  Inputs: [bazel-out/k8-opt/bin/lto/fdo/cc_tc/profile.afdo, lto/lib.h, lto/main.c]
+  Outputs: [bazel-out/k8-opt/bin/lto/_objs/bin/main.d, bazel-out/k8-opt/bin/lto/_objs/bin/main.indexing.o, bazel-out/k8-opt/bin/lto/_objs/bin/main.o]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /usr/bin/gcc \
+    -MD \
+    -MF \
+    bazel-out/k8-opt/bin/lto/_objs/bin/main.d \
+    '-frandom-seed=bazel-out/k8-opt/bin/lto/_objs/bin/main.o' \
+    '-DBUILD_FDO_TYPE="AFDO"' \
+    -iquote \
+    . \
+    -iquote \
+    bazel-out/k8-opt/bin \
+    -iquote \
+    external/rules_cc+ \
+    -iquote \
+    bazel-out/k8-opt/bin/external/rules_cc+ \
+    -iquote \
+    external/bazel_tools \
+    -iquote \
+    bazel-out/k8-opt/bin/external/bazel_tools \
+    '-flto=thin' \
+    'lto_indexing_bitcode=bazel-out/k8-opt/bin/lto/_objs/bin/main.indexing.o' \
+    '-fauto-profile=bazel-out/k8-opt/bin/lto/fdo/cc_tc/profile.afdo' \
+    -c \
+    lto/main.c \
+    -o \
+    bazel-out/k8-opt/bin/lto/_objs/bin/main.o)
+# Configuration: 51687ad933d099dea254fdbffe6a9291d4bc3e5335881cf11359c63060196ce1
+# Execution platform: @@platforms//host:host
+
+action 'LTO Backend Compile lto/bin.lto/bazel-out/k8-opt/bin/lto/_objs/lib/lib.o'
+  Mnemonic: CcLtoBackendCompile
+  Target: //lto:bin
+  Configuration: k8-opt
+  Execution platform: @platforms//host:host
+  ActionKey: d070780e4b39c01dbbe30831bfc95fc8eb55251b2d804116dd9dafc7b0a78bd0
+  Inputs: [bazel-out/k8-opt/bin/lto/_objs/lib/lib.o, bazel-out/k8-opt/bin/lto/bin.lto/bazel-out/k8-opt/bin/lto/_objs/lib/lib.o.imports, bazel-out/k8-opt/bin/lto/bin.lto/bazel-out/k8-opt/bin/lto/_objs/lib/lib.o.thinlto.bc, bazel-out/k8-opt/bin/lto/fdo/cc_tc/profile.afdo]
+  Outputs: [bazel-out/k8-opt/bin/lto/bin.lto/bazel-out/k8-opt/bin/lto/_objs/lib/lib.o]
+  Command Line: (exec /usr/bin/gcc \
+    'thinlto_index=bazel-out/k8-opt/bin/lto/bin.lto/bazel-out/k8-opt/bin/lto/_objs/lib/lib.o.thinlto.bc' \
+    'thinlto_output_object_file=bazel-out/k8-opt/bin/lto/bin.lto/bazel-out/k8-opt/bin/lto/_objs/lib/lib.o' \
+    'thinlto_input_bitcode_file=bazel-out/k8-opt/bin/lto/_objs/lib/lib.o' \
+    'fdo=bazel-out/k8-opt/bin/lto/fdo/cc_tc/profile.afdo' \
+    '-fauto-profile=bazel-out/k8-opt/bin/lto/fdo/cc_tc/profile.afdo' \
+    -DLIB)
+# Configuration: 51687ad933d099dea254fdbffe6a9291d4bc3e5335881cf11359c63060196ce1
+# Execution platform: @@platforms//host:host
+
+action 'LTO Backend Compile lto/bin.lto/bazel-out/k8-opt/bin/lto/_objs/bin/main.o'
+  Mnemonic: CcLtoBackendCompile
+  Target: //lto:bin
+  Configuration: k8-opt
+  Execution platform: @platforms//host:host
+  ActionKey: 3ecd2200200734541dfa84bdfff0797bbbe9e15cc103c2181f37467409d98fda
+  Inputs: [bazel-out/k8-opt/bin/lto/_objs/bin/main.o, bazel-out/k8-opt/bin/lto/bin.lto/bazel-out/k8-opt/bin/lto/_objs/bin/main.o.imports, bazel-out/k8-opt/bin/lto/bin.lto/bazel-out/k8-opt/bin/lto/_objs/bin/main.o.thinlto.bc, bazel-out/k8-opt/bin/lto/fdo/cc_tc/profile.afdo]
+  Outputs: [bazel-out/k8-opt/bin/lto/bin.lto/bazel-out/k8-opt/bin/lto/_objs/bin/main.o]
+  Command Line: (exec /usr/bin/gcc \
+    'thinlto_index=bazel-out/k8-opt/bin/lto/bin.lto/bazel-out/k8-opt/bin/lto/_objs/bin/main.o.thinlto.bc' \
+    'thinlto_output_object_file=bazel-out/k8-opt/bin/lto/bin.lto/bazel-out/k8-opt/bin/lto/_objs/bin/main.o' \
+    'thinlto_input_bitcode_file=bazel-out/k8-opt/bin/lto/_objs/bin/main.o' \
+    'fdo=bazel-out/k8-opt/bin/lto/fdo/cc_tc/profile.afdo' \
+    '-fauto-profile=bazel-out/k8-opt/bin/lto/fdo/cc_tc/profile.afdo')
+# Configuration: 51687ad933d099dea254fdbffe6a9291d4bc3e5335881cf11359c63060196ce1
+# Execution platform: @@platforms//host:host
+
+action 'Symlinking FDO profile lto/profile.afdo'
+  Mnemonic: Symlink
+  Target: //lto:cc_tc
+  Configuration: k8-opt
+  Execution platform: @platforms//host:host
+  ActionKey: c90914cc1e7ea06f84518cf4f179e63dbd20dad9358a550644494828e4a4ed28
+  Inputs: [lto/profile.afdo]
+  Outputs: [bazel-out/k8-opt/bin/lto/fdo/cc_tc/profile.afdo]
+

@@ -348,8 +348,9 @@ pub(crate) trait Phase1: Host {
         };
         // DependencyResolutionHelpers.visitRule reports a validation failure
         // at the rule's location (analysis/DependencyResolutionHelpers.java:309-313).
-        let configured_rule = configured_attributes::configure(&rule, &resolver)
-            .map_err(|error| located(rule.location.as_deref(), error))?;
+        let configured_rule =
+            configured_attributes::configure(&rule, &resolver, &configuration.native)
+                .map_err(|error| located(rule.location.as_deref(), error))?;
         let duplicate_errors =
             configured_attributes::concatenated_duplicate_errors(&rule, &configured_rule);
         let mut rule = configured_rule;

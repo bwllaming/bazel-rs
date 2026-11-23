@@ -870,9 +870,13 @@ pub(crate) fn call<'v>(
             Ok(alloc_file(heap, solib_symlink(context, &library, &link_path)?))
         }
         "absolute_symlink" => {
-            // CcStarlarkInternal.absoluteSymlink (:376-395): an FDO-profile
-            // absolute symlink; FDO is unsupported, so nothing can use it.
-            bind(
+            // CcStarlarkInternal.absoluteSymlink (:376-395): a SymlinkAction
+            // to an absolute path (SymlinkAction.toAbsolutePath, :194-198),
+            // the FDO/Propeller profiles given as absolute paths. It has no
+            // inputs and is registered like genuine's (mnemonic `Symlink`);
+            // executing it (a symlink out of the execution root, which Bazel
+            // re-runs unconditionally) is an explicit native gap.
+            let bound = bind(
                 method,
                 &[
                     param("ctx", false, true, true),
@@ -883,9 +887,71 @@ pub(crate) fn call<'v>(
                 args,
                 heap,
             )?;
-            Err(failure(
-                "cc_internal.absolute_symlink is not implemented in the native profile (FDO profiles with absolute paths)".to_owned(),
-            ))
+            let output = unpack_file(bound[1].expect("required"))
+                .map_err(|error| failure(format!("cc_internal.{method}: output: {error}")))?;
+            let target_value = bound[2].expect("required");
+            let target = target_value
+                .unpack_str()
+                .ok_or_else(|| type_error(method, "target_path", target_value, "string"))?;
+            if !target.starts_with('/') {
+                return Err(failure(format!(
+                    "cc_internal.{method}: '{target}' is not an absolute path"
+                )));
+            }
+            let progress_value = bound[3].expect("required");
+            let progress = progress_value
+                .unpack_str()
+                .ok_or_else(|| type_error(method, "progress_message", progress_value, "string"))?;
+            let target = crate::action::unresolved_link_text(target);
+            let primary_output = output.clone();
+            context
+                .register_action(crate::analysis_runtime::Registration {
+                    outputs: vec![output],
+                    inputs: Vec::new(),
+                    command: String::new(),
+                    write: None,
+                    program: None,
+                    arguments: Vec::new(),
+                    environment: BTreeMap::new(),
+                    extra: crate::action::ActionExtra {
+                        transform: Some(crate::action::Transform::Unsupported {
+                            message: format!(
+                                "a symlink to the absolute path '{target}' (an FDO or Propeller profile given by an absolute path) is not implemented in the native profile"
+                            ),
+                        }),
+                        mnemonic: "Symlink".to_owned(),
+                        progress: Some(progress.into()),
+                        ..Default::default()
+                    },
+                    shell_pad: false,
+                    executable_file: false,
+                    deferred: None,
+                    exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
+                    runfiles_trees: Vec::new(),
+                    build_info: None,
+                    shareable: false,
+                })
+                .map_err(|error| failure(format!("cc_internal.{method}: {error}")))?;
+            if crate::aquery::capturing() {
+                let mut actions = context.actions.borrow_mut();
+                if let Some(registered) = actions
+                    .iter_mut()
+                    .rev()
+                    .find(|action| action.outputs.contains(&primary_output))
+                {
+                    let mut meta = registered
+                        .action
+                        .extra
+                        .aquery
+                        .as_deref()
+                        .cloned()
+                        .unwrap_or_default();
+                    meta.progress = Some(progress.to_owned());
+                    meta.absolute_symlink = Some(target);
+                    registered.action.extra.aquery = Some(Arc::new(meta));
+                }
+            }
+            Ok(Value::new_none())
         }
         "create_cc_compile_action" => {
             let _ = context;

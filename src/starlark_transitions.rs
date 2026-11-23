@@ -84,6 +84,10 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "host_conlyopt",
     "host_linkopt",
     "host_per_file_copt",
+    // The ThinLTO option lists rules_cc's own tests transition on (B32).
+    "ltoindexopt",
+    "ltobackendopt",
+    "per_file_ltobackendopt",
     // CoreOptions.defaultFeatures/hostFeatures and JavaOptions.javacOpts/
     // hostJavacOpts: List<String> options like the CppOptions lists.
     "features",
@@ -108,6 +112,23 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "start_end_lib",
     "interface_shared_objects",
     "process_headers_in_dependencies",
+    // The FDO, Propeller, malloc, libc and C++20 module CppOptions (B32).
+    "fdo_instrument",
+    "fdo_optimize",
+    "cs_fdo_instrument",
+    "cs_fdo_absolute_path",
+    "xbinary_fdo",
+    "fdo_prefetch_hints",
+    "fdo_profile",
+    "cs_fdo_profile",
+    "propeller_optimize_absolute_cc_profile",
+    "propeller_optimize_absolute_ld_profile",
+    "propeller_optimize",
+    "memprof_profile",
+    "custom_malloc",
+    "grte_top",
+    "host_grte_top",
+    "experimental_cpp_modules",
 ];
 
 /// Table-driven options (crate::configuration::VALUE_OPTIONS) read and
@@ -134,6 +155,49 @@ const GENERIC_VALUE_OPTIONS: &[(&str, &str)] = &[
     (
         "process_headers_in_dependencies",
         "rules.cpp.CppOptions.processHeadersInDependencies",
+    ),
+    (
+        "fdo_instrument",
+        "rules.cpp.CppOptions.fdoInstrumentForBuild",
+    ),
+    ("fdo_optimize", "rules.cpp.CppOptions.fdoOptimizeForBuild"),
+    (
+        "cs_fdo_instrument",
+        "rules.cpp.CppOptions.csFdoInstrumentForBuild",
+    ),
+    (
+        "cs_fdo_absolute_path",
+        "rules.cpp.CppOptions.csFdoAbsolutePathForBuild",
+    ),
+    ("xbinary_fdo", "rules.cpp.CppOptions.xfdoProfileLabel"),
+    (
+        "fdo_prefetch_hints",
+        "rules.cpp.CppOptions.fdoPrefetchHintsLabel",
+    ),
+    ("fdo_profile", "rules.cpp.CppOptions.fdoProfileLabel"),
+    ("cs_fdo_profile", "rules.cpp.CppOptions.csFdoProfileLabel"),
+    (
+        "propeller_optimize_absolute_cc_profile",
+        "rules.cpp.CppOptions.propellerOptimizeAbsoluteCCProfile",
+    ),
+    (
+        "propeller_optimize_absolute_ld_profile",
+        "rules.cpp.CppOptions.propellerOptimizeAbsoluteLdProfile",
+    ),
+    (
+        "propeller_optimize",
+        "rules.cpp.CppOptions.propellerOptimizeLabel",
+    ),
+    (
+        "memprof_profile",
+        "rules.cpp.CppOptions.memprofProfileLabel",
+    ),
+    ("custom_malloc", "rules.cpp.CppOptions.customMalloc"),
+    ("grte_top", "rules.cpp.CppOptions.libcTopLabel"),
+    ("host_grte_top", "rules.cpp.CppOptions.hostLibcTopLabel"),
+    (
+        "experimental_cpp_modules",
+        "rules.cpp.CppOptions.experimentalCppModules",
     ),
 ];
 
@@ -182,6 +246,8 @@ fn generic_native_input<'v>(
         (_, Some(OptionValue::Label(label))) => {
             crate::starlark_types::alloc_label(heap, &label.to_string())?
         }
+        // A String field (Starlark.fromJava: the string).
+        (OptionKind::NullableString, Some(OptionValue::String(text))) => heap.alloc(text.as_str()),
         (_, Some(other)) => {
             return Err(anyhow!(
                 "internal error: unexpected value {other} of native option {}",
@@ -214,6 +280,12 @@ fn convert_generic(
         // A null enum or list field reads as its default.
         (RawKind::None, _) => option.default_value(),
         (RawKind::Bool(flag), OptionKind::Bool) => OptionValue::Bool(*flag),
+        // A Label value of a Label field is stored as is, without the
+        // converter (`def.getType().isInstance`, :726-728): LibcTopLabel's
+        // `everything` name applies to strings only.
+        (RawKind::Label(label), OptionKind::NullableLabel { .. } | OptionKind::LibcTopLabel) => {
+            OptionValue::Label(label.clone())
+        }
         (RawKind::Enum(_, value), OptionKind::Enum { values, .. }) if values.contains(value) => {
             OptionValue::Enum(value)
         }
@@ -1097,6 +1169,9 @@ pub(crate) fn native_input<'v>(
         "host_conlyopt" => heap.alloc(native.host_conlyopts.clone()),
         "host_linkopt" => heap.alloc(native.host_linkopts.clone()),
         "host_per_file_copt" => heap.alloc(native.host_per_file_copts.clone()),
+        "ltoindexopt" => heap.alloc(native.ltoindexopts.clone()),
+        "ltobackendopt" => heap.alloc(native.ltobackendopts.clone()),
+        "per_file_ltobackendopt" => heap.alloc(native.per_file_ltobackendopts.clone()),
         "features" => heap.alloc(native.features.clone()),
         "host_features" => heap.alloc(native.host_features.clone()),
         "javacopt" => heap.alloc(native.javacopts.clone()),
@@ -1959,6 +2034,9 @@ fn convert_native(
             | "host_conlyopt"
             | "host_linkopt"
             | "host_per_file_copt"
+            | "ltoindexopt"
+            | "ltobackendopt"
+            | "per_file_ltobackendopt"
             | "features"
             | "host_features"
             | "javacopt"
@@ -2130,9 +2208,11 @@ fn convert_native(
         // IllegalArgumentException, :762-764; observed: the paired capture
         // tests/fixtures/cpp_flag_options).
         "copt" | "cxxopt" | "conlyopt" | "linkopt" | "host_copt" | "host_cxxopt"
-        | "host_conlyopt" | "host_linkopt" | "features" | "host_features" | "javacopt"
-        | "host_javacopt" => {
+        | "host_conlyopt" | "host_linkopt" | "ltoindexopt" | "ltobackendopt" | "features"
+        | "host_features" | "javacopt" | "host_javacopt" => {
             let field = match name {
+                "ltoindexopt" => "rules.cpp.CppOptions.ltoindexoptList",
+                "ltobackendopt" => "rules.cpp.CppOptions.ltobackendoptList",
                 "copt" => "rules.cpp.CppOptions.coptList",
                 "cxxopt" => "rules.cpp.CppOptions.cxxoptList",
                 "conlyopt" => "rules.cpp.CppOptions.conlyoptList",
@@ -2165,6 +2245,8 @@ fn convert_native(
                 "host_cxxopt" => &mut native.host_cxxopts,
                 "host_conlyopt" => &mut native.host_conlyopts,
                 "host_linkopt" => &mut native.host_linkopts,
+                "ltoindexopt" => &mut native.ltoindexopts,
+                "ltobackendopt" => &mut native.ltobackendopts,
                 "features" => &mut native.features,
                 "host_features" => &mut native.host_features,
                 "javacopt" => &mut native.javacopts,
@@ -2181,7 +2263,7 @@ fn convert_native(
         // splits; the filter validates as a RegexFilter; options split on
         // non-escaped commas); a bare string converts to one PerLabelOptions,
         // which the List field rejects.
-        "per_file_copt" | "host_per_file_copt" => {
+        "per_file_copt" | "host_per_file_copt" | "per_file_ltobackendopt" => {
             let per_label_options = |text: &str| -> Result<String, String> {
                 let (filter, _) = match text.split_once('@') {
                     Some(split) => split,
@@ -2202,10 +2284,10 @@ fn convert_native(
                     per_label_options(text)?;
                     return Err(format!(
                         "IllegalArgumentError for option '{name}': Can not set java.util.List field com.google.devtools.build.lib.rules.cpp.CppOptions.{} to com.google.devtools.build.lib.analysis.config.PerLabelOptions",
-                        if name == "per_file_copt" {
-                            "perFileCopts"
-                        } else {
-                            "hostPerFileCoptsList"
+                        match name {
+                            "per_file_copt" => "perFileCopts",
+                            "per_file_ltobackendopt" => "perFileLtoBackendOpts",
+                            _ => "hostPerFileCoptsList",
                         }
                     ));
                 }
@@ -2213,6 +2295,7 @@ fn convert_native(
             };
             match name {
                 "per_file_copt" => native.per_file_copts = values,
+                "per_file_ltobackendopt" => native.per_file_ltobackendopts = values,
                 _ => native.host_per_file_copts = values,
             }
         }

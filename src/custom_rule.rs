@@ -195,9 +195,10 @@ impl AttrDeclaration {
     /// A late-bound default whose configured value crate::late_bound resolves.
     pub(crate) fn late_bound_resolvable(&self) -> bool {
         self.late_bound
-            && self.configuration_field.as_ref().is_some_and(|field| {
-                crate::late_bound::resolve(&field.fragment, &field.name).is_some()
-            })
+            && self
+                .configuration_field
+                .as_ref()
+                .is_some_and(|field| crate::late_bound::resolvable(&field.fragment, &field.name))
     }
 
     /// AllowedValueSet.apply; an empty set allows everything.
@@ -556,6 +557,31 @@ pub struct CppConfigurationView {
     /// CppOptions.perFileLtoBackendOpts (`--per_file_ltobackendopt`),
     /// `filter@options` as given.
     pub per_file_lto_backend_opts: Vec<String>,
+    /// CppOptions.ltoindexoptList (`--ltoindexopt`).
+    pub lto_index_options: Vec<String>,
+    /// CppOptions.ltobackendoptList (`--ltobackendopt`).
+    pub lto_backend_options: Vec<String>,
+    /// CppConfiguration.fdoPath: `--fdo_optimize` when it is not a `//`
+    /// label, as a normalized path (CppConfiguration.java:180-209).
+    pub fdo_path: Option<String>,
+    /// CppConfiguration.csFdoAbsolutePath (`--cs_fdo_absolute_path`).
+    pub cs_fdo_path: Option<String>,
+    /// `--propeller_optimize_absolute_cc_profile`, normalized.
+    pub propeller_optimize_absolute_cc_profile: Option<String>,
+    /// `--propeller_optimize_absolute_ld_profile`, normalized.
+    pub propeller_optimize_absolute_ld_profile: Option<String>,
+    /// CppOptions.fdoInstrumentForBuild (`--fdo_instrument`).
+    pub fdo_instrument: Option<String>,
+    /// CppOptions.csFdoInstrumentForBuild (`--cs_fdo_instrument`).
+    pub cs_fdo_instrument: Option<String>,
+    /// `--fdo_prefetch_hints` (canonical label text).
+    pub fdo_prefetch_hints_label: Option<String>,
+    /// `--custom_malloc` (canonical label text).
+    pub custom_malloc: Option<String>,
+    /// `--grte_top` (canonical label text).
+    pub libc_top_label: Option<String>,
+    /// CppOptions.experimentalCppModules (`--experimental_cpp_modules`).
+    pub experimental_cpp_modules: bool,
 }
 
 impl Default for CppConfigurationView {
@@ -581,6 +607,18 @@ impl Default for CppConfigurationView {
             interface_shared_objects: true,
             process_headers_in_dependencies: false,
             per_file_lto_backend_opts: Vec::new(),
+            lto_index_options: Vec::new(),
+            lto_backend_options: Vec::new(),
+            fdo_path: None,
+            cs_fdo_path: None,
+            propeller_optimize_absolute_cc_profile: None,
+            propeller_optimize_absolute_ld_profile: None,
+            fdo_instrument: None,
+            cs_fdo_instrument: None,
+            fdo_prefetch_hints_label: None,
+            custom_malloc: None,
+            libc_top_label: None,
+            experimental_cpp_modules: false,
         }
     }
 }
@@ -628,7 +666,35 @@ impl CppConfigurationView {
                 != Some(crate::configuration::OptionValue::Bool(false)),
             process_headers_in_dependencies: native.raw_value("process_headers_in_dependencies")
                 == Some(crate::configuration::OptionValue::Bool(true)),
-            per_file_lto_backend_opts: Vec::new(),
+            per_file_lto_backend_opts: native.per_file_ltobackendopts.clone(),
+            lto_index_options: native.ltoindexopts.clone(),
+            lto_backend_options: native.ltobackendopts.clone(),
+            fdo_path: native
+                .nullable_string("fdo_optimize")
+                .filter(|text| !text.starts_with("//"))
+                .map(|text| crate::action::unresolved_link_text(&text)),
+            cs_fdo_path: native
+                .nullable_string("cs_fdo_absolute_path")
+                .map(|text| crate::action::unresolved_link_text(&text)),
+            propeller_optimize_absolute_cc_profile: native
+                .nullable_string("propeller_optimize_absolute_cc_profile")
+                .map(|text| crate::action::unresolved_link_text(&text)),
+            propeller_optimize_absolute_ld_profile: native
+                .nullable_string("propeller_optimize_absolute_ld_profile")
+                .map(|text| crate::action::unresolved_link_text(&text)),
+            fdo_instrument: native.nullable_string("fdo_instrument"),
+            cs_fdo_instrument: native.nullable_string("cs_fdo_instrument"),
+            fdo_prefetch_hints_label: native
+                .nullable_label("fdo_prefetch_hints")
+                .map(|label| label.to_string()),
+            custom_malloc: native
+                .nullable_label("custom_malloc")
+                .map(|label| label.to_string()),
+            libc_top_label: native
+                .nullable_label("grte_top")
+                .map(|label| label.to_string()),
+            experimental_cpp_modules: native.raw_value("experimental_cpp_modules")
+                == Some(crate::configuration::OptionValue::Bool(true)),
         }
     }
 

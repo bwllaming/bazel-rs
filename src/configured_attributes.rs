@@ -803,6 +803,7 @@ pub fn transition_attributes(
 pub fn configure(
     rule: &std::sync::Arc<Rule>,
     resolver: &Resolver<'_>,
+    native: &crate::configuration::NativeOptions,
 ) -> Result<std::sync::Arc<Rule>, String> {
     use std::sync::Arc;
 
@@ -885,7 +886,7 @@ pub fn configure(
         // resolution in ConfiguredAttributeMapper's configuration). Null values
         // often already equal their loading default; only copy on a change.
         let custom = configured.custom.as_ref().unwrap();
-        let late_bound: Vec<_> = crate::late_bound::configured_values(&custom.schema)
+        let late_bound: Vec<_> = crate::late_bound::configured_values(&custom.schema, native)
             .filter(|(name, value)| custom.attrs.get(*name) != Some(value))
             .map(|(name, value)| (name.clone(), value))
             .collect();
@@ -1012,12 +1013,21 @@ genrule(name = "selected_gen", srcs = select({":choice": ["one"], "//conditions:
         let package = sharing_fixture();
         for name in ["files", "gen", "forward", "plain", "null"] {
             let original = &package.rules[&label(&format!("//:{name}"))];
-            let configured =
-                configure(original, &resolver(&original.label, &BTreeMap::new())).unwrap();
+            let configured = configure(
+                original,
+                &resolver(&original.label, &BTreeMap::new()),
+                &crate::configuration::NativeOptions::default(),
+            )
+            .unwrap();
             assert!(Arc::ptr_eq(original, &configured), "{name}");
         }
         let original = &package.rules[&label("//:label")];
-        let configured = configure(original, &resolver(&original.label, &BTreeMap::new())).unwrap();
+        let configured = configure(
+            original,
+            &resolver(&original.label, &BTreeMap::new()),
+            &crate::configuration::NativeOptions::default(),
+        )
+        .unwrap();
         assert!(!Arc::ptr_eq(original, &configured));
         assert_eq!(
             original.custom.as_ref().unwrap().attrs["_tool"],
@@ -1040,7 +1050,12 @@ genrule(name = "selected_gen", srcs = select({":choice": ["one"], "//conditions:
             let selected = |result| {
                 let conditions =
                     BTreeMap::from([("//:choice".to_owned(), condition("choice", &[], result))]);
-                configure(original, &resolver(&original.label, &conditions)).unwrap()
+                configure(
+                    original,
+                    &resolver(&original.label, &conditions),
+                    &crate::configuration::NativeOptions::default(),
+                )
+                .unwrap()
             };
             let yes = selected(MatchResult::Match);
             let no = selected(MatchResult::NoMatch(vec![]));

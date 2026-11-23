@@ -192,8 +192,15 @@ tests/cc_compile.rs `thin_lto_actions_match_genuine` and
   compile action templates), `module_files`/module maps on the compile action.
 - **LTO over tree artifacts**: `create_lto_backend_action_template` and the
   wrapped factory's `declare_shareable_directory`.
-- **FDO**: `absolute_symlink` (absolute-path FDO profiles); FDO/propeller
-  profiles remain N25d's explicit toolchain-analysis gaps.
+- **FDO profiles given by absolute paths**: `absolute_symlink`
+  (SymlinkAction.toAbsolutePath) registers a `Symlink` action without
+  inputs, described and keyed like genuine's in aquery
+  (`Symlinking FDO profile %{input}`, the GUID and the target path;
+  tests/cc_compile.rs `fdo_profiles_match_genuine`); executing it (a
+  symlink out of the execution root that Bazel re-runs unconditionally)
+  fails explicitly. FDO profiles given by labels (`--fdo_optimize=//...`,
+  `--fdo_profile`, `--xbinary_fdo`, ...) are rules_cc's ordinary symlink and
+  `llvm-profdata` actions.
 - **libc_top** (N25d5) remains unsupported.
 - **cc_library `linkstamp`** — supported since B32 (the shareable
   linkstamp compile above; the `LinkstampInfo` closures in depsets since

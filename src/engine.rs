@@ -9290,7 +9290,16 @@ impl Engine {
                 .get(config)
                 .native
                 .evaluating_for_analysis_test,
-            retain_actions: engine.inspected_targets.contains(&rule.label),
+            // The targets an analysis test of the request names, and every
+            // target of an analysis test's own configuration (a testing
+            // aspect that propagates reads `target.actions` of the subject's
+            // dependencies, B32).
+            retain_actions: engine.inspected_targets.contains(&rule.label)
+                || engine
+                    .configurations
+                    .get(config)
+                    .native
+                    .evaluating_for_analysis_test,
         };
         Ok(PreparedTarget {
             key,

@@ -1240,6 +1240,27 @@ fn plan_application<C: AspectCx>(
             }
         }
     }
+    // A Starlark base rule's exec_compatible_with and configured
+    // target_compatible_with prerequisites, which its own analysis has
+    // beside its edges (crate::engine custom_dependencies): its
+    // `ctx.rule.attr` Targets of those built-in attributes.
+    if let Some(custom) = &base_rule.custom {
+        for name in ["exec_compatible_with", "target_compatible_with"] {
+            for text in custom.declaration.builtin.target.labels(name) {
+                let dependency = cx.engine().resolve_rule_src(&base_rule, &text)?;
+                let map_key = analysis::dependency_key(&dependency.to_string(), false);
+                if dependencies.contains_key(&map_key) {
+                    continue;
+                }
+                match plan_dependency(cx, &dependency, base_key.config, Vec::new()) {
+                    Err(error) if error == parallel::aspects::PENDING => pending = true,
+                    planned => {
+                        dependencies.insert(map_key, planned?.0);
+                    }
+                }
+            }
+        }
+    }
     // `ctx.rule.toolchains` (AspectFunction.getBaseTargetToolchainContexts,
     // AspectBaseTargetResolvedToolchainContext.load): per resolved type
     // of the base target, the providers of the aspects propagated to
@@ -1570,7 +1591,13 @@ fn plan_application<C: AspectCx>(
         base_rule,
         aspect_identity: aspect.identity.clone(),
         action_execution,
-        retain_actions: cx.engine().inspected_targets.contains(&base_key.label),
+        retain_actions: cx.engine().inspected_targets.contains(&base_key.label)
+            || cx
+                .engine()
+                .configurations
+                .get(base_key.config)
+                .native
+                .evaluating_for_analysis_test,
     };
     cx.analyze(&key, context, application, commit)
 }

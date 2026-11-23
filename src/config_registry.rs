@@ -570,6 +570,10 @@ pub fn exec_transition(
         host_cxxopts: from.native.host_cxxopts.clone(),
         host_conlyopts: from.native.host_conlyopts.clone(),
         host_per_file_copts: from.native.host_per_file_copts.clone(),
+        // Not in CppOptions' propagate list (builtin_exec_platforms.bzl:291-348).
+        ltoindexopts: Vec::new(),
+        ltobackendopts: Vec::new(),
+        per_file_ltobackendopts: Vec::new(),
         host_linkopts: from.native.host_linkopts.clone(),
         // `_core_options` (builtin_exec_platforms.bzl:228): `--features` =
         // `--host_features`, which propagates (:258).
@@ -681,6 +685,8 @@ pub(crate) fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static
     options.insert("host_cxxopt", list(&native.host_cxxopts));
     options.insert("host_conlyopt", list(&native.host_conlyopts));
     options.insert("host_linkopt", list(&native.host_linkopts));
+    options.insert("ltoindexopt", list(&native.ltoindexopts));
+    options.insert("ltobackendopt", list(&native.ltobackendopts));
     options.insert("features", list(&native.features));
     options.insert("host_features", list(&native.host_features));
     options.insert("javacopt", list(&native.javacopts));
@@ -721,6 +727,10 @@ pub(crate) fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static
     options.insert(
         "host_per_file_copt",
         per_label_options(&native.host_per_file_copts),
+    );
+    options.insert(
+        "per_file_ltobackendopt",
+        per_label_options(&native.per_file_ltobackendopts),
     );
     options.insert("is exec configuration", format!("={}", native.is_exec));
     options.insert(

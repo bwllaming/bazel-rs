@@ -941,6 +941,18 @@ impl Engine {
                 };
                 record.description = progress(&format!("{} %{{output}}", record.mnemonic));
                 record.action_key = self.aquery_native_key(&record, key_platform, &properties);
+                if let Some(target) = &meta.absolute_symlink {
+                    // SymlinkAction.toAbsolutePath: its raw progress message
+                    // (no input to expand `%{input}`) and key.
+                    if let Some(raw) = &meta.progress {
+                        record.description = progress(raw);
+                    }
+                    record.action_key = crate::aquery_key::action_key(
+                        &KeyKind::AbsoluteSymlink { target },
+                        key_platform,
+                        &properties,
+                    );
+                }
             }
             (None, None) => {
                 record.mnemonic = action.extra.mnemonic.clone();

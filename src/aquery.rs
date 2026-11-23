@@ -86,6 +86,9 @@ pub struct Meta {
     /// becomes an IOException, then an interruption:
     /// OutputFormatterCallback.processAllTargets -> "build interrupted").
     pub expansion_error: Option<String>,
+    /// A SymlinkAction to an absolute path (`cc_internal.absolute_symlink`):
+    /// its target path, keyed (SymlinkAction.computeKey :429-439).
+    pub absolute_symlink: Option<String>,
 }
 
 impl Meta {

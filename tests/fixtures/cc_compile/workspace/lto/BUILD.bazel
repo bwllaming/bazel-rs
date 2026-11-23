@@ -51,3 +51,5 @@ cc_test(
     ],
     deps = [":lib"],
 )
+
+exports_files(["profile.afdo"])

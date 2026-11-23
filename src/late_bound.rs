@@ -1,40 +1,82 @@
 //! Late-bound `configuration_field(fragment, name)` attribute defaults
 //! (StarlarkLateBoundDefault.resolve, analysis/starlark/StarlarkLateBoundDefault.java:57-66):
 //! the value is the fragment field of the configuration the target is
-//! analyzed in. Only fields whose value is fixed in every native
-//! configuration are resolved; every other field stays an explicit
-//! analysis-time gap (crate::custom_rule::AttrDeclaration::unanalyzed).
-//!
-//! The native profile models none of the command-line options these fields
-//! read (crate::configuration::OPTIONS: an unmodelled option is rejected
-//! before analysis), so their Bazel 9.3 defaults always apply.
+//! analyzed in. The CppConfiguration fields follow the modelled CppOptions
+//! of that configuration (crate::configuration::VALUE_OPTIONS: the FDO,
+//! Propeller, malloc and libc options, OSS corpus B32); every other
+//! resolved field is fixed in every native configuration; the rest stay an
+//! explicit analysis-time gap (crate::custom_rule::AttrDeclaration::unanalyzed).
 
 use std::collections::BTreeMap;
 
+use crate::configuration::NativeOptions;
 use crate::custom_rule::{AttrSpec, AttrValue};
 
-/// The configured value of a resolvable field: `Some(None)` is Bazel's null
-/// label (the attribute is `None`, no dependency edge), `Some(Some(label))`
-/// a canonical label. `None` means the field is not resolved natively.
-pub(crate) fn resolve(fragment: &str, name: &str) -> Option<Option<&'static str>> {
+/// Whether `fragment.name` is a field the native profile resolves.
+pub(crate) fn resolvable(fragment: &str, name: &str) -> bool {
+    resolve(fragment, name, &NativeOptions::default()).is_some()
+}
+
+/// The configured value of a resolvable field in the configuration of
+/// `native`: `Some(None)` is Bazel's null label (the attribute is `None`, no
+/// dependency edge), `Some(Some(label))` a canonical label. `None` means
+/// the field is not resolved natively.
+pub(crate) fn resolve(
+    fragment: &str,
+    name: &str,
+    native: &NativeOptions,
+) -> Option<Option<String>> {
+    let label = |option: &str| native.nullable_label(option).map(|label| label.to_string());
     Some(match (fragment, name) {
-        // CppConfiguration (rules/cpp/CppConfiguration.java): every field is
-        // a CppOptions label whose option default is null, or derived only
-        // from such options.
-        //   fdo_optimize :632-635 (fdoOptimizeLabel from --fdo_optimize, :180-209)
-        //   fdo_prefetch_hints :683-694, fdo_profile :696-699,
-        //   cs_fdo_profile :701-706, propeller_optimize :709-717,
-        //   xbinary_fdo :720-730, memprof_profile :733-738,
-        //   custom_malloc :424-430 (CppOptions.java:311-320 default "null"),
-        //   libc_top :756-759 (--grte_top, CppOptions.java:670-678 default "null"),
-        //   proto_profile_path :958-961 (CppOptions.java:542-550 default "null"),
-        //   zipper :309-319 (non-null only when an FDO option is set).
-        (
-            "cpp",
-            "fdo_optimize" | "fdo_prefetch_hints" | "fdo_profile" | "cs_fdo_profile"
-            | "propeller_optimize" | "xbinary_fdo" | "memprof_profile" | "custom_malloc"
-            | "libc_top" | "proto_profile_path" | "zipper",
-        ) => None,
+        // CppConfiguration (rules/cpp/CppConfiguration.java).
+        // fdo_optimize :632-635: the `//` label of --fdo_optimize (:180-209).
+        ("cpp", "fdo_optimize") => native
+            .nullable_string("fdo_optimize")
+            .filter(|text| text.starts_with("//"))
+            .and_then(|text| crate::label::Label::parse_canonical(&text).ok())
+            .map(|label| label.to_string()),
+        // :683-694, :696-699, :701-706, :732-738, :422-430, :756-759.
+        ("cpp", "fdo_prefetch_hints") => label("fdo_prefetch_hints"),
+        ("cpp", "fdo_profile") => label("fdo_profile"),
+        ("cpp", "cs_fdo_profile") => label("cs_fdo_profile"),
+        ("cpp", "memprof_profile") => label("memprof_profile"),
+        ("cpp", "custom_malloc") => label("custom_malloc"),
+        ("cpp", "libc_top") => label("grte_top"),
+        // :708-717: null under --fdo_instrument or --cs_fdo_instrument.
+        ("cpp", "propeller_optimize") => {
+            if native.nullable_string("fdo_instrument").is_some()
+                || native.nullable_string("cs_fdo_instrument").is_some()
+            {
+                None
+            } else {
+                label("propeller_optimize")
+            }
+        }
+        // :719-730: null under --fdo_optimize, --fdo_instrument,
+        // --fdo_profile or code coverage.
+        ("cpp", "xbinary_fdo") => {
+            if native.nullable_string("fdo_optimize").is_some()
+                || native.nullable_string("fdo_instrument").is_some()
+                || native.nullable_label("fdo_profile").is_some()
+                || native.collect_code_coverage
+            {
+                None
+            } else {
+                label("xbinary_fdo")
+            }
+        }
+        // :308-319: the unzip tool whenever an FDO profile is set.
+        ("cpp", "zipper") => {
+            let fdo_optimize = native.nullable_string("fdo_optimize").is_some();
+            let xbinary = resolve("cpp", "xbinary_fdo", native).flatten().is_some();
+            (fdo_optimize
+                || native.nullable_label("fdo_profile").is_some()
+                || native.nullable_label("memprof_profile").is_some()
+                || xbinary)
+                .then(|| "@@bazel_tools//tools/zip:unzip_fdo".to_owned())
+        }
+        // proto_profile_path :958-961 (CppOptions.java:542-550 default "null").
+        ("cpp", "proto_profile_path") => None,
         // CoverageConfiguration.outputGenerator (analysis/test/CoverageConfiguration.java:76-95):
         // null unless --collect_code_coverage, which the native profile never sets.
         ("coverage", "output_generator") => None,
@@ -43,7 +85,7 @@ pub(crate) fn resolve(fragment: &str, name: &str) -> Option<Option<&'static str>
         // "@bazel_tools//tools/cpp:host_xcodes" (rules/apple/AppleCommandLineOptions.java:293-296).
         // The annotation's defaultLabel //tools/objc:host_xcodes (:326) is only the
         // attribute's static (query-time) default, not the analysis value.
-        ("apple", "xcode_config_label") => Some("@@bazel_tools//tools/cpp:host_xcodes"),
+        ("apple", "xcode_config_label") => Some("@@bazel_tools//tools/cpp:host_xcodes".to_owned()),
         // JavaConfiguration (rules/java/JavaConfiguration.java):
         //   launcher :236-243 (--java_launcher, JavaOptions.java:212-213 default "null"),
         //   proguard_top :246-253 (--proguard_top, JavaOptions.java:224-225 default "null"),
@@ -71,14 +113,16 @@ pub(crate) fn resolve(fragment: &str, name: &str) -> Option<Option<&'static str>
 }
 
 /// The configured values of the resolvable late-bound attributes of a
-/// Starlark rule target, replacing their unconfigured (`None`) defaults.
-pub(crate) fn configured_values(
-    schema: &BTreeMap<String, AttrSpec>,
-) -> impl Iterator<Item = (&String, AttrValue)> {
-    schema.iter().filter_map(|(name, spec)| {
+/// Starlark rule target in the configuration of `native`, replacing their
+/// unconfigured (`None`) defaults.
+pub(crate) fn configured_values<'a>(
+    schema: &'a BTreeMap<String, AttrSpec>,
+    native: &'a NativeOptions,
+) -> impl Iterator<Item = (&'a String, AttrValue)> + 'a {
+    schema.iter().filter_map(move |(name, spec)| {
         let field = spec.declaration.configuration_field.as_ref()?;
-        let value = resolve(&field.fragment, &field.name)?;
-        Some((name, AttrValue::Label(value.map(str::to_owned))))
+        let value = resolve(&field.fragment, &field.name, native)?;
+        Some((name, AttrValue::Label(value)))
     })
 }
 
@@ -140,6 +184,7 @@ mod tests {
 
     #[test]
     fn resolved_fields_follow_bazel_option_defaults_and_others_stay_gaps() {
+        let defaults = NativeOptions::default();
         for field in [
             "fdo_optimize",
             "fdo_prefetch_hints",
@@ -153,26 +198,91 @@ mod tests {
             "proto_profile_path",
             "zipper",
         ] {
-            assert_eq!(resolve("cpp", field), Some(None), "{field}");
+            assert_eq!(resolve("cpp", field, &defaults), Some(None), "{field}");
         }
-        assert_eq!(resolve("coverage", "output_generator"), Some(None));
         assert_eq!(
-            resolve("apple", "xcode_config_label"),
-            Some(Some("@@bazel_tools//tools/cpp:host_xcodes"))
+            resolve("coverage", "output_generator", &defaults),
+            Some(None)
+        );
+        assert_eq!(
+            resolve("apple", "xcode_config_label", &defaults),
+            Some(Some("@@bazel_tools//tools/cpp:host_xcodes".to_owned()))
         );
         for (fragment, field) in [
             ("java", "bytecode_optimizer"),
             ("py", "native_rules_allowlist"),
             ("bazel_py", "python_top"),
         ] {
-            assert_eq!(resolve(fragment, field), Some(None), "{fragment}.{field}");
+            assert_eq!(
+                resolve(fragment, field, &defaults),
+                Some(None),
+                "{fragment}.{field}"
+            );
         }
         for (fragment, field) in [
             ("proto", "proto_compiler"),
             ("android", "optimizing_dexer"),
             ("j2objc", "dead_code_report"),
         ] {
-            assert_eq!(resolve(fragment, field), None, "{fragment}.{field}");
+            assert_eq!(
+                resolve(fragment, field, &defaults),
+                None,
+                "{fragment}.{field}"
+            );
         }
+    }
+
+    /// The CppConfiguration fields of a configuration with the FDO and
+    /// malloc options set (CppConfiguration.java:180-209, 308-319, 708-730).
+    #[test]
+    fn cpp_fields_follow_the_configuration() {
+        use crate::configuration::{OptionValue, value_option};
+        let set = |native: &mut NativeOptions, name: &str, value: OptionValue| {
+            native.set_value(value_option(name).unwrap(), value);
+        };
+        let label =
+            |text: &str| OptionValue::Label(crate::label::Label::parse_canonical(text).unwrap());
+        let mut native = NativeOptions::default();
+        set(&mut native, "custom_malloc", label("//m:malloc"));
+        set(&mut native, "xbinary_fdo", label("//p:x.xfdo"));
+        set(&mut native, "propeller_optimize", label("//p:prop"));
+        assert_eq!(
+            resolve("cpp", "custom_malloc", &native),
+            Some(Some("//m:malloc".to_owned()))
+        );
+        assert_eq!(
+            resolve("cpp", "xbinary_fdo", &native),
+            Some(Some("//p:x.xfdo".to_owned()))
+        );
+        assert_eq!(
+            resolve("cpp", "zipper", &native),
+            Some(Some("@@bazel_tools//tools/zip:unzip_fdo".to_owned()))
+        );
+        assert_eq!(
+            resolve("cpp", "propeller_optimize", &native),
+            Some(Some("//p:prop".to_owned()))
+        );
+        set(
+            &mut native,
+            "fdo_optimize",
+            OptionValue::String("//p:profile.afdo".to_owned()),
+        );
+        set(
+            &mut native,
+            "fdo_instrument",
+            OptionValue::String("dir".to_owned()),
+        );
+        assert_eq!(
+            resolve("cpp", "fdo_optimize", &native),
+            Some(Some("//p:profile.afdo".to_owned()))
+        );
+        assert_eq!(resolve("cpp", "xbinary_fdo", &native), Some(None));
+        assert_eq!(resolve("cpp", "propeller_optimize", &native), Some(None));
+        set(
+            &mut native,
+            "fdo_optimize",
+            OptionValue::String("/abs/profile.afdo".to_owned()),
+        );
+        assert_eq!(resolve("cpp", "fdo_optimize", &native), Some(None));
     }
 }
