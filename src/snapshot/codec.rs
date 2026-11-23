@@ -256,6 +256,7 @@ pub fn encode_parts_with<T: Send>(
 ) -> Result<(Vec<T>, Stats), EncodeError> {
     encode_parts_chunked(
         request,
+        |groups| to_section(groups).map(|bytes| (bytes.len(), part(bytes))),
         |elements| to_section(elements).map(|bytes| (bytes.len(), part(bytes))),
         &part,
     )
@@ -283,14 +284,19 @@ pub fn encode_parts_framed(
             .map(|piece| (piece.len(), compress(piece)))
             .collect::<Vec<_>>()
     };
+    fn streamed<V: Serialize + ?Sized>(
+        value: &V,
+        frame: usize,
+        compress: &(dyn Fn(&[u8]) -> Vec<u8> + Sync),
+    ) -> Result<(usize, Frames), postcard::Error> {
+        let (len, mut table, body) = to_section_streamed(value, FrameSink::new(frame, compress))?;
+        table.extend(body);
+        Ok((len, table))
+    }
     encode_parts_chunked(
         request,
-        |elements| {
-            let (len, mut table, body) =
-                to_section_streamed(elements, FrameSink::new(frame, compress))?;
-            table.extend(body);
-            Ok((len, table))
-        },
+        |groups| streamed(groups, frame, compress),
+        |elements| streamed(elements, frame, compress),
         &frames_of,
     )
 }
@@ -299,6 +305,7 @@ pub fn encode_parts_framed(
 /// `chunk` into its length and part.
 fn encode_parts_chunked<T: Send>(
     request: &PlannedRequest,
+    groups: impl FnOnce(&Vec<GroupOut<'_>>) -> Result<(usize, T), postcard::Error> + Send,
     chunk: impl Fn(&Vec<(&PlannedAction, &[u32])>) -> Result<(usize, T), postcard::Error> + Sync,
     part: &(impl Fn(Vec<u8>) -> T + Sync),
 ) -> Result<(Vec<T>, Stats), EncodeError> {
@@ -306,32 +313,25 @@ fn encode_parts_chunked<T: Send>(
     let meta = postcard::to_stdvec(&meta_of(request))
         .map_err(|error| postcard_error(error, "the request outline"))?;
     // The shared input groups, each once, and every node's indices into
-    // the table: sequential, before the chunks encode on other threads.
+    // the table: sequential, before the chunks; the table encodes on a
+    // thread of its own beside them.
     let (table, indices) = group_table(&request.nodes);
-    let groups = to_section(&table_of(&table))
+    let table_out = table_of(&table);
+    let arena = crate::alloc_arena::current();
+    let (groups, chunks) = std::thread::scope(|scope| {
+        let groups = scope.spawn(|| {
+            if let Some(arena) = arena {
+                crate::alloc_arena::bind(arena);
+            }
+            groups(&table_out)
+        });
+        let chunks = encode_chunks(&request.nodes, &indices, &chunk);
+        (groups.join(), chunks)
+    });
+    let (groups_len, groups) = groups
+        .unwrap_or_else(|_| Err(postcard::Error::SerdeSerCustom))
         .map_err(|error| postcard_error(error, "the shared input groups"))?;
-    let encode_chunk = |(nodes, indices): &(&[PlannedAction], &[Vec<u32>])| {
-        chunk(&chunk_elements(nodes, indices))
-            .map_err(|error| EncodeError::NotSerializable(not_serializable_reason(nodes, error)))
-    };
-    let parts: Vec<(&[PlannedAction], &[Vec<u32>])> = request
-        .nodes
-        .chunks(CHUNK)
-        .zip(indices.chunks(CHUNK))
-        .collect();
-    // Chunks encode independently (the same bytes on any thread): a large
-    // plan encodes them on a few scoped threads (the analysis snapshot's
-    // save, L2-W5, encodes on the main thread before execution).
-    let chunks = on_threads_up_to(ENCODE_THREADS, &parts, encode_chunk)
-        .into_iter()
-        .map(|chunk| {
-            chunk.unwrap_or_else(|| {
-                Err(EncodeError::NotSerializable(
-                    "the planned actions: the encoder panicked".to_owned(),
-                ))
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let chunks = chunks?;
     let sections = 2 + chunks.len();
     let mut bytes = Vec::with_capacity(16 + 12 * sections);
     bytes.extend_from_slice(MAGIC);
@@ -340,7 +340,7 @@ fn encode_parts_chunked<T: Send>(
     bytes.extend_from_slice(&SECTION_META.to_le_bytes());
     bytes.extend_from_slice(&(meta.len() as u64).to_le_bytes());
     bytes.extend_from_slice(&SECTION_GROUPS.to_le_bytes());
-    bytes.extend_from_slice(&(groups.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&(groups_len as u64).to_le_bytes());
     for (len, _) in &chunks {
         bytes.extend_from_slice(&SECTION_NODES.to_le_bytes());
         bytes.extend_from_slice(&(*len as u64).to_le_bytes());
@@ -349,11 +349,11 @@ fn encode_parts_chunked<T: Send>(
         nodes: request.nodes.len(),
         bytes: bytes.len()
             + meta.len()
-            + groups.len()
+            + groups_len
             + chunks.iter().map(|(len, _)| len).sum::<usize>(),
         meta_bytes: meta.len(),
         groups: table.len(),
-        group_bytes: groups.len(),
+        group_bytes: groups_len,
         chunks: chunks.len(),
         encode: start.elapsed(),
         decode: None,
@@ -361,9 +361,37 @@ fn encode_parts_chunked<T: Send>(
     let mut parts = Vec::with_capacity(3 + chunks.len());
     parts.push(part(bytes));
     parts.push(part(meta));
-    parts.push(part(groups));
+    parts.push(groups);
     parts.extend(chunks.into_iter().map(|(_, chunk)| chunk));
     Ok((parts, stats))
+}
+
+/// The NODES chunks of `nodes`, each encoded by `chunk` ([`encode_parts_chunked`]).
+#[allow(clippy::type_complexity)]
+fn encode_chunks<T: Send>(
+    nodes: &[PlannedAction],
+    indices: &[Vec<u32>],
+    chunk: &(impl Fn(&Vec<(&PlannedAction, &[u32])>) -> Result<(usize, T), postcard::Error> + Sync),
+) -> Result<Vec<(usize, T)>, EncodeError> {
+    let encode_chunk = |(nodes, indices): &(&[PlannedAction], &[Vec<u32>])| {
+        chunk(&chunk_elements(nodes, indices))
+            .map_err(|error| EncodeError::NotSerializable(not_serializable_reason(nodes, error)))
+    };
+    let parts: Vec<(&[PlannedAction], &[Vec<u32>])> =
+        nodes.chunks(CHUNK).zip(indices.chunks(CHUNK)).collect();
+    // Chunks encode independently (the same bytes on any thread): a large
+    // plan encodes them on a few scoped threads (the analysis snapshot's
+    // save, L2-W5, encodes on the main thread before execution).
+    on_threads_up_to(ENCODE_THREADS, &parts, encode_chunk)
+        .into_iter()
+        .map(|chunk| {
+            chunk.unwrap_or_else(|| {
+                Err(EncodeError::NotSerializable(
+                    "the planned actions: the encoder panicked".to_owned(),
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
 }
 
 /// The GROUPS table of `nodes`: every distinct shared input group (by
@@ -375,7 +403,10 @@ fn encode_parts_chunked<T: Send>(
 /// into it, in its group order.
 fn group_table(nodes: &[PlannedAction]) -> (Vec<&InputGroup>, Vec<Vec<u32>>) {
     let mut positions: HashMap<*const InputGroup, u32> = HashMap::new();
-    let mut by_value: HashMap<Vec<u8>, u32> = HashMap::new();
+    // Distinct groups by a hash of their encoding (equal hashes compared
+    // by value, [`same_group`]): not their encodings themselves, every
+    // path in full (OpenROAD: hundreds of MB beside the plan's encoding).
+    let mut by_value: HashMap<(u64, usize), Vec<u32>> = HashMap::new();
     let mut table: Vec<&InputGroup> = Vec::new();
     let indices = nodes
         .iter()
@@ -392,23 +423,57 @@ fn group_table(nodes: &[PlannedAction]) -> (Vec<&InputGroup>, Vec<Vec<u32>>) {
                             "internal error: shared input group {} is encoded but not valid",
                             group.root.display()
                         );
-                        let mut push = || {
-                            table.push(group);
-                            u32::try_from(table.len() - 1)
-                                .expect("fewer than 2^32 shared input groups")
-                        };
                         // A group that cannot be serialized fails the
                         // GROUPS section's encoding below.
-                        match postcard::to_stdvec(&GroupOut::of(group)) {
-                            Ok(value) => *by_value.entry(value).or_insert_with(push),
-                            Err(_) => push(),
+                        let candidates =
+                            group_hash(group).map(|key| by_value.entry(key).or_default());
+                        if let Some(candidates) = &candidates
+                            && let Some(&found) = candidates
+                                .iter()
+                                .find(|&&index| same_group(table[index as usize], group))
+                        {
+                            return found;
                         }
+                        table.push(group);
+                        let index = u32::try_from(table.len() - 1)
+                            .expect("fewer than 2^32 shared input groups");
+                        if let Some(candidates) = candidates {
+                            candidates.push(index);
+                        }
+                        index
                     })
                 })
                 .collect()
         })
         .collect();
     (table, indices)
+}
+
+/// A hash of a group's encoding and its length, without the encoding
+/// ([`group_table`]); `None` when it does not encode.
+fn group_hash(group: &InputGroup) -> Option<(u64, usize)> {
+    struct HashSink(crate::fast_hash::FxHasher, usize);
+    impl postcard::ser_flavors::Flavor for HashSink {
+        type Output = (u64, usize);
+        fn try_extend(&mut self, data: &[u8]) -> postcard::Result<()> {
+            use std::hash::Hasher as _;
+            self.0.write(data);
+            self.1 += data.len();
+            Ok(())
+        }
+        fn try_push(&mut self, byte: u8) -> postcard::Result<()> {
+            self.try_extend(&[byte])
+        }
+        fn finalize(self) -> postcard::Result<(u64, usize)> {
+            use std::hash::Hasher as _;
+            Ok((self.0.finish(), self.1))
+        }
+    }
+    postcard::serialize_with_flavor(
+        &GroupOut::of(group),
+        HashSink(crate::fast_hash::FxHasher::default(), 0),
+    )
+    .ok()
 }
 
 /// Whether two shared input groups encode alike: equal in every encoded

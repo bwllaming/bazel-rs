@@ -2014,7 +2014,11 @@ impl Captured {
         self.recorded.load(Ordering::Acquire)
     }
 
-    fn new(events: Events) -> Arc<Self> {
+    fn new(mut events: Events) -> Arc<Self> {
+        // Held until its frame's owner merges (a worker's analysis waiting
+        // for the cursor): without the growth room of its recording.
+        events.events.shrink_to_fit();
+        events.children.shrink_to_fit();
         let order_dependent = events.order_dependent();
         let supersedes = events.supersedes();
         Arc::new(Self {

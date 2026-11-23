@@ -839,9 +839,15 @@ impl<'a> DeltaBuilder<'a> {
             )),
             None => true,
         });
+        // A delta waits for its merge (OpenROAD: tens of thousands at once
+        // behind the cursor): without its vectors' growth room (an
+        // executable's runfiles resolved one read each).
+        reads.shrink_to_fit();
+        let mut ops = self.ops;
+        ops.shrink_to_fit();
         Ok(TargetDelta {
             unchecked: matches!(self.hooks, Hooks::Worker),
-            ops: self.ops,
+            ops,
             error: result.err(),
             uses: self.uses,
             failed_output: self.failed_output,

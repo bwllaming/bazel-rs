@@ -355,8 +355,10 @@ impl Save {
         let window_stderr = window.bytes.len() as u64;
         let ms = |duration: Duration| duration.as_secs_f64() * 1000.0;
         self.saved_note = format!(
-            "{plan_nodes} actions, PLAN {} bytes, window stderr {window_stderr} bytes; {:.1} ms before execution (checks {:.1}, plan {:.1})",
+            "{plan_nodes} actions, PLAN {} bytes ({} shared input groups: {} bytes), window stderr {window_stderr} bytes; {:.1} ms before execution (checks {:.1}, plan {:.1})",
             plan_len,
+            plan_stats.groups,
+            plan_stats.group_bytes,
             ms(started.elapsed()),
             ms(checked_at),
             ms(plan_at - checked_at),
