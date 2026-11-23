@@ -36,7 +36,9 @@ use std::path::Path;
 /// observations and can be discharged only by current guarded acceptance proof.
 /// 6: listings of a `glob()` with excludes drop the excluded regular files
 /// (crate::observed_fs::Projection::Excluding), and the DERIVE section.
-pub const FORMAT: u32 = 6;
+/// 7 (B13c): the INDEX section's keys carry a toolchain dependency's
+/// execution platform (ConfiguredTargetKey::exec_platform).
+pub const FORMAT: u32 = 7;
 
 /// Options left out of G (PLAN-L2 §1a "Options left out of G"), by name
 /// (an `--[no]name` boolean's `no` form matches too). Each was traced to

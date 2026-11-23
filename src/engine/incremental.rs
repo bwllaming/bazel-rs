@@ -120,7 +120,14 @@ fn pattern() -> bool {
     PATTERN_DEPTH.with(Cell::get) > 0
 }
 
-type KeyIdentity = (Label, Option<ConfigId>, bool);
+/// (label, configuration (`None`: a source file), apply rule transition,
+/// a toolchain dependency's execution platform: ConfiguredTargetKey).
+type KeyIdentity = (
+    Label,
+    Option<ConfigId>,
+    bool,
+    Option<crate::config_registry::ExecPlatform>,
+);
 
 /// The ids of the tracker's keys by their hash, the identities themselves
 /// kept once (in `Tracker::keys`); the rare identity whose hash an earlier
@@ -583,14 +590,20 @@ struct TrackTables {
     scopes: Vec<&'static str>,
 }
 
-/// The hash of a key identity `(label, config, rule transition)` (as the
-/// tuple hashes).
-fn key_hash(label: &Label, config: Option<ConfigId>, rule_transition: bool) -> u64 {
+/// The hash of a key identity `(label, config, rule transition, execution
+/// platform)` (as the tuple hashes).
+fn key_hash(
+    label: &Label,
+    config: Option<ConfigId>,
+    rule_transition: bool,
+    exec_platform: Option<crate::config_registry::ExecPlatform>,
+) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = crate::fast_hash::FxHasher::default();
     label.hash(&mut hasher);
     config.hash(&mut hasher);
     rule_transition.hash(&mut hasher);
+    exec_platform.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -600,21 +613,27 @@ fn intern_key(
     label: &Label,
     config: Option<ConfigId>,
     rule_transition: bool,
+    exec_platform: Option<crate::config_registry::ExecPlatform>,
 ) -> u32 {
-    let hash = key_hash(label, config, rule_transition);
+    let hash = key_hash(label, config, rule_transition, exec_platform);
     let keys = &tables.keys;
     if let Some(id) = tables.key_ids.find(hash, |id| {
-        let (known, known_config, known_transition) = &keys[*id as usize];
-        known == label && *known_config == config && *known_transition == rule_transition
+        let (known, known_config, known_transition, known_platform) = &keys[*id as usize];
+        known == label
+            && *known_config == config
+            && *known_transition == rule_transition
+            && *known_platform == exec_platform
     }) {
         return *id;
     }
     let id = tables.keys.len() as u32;
-    tables.keys.push((label.clone(), config, rule_transition));
+    tables
+        .keys
+        .push((label.clone(), config, rule_transition, exec_platform));
     let keys = &tables.keys;
     tables.key_ids.insert_unique(hash, id, |id| {
-        let (label, config, rule_transition) = &keys[*id as usize];
-        key_hash(label, *config, *rule_transition)
+        let (label, config, rule_transition, exec_platform) = &keys[*id as usize];
+        key_hash(label, *config, *rule_transition, *exec_platform)
     });
     id
 }
@@ -748,6 +767,7 @@ impl TapeReplay {
                         &ct.key.label,
                         Some(ct.key.config),
                         ct.key.apply_rule_transition,
+                        ct.key.exec_platform,
                     )),
                     _ => None,
                 })?,
@@ -776,7 +796,7 @@ impl TapeReplay {
                 printed: *printed,
             },
             TapeOp::Effect(Event::Source(label)) => {
-                TrackOp::Source(intern_key(tables, label, None, true))
+                TrackOp::Source(intern_key(tables, label, None, true, None))
             }
             TapeOp::Effect(Event::Print(_)) => TrackOp::Print,
             TapeOp::Fail(_) | TapeOp::Flush | TapeOp::Effect(_) => return None,
@@ -964,6 +984,7 @@ impl Engine {
                 key.label.clone(),
                 Some(key.config),
                 key.apply_rule_transition,
+                key.exec_platform,
             );
             self.track_with(move |tracker| {
                 tracker.reach(identity);
@@ -975,6 +996,7 @@ impl Engine {
             key.label.clone(),
             Some(key.config),
             key.apply_rule_transition,
+            key.exec_platform,
         )))
     }
 
@@ -983,7 +1005,7 @@ impl Engine {
         if self.tracking() {
             let label = label.clone();
             self.track_with(move |tracker| {
-                tracker.reach((label, None, true));
+                tracker.reach((label, None, true, None));
             });
         }
     }
@@ -1050,6 +1072,7 @@ impl Engine {
                 key.label.clone(),
                 Some(key.config),
                 key.apply_rule_transition,
+                key.exec_platform,
             );
             self.track_with(move |tracker| {
                 let id = tracker.key(identity);
@@ -1124,8 +1147,13 @@ impl Engine {
                 capture.push(key.clone());
             }
             let base = &key.base;
+            // A base keyed by an execution platform (B13c) is its own.
+            let platform = base
+                .exec_platform
+                .map(|platform| format!("@{}", platform.label()))
+                .unwrap_or_default();
             let identity = format!(
-                "{}|{}|{}|{}|{}",
+                "{}|{}|{}{platform}|{}|{}",
                 base.label,
                 base.config,
                 base.apply_rule_transition,
@@ -1401,8 +1429,8 @@ fn build_index(
             .keys
             .iter()
             .enumerate()
-            .filter(|(_, (_, config, _))| config.is_some())
-            .map(|(index, (label, _, _))| (index as u32, label.clone()))
+            .filter(|(_, (_, config, _, _))| config.is_some())
+            .map(|(index, (label, _, _, _))| (index as u32, label.clone()))
             .collect();
         let graph = module_graph(all_packages);
         let rules = rule_modules(all_packages, &keys);
@@ -1415,10 +1443,11 @@ fn build_index(
             keys: tracker
                 .keys
                 .iter()
-                .map(|(label, config, apply)| IndexKey {
+                .map(|(label, config, apply, exec_platform)| IndexKey {
                     label: label.clone(),
                     config: config.map(|config| config.bytes()),
                     apply: *apply,
+                    exec_platform: exec_platform.map(|platform| platform.label()),
                 })
                 .collect(),
             edges: tracker.edges.clone(),

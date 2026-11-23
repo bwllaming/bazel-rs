@@ -138,6 +138,9 @@ pub struct IndexKey {
     pub label: Label,
     pub config: Option<[u8; 32]>,
     pub apply: bool,
+    /// A toolchain dependency's execution platform
+    /// (ConfiguredTargetKey::exec_platform, B13c).
+    pub exec_platform: Option<Label>,
 }
 
 /// What a package's load produced, as far as analysis and the target
@@ -1690,14 +1693,17 @@ pub fn window_covers(full: &[u8], partial: &[u8]) -> Result<(), String> {
 /// ConfiguredTargetKey::action_owner).
 fn owner_of_key(key: &IndexKey, top: &[u8; 32]) -> Option<String> {
     let config = key.config?;
-    Some(if config == *top {
-        key.label.to_string()
-    } else {
-        let hex: String = config[..4]
+    let hex = || -> String {
+        config[..4]
             .iter()
             .map(|byte| format!("{byte:02x}"))
-            .collect();
-        format!("{}[{hex}]", key.label)
+            .collect()
+    };
+    Some(match (&key.exec_platform, config == *top) {
+        (None, true) => key.label.to_string(),
+        (None, false) => format!("{}[{}]", key.label, hex()),
+        (Some(platform), true) => format!("{}[@{platform}]", key.label),
+        (Some(platform), false) => format!("{}[{}@{platform}]", key.label, hex()),
     })
 }
 
@@ -3520,11 +3526,13 @@ mod tests {
                     label: label("//a:x"),
                     config: Some([1; 32]),
                     apply: true,
+                    exec_platform: None,
                 },
                 IndexKey {
                     label: label("//c:y"),
                     config: Some([1; 32]),
                     apply: true,
+                    exec_platform: None,
                 },
             ],
             labels: vec![label("//a:x"), label("//c:y")],
@@ -3702,6 +3710,7 @@ mod tests {
                 label: Label::parse_canonical("//a:b").unwrap(),
                 config: Some([1; 32]),
                 apply: true,
+                exec_platform: None,
             }],
             edges: vec![(0, 0)],
             accesses: vec![(0, 0)],
