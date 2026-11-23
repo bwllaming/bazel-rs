@@ -92,7 +92,7 @@ impl<'a> Strings<'a> {
     fn interned(&mut self, text: &'a crate::interner::IStr) {
         let text: &'static str = text.as_str();
         if self.allocations.insert(text.as_ptr() as usize) {
-            self.bytes += 8 + text.len().div_ceil(8) as u64 * 8;
+            self.bytes += text.len() as u64;
         }
         self.content(text.as_bytes());
     }

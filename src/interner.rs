@@ -1,12 +1,12 @@
 //! Process-global string interning (docs/MEMORY.md, "String interning").
 //!
-//! An [`IStr`] is one pointer to an interned copy of its text: equal texts
-//! interned anywhere in the process are one copy, and an `IStr` costs 8
+//! An [`IStr`] is a reference to an interned copy of its text: equal texts
+//! interned anywhere in the process are one copy, and an `IStr` costs 16
 //! bytes where a `String` costs 24 plus its own heap allocation. The copies
 //! live in leaked arena chunks for the rest of the process (every command is
 //! its own process), so intern only long-lived strings that repeat — a
 //! planned action's arguments (OpenROAD: 5.3 M argument strings, 92 K
-//! distinct) — never transient ones.
+//! distinct), labels — never transient ones.
 //!
 //! An `IStr` hashes, compares, orders, prints (`Display`, `Debug`) and
 //! serializes exactly as the `String` of its text, so it replaces a `String`
@@ -14,42 +14,34 @@
 //!
 //! The table is sharded ([`SHARDS`] mutexes, picked by the text's hash): an
 //! intern takes one shard's lock for a lookup and, for a new text, a copy
-//! into that shard's arena chunk.
-#![allow(unsafe_code)]
+//! into that shard's arena chunk. Safe code only: a chunk is a leaked byte
+//! slice, each text is split off its front and validated back into a `str`.
 
 use std::borrow::Borrow;
 use std::ffi::OsStr;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 /// Shards of the table (a power of two).
 const SHARDS: usize = 64;
-/// Words (8 bytes) of an arena chunk: 256 KiB.
-const CHUNK_WORDS: usize = 1 << 15;
-/// Texts above this many words get an allocation of their own.
-const LARGE_WORDS: usize = CHUNK_WORDS / 8;
+/// Bytes of an arena chunk.
+const CHUNK_BYTES: usize = 1 << 16;
+/// Texts above this many bytes get an allocation of their own.
+const LARGE_BYTES: usize = CHUNK_BYTES / 16;
 
-/// An interned string: a pointer to its length word, followed by its UTF-8
-/// bytes, in a leaked arena. Cloning copies the pointer (not `Copy`, so
-/// that a field changing from `String` keeps its `clone()` calls).
-#[derive(Clone)]
-pub struct IStr(NonNull<u64>);
-
-// SAFETY: an IStr points to immutable, never-freed memory.
-unsafe impl Send for IStr {}
-// SAFETY: as above.
-unsafe impl Sync for IStr {}
-
-/// The empty string's storage (length 0, no bytes).
-static EMPTY: u64 = 0;
+/// An interned string: its text, in memory that lives for the rest of the
+/// process. Equal texts are one copy, so equality is identity. Cloning
+/// copies the reference (not `Copy`, so that a field changing from `String`
+/// keeps its `clone()` calls).
+#[derive(Clone, Default)]
+pub struct IStr(&'static str);
 
 struct Shard {
     table: hashbrown::HashTable<IStr>,
     /// The unused rest of the shard's current chunk.
-    rest: &'static mut [u64],
+    rest: &'static mut [u8],
 }
 
 static TABLE: LazyLock<[Mutex<Shard>; SHARDS]> = LazyLock::new(|| {
@@ -61,7 +53,7 @@ static TABLE: LazyLock<[Mutex<Shard>; SHARDS]> = LazyLock::new(|| {
     })
 });
 
-/// Distinct texts interned and their bytes (arena words included).
+/// Distinct texts interned and their bytes (arena bytes).
 static INTERNED: AtomicU64 = AtomicU64::new(0);
 static INTERNED_BYTES: AtomicU64 = AtomicU64::new(0);
 
@@ -88,31 +80,22 @@ fn shard_of(hash: u64) -> usize {
 impl Shard {
     /// Copy `text` into this shard's arena.
     fn store(&mut self, text: &str) -> IStr {
-        let words = 1 + text.len().div_ceil(8);
-        let slot: &'static mut [u64] = if words > LARGE_WORDS {
-            Box::leak(vec![0u64; words].into_boxed_slice())
+        let stored: &'static str = if text.len() > LARGE_BYTES {
+            Box::leak(Box::<str>::from(text))
         } else {
-            if self.rest.len() < words {
-                self.rest = Box::leak(vec![0u64; CHUNK_WORDS].into_boxed_slice());
+            if self.rest.len() < text.len() {
+                self.rest = Box::leak(vec![0u8; CHUNK_BYTES].into_boxed_slice());
             }
             let rest = std::mem::take(&mut self.rest);
-            let (slot, rest) = rest.split_at_mut(words);
+            let (slot, rest) = rest.split_at_mut(text.len());
             self.rest = rest;
-            slot
+            slot.copy_from_slice(text.as_bytes());
+            let slot: &'static [u8] = slot;
+            std::str::from_utf8(slot).expect("a copy of a str is UTF-8")
         };
-        slot[0] = text.len() as u64;
-        // SAFETY: `slot` has `words - 1 >= text.len() / 8` words after the
-        // length word, exclusively ours, and u8 has no alignment needs.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                text.as_ptr(),
-                slot.as_mut_ptr().add(1).cast::<u8>(),
-                text.len(),
-            );
-        }
         INTERNED.fetch_add(1, Ordering::Relaxed);
-        INTERNED_BYTES.fetch_add(words as u64 * 8, Ordering::Relaxed);
-        IStr(NonNull::from(&mut slot[0]))
+        INTERNED_BYTES.fetch_add(text.len() as u64, Ordering::Relaxed);
+        IStr(stored)
     }
 }
 
@@ -126,27 +109,19 @@ impl IStr {
         let mut shard = TABLE[shard_of(hash)]
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(found) = shard.table.find(hash, |entry| entry.as_str() == text) {
+        if let Some(found) = shard.table.find(hash, |entry| entry.0 == text) {
             return found.clone();
         }
         let interned = shard.store(text);
         shard
             .table
-            .insert_unique(hash, interned.clone(), |entry| hash_text(entry.as_str()));
+            .insert_unique(hash, interned.clone(), |entry| hash_text(entry.0));
         interned
     }
 
     /// The text (it lives for the rest of the process).
     pub fn as_str(&self) -> &'static str {
-        let header = self.0.as_ptr();
-        // SAFETY: an IStr points to a length word followed by that many
-        // bytes of valid UTF-8 (copied from a `&str` by `Shard::store`, or
-        // EMPTY), in memory never freed or written again.
-        unsafe {
-            let len = *header as usize;
-            let bytes = std::slice::from_raw_parts(header.add(1).cast::<u8>(), len);
-            std::str::from_utf8_unchecked(bytes)
-        }
+        self.0
     }
 
     /// Intern every string of `strings`, into a vector of exactly their
@@ -169,12 +144,6 @@ pub fn stats() -> (u64, u64) {
         INTERNED.load(Ordering::Relaxed),
         INTERNED_BYTES.load(Ordering::Relaxed),
     )
-}
-
-impl Default for IStr {
-    fn default() -> Self {
-        IStr(NonNull::from(&EMPTY))
-    }
 }
 
 impl std::ops::Deref for IStr {
@@ -239,11 +208,12 @@ impl From<IStr> for String {
     }
 }
 
-// Equal texts are one interned copy (the empty text is always EMPTY), so
-// equality is identity.
+// Equal non-empty texts are one interned copy (disjoint from every other),
+// so equality is identity.
 impl PartialEq for IStr {
     fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
+        self.0.len() == other.0.len()
+            && (self.0.is_empty() || std::ptr::eq(self.0.as_ptr(), other.0.as_ptr()))
     }
 }
 
@@ -293,7 +263,7 @@ impl PartialOrd for IStr {
 
 impl Ord for IStr {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        if self.0 == other.0 {
+        if self == other {
             return std::cmp::Ordering::Equal;
         }
         self.as_str().cmp(other.as_str())
