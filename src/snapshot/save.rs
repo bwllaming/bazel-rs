@@ -344,7 +344,7 @@ impl Save {
         let compressing = Instant::now();
         crate::perf_mark("snapshot.save.sections_started");
         let (plan, plan_stats) =
-            crate::snapshot::codec::encode_parts_with(request, format::compress_part)
+            crate::snapshot::codec::encode_parts_framed(request, format::FRAME, format::deflate)
                 .map_err(|error| error.to_string())?;
         crate::perf_mark("snapshot.save.plan_encoded");
         let plan_len = plan_stats.bytes;
@@ -523,7 +523,17 @@ impl Sections {
         derive: Option<crate::snapshot::derive::Coverage>,
     ) -> Self {
         let replay_records = records.len();
+        // In the caller's arena, as the plan's encoders
+        // (crate::snapshot::codec): what these threads allocate and free
+        // reuses the pages planning freed there.
+        let arena = crate::alloc_arena::current();
+        let bind = move || {
+            if let Some(arena) = arena {
+                crate::alloc_arena::bind(arena);
+            }
+        };
         let inputs = std::thread::spawn(move || {
+            bind();
             let started = Instant::now();
             let recording = recorder.take();
             let policy = Policy::current();
@@ -586,6 +596,7 @@ impl Sections {
         });
         let timed = |encode: Box<dyn FnOnce() -> Option<Vec<u8>> + Send>| {
             std::thread::spawn(move || {
+                bind();
                 let started = Instant::now();
                 let encoded = encode();
                 (encoded, started.elapsed().as_secs_f64() * 1000.0)

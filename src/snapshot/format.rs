@@ -498,7 +498,7 @@ pub struct Stats {
 pub const COMPRESSED_MAGIC: &[u8; 8] = b"BZRSPZ01";
 /// Plan bytes per compressed frame (fixed: the stored bytes must not depend
 /// on the machine).
-const FRAME: usize = 4 << 20;
+pub(crate) const FRAME: usize = 4 << 20;
 /// Threads compressing or inflating the frames of one plan at most.
 const FRAME_THREADS: usize = 8;
 
@@ -602,7 +602,7 @@ pub fn assemble_compressed(parts: Vec<Vec<(usize, Vec<u8>)>>) -> Vec<u8> {
 }
 
 /// One frame deflated ([`compress_plan`], [`compress_part`]).
-fn deflate(frame: &[u8]) -> Vec<u8> {
+pub(crate) fn deflate(frame: &[u8]) -> Vec<u8> {
     use std::io::Write;
     let mut encoder = flate2::write::DeflateEncoder::new(
         Vec::with_capacity(frame.len() / 8),

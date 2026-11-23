@@ -254,6 +254,54 @@ pub fn encode_parts_with<T: Send>(
     request: &PlannedRequest,
     part: impl Fn(Vec<u8>) -> T + Sync,
 ) -> Result<(Vec<T>, Stats), EncodeError> {
+    encode_parts_chunked(
+        request,
+        |elements| to_section(elements).map(|bytes| (bytes.len(), part(bytes))),
+        &part,
+    )
+}
+
+/// [`encode_parts`] as compressed frames, each part's raw bytes cut into
+/// frames of at most `frame` bytes and handed to `compress` as they are
+/// written (crate::snapshot::format::compress_part's frames): a NODES chunk
+/// streams into frames on the thread that encodes it, so no chunk's raw
+/// bytes are ever held whole (~/code: 58 chunks of ~8 MB raw on 16 threads,
+/// each with its doubling buffer and the copy its path table was prepended
+/// to — the save's ~0.5 GB spike over the analysis). A chunk's path table
+/// (written first in the raw bytes) and its body are framed apart: the
+/// frames inflate to the same bytes, [`decode_stored`] reads a section
+/// from any frames that end at its end.
+pub fn encode_parts_framed(
+    request: &PlannedRequest,
+    frame: usize,
+    compress: impl Fn(&[u8]) -> Vec<u8> + Sync,
+) -> Result<(Vec<Frames>, Stats), EncodeError> {
+    let compress: &(dyn Fn(&[u8]) -> Vec<u8> + Sync) = &compress;
+    let frames_of = |bytes: Vec<u8>| {
+        bytes
+            .chunks(frame)
+            .map(|piece| (piece.len(), compress(piece)))
+            .collect::<Vec<_>>()
+    };
+    encode_parts_chunked(
+        request,
+        |elements| {
+            let (len, mut table, body) =
+                to_section_streamed(elements, FrameSink::new(frame, compress))?;
+            table.extend(body);
+            Ok((len, table))
+        },
+        &frames_of,
+    )
+}
+
+/// [`encode_parts_with`] with each NODES chunk's elements encoded by
+/// `chunk` into its length and part.
+fn encode_parts_chunked<T: Send>(
+    request: &PlannedRequest,
+    chunk: impl Fn(&Vec<(&PlannedAction, &[u32])>) -> Result<(usize, T), postcard::Error> + Sync,
+    part: &(impl Fn(Vec<u8>) -> T + Sync),
+) -> Result<(Vec<T>, Stats), EncodeError> {
     let start = Instant::now();
     let meta = postcard::to_stdvec(&meta_of(request))
         .map_err(|error| postcard_error(error, "the request outline"))?;
@@ -262,10 +310,9 @@ pub fn encode_parts_with<T: Send>(
     let (table, indices) = group_table(&request.nodes);
     let groups = to_section(&table_of(&table))
         .map_err(|error| postcard_error(error, "the shared input groups"))?;
-    let encode_chunk = |(chunk, indices): &(&[PlannedAction], &[Vec<u32>])| {
-        to_section(&chunk_elements(chunk, indices))
-            .map(|bytes| (bytes.len(), part(bytes)))
-            .map_err(|error| EncodeError::NotSerializable(not_serializable_reason(chunk, error)))
+    let encode_chunk = |(nodes, indices): &(&[PlannedAction], &[Vec<u32>])| {
+        chunk(&chunk_elements(nodes, indices))
+            .map_err(|error| EncodeError::NotSerializable(not_serializable_reason(nodes, error)))
     };
     let parts: Vec<(&[PlannedAction], &[Vec<u32>])> = request
         .nodes
@@ -734,9 +781,17 @@ fn on_threads_up_to<T: Sync, R: Send>(
     }
     let next = AtomicUsize::new(0);
     let slots: Vec<Mutex<Option<R>>> = items.iter().map(|_| Mutex::new(None)).collect();
+    // The encoders allocate in the caller's arena: their buffers come and
+    // go, and its pages planning freed are reused rather than new arenas'
+    // fresh pages added beside them (the analysis snapshot's save, at the
+    // end of planning).
+    let arena = crate::alloc_arena::current();
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| {
+                if let Some(arena) = arena {
+                    crate::alloc_arena::bind(arena);
+                }
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some(item) = items.get(index) else {
@@ -1170,6 +1225,95 @@ impl Drop for TableScope {
 /// A GROUPS or NODES section: its path table (the distinct path byte
 /// strings) followed by `value` with every path written as its index in
 /// the table. The same value always gives the same bytes.
+/// [`to_section`] written to `sink` as it is encoded: the section's length,
+/// its path table's frames and its body's frames (the raw section is the
+/// table followed by the body, as [`to_section`] writes it).
+fn to_section_streamed<T: Serialize + ?Sized>(
+    value: &T,
+    sink: FrameSink<'_>,
+) -> Result<(usize, Frames, Frames), postcard::Error> {
+    let _scope = TableScope;
+    ENCODING.with(|table| *table.borrow_mut() = Some(PathTable::default()));
+    let (body_len, body, frame, compress) = postcard::serialize_with_flavor(value, sink)?;
+    let table = ENCODING
+        .with(|table| table.borrow_mut().take())
+        .unwrap_or_default();
+    let entries: Vec<BytesRef<'_>> = table.entries.iter().map(|entry| BytesRef(entry)).collect();
+    let table = postcard::to_stdvec(&entries)?;
+    let len = table.len() + body_len;
+    let table = table
+        .chunks(frame)
+        .map(|piece| (piece.len(), compress(piece)))
+        .collect();
+    Ok((len, table, body))
+}
+
+/// Compressed frames: (raw bytes, compressed bytes) each.
+pub type Frames = Vec<(usize, Vec<u8>)>;
+
+/// A postcard output that compresses every `frame` bytes as they are
+/// written ([`encode_parts_framed`]): its raw length and frames.
+struct FrameSink<'a> {
+    frame: usize,
+    buffer: Vec<u8>,
+    frames: Vec<(usize, Vec<u8>)>,
+    len: usize,
+    compress: &'a (dyn Fn(&[u8]) -> Vec<u8> + Sync),
+}
+
+impl<'a> FrameSink<'a> {
+    fn new(frame: usize, compress: &'a (dyn Fn(&[u8]) -> Vec<u8> + Sync)) -> Self {
+        assert!(frame > 0, "a frame holds bytes");
+        FrameSink {
+            frame,
+            buffer: Vec::new(),
+            frames: Vec::new(),
+            len: 0,
+            compress,
+        }
+    }
+
+    fn flush(&mut self) {
+        if !self.buffer.is_empty() {
+            self.frames
+                .push((self.buffer.len(), (self.compress)(&self.buffer)));
+            self.len += self.buffer.len();
+            self.buffer.clear();
+        }
+    }
+}
+
+impl<'a> postcard::ser_flavors::Flavor for FrameSink<'a> {
+    type Output = (
+        usize,
+        Vec<(usize, Vec<u8>)>,
+        usize,
+        &'a (dyn Fn(&[u8]) -> Vec<u8> + Sync),
+    );
+
+    fn try_extend(&mut self, mut data: &[u8]) -> postcard::Result<()> {
+        while !data.is_empty() {
+            let room = self.frame - self.buffer.len();
+            let (now, rest) = data.split_at(room.min(data.len()));
+            self.buffer.extend_from_slice(now);
+            data = rest;
+            if self.buffer.len() == self.frame {
+                self.flush();
+            }
+        }
+        Ok(())
+    }
+
+    fn try_push(&mut self, byte: u8) -> postcard::Result<()> {
+        self.try_extend(&[byte])
+    }
+
+    fn finalize(mut self) -> postcard::Result<Self::Output> {
+        self.flush();
+        Ok((self.len, self.frames, self.frame, self.compress))
+    }
+}
+
 fn to_section<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, postcard::Error> {
     let _scope = TableScope;
     ENCODING.with(|table| *table.borrow_mut() = Some(PathTable::default()));
@@ -2903,6 +3047,48 @@ mod tests {
         damaged[last] ^= 0xff;
         assert!(decode_stored(&damaged, &never).is_err());
         assert!(decode_stored(&stored[..stored.len() - 1], &never).is_err());
+    }
+
+    /// The streamed encoding (the analysis snapshot's save): its frames
+    /// inflate to exactly the encoding, decode section by section to the
+    /// same request, and are the same on every run, at any frame size
+    /// (a frame smaller than a path table or a chunk, one larger than the
+    /// whole plan).
+    #[test]
+    fn framed_parts_inflate_to_the_encoding() {
+        use crate::snapshot::format::{assemble_compressed, decompress_plan, deflate};
+        let tool = input_group("tool.runfiles", "a");
+        let held = [&tool];
+        let mut nodes: Vec<PlannedAction> = (0..2 * CHUNK + 3)
+            .map(|index| holder(index, if index % 3 == 0 { &held[..] } else { &[] }))
+            .collect();
+        nodes.extend(sample().nodes);
+        let request = with_nodes(nodes);
+        let bytes = encode(&request).unwrap();
+        let never = AtomicBool::new(false);
+        for frame in [1, 7, 4096, 1 << 30] {
+            let (parts, stats) = encode_parts_framed(&request, frame, deflate).unwrap();
+            assert_eq!(stats.bytes, bytes.len());
+            assert!(
+                parts
+                    .iter()
+                    .flatten()
+                    .all(|(raw, _)| 0 < *raw && *raw <= frame)
+            );
+            let stored = assemble_compressed(parts);
+            assert_eq!(
+                decompress_plan(stored.clone()).unwrap(),
+                bytes,
+                "frame {frame}"
+            );
+            let (decoded, size) = decode_stored(&stored, &never).unwrap();
+            assert_eq!(
+                (encode(&decoded).unwrap(), size),
+                (bytes.clone(), bytes.len())
+            );
+            let (again, _) = encode_parts_framed(&request, frame, deflate).unwrap();
+            assert_eq!(assemble_compressed(again), stored);
+        }
     }
 
     /// A group's `valid` flag is never decoded but recomputed: a tampered

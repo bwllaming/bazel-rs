@@ -1363,28 +1363,39 @@ impl Recorder {
     /// afterwards).
     pub fn take(&self) -> Recording {
         wait_commits();
-        let mut observations = Vec::new();
-        for shard in &self.shards {
-            let entries = std::mem::take(&mut *lock(shard));
-            for (path, mut list) in entries {
-                // The last observation of the path takes it (sorted below).
-                let last = list.pop();
-                for observation in list {
-                    observations.push((path.clone(), observation));
-                }
-                if let Some(observation) = last {
-                    observations.push((path, observation));
-                }
+        // Each path once (the shards' keys), sorted by the paths' bytes
+        // (`Path::cmp` parses components; consumers need a deterministic
+        // order with a path's observations together), its observations in
+        // recorded order sorted by operation (stably): what a stable sort of
+        // every observation by (path bytes, operation) gives, without that
+        // sort's scratch copy of half of them (~/code: 0.5 M observations,
+        // beside the plan's encoding).
+        let shards: Vec<_> = self
+            .shards
+            .iter()
+            .map(|shard| std::mem::take(&mut *lock(shard)))
+            .collect();
+        let mut paths: Vec<(PathBuf, Vec<Observation>)> =
+            Vec::with_capacity(shards.iter().map(|entries| entries.len()).sum());
+        for entries in shards {
+            paths.extend(entries);
+        }
+        paths.sort_unstable_by(|(a, _), (b, _)| {
+            a.as_os_str().as_bytes().cmp(b.as_os_str().as_bytes())
+        });
+        let total = paths.iter().map(|(_, list)| list.len()).sum();
+        let mut observations = Vec::with_capacity(total);
+        for (path, mut list) in paths {
+            list.sort_by(|x, y| x.op.cmp(&y.op));
+            // The last observation of the path takes it.
+            let last = list.pop();
+            for observation in list {
+                observations.push((path.clone(), observation));
+            }
+            if let Some(observation) = last {
+                observations.push((path, observation));
             }
         }
-        // By the paths' bytes (`Path::cmp` parses components; consumers need
-        // a deterministic order with a path's observations together).
-        observations.sort_by(|(a, x), (b, y)| {
-            a.as_os_str()
-                .as_bytes()
-                .cmp(b.as_os_str().as_bytes())
-                .then_with(|| x.op.cmp(&y.op))
-        });
         let mut repositories = lock(&self.repositories).take();
         repositories.sort_by(|a, b| a.root.cmp(&b.root));
         self.restat_manifests(&mut repositories);

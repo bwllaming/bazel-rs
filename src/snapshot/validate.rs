@@ -617,6 +617,8 @@ fn per_tree_summary_owned(mut recording: Recording) -> Recording {
     recording
         .observations
         .retain(|_| keep.next().unwrap_or(true));
+    // (~/code keeps a tenth of them: the rest of the room goes back.)
+    recording.observations.shrink_to_fit();
     for repository in &mut recording.repositories {
         let entries = std::mem::take(&mut repository.entries);
         repository.entries = entries
