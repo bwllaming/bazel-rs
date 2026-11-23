@@ -1,0 +1,281 @@
+{
+ "schema": "runfiles-tree-tally-receipt-v1",
+ "reference": {
+  "path": "/home/coder/bazel/.direnv/reference/bazel-9.3.1-linux-x86_64",
+  "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+  "version": "9.3.1"
+ },
+ "method": "capture.py in this directory on the dev host (fresh workspace copy per case, private HOME, PATH=/usr/bin:/bin, --nosystem_rc --nohome_rc; genuine --batch with a scratch --output_user_root); each case built twice (cold, cached); native = bazel-rs 0.4.35 (main 35733ea1), native_0_4_34 = bazel-rs 0.4.34 for the canary comparison",
+ "findings": [
+  "Genuine counts four internal actions per runfiles tree (manifest, symlink tree, runfiles tree, repo mapping), once per executable and configuration however many actions or targets stage it: e1 (3 actions), e2 and the genrule share one exec-configuration tree (exec_uses_shared: 6 internal, as one_exec_use); a target-configuration use adds a second tree (+5 internal: the tool's own script write and its four runfiles actions).",
+  "bazel-rs 0.4.35 matches every row; 0.4.34 counted a built runfiles tree once instead of twice (SymlinkTreeAction + RunfilesTreeAction): one short per tree built as a target's own runfiles (top_level_binary_only 5 vs 6), and two over where a tool's tree was also built as a top-level target's (the tool tree's faked three on top of the built manifest and tree: tool_top_level_and_used 13 vs 11).",
+  "~/code canary (cn-out8 b1, build //src/... --keep_going): internal 23,292 (0.4.34) -> 24,250 (0.4.35) = +958 = exactly the 958 runfiles trees 0.4.34 built (each now tallied twice); the 105 tool trees 0.4.35 newly builds (210 new published outputs: a .runfiles_manifest and a .runfiles each) were already tallied as three internal actions by 0.4.34 without being built, so they add no count."
+ ],
+ "rows": [
+  {
+   "id": "one_exec_use",
+   "targets": [
+    "//t:e2"
+   ],
+   "classification": "EXACT",
+   "genuine": [
+    [
+     0,
+     "INFO: 7 processes: 6 internal, 1 processwrapper-sandbox."
+    ],
+    [
+     0,
+     "INFO: 1 process: 6 action cache hit, 1 internal."
+    ]
+   ],
+   "native": [
+    [
+     0,
+     "INFO: 7 processes: 6 internal, 1 processwrapper-sandbox."
+    ],
+    [
+     0,
+     "INFO: 1 process: 6 action cache hit, 1 internal."
+    ]
+   ],
+   "native_0_4_34": [
+    [
+     0,
+     "INFO: 7 processes: 6 internal, 1 processwrapper-sandbox."
+    ],
+    [
+     0,
+     "INFO: 1 process: 6 action cache hit, 1 internal."
+    ]
+   ]
+  },
+  {
+   "id": "exec_uses_shared",
+   "targets": [
+    "//t:e1",
+    "//t:e2",
+    "//t:g"
+   ],
+   "classification": "EXACT",
+   "genuine": [
+    [
+     0,
+     "INFO: 11 processes: 6 internal, 5 processwrapper-sandbox."
+    ],
+    [
+     0,
+     "INFO: 1 process: 10 action cache hit, 1 internal."
+    ]
+   ],
+   "native": [
+    [
+     0,
+     "INFO: 11 processes: 6 internal, 5 processwrapper-sandbox."
+    ],
+    [
+     0,
+     "INFO: 1 process: 10 action cache hit, 1 internal."
+    ]
+   ],
+   "native_0_4_34": [
+    [
+     0,
+     "INFO: 11 processes: 6 internal, 5 processwrapper-sandbox."
+    ],
+    [
+     0,
+     "INFO: 1 process: 10 action cache hit, 1 internal."
+    ]
+   ]
+  },
+  {
+   "id": "exec_and_target",
+   "targets": [
+    "//t:e1",
+    "//t:t1"
+   ],
+   "classification": "EXACT",
+   "genuine": [
+    [
+     0,
+     "INFO: 16 processes: 11 internal, 5 processwrapper-sandbox."
+    ],
+    [
+     0,
+     "INFO: 1 process: 15 action cache hit, 1 internal."
+    ]
+   ],
+   "native": [
+    [
+     0,
+     "INFO: 16 processes: 11 internal, 5 processwrapper-sandbox."
+    ],
+    [
+     0,
+     "INFO: 1 process: 15 action cache hit, 1 internal."
+    ]
+   ],
+   "native_0_4_34": [
+    [
+     0,
+     "INFO: 16 processes: 11 internal, 5 processwrapper-sandbox."
+    ],
+    [
+     0,
+     "INFO: 1 process: 15 action cache hit, 1 internal."
+    ]
+   ]
+  },
+  {
+   "id": "two_tools",
+   "targets": [
+    "//t:e1",
+    "//t:f1"
+   ],
+   "classification": "EXACT",
+   "genuine": [
+    [
+     0,
+     "INFO: 15 processes: 11 internal, 4 processwrapper-sandbox."
+    ],
+    [
+     0,
+     "INFO: 1 process: 14 action cache hit, 1 internal."
+    ]
+   ],
+   "native": [
+    [
+     0,
+     "INFO: 15 processes: 11 internal, 4 processwrapper-sandbox."
+    ],
+    [
+     0,
+     "INFO: 1 process: 14 action cache hit, 1 internal."
+    ]
+   ],
+   "native_0_4_34": [
+    [
+     0,
+     "INFO: 15 processes: 11 internal, 4 processwrapper-sandbox."
+    ],
+    [
+     0,
+     "INFO: 1 process: 14 action cache hit, 1 internal."
+    ]
+   ]
+  },
+  {
+   "id": "tool_top_level_and_used",
+   "targets": [
+    "//t:tool",
+    "//t:e1",
+    "//t:t1"
+   ],
+   "classification": "EXACT",
+   "genuine": [
+    [
+     0,
+     "INFO: 16 processes: 11 internal, 5 processwrapper-sandbox."
+    ],
+    [
+     0,
+     "INFO: 1 process: 15 action cache hit, 1 internal."
+    ]
+   ],
+   "native": [
+    [
+     0,
+     "INFO: 16 processes: 11 internal, 5 processwrapper-sandbox."
+    ],
+    [
+     0,
+     "INFO: 1 process: 15 action cache hit, 1 internal."
+    ]
+   ],
+   "native_0_4_34": [
+    [
+     0,
+     "INFO: 18 processes: 13 internal, 5 processwrapper-sandbox."
+    ],
+    [
+     0,
+     "INFO: 1 process: 17 action cache hit, 1 internal."
+    ]
+   ]
+  },
+  {
+   "id": "all",
+   "targets": [
+    "//t:all"
+   ],
+   "classification": "EXACT",
+   "genuine": [
+    [
+     0,
+     "INFO: 29 processes: 21 internal, 8 processwrapper-sandbox."
+    ],
+    [
+     0,
+     "INFO: 1 process: 28 action cache hit, 1 internal."
+    ]
+   ],
+   "native": [
+    [
+     0,
+     "INFO: 29 processes: 21 internal, 8 processwrapper-sandbox."
+    ],
+    [
+     0,
+     "INFO: 1 process: 28 action cache hit, 1 internal."
+    ]
+   ],
+   "native_0_4_34": [
+    [
+     0,
+     "INFO: 30 processes: 22 internal, 8 processwrapper-sandbox."
+    ],
+    [
+     0,
+     "INFO: 1 process: 29 action cache hit, 1 internal."
+    ]
+   ]
+  },
+  {
+   "id": "top_level_binary_only",
+   "targets": [
+    "//t:tool2"
+   ],
+   "classification": "EXACT",
+   "genuine": [
+    [
+     0,
+     "INFO: 6 processes: 6 internal."
+    ],
+    [
+     0,
+     "INFO: 1 process: 5 action cache hit, 1 internal."
+    ]
+   ],
+   "native": [
+    [
+     0,
+     "INFO: 6 processes: 6 internal."
+    ],
+    [
+     0,
+     "INFO: 1 process: 5 action cache hit, 1 internal."
+    ]
+   ],
+   "native_0_4_34": [
+    [
+     0,
+     "INFO: 5 processes: 5 internal."
+    ],
+    [
+     0,
+     "INFO: 1 process: 4 action cache hit, 1 internal."
+    ]
+   ]
+  }
+ ]
+}

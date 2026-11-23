@@ -155,6 +155,7 @@ tests/fixtures/rule_extension/workspace
 tests/fixtures/runfiles_repo_links/workspace
 tests/fixtures/runfiles_symlinks/workspace
 tests/fixtures/runfiles_transitions/workspace
+tests/fixtures/runfiles_tree_tally/workspace
 tests/fixtures/sealed_copies/workspace
 tests/fixtures/sh_binary/rules_shell
 tests/fixtures/sh_binary/workspace

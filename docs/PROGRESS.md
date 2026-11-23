@@ -70,10 +70,11 @@ tests/console_text.rs):
   BuildSummaryStatsModule, SpawnStats): N counts the completed actions —
   executed, with or without a process (`internal`: writes, native transforms,
   the workspace status action, a failed spawn — one whose outputs are
-  missing counts under its runner —, and three per tool runfiles tree the
-  plan stages as a shared input group: Bazel's SourceManifestAction,
-  SymlinkTreeAction and RunfilesTreeAction, run or cached with the tree's
-  repository mapping manifest), not the action cache hits
+  missing counts under its runner —, and a runfiles tree's node twice:
+  Bazel's SymlinkTreeAction and RunfilesTreeAction, beside the tree's
+  SourceManifestAction and repository mapping manifest — four per
+  executable and configuration however many actions stage the tree,
+  tests/fixtures/runfiles_tree_tally), not the action cache hits
   (`M action cache hit`) — then the spawns by runner name (`remote cache
   hit`, then alphabetically `linux-sandbox` for the Landlock sandbox,
   `local`, `processwrapper-sandbox`, `remote`, `worker`; a test action counts

@@ -1,0 +1,20 @@
+load(":defs.bzl", "tool", "use_exec", "use_target")
+
+tool(name = "tool", data = ["data.txt"])
+
+tool(name = "tool2", data = ["data.txt"])
+
+use_exec(name = "e1", tool = ":tool", n = 3)
+
+use_exec(name = "e2", tool = ":tool")
+
+use_target(name = "t1", tool = ":tool", n = 2)
+
+use_exec(name = "f1", tool = ":tool2")
+
+genrule(
+    name = "g",
+    outs = ["g.txt"],
+    cmd = "$(location :tool) $@",
+    tools = [":tool"],
+)

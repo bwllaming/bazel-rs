@@ -24,6 +24,17 @@ its analysis and executed only when needed:
 | SourceManifestAction SOURCE_SYMLINKS (:501-523) | `Transform::RunfilesManifest` | `<exe>.runfiles_manifest` |
 | SymlinkTreeAction + RunfilesTreeAction (:525-544, 467-491) | `Transform::RunfilesTree` | `<exe>.runfiles/MANIFEST` |
 
+In the `INFO: N processes: …` tally the tree node counts twice (Bazel's
+SymlinkTreeAction and RunfilesTreeAction, both internal), so a built tree is
+four internal actions with its manifest and repository mapping — once per
+executable and configuration, however many actions or targets stage it as a
+tool (a tool's support is built with the actions that stage it, B49).
+Genuine 9.3.1 receipt: `tests/fixtures/runfiles_tree_tally` (a tool shared
+by several actions, in the exec and the target configuration, beside a
+second tool and top-level builds of the tools; 0.4.34 counted a built tree
+once, ~/code's canary went from 23,292 to 24,250 internal actions with
+0.4.35: exactly its 958 built trees).
+
 `bazel build` of an executable or test target builds the runfiles tree
 artifact like OutputGroupInfo.HIDDEN_TOP_LEVEL (RuleConfiguredTargetBuilder.java:144-158):
 the tree (and through it the manifests) with `--build_runfile_links` (default),

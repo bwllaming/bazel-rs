@@ -1534,3 +1534,71 @@ fn repo_mapping_manifests_include_generating_rules_and_select_keys() {
         );
     }
 }
+
+/// tests/fixtures/runfiles_tree_tally (genuine 9.3.1 receipt): the
+/// `INFO: N processes: ...` tally around runfiles trees. Bazel runs a tree
+/// as four internal actions (manifest, symlink tree, runfiles tree, repo
+/// mapping) once per executable and configuration, however many actions or
+/// targets stage it; each case builds twice (cold, then cached). The
+/// sandbox runner's name is the host's (`linux-sandbox` where the namespace
+/// sandbox works; the receipt's host has processwrapper-sandbox).
+#[test]
+fn runfiles_tree_tally_matches_the_genuine_receipt() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/runfiles_tree_tally");
+    let receipt: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fixture.join("reference_receipt.json")).unwrap())
+            .unwrap();
+    for row in receipt["rows"].as_array().unwrap() {
+        let id = row["id"].as_str().unwrap();
+        let temp = tempfile::Builder::new()
+            .prefix("runfiles-tree-tally-")
+            .tempdir_in(crate::test_temp::root())
+            .unwrap();
+        let ws = temp.path().join("ws");
+        for name in ["MODULE.bazel", "t/BUILD.bazel", "t/defs.bzl", "t/data.txt"] {
+            let path = ws.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::copy(fixture.join("workspace").join(name), path).unwrap();
+        }
+        // The built-in module profile, like genuine (its default host
+        // platform), from the offline genuine registry.
+        let cache = temp.path().join("cache");
+        seed_module_archives(&cache, &["platforms@1.0.0"]);
+        let mut runs = Vec::new();
+        for _ in 0..2 {
+            let output = Command::new("timeout")
+                .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
+                .arg("--ignore_all_rc_files")
+                .arg(format!("--cache-dir={}", cache.display()))
+                .args(["build", "--experimental-builtin-modules"])
+                .arg(builtin_registry_flag())
+                .args(
+                    row["targets"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|target| target.as_str().unwrap()),
+                )
+                .current_dir(&ws)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", temp.path())
+                .output()
+                .unwrap();
+            let mut run = vec![serde_json::json!(output.status.code())];
+            run.extend(
+                stderr(&output)
+                    .lines()
+                    .filter(|line| {
+                        line.starts_with("INFO: ")
+                            && (line.contains(" processes: ") || line.contains(" process: "))
+                    })
+                    .map(|line| {
+                        serde_json::json!(line.replace("linux-sandbox", "processwrapper-sandbox"))
+                    }),
+            );
+            runs.push(serde_json::Value::Array(run));
+        }
+        assert_eq!(serde_json::Value::Array(runs), row["genuine"], "{id}");
+    }
+}
