@@ -342,9 +342,11 @@ impl Save {
         // encoding threads: a plan of GBs is never held uncompressed while
         // the planned request and the analysis are still in memory (MEM4).
         let compressing = Instant::now();
+        crate::perf_mark("snapshot.save.sections_started");
         let (plan, plan_stats) =
             crate::snapshot::codec::encode_parts_with(request, format::compress_part)
                 .map_err(|error| error.to_string())?;
+        crate::perf_mark("snapshot.save.plan_encoded");
         let plan_len = plan_stats.bytes;
         let compressed_ms = compressing.elapsed().as_secs_f64() * 1000.0;
         let plan_at = started.elapsed();
@@ -381,6 +383,7 @@ impl Save {
                 index_ms,
                 derive_ms,
             } = sections.join()?;
+            crate::perf_mark("snapshot.save.sections_joined");
             stats.window_stderr = window_stderr;
             stats.plan_nodes = plan_nodes;
             stats.plan_bytes = plan_len as u64;
