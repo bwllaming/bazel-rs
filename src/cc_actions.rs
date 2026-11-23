@@ -1204,17 +1204,20 @@ fn create_cc_compile_action<'v>(
             "cc_internal.create_cc_compile_action with should_scan_includes is not implemented in the native profile (include scanning)".to_owned(),
         ));
     }
-    if !files_arg(23, "module_files")?.is_empty() {
-        return Err(failure(
-            "cc_internal.create_cc_compile_action with module_files is not implemented in the native profile (C++20 modules)".to_owned(),
-        ));
-    }
+    // C++20 modules (`--experimental_cpp_modules`, OSS corpus B32): the
+    // module map and its input are mandatory inputs
+    // (CppCompileActionBuilder.buildMandatoryInputs :395-397); the
+    // `module_files` are the action's allowed derived inputs, of which the
+    // module map names the ones a compile reads at execution
+    // (CppCompileAction.discoverInputs over the modmap input, :1680-1715).
+    // That discovery is not modelled: like genuine's undiscovered action,
+    // the compile has its mandatory inputs only (docs/CC_ACTIONS.md).
     let modmap = optional_file(24, "modmap_file")?;
     let modmap_input = optional_file(25, "modmap_input_file")?;
-    if modmap.is_some() || modmap_input.is_some() {
-        return Err(failure(
-            "cc_internal.create_cc_compile_action with a module map is not implemented in the native profile".to_owned(),
-        ));
+    if modmap.is_some() != modmap_input.is_some() {
+        return Err(failure(format!(
+            "cc_internal.{F}: modmap_file and modmap_input_file go together"
+        )));
     }
 
     // buildAndVerify (:256-291): the action config and its tool requirements.
@@ -1329,6 +1332,9 @@ fn create_cc_compile_action<'v>(
             .is_none_or(|(start, memo)| inputs[*start..].starts_with(memo.files())),
         "internal error: a compile's inputs do not hold the toolchain's memoized walk"
     );
+    for file in modmap.iter().chain(modmap_input.iter()) {
+        push(&mut inputs, &mut listed, file.clone());
+    }
     for file in files_arg(18, "cache_key_inputs")? {
         push(&mut inputs, &mut listed, file);
     }

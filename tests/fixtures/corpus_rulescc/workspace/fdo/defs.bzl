@@ -101,3 +101,34 @@ def _exec_user_impl(ctx):
 exec_user = rule(implementation = _exec_user_impl, attrs = {
     "tool": attr.label(cfg = "exec"),
 })
+
+# CoreOptions.actionEnvironment (`--action_env`, List<EnvVar>) written and
+# read by a transition: the output root and the default shell environment.
+def _env_impl(settings, attr):
+    print("READ_ENV", settings["//command_line_option:action_env"])
+    return {"//command_line_option:action_env": attr.env}
+
+_env = transition(
+    implementation = _env_impl,
+    inputs = ["//command_line_option:action_env"],
+    outputs = ["//command_line_option:action_env"],
+)
+
+def _env_leaf_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.run_shell(
+        outputs = [out],
+        command = 'echo "$PATH $X" > ' + out.path,
+        use_default_shell_env = True,
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+env_leaf = rule(implementation = _env_leaf_impl)
+
+def _env_top_impl(ctx):
+    return [DefaultInfo(files = depset(ctx.files.dep))]
+
+env_top = rule(implementation = _env_top_impl, attrs = {
+    "dep": attr.label(cfg = _env),
+    "env": attr.string_list(),
+})

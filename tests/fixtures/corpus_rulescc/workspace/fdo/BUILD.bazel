@@ -1,4 +1,4 @@
-load(":defs.bzl", "exec_user", "leaf", "read_leaf", "top")
+load(":defs.bzl", "env_leaf", "env_top", "exec_user", "leaf", "read_leaf", "top")
 
 filegroup(name = "malloc")
 
@@ -121,4 +121,16 @@ top(
 exec_user(
     name = "exec_user",
     tool = ":leaf",
+)
+
+env_leaf(name = "env_leaf")
+
+env_top(
+    name = "env",
+    dep = ":env_leaf",
+    env = [
+        "PATH=/usr/bin/special:/bin",
+        "X=1",
+        "=Y",
+    ],
 )

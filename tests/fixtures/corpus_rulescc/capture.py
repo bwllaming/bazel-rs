@@ -47,6 +47,8 @@ CASES = {
         ['//fdo:leaf'], [r'misplaced here'], ['leaf.txt']),
     'grte_top_not_a_label': (
         [], 'build', BUILD + ['--grte_top=fdo:libc'], ['//fdo:leaf'], [r'grte_top'], []),
+    'action_env_transition': (
+        [], 'build', BUILD + ['--action_env=X=0'], ['//fdo:env', '//fdo:env_leaf'], [r'READ_ENV'], ['env_leaf.txt']),
     'exec_grte_top': (
         [], 'build', BUILD + ['--host_grte_top=//fdo:libc', '--grte_top=//fdo:prof'],
         ['//fdo:exec_user', '//fdo:leaf'], [], ['leaf.txt']),

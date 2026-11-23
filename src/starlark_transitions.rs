@@ -86,6 +86,9 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "host_per_file_copt",
     // The ThinLTO option lists rules_cc's own tests transition on (B32).
     "ltoindexopt",
+    // CoreOptions.actionEnvironment (List<EnvVar>, EnvVarsConverter
+    // Starlark-convertible; rules_cc's cc_static_library tests, B32).
+    "action_env",
     "ltobackendopt",
     "per_file_ltobackendopt",
     // CoreOptions.defaultFeatures/hostFeatures and JavaOptions.javacOpts/
@@ -1159,6 +1162,14 @@ pub(crate) fn native_input<'v>(
         // converter is Starlark-convertible: each entry reads as its
         // `reverseForStarlark` string `filter@opt,...`
         // (StarlarkDefinedConfigTransition.getTransitionSafeString, :472-516).
+        // Each EnvVar as its reverseForStarlark spelling.
+        "action_env" => heap.alloc(
+            native
+                .action_env
+                .iter()
+                .map(crate::action_env::EnvVar::reverse)
+                .collect::<Vec<_>>(),
+        ),
         "copt" => heap.alloc(native.copts.clone()),
         "cxxopt" => heap.alloc(native.cxxopts.clone()),
         "conlyopt" => heap.alloc(native.conlyopts.clone()),
@@ -2037,6 +2048,7 @@ fn convert_native(
             | "ltoindexopt"
             | "ltobackendopt"
             | "per_file_ltobackendopt"
+            | "action_env"
             | "features"
             | "host_features"
             | "javacopt"
@@ -2207,6 +2219,24 @@ fn convert_native(
         // List field rejects (FieldOptionDefinition.setValue's
         // IllegalArgumentException, :762-764; observed: the paired capture
         // tests/fixtures/cpp_flag_options).
+        // allowMultiple `List<EnvVar>` with EnvVarsConverter per element.
+        "action_env" => {
+            let values = match &raw.kind {
+                RawKind::List(items) => items
+                    .iter()
+                    .map(|item| crate::action_env::EnvVar::parse(&item.element_text(false)))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(parsing)?,
+                RawKind::String(text) => {
+                    crate::action_env::EnvVar::parse(text).map_err(parsing)?;
+                    return Err(format!(
+                        "IllegalArgumentError for option '{name}': Can not set java.util.List field com.google.devtools.build.lib.analysis.config.CoreOptions.actionEnvironment to com.google.devtools.common.options.Converters$EnvVar"
+                    ));
+                }
+                _ => return Err(invalid()),
+            };
+            native.action_env = values;
+        }
         "copt" | "cxxopt" | "conlyopt" | "linkopt" | "host_copt" | "host_cxxopt"
         | "host_conlyopt" | "host_linkopt" | "ltoindexopt" | "ltobackendopt" | "features"
         | "host_features" | "javacopt" | "host_javacopt" => {

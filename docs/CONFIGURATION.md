@@ -996,7 +996,11 @@ there, while `--features`/`--host_features` are accepted and ignored):
   under `--fdo_instrument`/`--cs_fdo_instrument`, `xbinary_fdo` null under
   `--fdo_optimize`/`--fdo_instrument`/`--fdo_profile`/coverage, `zipper`
   `@bazel_tools//tools/zip:unzip_fdo` whenever a profile is set;
-  tests/fixtures/corpus_rulescc).
+  tests/fixtures/corpus_rulescc). `--action_env` is transitionable too
+  (List<EnvVar>: each element through EnvVarsConverter, read back as its
+  `reverseForStarlark` spelling, each EnvVar record's `toString`
+  — `Set[name=N, value=V]` — in the ST- hash; rules_cc's cc_static_library
+  tests; corpus_rulescc `action_env_transition`).
 - `--javacopt`/`--host_javacopt`: `ctx.fragments.java.default_javac_flags`
   (tokenized) and `default_javac_flags_depset` (one ShellUtils-escaped
   string; JavaHelper.detokenizeJavaOptions); the exec transition sets

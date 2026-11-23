@@ -686,6 +686,25 @@ pub(crate) fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static
     options.insert("host_conlyopt", list(&native.host_conlyopts));
     options.insert("host_linkopt", list(&native.host_linkopts));
     options.insert("ltoindexopt", list(&native.ltoindexopts));
+    // CoreOptions.actionEnvironment/hostActionEnvironment: List<EnvVar>, each
+    // EnvVar record's toString (`Set[name=N, value=V]`, `Inherit[name=N]`,
+    // `Unset[name=N]`).
+    let env_vars = |entries: &[crate::action_env::EnvVar]| {
+        list(
+            &entries
+                .iter()
+                .map(|entry| match entry {
+                    crate::action_env::EnvVar::Set(name, value) => {
+                        format!("Set[name={name}, value={value}]")
+                    }
+                    crate::action_env::EnvVar::Inherit(name) => format!("Inherit[name={name}]"),
+                    crate::action_env::EnvVar::Unset(name) => format!("Unset[name={name}]"),
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
+    options.insert("action_env", env_vars(&native.action_env));
+    options.insert("host_action_env", env_vars(&native.host_action_env));
     options.insert("ltobackendopt", list(&native.ltobackendopts));
     options.insert("features", list(&native.features));
     options.insert("host_features", list(&native.host_features));

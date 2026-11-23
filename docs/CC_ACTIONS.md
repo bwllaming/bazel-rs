@@ -189,7 +189,12 @@ tests/cc_compile.rs `thin_lto_actions_match_genuine` and
 ## What fails explicitly
 
 - **C++20 modules**: `create_cc_compile_action_template` (tree-artifact
-  compile action templates), `module_files`/module maps on the compile action.
+  compile action templates). A compile's module map and its input are
+  mandatory inputs (CppCompileActionBuilder.buildMandatoryInputs
+  :395-397; `--experimental_cpp_modules`, B32); its `module_files`, of
+  which genuine discovers the ones the module map names at execution
+  (CppCompileAction.discoverInputs), are not staged — like the ThinLTO
+  backends' imports, input discovery is not modelled.
 - **LTO over tree artifacts**: `create_lto_backend_action_template` and the
   wrapped factory's `declare_shareable_directory`.
 - **FDO profiles given by absolute paths**: `absolute_symlink`

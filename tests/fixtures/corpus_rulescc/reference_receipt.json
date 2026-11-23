@@ -1,6 +1,33 @@
 {
  "bazel": "9.3.1",
  "cases": {
+  "action_env_transition": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--action_env=X=0"
+   ],
+   "outputs": {
+    "k8-fastbuild-ST-3b9fca5d05b6/bin/fdo/env_leaf.txt": "/usr/bin/special:/bin 1\n",
+    "k8-fastbuild/bin/fdo/env_leaf.txt": "/bin:/usr/bin:/usr/local/bin 0\n"
+   },
+   "startup": [],
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/fdo/defs.bzl:108:10: READ_ENV [\"X=0\"]",
+     "pattern": "READ_ENV"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//fdo:env",
+    "//fdo:env_leaf"
+   ],
+   "workspace": "workspace"
+  },
   "exec_grte_top": {
    "bin_paths": {},
    "command": "build",
