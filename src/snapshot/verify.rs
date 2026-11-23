@@ -50,19 +50,19 @@
 //! a mismatch too ([`exit_if_abandoned`], from main: the full analysis's
 //! error is the command's, or exit 70 under the strict switch).
 
-use crate::observed_fs::{self, Op, Outcome, Recording, escape};
+use crate::observed_fs::{self, Observation, Op, Outcome, Recording, escape};
 use crate::registry_session::SessionHandle;
 use crate::request::{Diagnostics, PlannedRequest};
 use crate::snapshot::capture::{self, Capture, Captured};
 use crate::snapshot::hit::{Evidence, Hit};
 use crate::snapshot::key::Key;
 use crate::snapshot::replay::ReplayRecord;
-use crate::snapshot::validate::Policy;
+use crate::snapshot::validate::{Excused, Policy};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::io::Write as _;
 use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -219,7 +219,11 @@ impl Verify {
         let compared = Instant::now();
         let mut hit = self.hit.take().expect("a verify session holds its hit");
         let key = hit.session.key().short();
-        let Evidence { plan, inputs } = hit
+        let Evidence {
+            plan,
+            inputs,
+            excused,
+        } = hit
             .evidence
             .take()
             .expect("a verify session's hit holds its evidence");
@@ -275,7 +279,7 @@ impl Verify {
                     );
                 }
                 let recording = Policy::current().select_owned(recording);
-                compare_recordings(&inputs.recording, &recording, &mut report);
+                compare_recordings(&inputs.recording, &recording, &excused, &mut report);
                 recording.observations.len()
             }
             None => {
@@ -944,9 +948,37 @@ fn same_outcome(old: &Outcome, new: &Outcome) -> bool {
     }
 }
 
+/// Whether the full analysis's `observation` at `path`, recorded now but
+/// not in the snapshot, is what discovery's walk of a directory the hit's
+/// validation found added (`excused`, holding no package) records: its
+/// listing, the STAT of an absent BUILD.bazel / BUILD, the LSTAT of a
+/// directory it skips.
+fn walked_added_directory(excused: &Excused, path: &Path, observation: &Observation) -> bool {
+    excused.below_added(path)
+        && match (&observation.op, &observation.outcome) {
+            (op, Outcome::Listing { .. }) => crate::snapshot::validate::is_discovery_listing(op),
+            (Op::Stat, Outcome::Error(code)) => {
+                *code == libc::ENOENT
+                    && path
+                        .file_name()
+                        .is_some_and(|name| name == "BUILD.bazel" || name == "BUILD")
+            }
+            (Op::Lstat, Outcome::Kind(observed_fs::FileKind::Dir)) => true,
+            _ => false,
+        }
+}
+
 /// Compare the recording of the full analysis (`now`, under the snapshot's
-/// policy) with the snapshot's.
-fn compare_recordings(snapshot: &Recording, now: &Recording, report: &mut Report) {
+/// policy) with the snapshot's. The discovery listings the hit's validation
+/// `excused` may differ, and what discovery records walking the directories
+/// added to them is not in the snapshot (crate::snapshot::validate,
+/// "discovery listings"): both are notes, not mismatches.
+fn compare_recordings(
+    snapshot: &Recording,
+    now: &Recording,
+    excused: &Excused,
+    report: &mut Report,
+) {
     let recorded: HashMap<(&[u8], &Op), &Outcome> = snapshot
         .observations
         .iter()
@@ -961,10 +993,19 @@ fn compare_recordings(snapshot: &Recording, now: &Recording, report: &mut Report
     let mut missing = Vec::new();
     let mut changed = Vec::new();
     let (mut first_missing, mut first_changed) = (None, None);
+    let mut tolerated = 0;
     for (path, observation) in &now.observations {
         let key = (path.as_os_str().as_bytes(), &observation.op);
         seen.insert(key);
         match recorded.get(&key) {
+            None if walked_added_directory(excused, path, observation) => tolerated += 1,
+            Some(outcome)
+                if !same_outcome(outcome, &observation.outcome)
+                    && crate::snapshot::validate::is_discovery_listing(&observation.op)
+                    && excused.excuses_listing(snapshot, path) =>
+            {
+                tolerated += 1;
+            }
             None => {
                 first_missing.get_or_insert(path.as_os_str());
                 missing.push(format!(
@@ -984,6 +1025,14 @@ fn compare_recordings(snapshot: &Recording, now: &Recording, report: &mut Report
             }
             Some(_) => {}
         }
+    }
+    if tolerated > 0 {
+        report.notes.push(format!(
+            "{tolerated} observation(s) of {} discovery listing(s) changed only by directories without packages ({} added, {} removed)",
+            excused.indices.len(),
+            excused.added.len(),
+            excused.removed.len()
+        ));
     }
     // The log's first differing path, in the order of the differences.
     if let Some(path) = first_missing.or(first_changed) {
@@ -1255,7 +1304,7 @@ mod tests {
             observation("/ws/pkg", Op::Stat, Outcome::Kind(FileKind::Dir)),
         ]);
         let mut report = Report::default();
-        compare_recordings(&snapshot, &now, &mut report);
+        compare_recordings(&snapshot, &now, &Excused::default(), &mut report);
         assert!(report.mismatches.is_empty(), "{:?}", report.mismatches);
         assert_eq!(report.notes.len(), 1);
         assert!(
@@ -1274,7 +1323,7 @@ mod tests {
             observation("/ws/old", Op::Lstat, Outcome::Error(2)),
         ]);
         let mut report = Report::default();
-        compare_recordings(&snapshot, &now, &mut report);
+        compare_recordings(&snapshot, &now, &Excused::default(), &mut report);
         let titles: Vec<&str> = report
             .mismatches
             .iter()
@@ -1299,7 +1348,7 @@ mod tests {
         now.env
             .push((OsString::from("B"), EnvObservation { digest: None }));
         let mut report = Report::default();
-        compare_recordings(&snapshot, &now, &mut report);
+        compare_recordings(&snapshot, &now, &Excused::default(), &mut report);
         assert_eq!(report.mismatches.len(), 1);
         assert_eq!(report.mismatches[0].0, Class::Env);
         assert_eq!(

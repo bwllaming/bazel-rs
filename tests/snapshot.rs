@@ -784,6 +784,86 @@ fn recursive_patterns_see_new_packages_only() {
     twin.same(args, &[]).assert_hit();
 }
 
+/// A new directory without a BUILD file at any depth below a directory a
+/// recursive pattern lists (a test's `__pycache__`, a tool's cache) still
+/// hits, with identical output (crate::snapshot::validate, "discovery
+/// listings"), and so does its removal; a BUILD file added in it later
+/// misses and builds the new package; a glob descending into a new
+/// directory misses, and incremental analysis (no longer refused by the
+/// pattern's listing) re-analyzes the globbing target.
+#[test]
+fn recursive_patterns_excuse_new_directories_without_packages() {
+    let twin = fixture();
+    twin.write(
+        "gl/BUILD.bazel",
+        "genrule(name = 'all', srcs = glob(['**/*.txt']), outs = ['all.txt'], cmd = 'cat $(SRCS) > $@')\n",
+    );
+    twin.write("gl/a.txt", "a\n");
+    let args = &["build", "//other/...", "//gl/..."];
+    twin.save(args, &[]);
+    twin.same(args, &[]).assert_hit();
+    twin.write("other/__pycache__/main.cpython-312.pyc", "pyc");
+    twin.write("other/cache/a/b/c.txt", "c\n");
+    for _ in 0..2 {
+        let hit = twin.same(args, &[]);
+        hit.assert_hit().assert_success();
+        let line = hit.line("hit ").unwrap();
+        assert!(
+            line.contains("1 discovery listing(s) changed only by directories without packages (2 added, 4 directories checked; 0 removed)"),
+            "{line}"
+        );
+        assert!(hit.line("saved ").is_none());
+    }
+    // A BUILD file deep in a new directory: a new package.
+    twin.write(
+        "other/cache/a/BUILD.bazel",
+        "genrule(name = 's', outs = ['s.txt'], cmd = 'echo s > $@')\n",
+    );
+    let miss = twin.same(args, &[]);
+    miss.assert_miss("other: listing changed (new directory cache: ")
+        .assert_saved()
+        .assert_success();
+    let stderr = miss.stderr();
+    assert!(
+        stderr.contains("Analyzed 3 targets") && stderr.contains("1 actions executed"),
+        "{stderr}"
+    );
+    twin.same(args, &[]).assert_hit();
+    // The package removed: its BUILD file's STAT misses; the remaining
+    // directory without packages removed hits.
+    twin.each(|root| fs::remove_dir_all(root.join("ws/other/cache")).unwrap());
+    twin.same(args, &[]).assert_miss("cache").assert_saved();
+    twin.same(args, &[]).assert_hit();
+    twin.each(|root| fs::remove_dir_all(root.join("ws/other/__pycache__")).unwrap());
+    let hit = twin.same(args, &[]);
+    hit.assert_hit();
+    assert!(
+        hit.line("hit ")
+            .unwrap()
+            .contains("(0 added, 0 directories checked; 1 removed)"),
+        "{}",
+        hit.line("hit ").unwrap()
+    );
+    // A glob that descends into a new directory: a miss, incremental.
+    twin.write("gl/sub/b.txt", "b\n");
+    let pair = twin.same(args, &[]);
+    pair.assert_miss("gl").assert_success();
+    assert!(
+        pair.explain()
+            .iter()
+            .any(|line| line.starts_with("incremental ")
+                && line.contains(" 1 requested target(s) re-analyzed")),
+        "{}",
+        pair.explain().join("\n")
+    );
+    assert!(
+        pair.stderr().contains("1 actions executed"),
+        "{}",
+        pair.stderr()
+    );
+    twin.same(args, &[]).assert_hit();
+}
+
 /// Fixture 6: an environment variable a local repository rule reads misses
 /// (its replay differs); an inherited `--action_env` value is re-resolved
 /// on a hit, and the action that uses it runs again.
@@ -5736,6 +5816,11 @@ mod verify_mode {
     #[test]
     fn recursive_patterns_see_new_packages_only() {
         verified(super::recursive_patterns_see_new_packages_only);
+    }
+
+    #[test]
+    fn recursive_patterns_excuse_new_directories_without_packages() {
+        verified(super::recursive_patterns_excuse_new_directories_without_packages);
     }
 
     #[test]

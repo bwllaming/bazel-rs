@@ -121,9 +121,11 @@ pub fn discover_packages_skipping(
             // (LabelValidator.java:50-61): neither it nor anything below it
             // is a package.
             let Some(name) = name.to_str() else {
+                note_skipped_directory(&entry.path());
                 continue;
             };
             if matches!(name, ".git" | ".direnv" | "bazel-rs-out") {
+                note_skipped_directory(&entry.path());
                 continue;
             }
             let child = if package.is_empty() {
@@ -135,10 +137,12 @@ pub fn discover_packages_skipping(
             // excluded paths, don't recurse into it." This precedes the
             // nested-repository and package-name checks below.
             if ignored.matching_entry(&child).is_some() {
+                note_skipped_directory(&entry.path());
                 continue;
             }
             let path = entry.path();
             if skip.iter().any(|prefix| path.starts_with(prefix)) {
+                note_skipped_directory(&path);
                 continue;
             }
             // ProcessPackageDirectory looks the directory up as a package
@@ -146,6 +150,7 @@ pub fn discover_packages_skipping(
             // is `invalidPackageName`, not an error, and its subdirectories'
             // paths are invalid package names too. Skip the subtree.
             if !is_valid_package_name(&child) {
+                note_skipped_directory(&path);
                 continue;
             }
             pending.push((path, child));
@@ -153,6 +158,20 @@ pub fn discover_packages_skipping(
     }
     packages.sort();
     Ok(packages)
+}
+
+/// A subdirectory discovery lists but does not descend into (a reserved or
+/// invalid name, an ignored path, a skipped store prefix): recorded as an
+/// LSTAT while the snapshot records, so that every directory of a recorded
+/// discovery listing has an observation at its path — walked ones their own
+/// listing. A hit's validation tells the directories added since the
+/// recording by that (crate::snapshot::validate, "discovery listings"); the
+/// observation itself only holds what the listing held already (a
+/// directory).
+fn note_skipped_directory(path: &Path) {
+    if observed_fs::recording() {
+        let _ = observed_fs::symlink_metadata(path);
+    }
 }
 
 fn canonical_root(root: &Path) -> Result<PathBuf, String> {

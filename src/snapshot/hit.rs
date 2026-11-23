@@ -108,6 +108,9 @@ pub struct Evidence {
     /// The INPUTS section, decoded: the policy's recording and the replay
     /// records.
     pub inputs: format::Inputs,
+    /// The discovery listings the validation excused (their outcome now
+    /// differs, and the directories added to them are walked now).
+    pub excused: validate::Excused,
 }
 
 /// Where the hit's time went.
@@ -505,8 +508,19 @@ fn attempt_keeping(
     timings.status = status_started.elapsed();
     reader.touch();
     timings.total = started.elapsed();
+    let excused = if validated.excused.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; {} discovery listing(s) changed only by directories without packages ({} added, {} directories checked; {} removed)",
+            validated.excused.indices.len(),
+            validated.excused.added.len(),
+            validated.excused.walked,
+            validated.excused.removed.len()
+        )
+    };
     let summary = format!(
-        "hit {}: {} checks validated ({} content checks, {} trees verified) in {} ms on {} thread(s); {} local repositories replayed in {} ms, their published trees checked in {} ms; {} actions ({} bytes) decoded in {} ms, their {} map_each function(s) ({} distinct, {} module(s) loaded) resolved in {} ms; window stderr {} bytes{}; total {} ms",
+        "hit {}: {} checks validated ({} content checks, {} trees verified{excused}) in {} ms on {} thread(s); {} local repositories replayed in {} ms, their published trees checked in {} ms; {} actions ({} bytes) decoded in {} ms, their {} map_each function(s) ({} distinct, {} module(s) loaded) resolved in {} ms; window stderr {} bytes{}; total {} ms",
         attempt.key.short(),
         validated.checks,
         validated.content_checks,
@@ -559,6 +573,7 @@ fn attempt_keeping(
         Some(Evidence {
             plan: kept_plan.unwrap_or_default(),
             inputs,
+            excused: validated.excused,
         })
     } else {
         if !validated.refresh.is_empty() {

@@ -52,7 +52,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -882,6 +882,12 @@ pub struct Validated {
     pub refresh: Vec<Refresh>,
     pub threads: usize,
     pub elapsed: Duration,
+    /// Discovery listings that changed only by directories holding no
+    /// package (see "Discovery listings" below).
+    pub excused: Excused,
+    /// Failed discovery listings (observation index, mismatch), decided
+    /// once every other check passed.
+    deferred: Vec<(usize, String)>,
 }
 
 enum Item {
@@ -1046,9 +1052,14 @@ pub fn validate_for_hit(
     validated.checks += items.len();
     let verified = Mutex::new(BTreeSet::new());
     if threads <= 1 {
-        for item in &items {
-            if let Some(refresh) = check_for_hit(recording, item, &verified, &mut validated)? {
-                validated.refresh.push(refresh);
+        for (index, item) in items.iter().enumerate() {
+            match check_for_hit(recording, item, &verified, &mut validated) {
+                Ok(Some(refresh)) => validated.refresh.push(refresh),
+                Ok(None) => {}
+                Err(error) if deferrable(recording, item) => {
+                    validated.deferred.push((index, error));
+                }
+                Err(error) => return Err(error),
             }
         }
     } else {
@@ -1079,6 +1090,9 @@ pub fn validate_for_hit(
                             match check_for_hit(recording, item, &verified, &mut tally) {
                                 Ok(Some(refresh)) => tally.refresh.push(refresh),
                                 Ok(None) => {}
+                                Err(error) if deferrable(recording, item) => {
+                                    tally.deferred.push((index, error));
+                                }
                                 Err(error) => {
                                     first_failure.fetch_min(index, Ordering::Relaxed);
                                     outcome = Err((index, error));
@@ -1107,10 +1121,40 @@ pub fn validate_for_hit(
             validated.content_checks += tally.content_checks;
             validated.trees_verified += tally.trees_verified;
             validated.refresh.extend(tally.refresh);
+            validated.deferred.extend(tally.deferred);
         }
+    }
+    // Every other check passed: the changed discovery listings decide.
+    let mut deferred = std::mem::take(&mut validated.deferred);
+    if !deferred.is_empty() {
+        deferred.sort_by_key(|(index, _)| *index);
+        let candidates: Vec<usize> = deferred.iter().map(|(index, _)| *index).collect();
+        let (excused, refused) = excuse_discovery_listings(recording, &candidates);
+        if let Some((index, reason)) = refused.into_iter().min_by_key(|(index, _)| *index) {
+            let mismatch = deferred
+                .iter()
+                .find(|(at, _)| *at == index)
+                .map(|(_, mismatch)| mismatch.clone())
+                .unwrap_or_default();
+            return Err(match reason {
+                Some(reason) => format!("{mismatch} ({reason})"),
+                None => mismatch,
+            });
+        }
+        validated.excused = excused;
     }
     validated.elapsed = started.elapsed();
     Ok(validated)
+}
+
+/// Whether a failed check is decided after the others: a discovery listing
+/// (READDIR[dirs]), which may have changed only by directories holding no
+/// package.
+fn deferrable(recording: &Recording, item: &Item) -> bool {
+    match *item {
+        Item::Observation(index) => is_discovery_listing(&recording.observations[index].1.op),
+        Item::Integrity(..) => false,
+    }
 }
 
 /// Every observation of `recording` that does not hold now (indices into
@@ -1204,7 +1248,382 @@ pub fn changed_observations(
         .into_inner()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     changed.sort_unstable();
+    // Discovery listings that changed only by directories holding no
+    // package changed nothing discovery found: not changes.
+    let candidates: Vec<usize> = changed
+        .iter()
+        .copied()
+        .filter(|index| is_discovery_listing(&recording.observations[*index].1.op))
+        .collect();
+    if !candidates.is_empty() {
+        let (excused, _) = excuse_discovery_listings(recording, &candidates);
+        let excused: BTreeSet<usize> = excused.indices.into_iter().collect();
+        changed.retain(|index| !excused.contains(index));
+    }
     Ok(changed)
+}
+
+// ---- discovery listings (incr-newdir) --------------------------------------
+//
+// Package discovery (`//x/...`, crate::workspace::discover_packages_skipping)
+// is the only reader of READDIR[dirs] listings: it walks every subdirectory
+// it lists (recording that subdirectory's own READDIR[dirs] and the STATs of
+// its BUILD.bazel / BUILD), but those it skips (reserved or invalid names,
+// ignored paths, store prefixes), which it records as an LSTAT. So every
+// directory of a recorded discovery listing has an observation at its path.
+//
+// A directory written beside sources (a test's `__pycache__`, an editor's or
+// a tool's cache) changes the listing of its parent, which used to be a
+// miss — and, a listing of the target patterns, a full analysis. A changed
+// discovery listing of directory D is excused when
+//
+//   1. the directories the recording saw directly below D — a discovery
+//      listing (READDIR[dirs]) or an LSTAT that found a directory at D/c;
+//      or that without the LSTAT-only ones with observations below them (a
+//      glob lstats what it descends into: a merged incremental save may
+//      hold that of a directory added after the listing) — with their type
+//      now (a directory, if gone), digest to the recorded listing: the
+//      recorded listing is exactly that set, so D's listing changed only by
+//      the directories it holds now that are not in it (*added*) and those
+//      in it that it no longer holds (*removed*). Which observations count
+//      as "seen" only decides whether the digest matches (a wrong choice is
+//      a miss, never a false hit);
+//   2. every removed directory is gone (lstat ENOENT: nothing below it
+//      resolves, so every positive observation the recording made below it
+//      — a BUILD file's STAT, a package — fails on its own, while discovery
+//      no longer lists it);
+//   3. every added directory is a directory (not of unknown type) whose
+//      tree holds no BUILD.bazel / BUILD at any depth, with every directory
+//      listable and every entry's type readable — checked now by a walk of
+//      every subdirectory (not following links, as discovery; a superset of
+//      what discovery walks: ignored paths and invalid names too), so
+//      discovery's walk of it finds no package and no error;
+//
+// and a changed discovery listing at or below a removed directory, whose
+// recorded outcome is a listing, is excused (discovery no longer walks it).
+// Then discovery finds the packages it found, with the same errors (none),
+// given every other observation holds — which the other checks decide.
+// Nothing else reads these listings: a glob records its own projection of a
+// directory (a new directory a pattern can descend into is a miss, and a
+// change incremental analysis attributes to the globbing package).
+// `.bazelignore`, REPO.bazel and `--deleted_packages` are READs and the key.
+//
+// The excused listing keeps its recorded outcome and key (no refresh): the
+// next lookup checks it again, so a BUILD file added in the new directory
+// later is a miss then.
+
+/// Discovery listings a validation excused although they changed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Excused {
+    /// Indices into the recording's observations, sorted.
+    pub indices: Vec<usize>,
+    /// Directories added to an excused listing (they hold no package).
+    pub added: Vec<PathBuf>,
+    /// Directories removed from an excused listing (gone now).
+    pub removed: Vec<PathBuf>,
+    /// Directories the walk of the added ones listed.
+    pub walked: usize,
+}
+
+impl Excused {
+    pub fn is_empty(&self) -> bool {
+        self.indices.is_empty()
+    }
+
+    /// Whether `path` is an excused listing's path among `recording`'s.
+    pub fn excuses_listing(&self, recording: &Recording, path: &Path) -> bool {
+        self.indices.iter().any(|index| {
+            recording
+                .observations
+                .get(*index)
+                .is_some_and(|(at, _)| at == path)
+        })
+    }
+
+    /// Whether `path` lies at or below an added directory.
+    pub fn below_added(&self, path: &Path) -> bool {
+        self.added.iter().any(|added| path.starts_with(added))
+    }
+}
+
+/// A READDIR of package discovery.
+pub fn is_discovery_listing(op: &Op) -> bool {
+    matches!(op, Op::ReadDir(crate::observed_fs::Projection::Directories))
+}
+
+/// The directories the walks of added directories list at most, per
+/// validation: more is a miss (the full analysis walks them).
+const ADDED_WALK_BUDGET: usize = 10_000;
+
+/// The order of a recording's observations: a recorder's (`Path` order), a
+/// merged incremental save's (bytes), or neither (then searched linearly).
+#[derive(Clone, Copy)]
+enum Order {
+    Path,
+    Bytes,
+    Unsorted,
+}
+
+/// Prefix searches over a recording's observation paths.
+struct Paths<'a> {
+    observations: &'a [(PathBuf, Observation)],
+    order: Order,
+}
+
+impl<'a> Paths<'a> {
+    fn new(observations: &'a [(PathBuf, Observation)]) -> Self {
+        let bytes = |index: usize| observations[index].0.as_os_str().as_bytes();
+        let sorted_by = |order: &dyn Fn(&[u8], &[u8]) -> std::cmp::Ordering| {
+            (1..observations.len()).all(|at| order(bytes(at - 1), bytes(at)).is_le())
+        };
+        let order = if sorted_by(&path_order) {
+            Order::Path
+        } else if sorted_by(&|a: &[u8], b: &[u8]| a.cmp(b)) {
+            Order::Bytes
+        } else {
+            Order::Unsorted
+        };
+        Self {
+            observations,
+            order,
+        }
+    }
+
+    fn bytes(&self, index: usize) -> &'a [u8] {
+        self.observations[index].0.as_os_str().as_bytes()
+    }
+
+    /// The observations whose path starts with the bytes `prefix` (a
+    /// contiguous run in either lexicographic order).
+    fn starting_with(&self, prefix: &[u8]) -> Vec<usize> {
+        let order: fn(&[u8], &[u8]) -> std::cmp::Ordering = match self.order {
+            Order::Path => path_order,
+            Order::Bytes => |a, b| a.cmp(b),
+            Order::Unsorted => {
+                return (0..self.observations.len())
+                    .filter(|index| self.bytes(*index).starts_with(prefix))
+                    .collect();
+            }
+        };
+        let start = self
+            .observations
+            .partition_point(|(path, _)| order(path.as_os_str().as_bytes(), prefix).is_lt());
+        (start..self.observations.len())
+            .take_while(|index| self.bytes(*index).starts_with(prefix))
+            .collect()
+    }
+
+    /// The directories the recording saw directly below `directory`, in
+    /// two readings: every one with a discovery listing of it or an LSTAT
+    /// that found a directory; and those but the directories only an LSTAT
+    /// saw that have observations below them — a skipped directory's
+    /// record has none, but a glob also lstats the directories it descends
+    /// into, and a merged incremental save may hold that of a directory
+    /// added after the listing (it re-analyzed the glob, not discovery).
+    fn directories_below(&self, directory: &Path) -> [BTreeSet<&'a OsStr>; 2] {
+        let mut prefix = directory.as_os_str().as_bytes().to_vec();
+        prefix.push(b'/');
+        let mut listed = BTreeSet::new();
+        let mut lstat = BTreeSet::new();
+        for index in self.starting_with(&prefix) {
+            let (path, observation) = &self.observations[index];
+            let name = &path.as_os_str().as_bytes()[prefix.len()..];
+            if name.is_empty() || name.contains(&b'/') {
+                continue;
+            }
+            match (&observation.op, &observation.outcome) {
+                (op, Outcome::Listing { .. }) if is_discovery_listing(op) => {
+                    listed.insert(OsStr::from_bytes(name));
+                }
+                (Op::Lstat, Outcome::Kind(FileKind::Dir)) => {
+                    lstat.insert(OsStr::from_bytes(name));
+                }
+                _ => {}
+            }
+        }
+        let mut all = listed.clone();
+        all.extend(lstat.iter().copied());
+        let mut skipped = listed;
+        skipped.extend(lstat.into_iter().filter(|name| {
+            let mut below = prefix.clone();
+            below.extend_from_slice(name.as_bytes());
+            below.push(b'/');
+            self.starting_with(&below).is_empty()
+        }));
+        [all, skipped]
+    }
+}
+
+/// Decide the changed discovery listings `candidates` (indices into
+/// `recording.observations`, each a READDIR[dirs] whose check failed): the
+/// excused ones, and the others with why (`None`: the check's own mismatch
+/// stands).
+fn excuse_discovery_listings(
+    recording: &Recording,
+    candidates: &[usize],
+) -> (Excused, Vec<(usize, Option<String>)>) {
+    let paths = Paths::new(&recording.observations);
+    let mut excused = Excused::default();
+    let mut refused = Vec::new();
+    let mut below_removed = Vec::new();
+    let mut budget = ADDED_WALK_BUDGET;
+    for &index in candidates {
+        let (directory, observation) = &recording.observations[index];
+        let Outcome::Listing { digest, .. } = &observation.outcome else {
+            refused.push((index, None));
+            continue;
+        };
+        if !is_discovery_listing(&observation.op) {
+            refused.push((index, None));
+            continue;
+        }
+        match fs::symlink_metadata(directory) {
+            Ok(metadata) if metadata.is_dir() => {}
+            // Gone (or no longer a directory): excused below a removed one.
+            _ => {
+                below_removed.push(index);
+                continue;
+            }
+        }
+        match excuse_listing(&paths, directory, digest, &mut budget) {
+            Ok((added, removed, walked)) => {
+                excused.indices.push(index);
+                excused.added.extend(added);
+                excused.removed.extend(removed);
+                excused.walked += walked;
+            }
+            Err(reason) => refused.push((index, Some(reason))),
+        }
+    }
+    for index in below_removed {
+        let (directory, observation) = &recording.observations[index];
+        let listed = matches!(observation.outcome, Outcome::Listing { .. });
+        if listed
+            && excused
+                .removed
+                .iter()
+                .any(|removed| directory.starts_with(removed))
+        {
+            excused.indices.push(index);
+        } else {
+            refused.push((index, None));
+        }
+    }
+    excused.indices.sort_unstable();
+    excused.added.sort();
+    excused.removed.sort();
+    (excused, refused)
+}
+
+/// Excuse the changed discovery listing of `directory` (see "discovery
+/// listings"): the added and the removed directories, and how many
+/// directories the walk of the added ones listed.
+fn excuse_listing(
+    paths: &Paths<'_>,
+    directory: &Path,
+    recorded: &[u8; 32],
+    budget: &mut usize,
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>, usize), String> {
+    let projection = crate::observed_fs::Projection::Directories;
+    let mut now = Vec::new();
+    for entry in fs::read_dir(directory).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name();
+        let kind = entry.file_type().ok().map(FileKind::of);
+        if projection.digests(&name, kind) {
+            now.push((name, kind.map_or(b'e', FileKind::letter)));
+        }
+    }
+    // The recorded listing must be exactly the directories the recording
+    // saw below `directory`: then those it does not list now are removed,
+    // and those it lists now but the recording never saw are added.
+    let now: BTreeMap<OsString, u8> = now.into_iter().collect();
+    let seen = paths
+        .directories_below(directory)
+        .into_iter()
+        .find(|seen| {
+            let mut expected: Vec<(OsString, u8)> = seen
+                .iter()
+                .map(|name| (name.to_os_string(), now.get(*name).copied().unwrap_or(b'd')))
+                .collect();
+            listing_digest(&mut expected) == *recorded
+        })
+        .ok_or_else(|| "not only directories added or removed".to_owned())?;
+    let added: Vec<(&OsString, u8)> = now
+        .iter()
+        .filter(|(name, _)| !seen.contains(name.as_os_str()))
+        .map(|(name, letter)| (name, *letter))
+        .collect();
+    let removed: Vec<&OsStr> = seen
+        .iter()
+        .copied()
+        .filter(|name| !now.contains_key(*name))
+        .collect();
+    let mut removed_paths = Vec::new();
+    for name in removed {
+        let path = directory.join(name);
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => removed_paths.push(path),
+            _ => {
+                return Err(format!(
+                    "{} is no longer a directory but exists",
+                    escape(name)
+                ));
+            }
+        }
+    }
+    let mut added_paths = Vec::new();
+    let mut walked = 0;
+    for (name, letter) in added {
+        if letter != b'd' {
+            return Err(format!("new entry {} of unknown type", escape(name)));
+        }
+        let path = directory.join(name);
+        walked += holds_no_package(&path, budget)
+            .map_err(|reason| format!("new directory {}: {reason}", escape(name)))?;
+        added_paths.push(path);
+    }
+    Ok((added_paths, removed_paths, walked))
+}
+
+/// Walk `root` (every subdirectory, not following links) as package
+/// discovery would and find no package: no BUILD.bazel or BUILD exists in
+/// any directory (as `metadata` sees them: discovery's `is_regular_file`;
+/// anything there, of any type, refuses), every directory lists and every
+/// entry's type reads. The directories listed, at most `budget` in all.
+fn holds_no_package(root: &Path, budget: &mut usize) -> Result<usize, String> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut walked = 0;
+    while let Some(directory) = pending.pop() {
+        if *budget == 0 {
+            return Err(format!(
+                "more than {ADDED_WALK_BUDGET} new directories to check"
+            ));
+        }
+        *budget -= 1;
+        walked += 1;
+        for marker in ["BUILD.bazel", "BUILD"] {
+            let path = directory.join(marker);
+            match fs::metadata(&path) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Ok(_) => return Err(format!("{} exists", escape(path.as_os_str()))),
+                Err(error) => return Err(format!("{}: {error}", escape(path.as_os_str()))),
+            }
+        }
+        let entries = fs::read_dir(&directory)
+            .map_err(|error| format!("{}: {error}", escape(directory.as_os_str())))?;
+        for entry in entries {
+            let entry =
+                entry.map_err(|error| format!("{}: {error}", escape(directory.as_os_str())))?;
+            let kind = entry
+                .file_type()
+                .map_err(|error| format!("{}: {error}", escape(entry.path().as_os_str())))?;
+            if kind.is_dir() {
+                pending.push(entry.path());
+            }
+        }
+    }
+    Ok(walked)
 }
 
 /// Apply settled keys to the recording (a racy observation or entry that a
@@ -1317,6 +1736,187 @@ mod tests {
         fs::write(root.join("missing"), b"").unwrap();
         let report = dry_run(&recording, 1, &Environment::default());
         assert_eq!(report.mismatches, 3, "{:?}", report.examples);
+    }
+
+    /// The recording of discovering the packages below the workspace
+    /// `root` (`//...`, `src/ignored` ignored) and what it found.
+    fn discovery(root: &Path) -> (Vec<String>, Recording) {
+        let ignored =
+            crate::ignored::IgnoredSubdirectories::new(vec!["src/ignored".to_owned()], Vec::new());
+        let (packages, recording) = crate::observed_fs::record_private(|| {
+            crate::workspace::discover_packages(root, "", &ignored).unwrap()
+        });
+        (packages, recording)
+    }
+
+    fn discovery_workspace() -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        fs::write(root.join("MODULE.bazel"), b"").unwrap();
+        for directory in [
+            "src/a/data",
+            "src/b",
+            "src/ignored/x",
+            "src/c/d",
+            ".git/objects",
+        ] {
+            fs::create_dir_all(root.join(directory)).unwrap();
+        }
+        fs::write(root.join("src/a/BUILD.bazel"), b"").unwrap();
+        fs::write(root.join("src/b/BUILD"), b"").unwrap();
+        (temp, root)
+    }
+
+    /// A directory without a BUILD file at any depth added below a listing
+    /// discovery walked (a test's `__pycache__`) is excused — the hit
+    /// validates, incremental analysis sees no change — and the next one
+    /// still checks it: a BUILD file added in it later is a miss.
+    #[test]
+    fn discovery_listings_excuse_new_directories_without_packages() {
+        let (_temp, root) = discovery_workspace();
+        let (packages, recording) = discovery(&root);
+        assert_eq!(packages, ["src/a", "src/b"]);
+        // Skipped directories are recorded (LSTAT), walked ones listed.
+        let lstat = |path: &str| {
+            recording.observations.iter().any(|(at, observation)| {
+                *at == root.join(path)
+                    && observation.op == Op::Lstat
+                    && observation.outcome == Outcome::Kind(FileKind::Dir)
+            })
+        };
+        assert!(lstat(".git") && lstat("src/ignored"));
+        let environment = Environment::default();
+        assert!(
+            validate_for_hit(&recording, &environment)
+                .unwrap()
+                .excused
+                .is_empty()
+        );
+
+        fs::create_dir_all(root.join("src/a/__pycache__")).unwrap();
+        fs::write(root.join("src/a/__pycache__/x.pyc"), b"").unwrap();
+        fs::create_dir_all(root.join("src/c/d/.cache/deep/er")).unwrap();
+        // An ignored directory's new subdirectory is no listing discovery made.
+        fs::create_dir_all(root.join("src/ignored/new")).unwrap();
+        assert_eq!(dry_run(&recording, 1, &environment).mismatches, 2);
+        let validated = validate_for_hit(&recording, &environment).unwrap();
+        assert_eq!(
+            validated.excused.added,
+            [root.join("src/a/__pycache__"), root.join("src/c/d/.cache")]
+        );
+        assert_eq!(validated.excused.indices.len(), 2);
+        assert_eq!(validated.excused.walked, 4);
+        assert!(validated.refresh.iter().all(|refresh| match refresh {
+            Refresh::Observation { index, .. } => !validated.excused.indices.contains(index),
+            Refresh::Integrity { .. } => true,
+        }));
+        assert!(
+            changed_observations(&recording, &environment)
+                .unwrap()
+                .is_empty()
+        );
+        // Discovery agrees: the same packages.
+        assert_eq!(discovery(&root).0, packages);
+
+        // A BUILD file deeper in the new directory: a new package, a miss.
+        fs::write(root.join("src/c/d/.cache/deep/BUILD"), b"").unwrap();
+        let error = validate_for_hit(&recording, &environment).unwrap_err();
+        assert!(
+            error.starts_with(&format!(
+                "READDIR[dirs] {}: listing changed (new directory .cache: ",
+                root.join("src/c/d").display()
+            )) && error.ends_with("/deep/BUILD exists)"),
+            "{error}"
+        );
+        let changed = changed_observations(&recording, &environment).unwrap();
+        assert_eq!(changed.len(), 1);
+        assert_eq!(recording.observations[changed[0]].0, root.join("src/c/d"));
+        assert_eq!(
+            discovery(&root).0,
+            ["src/a", "src/b", "src/c/d/.cache/deep"]
+        );
+        fs::remove_file(root.join("src/c/d/.cache/deep/BUILD")).unwrap();
+        // Even a dangling link or a directory named BUILD refuses.
+        std::os::unix::fs::symlink("nowhere", root.join("src/c/d/.cache/BUILD.bazel")).unwrap();
+        assert!(validate_for_hit(&recording, &environment).is_ok());
+        fs::remove_file(root.join("src/c/d/.cache/BUILD.bazel")).unwrap();
+        fs::create_dir(root.join("src/c/d/.cache/BUILD")).unwrap();
+        assert!(validate_for_hit(&recording, &environment).is_err());
+        fs::remove_dir(root.join("src/c/d/.cache/BUILD")).unwrap();
+        assert!(validate_for_hit(&recording, &environment).is_ok());
+
+        // Another change of the listing (a directory became a link) is not
+        // excused, nor a new file where a directory was listed.
+        fs::remove_dir_all(root.join("src/c/d")).unwrap();
+        std::os::unix::fs::symlink("../a", root.join("src/c/d")).unwrap();
+        assert!(validate_for_hit(&recording, &environment).is_err());
+    }
+
+    /// Removed directories that held no package are excused with every
+    /// listing below them; one that held a package, or that is anything but
+    /// gone, is a miss.
+    #[test]
+    fn discovery_listings_excuse_removed_directories_without_packages() {
+        let (_temp, root) = discovery_workspace();
+        let (packages, recording) = discovery(&root);
+        let environment = Environment::default();
+        fs::remove_dir_all(root.join("src/c")).unwrap();
+        let validated = validate_for_hit(&recording, &environment).unwrap();
+        assert_eq!(validated.excused.removed, [root.join("src/c")]);
+        // src's listing, src/c's and src/c/d's.
+        assert_eq!(validated.excused.indices.len(), 3);
+        assert!(
+            changed_observations(&recording, &environment)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(discovery(&root).0, packages);
+        // Removing the ignored directory (recorded by its LSTAT) is a miss:
+        // the LSTAT itself changed.
+        fs::remove_dir_all(root.join("src/ignored")).unwrap();
+        let error = validate_for_hit(&recording, &environment).unwrap_err();
+        assert!(error.starts_with("LSTAT "), "{error}");
+        fs::create_dir_all(root.join("src/ignored/x")).unwrap();
+        // A removed package: its BUILD file's STAT fails.
+        fs::remove_dir_all(root.join("src/b")).unwrap();
+        let error = validate_for_hit(&recording, &environment).unwrap_err();
+        assert!(error.starts_with("STAT "), "{error}");
+        fs::create_dir_all(root.join("src/b")).unwrap();
+        fs::write(root.join("src/b/BUILD"), b"").unwrap();
+        assert!(validate_for_hit(&recording, &environment).is_ok());
+        // src/c now a link to a directory: not gone, a miss (a link to a
+        // package is one by its BUILD file's STAT already).
+        std::os::unix::fs::symlink("ignored", root.join("src/c")).unwrap();
+        let error = validate_for_hit(&recording, &environment).unwrap_err();
+        assert!(
+            error.contains("c is no longer a directory but exists"),
+            "{error}"
+        );
+    }
+
+    /// The prefix searches work over a recorder's order, a merged save's
+    /// byte order and no order at all.
+    #[test]
+    fn discovery_listing_searches_take_any_order() {
+        let (_temp, root) = discovery_workspace();
+        let (_, recording) = discovery(&root);
+        fs::create_dir_all(root.join("src/a/__pycache__")).unwrap();
+        fs::create_dir_all(root.join("src/a-b")).unwrap();
+        fs::write(root.join("src/a-b/BUILD"), b"").unwrap();
+        let environment = Environment::default();
+        // A new package beside an old one whose name it extends: a miss.
+        assert!(validate_for_hit(&recording, &environment).is_err());
+        fs::remove_dir_all(root.join("src/a-b")).unwrap();
+        let mut bytes = recording.clone();
+        bytes
+            .observations
+            .sort_by(|(a, _), (b, _)| a.as_os_str().as_bytes().cmp(b.as_os_str().as_bytes()));
+        let mut reversed = recording.clone();
+        reversed.observations.reverse();
+        for recording in [&recording, &bytes, &reversed] {
+            let validated = validate_for_hit(recording, &environment).unwrap();
+            assert_eq!(validated.excused.added, [root.join("src/a/__pycache__")]);
+        }
     }
 
     #[test]
