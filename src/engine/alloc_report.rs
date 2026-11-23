@@ -748,6 +748,16 @@ impl Footprint for String {
     }
 }
 
+// A write action's content: shared by content, once per allocation.
+impl Footprint for crate::action::WriteContent {
+    fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
+        walker.shared(self.as_bytes().as_ptr().cast(), |walker| {
+            walker.alloc(ARC_HEADER + self.len())
+        });
+        0
+    }
+}
+
 /// An interned string's text is shared by the whole process (counted
 /// nowhere); the reference is inline.
 impl Footprint for crate::interner::IStr {

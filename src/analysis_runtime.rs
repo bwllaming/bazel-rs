@@ -763,7 +763,7 @@ impl Context {
             Vec::new(),
             String::new(),
             Some(WriteAction {
-                content: placeholder,
+                content: placeholder.into(),
                 executable: false,
             }),
             None,
@@ -1755,7 +1755,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
                 inputs: Vec::new(),
                 command: String::new(),
                 write: Some(WriteAction {
-                    content: crate::bazel_bytes::internal_bytes(text).into_owned(),
+                    content: crate::bazel_bytes::internal_bytes(text).into_owned().into(),
                     executable: is_executable,
                 }),
                 program: None,
@@ -1821,7 +1821,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
             inputs: directories,
             command: String::new(),
             write: Some(WriteAction {
-                content,
+                content: content.into(),
                 executable: is_executable,
             }),
             program: None,

@@ -457,7 +457,7 @@ impl PlannedRequest {
                 _ => continue,
             };
             if let Some(write) = &mut node.action.write {
-                write.content = content.clone();
+                write.content = content.clone().into();
             }
         }
     }
@@ -473,9 +473,9 @@ impl PlannedRequest {
                         node.action.extra.transform = None;
                         node.action.write = Some(crate::action::WriteAction {
                             content: if volatile {
-                                status.volatile_bytes.clone()
+                                status.volatile_bytes.clone().into()
                             } else {
-                                status.stable_bytes.clone()
+                                status.stable_bytes.clone().into()
                             },
                             executable: false,
                         });
@@ -1894,7 +1894,16 @@ mod tests {
             })
             .unwrap();
         let content = |index: usize| {
-            String::from_utf8(request.nodes[index].action.write.clone().unwrap().content).unwrap()
+            String::from_utf8(
+                request.nodes[index]
+                    .action
+                    .write
+                    .clone()
+                    .unwrap()
+                    .content
+                    .to_vec(),
+            )
+            .unwrap()
         };
         let (stable, volatile) = (content(1), content(2));
         assert!(stable.contains("BUILD_EMBED_LABEL w4\n"), "{stable}");

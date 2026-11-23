@@ -1581,10 +1581,10 @@ pub(crate) mod bytes {
         BytesRef(value).serialize(serializer)
     }
 
-    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>, T: From<Vec<u8>>>(
         deserializer: D,
-    ) -> Result<Vec<u8>, D::Error> {
-        Bytes::deserialize(deserializer).map(|value| value.0)
+    ) -> Result<T, D::Error> {
+        Bytes::deserialize(deserializer).map(|value| T::from(value.0))
     }
 }
 
@@ -2011,7 +2011,7 @@ mod tests {
                     id: "write".into(),
                     outputs: vec!["bazel-out/w".into()],
                     write: Some(WriteAction {
-                        content: vec![0, 1, 2, 255],
+                        content: vec![0, 1, 2, 255].into(),
                         executable: true,
                     }),
                     ..Action::default()
@@ -2144,7 +2144,7 @@ mod tests {
         )]);
         let mut action = Action {
             write: write.then(|| WriteAction {
-                content: Vec::new(),
+                content: Vec::new().into(),
                 executable: false,
             }),
             ..Action::default()
@@ -2153,7 +2153,10 @@ mod tests {
         (
             action.arguments.into_iter().map(String::from).collect(),
             action.extra.param_files,
-            action.write.map(|write| write.content).unwrap_or_default(),
+            action
+                .write
+                .map(|write| write.content.to_vec())
+                .unwrap_or_default(),
         )
     }
 
@@ -2225,7 +2228,7 @@ mod tests {
                 let mut node = node.clone();
                 node.action.id = format!("//pkg:w#{index}");
                 node.action.write = Some(WriteAction {
-                    content: vec![b'x'; 2048],
+                    content: vec![b'x'; 2048].into(),
                     executable: false,
                 });
                 node
@@ -2387,7 +2390,7 @@ mod tests {
                 id: "//pkg:unexpanded".into(),
                 outputs: vec!["bazel-out/u".into()],
                 write: Some(WriteAction {
-                    content: Vec::new(),
+                    content: Vec::new().into(),
                     executable: false,
                 }),
                 ..Action::default()

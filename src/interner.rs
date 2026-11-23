@@ -406,6 +406,67 @@ impl<'de> serde::Deserialize<'de> for IStr {
     }
 }
 
+/// Shared `Arc` copies by content ([`shared_str`], [`shared_bytes`]): equal
+/// contents handed out by one table are one allocation. Where a field is an
+/// `Arc<str>` or `Arc<[u8]>` already (a runfiles path, a write action's
+/// content), deduplicating at creation shares what independently computed
+/// equal values each allocated, without changing the field's type, order,
+/// hash or encoding. The table keeps every distinct content for the rest of
+/// the process, like [`IStr`]: use it only for long-lived planning data that
+/// repeats (OpenROAD: 3.7 M runfiles entries name a few thousand distinct
+/// paths; 19,150 writes have 6,494 distinct contents).
+struct SharedTable<T: ?Sized> {
+    shards: [Mutex<hashbrown::HashTable<std::sync::Arc<T>>>; SHARED_SHARDS],
+}
+
+/// Shards of a [`SharedTable`] (a power of two).
+const SHARED_SHARDS: usize = 16;
+
+impl<T: ?Sized + Eq + AsRef<[u8]>> SharedTable<T> {
+    fn new() -> Self {
+        SharedTable {
+            shards: std::array::from_fn(|_| Mutex::new(hashbrown::HashTable::new())),
+        }
+    }
+
+    fn hash(bytes: &[u8]) -> u64 {
+        let mut hasher = crate::fast_hash::FxHasher::default();
+        hasher.write(bytes);
+        hasher.write_usize(bytes.len());
+        let hash = hasher.finish();
+        (hash ^ (hash >> 29)).wrapping_mul(0xbf58_476d_1ce4_e5b9)
+    }
+
+    /// The table's copy of `value`, made by `make` the first time.
+    fn get(&self, value: &T, make: impl FnOnce() -> std::sync::Arc<T>) -> std::sync::Arc<T> {
+        let hash = Self::hash(value.as_ref());
+        let mut shard = self.shards[((hash >> 58) as usize) & (SHARED_SHARDS - 1)]
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(found) = shard.find(hash, |entry| **entry == *value) {
+            return std::sync::Arc::clone(found);
+        }
+        let shared = make();
+        shard.insert_unique(hash, std::sync::Arc::clone(&shared), |entry| {
+            Self::hash((**entry).as_ref())
+        });
+        shared
+    }
+}
+
+static SHARED_STRS: LazyLock<SharedTable<str>> = LazyLock::new(SharedTable::new);
+static SHARED_BYTES: LazyLock<SharedTable<[u8]>> = LazyLock::new(SharedTable::new);
+
+/// The process's shared `Arc<str>` of `text` ([`SharedTable`]).
+pub fn shared_str(text: &str) -> std::sync::Arc<str> {
+    SHARED_STRS.get(text, || std::sync::Arc::from(text))
+}
+
+/// The process's shared `Arc<[u8]>` of `bytes` ([`SharedTable`]).
+pub fn shared_bytes(bytes: &[u8]) -> std::sync::Arc<[u8]> {
+    SHARED_BYTES.get(bytes, || std::sync::Arc::from(bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::IStr;
@@ -459,6 +520,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn shared_arcs_are_one_allocation_per_content() {
+        use super::{shared_bytes, shared_str};
+        let a = shared_str(&format!("{}/{}", "_main", "tool.sh"));
+        let b = shared_str("_main/tool.sh");
+        assert!(std::sync::Arc::ptr_eq(&a, &b));
+        assert_eq!(&*a, "_main/tool.sh");
+        assert!(!std::sync::Arc::ptr_eq(&a, &shared_str("_main/other.sh")));
+        let c = shared_bytes(b"content\0");
+        let copy: Vec<u8> = b"content\0".into();
+        assert!(std::sync::Arc::ptr_eq(&c, &shared_bytes(&copy)));
+        assert_eq!(&*shared_bytes(b""), b"");
     }
 
     #[test]

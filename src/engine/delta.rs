@@ -1441,7 +1441,7 @@ impl<'a> DeltaBuilder<'a> {
                     inputs: Vec::new(),
                     outputs: vec![PathBuf::from(&repo_mapping.path)],
                     write: Some(crate::action::WriteAction {
-                        content,
+                        content: content.into(),
                         executable: false,
                     }),
                     program: None,
@@ -1468,7 +1468,9 @@ impl<'a> DeltaBuilder<'a> {
         let mut entries: Vec<(Arc<str>, Option<SharedPath>)> = Vec::new();
         let mut mapped: Vec<(Arc<str>, Option<Artifact>)> = Vec::new();
         for (path, file) in mapping {
-            let path: Arc<str> = path.into();
+            // Equal runfiles paths of different executables share one copy
+            // (the tests of a repository stage the same tool runfiles).
+            let path: Arc<str> = crate::interner::shared_str(&path);
             match file {
                 Some(file) => {
                     let artifact = if file == *repo_mapping {
@@ -1862,7 +1864,7 @@ fn resolve_repo_mapping(
         compact,
     )?;
     match registered.action.write.as_mut() {
-        Some(write) => write.content = content,
+        Some(write) => write.content = content.into(),
         None => {
             return Err(format!(
                 "internal error: the repo mapping manifest {:?} is no write",

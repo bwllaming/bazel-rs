@@ -745,7 +745,7 @@ fn run_compute(
                 && crate::repository_demand::sentinels_raised() == sentinels
                 && let Some(write) = registered.action.write.as_mut()
             {
-                write.content = content;
+                write.content = content.into();
                 registered.repo_mapping = None;
             }
         }

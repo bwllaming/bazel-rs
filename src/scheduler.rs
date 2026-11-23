@@ -153,7 +153,8 @@ impl Deferred {
                 )?;
                 if let Some(write) = action.write.as_mut() {
                     write.content =
-                        crate::command_line::param_file_bytes(&arguments, snapshot.file_type);
+                        crate::command_line::param_file_bytes(&arguments, snapshot.file_type)
+                            .into();
                 }
                 action
                     .extra
@@ -1647,7 +1648,9 @@ mod tests {
         let mut producer = node("producer");
         producer.action.command.clear();
         producer.action.write = Some(action::WriteAction {
-            content: b"#!/bin/sh\nfalse\nprintf '%s:%s' \"$1\" \"$VALUE\" > out\n".to_vec(),
+            content: b"#!/bin/sh\nfalse\nprintf '%s:%s' \"$1\" \"$VALUE\" > out\n"
+                .to_vec()
+                .into(),
             executable: true,
         });
         let mut consumer = node("consumer");
@@ -1690,7 +1693,7 @@ mod tests {
         let mut producer = node("producer");
         producer.action.command.clear();
         producer.action.write = Some(action::WriteAction {
-            content: b"native\0bytes".to_vec(),
+            content: b"native\0bytes".to_vec().into(),
             executable: false,
         });
         let mut consumer = node("consumer");
@@ -1723,7 +1726,7 @@ mod tests {
         let mut write = node("write");
         write.action.command.clear();
         write.action.write = Some(action::WriteAction {
-            content: vec![0],
+            content: vec![0].into(),
             executable: false,
         });
         write.dependencies = vec![dependency("producer", 0, "generated")];

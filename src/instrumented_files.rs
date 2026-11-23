@@ -697,7 +697,7 @@ fn register_baseline_coverage(
         Vec::new(),
         String::new(),
         Some(crate::action::WriteAction {
-            content: content.into_bytes(),
+            content: content.into_bytes().into(),
             executable: false,
         }),
         None,

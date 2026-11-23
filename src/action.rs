@@ -655,8 +655,80 @@ impl Transform {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WriteAction {
     #[serde(with = "crate::snapshot::codec::bytes")]
-    pub content: Vec<u8>,
+    pub content: WriteContent,
     pub executable: bool,
+}
+
+/// A write action's content, shared by content: equal contents written by
+/// different actions (the repository mapping manifests of a repository's
+/// executables, identical launcher scripts) are one allocation
+/// (crate::interner::shared_bytes; docs/MEMORY.md). It derefs, compares,
+/// hashes and prints (`Debug`) as its bytes, and encodes as the
+/// `Vec<u8>` it replaced.
+#[derive(Clone, Default, PartialEq, Eq, Hash)]
+pub struct WriteContent(Arc<[u8]>);
+
+impl WriteContent {
+    /// The content's bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for WriteContent {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl AsRef<[u8]> for WriteContent {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for WriteContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0[..].fmt(f)
+    }
+}
+
+impl From<Vec<u8>> for WriteContent {
+    fn from(bytes: Vec<u8>) -> Self {
+        WriteContent(crate::interner::shared_bytes(&bytes))
+    }
+}
+
+impl From<&[u8]> for WriteContent {
+    fn from(bytes: &[u8]) -> Self {
+        WriteContent(crate::interner::shared_bytes(bytes))
+    }
+}
+
+impl PartialEq<[u8]> for WriteContent {
+    fn eq(&self, other: &[u8]) -> bool {
+        self.0[..] == *other
+    }
+}
+
+impl PartialEq<&[u8]> for WriteContent {
+    fn eq(&self, other: &&[u8]) -> bool {
+        self.0[..] == **other
+    }
+}
+
+impl<const N: usize> PartialEq<&[u8; N]> for WriteContent {
+    fn eq(&self, other: &&[u8; N]) -> bool {
+        self.0[..] == other[..]
+    }
+}
+
+impl PartialEq<Vec<u8>> for WriteContent {
+    fn eq(&self, other: &Vec<u8>) -> bool {
+        self.0[..] == other[..]
+    }
 }
 
 #[derive(Debug)]
@@ -9632,7 +9704,7 @@ mod tests {
                 inputs: Vec::new(),
                 outputs: vec!["out/result".into()],
                 write: Some(WriteAction {
-                    content,
+                    content: content.into(),
                     executable: false,
                 }),
                 program: None,
@@ -9879,7 +9951,12 @@ mod tests {
                 & 0o777,
             0o555
         );
-        action.write.as_mut().unwrap().content.push(0xff);
+        {
+            let write = action.write.as_mut().unwrap();
+            let mut bytes = write.content.to_vec();
+            bytes.push(0xff);
+            write.content = bytes.into();
+        }
         let changed = execute(&fixture.cache(), &action).unwrap();
         assert!(!changed.cache_hit);
         assert_ne!(executable.outputs, changed.outputs);
@@ -10076,7 +10153,7 @@ mod tests {
                 5 => {
                     action.inputs.clear();
                     action.write = Some(WriteAction {
-                        content: vec![],
+                        content: Vec::new().into(),
                         executable: false,
                     });
                 }

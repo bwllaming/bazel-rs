@@ -3291,7 +3291,9 @@ fn analyze_inner(
                     inputs: Vec::new(),
                     command: String::new(),
                     write: Some(crate::action::WriteAction {
-                        content: crate::bazel_bytes::internal_bytes(&script).into_owned(),
+                        content: crate::bazel_bytes::internal_bytes(&script)
+                            .into_owned()
+                            .into(),
                         executable: true,
                     }),
                     program: None,

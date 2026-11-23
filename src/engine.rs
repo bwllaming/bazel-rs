@@ -10431,7 +10431,7 @@ impl Engine {
                         id: id.clone(),
                         outputs: vec![output.clone()],
                         write: Some(action::WriteAction {
-                            content,
+                            content: content.into(),
                             executable: false,
                         }),
                         extra: action::ActionExtra {
@@ -10497,7 +10497,7 @@ impl Engine {
                     id: action_owner.clone(),
                     outputs: vec![output.clone()],
                     write: Some(action::WriteAction {
-                        content: genquery.content,
+                        content: genquery.content.into(),
                         executable: false,
                     }),
                     extra: action::ActionExtra {
@@ -16506,7 +16506,7 @@ mod tests {
             id: id.to_owned(),
             outputs: outputs.iter().map(PathBuf::from).collect(),
             write: Some(crate::action::WriteAction {
-                content: content.as_bytes().to_vec(),
+                content: content.as_bytes().to_vec().into(),
                 executable: false,
             }),
             ..Action::default()

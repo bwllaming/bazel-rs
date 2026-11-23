@@ -290,7 +290,7 @@ impl<'a> Census<'a> {
             .string(&platform.remote_execution_properties);
         if let Some(write) = &action.write {
             self.category("action.write_contents")
-                .owned(&write.content, write.content.capacity());
+                .owned(&write.content, write.content.len());
         }
         for (source, destination) in &action.inputs {
             self.category("action.inputs").shared_path(source);
