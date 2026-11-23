@@ -1765,7 +1765,13 @@ mod tests {
             execute_with(Path::new("unused"), graph(), jobs, &worker).unwrap();
             let order = order.into_inner().unwrap();
             assert_eq!(order.len(), 10);
-            assert_eq!(order[0], first, "jobs={jobs}: {order:?}");
+            // The first `jobs` actions start together, so the order in which
+            // they record themselves is a race; the chain's head must be in
+            // that first wave (with one job, exactly first).
+            assert!(
+                order[..jobs].iter().any(|id| id == first),
+                "jobs={jobs}: {order:?}"
+            );
         }
         let validated = validate(graph(), 4).unwrap();
         let levels: Vec<u32> = validated.levels.clone();
