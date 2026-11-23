@@ -71,7 +71,7 @@ pub struct MacroOwner {
 pub struct Rule {
     pub label: Label,
     pub kind: RuleKind,
-    pub srcs: Vec<String>,
+    pub srcs: Vec<crate::interner::IStr>,
     pub outs: Vec<String>,
     pub cmd: Option<String>,
     pub visibility: Visibility,
@@ -393,27 +393,35 @@ pub(crate) fn custom_label_context(
 /// label, label list and label-keyed dictionary keys (also of defaults).
 /// Configured targets recompute this from resolved values
 /// (crate::configured_attributes::configure).
-pub(crate) fn custom_dependency_labels(attrs: &BTreeMap<String, AttrValue>) -> Vec<String> {
-    let mut srcs = Vec::new();
-    for value in attrs.values() {
-        match value {
-            AttrValue::Label(Some(value)) => srcs.push(value.clone()),
-            AttrValue::Labels(values) => srcs.extend(values.iter().cloned()),
-            AttrValue::LabelKeyedStringDict(entries) => {
-                srcs.extend(entries.iter().map(|(label, _)| label.clone()))
-            }
-            // DictType.visitLabels (packages/Type.java:504-514): label values.
-            AttrValue::StringKeyedLabelDict(entries) => {
-                srcs.extend(entries.iter().map(|(_, label)| label.clone()))
-            }
-            AttrValue::LabelListDict(entries) => srcs.extend(
-                entries
-                    .iter()
-                    .flat_map(|(_, labels)| labels.iter().cloned()),
-            ),
-            _ => {}
-        }
-    }
+/// A Starlark rule's dependency label texts, attribute by attribute, as
+/// interned strings (a rule and each of its configured copies hold them:
+/// OpenROAD's 65,000 configured targets held ~150 MB of `String` copies).
+pub(crate) fn custom_dependency_labels(
+    attrs: &BTreeMap<String, AttrValue>,
+) -> Vec<crate::interner::IStr> {
+    let labels = || {
+        attrs
+            .values()
+            .flat_map(|value| -> Box<dyn Iterator<Item = &String> + '_> {
+                match value {
+                    AttrValue::Label(Some(value)) => Box::new(std::iter::once(value)),
+                    AttrValue::Labels(values) => Box::new(values.iter()),
+                    AttrValue::LabelKeyedStringDict(entries) => {
+                        Box::new(entries.iter().map(|(label, _)| label))
+                    }
+                    // DictType.visitLabels (packages/Type.java:504-514): label values.
+                    AttrValue::StringKeyedLabelDict(entries) => {
+                        Box::new(entries.iter().map(|(_, label)| label))
+                    }
+                    AttrValue::LabelListDict(entries) => {
+                        Box::new(entries.iter().flat_map(|(_, labels)| labels.iter()))
+                    }
+                    _ => Box::new(std::iter::empty()),
+                }
+            })
+    };
+    let mut srcs = Vec::with_capacity(labels().count());
+    srcs.extend(labels().map(|label| crate::interner::IStr::new(label)));
     srcs
 }
 
@@ -568,7 +576,7 @@ impl Declarations {
         &self,
         name: &str,
         kind: RuleKind,
-        srcs: Vec<String>,
+        srcs: Vec<crate::interner::IStr>,
         outs: Vec<String>,
         cmd: Option<String>,
         visibility: Option<Visibility>,
@@ -1644,7 +1652,15 @@ fn declare_native<'v>(
             target.input_labels.clone()
         },
     };
-    context.declare(&instance.name, kind, srcs, outs, cmd, visibility, site)?;
+    context.declare(
+        &instance.name,
+        kind,
+        crate::interner::IStr::all(srcs),
+        outs,
+        cmd,
+        visibility,
+        site,
+    )?;
     let mut rules = context.rules.borrow_mut();
     let rule = rules.last_mut().expect("declared rule");
     rule.native = Some(Arc::new(target));

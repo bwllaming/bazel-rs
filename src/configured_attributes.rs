@@ -853,8 +853,13 @@ pub fn configure(
         match configured.kind {
             crate::package::RuleKind::Filegroup | crate::package::RuleKind::Genrule => {
                 let srcs = target.labels("srcs");
-                if configured.srcs != srcs {
-                    Arc::make_mut(&mut configured).srcs = srcs;
+                if configured
+                    .srcs
+                    .iter()
+                    .map(|label| label.as_str())
+                    .ne(srcs.iter().map(String::as_str))
+                {
+                    Arc::make_mut(&mut configured).srcs = crate::interner::IStr::all(srcs);
                 }
                 if matches!(configured.kind, crate::package::RuleKind::Genrule) {
                     let cmd = target

@@ -332,7 +332,7 @@ impl Engine {
             // runfiles providers (Filegroup.java:80-104). A `data`
             // prerequisite's source files join the artifact index like
             // the `srcs` inputs (they are runfiles).
-            let mut prerequisites = |labels: &[String]| -> Result<Vec<_>, String> {
+            let mut prerequisites = |labels: &[&str]| -> Result<Vec<_>, String> {
                 let mut found = Vec::new();
                 for text in labels {
                     let label = cx.engine().resolve_rule_src(rule, text)?;
@@ -355,8 +355,20 @@ impl Engine {
                 }
                 Ok(found)
             };
-            let srcs = prerequisites(&rule.srcs)?;
-            let data = prerequisites(&native.labels("data"))?;
+            let srcs = prerequisites(
+                &rule
+                    .srcs
+                    .iter()
+                    .map(|label| label.as_str())
+                    .collect::<Vec<_>>(),
+            )?;
+            let data = prerequisites(
+                &native
+                    .labels("data")
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+            )?;
             let files = inputs.iter().map(Artifact::file).collect::<Vec<_>>();
             fn pairs(
                 prerequisites: &[(Vec<File>, Arc<crate::runfiles::TargetRunfiles>)],

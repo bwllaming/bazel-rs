@@ -175,7 +175,7 @@ pub(crate) fn analysis_dependent_labels(
         }
     }
     late.retain(|label| !ordinary.contains(label));
-    late
+    late.into_iter().map(String::from).collect()
 }
 
 #[cfg(test)]

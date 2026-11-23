@@ -2858,8 +2858,8 @@ fn no_config_rule_class(rule: &Rule) -> bool {
 }
 
 fn attribute_edges(rule: &Rule) -> Vec<Edge> {
-    let edge = |label: &String, attribute: &str, cfg: EdgeCfg| Edge {
-        label: label.clone(),
+    let edge = |label: &str, attribute: &str, cfg: EdgeCfg| Edge {
+        label: label.to_owned(),
         attribute: attribute.to_owned(),
         cfg,
     };
@@ -10751,7 +10751,7 @@ impl Engine {
                 // runfiles providers (Filegroup.java:80-104). A `data`
                 // prerequisite's source files join the artifact index like
                 // the `srcs` inputs above (they are runfiles).
-                let mut prerequisites = |labels: &[String]| -> Result<Vec<_>, String> {
+                let mut prerequisites = |labels: &[&str]| -> Result<Vec<_>, String> {
                     let mut found = Vec::new();
                     for text in labels {
                         let label = self.resolve_rule_src(rule, text)?;
@@ -10773,8 +10773,20 @@ impl Engine {
                     }
                     Ok(found)
                 };
-                let srcs = prerequisites(&rule.srcs)?;
-                let data = prerequisites(&native.labels("data"))?;
+                let srcs = prerequisites(
+                    &rule
+                        .srcs
+                        .iter()
+                        .map(|label| label.as_str())
+                        .collect::<Vec<_>>(),
+                )?;
+                let data = prerequisites(
+                    &native
+                        .labels("data")
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>(),
+                )?;
                 let files = inputs.iter().map(Artifact::file).collect::<Vec<_>>();
                 fn pairs(
                     prerequisites: &[(Vec<File>, Arc<crate::runfiles::TargetRunfiles>)],
@@ -17869,9 +17881,10 @@ m = macro(implementation=emit)
         f.write("app/macro_only", "x");
         std::os::unix::fs::symlink("data", f.0.join("app/link")).unwrap();
         let mut ordinary = test_rule("//app:files", None);
-        ordinary
-            .srcs
-            .extend([":data", ":missing", ":dir", ":link", "//app:canonical"].map(str::to_owned));
+        ordinary.srcs.extend(
+            [":data", ":missing", ":dir", ":link", "//app:canonical"]
+                .map(crate::interner::IStr::new),
+        );
         ordinary.package_metadata = vec!["//app:metadata".into()];
         let mut macro_rule = test_rule("//app:demo", Some(("//app:m.bzl", "demo")));
         macro_rule.srcs.push(":macro_only".into());
@@ -18219,7 +18232,7 @@ m = macro(implementation=emit)
         let mut consumer = test_rule("//app:files", None);
         consumer
             .srcs
-            .extend([":data", ":data", ":grouped"].map(str::to_owned));
+            .extend([":data", ":data", ":grouped"].map(crate::interner::IStr::new));
         let mut engine = test_engine(f.0.clone(), vec![consumer]);
         // The source's own visibility names a package group that does not exist.
         engine

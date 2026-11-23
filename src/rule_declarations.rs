@@ -2953,7 +2953,9 @@ def m(name):\n    r(name = name, deps = [':x'] + select({':cond': [':y'], '//con
         );
         // Retained for configured resolution: no load-time default value and
         // no load-time dependency; key and branch labels are assumed inputs.
-        assert!(!custom.attrs.contains_key("deps") && !sel.srcs.contains(&"//:y".to_owned()));
+        assert!(
+            !custom.attrs.contains_key("deps") && !sel.srcs.iter().any(|label| label == "//:y")
+        );
         assert_eq!(
             custom
                 .declaration

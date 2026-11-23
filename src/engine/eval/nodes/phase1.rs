@@ -389,7 +389,7 @@ pub(crate) trait Phase1: Host {
         if forwards(&rule) {
             let actual = self.alias_actual(&rule, &configuration, build_setting.as_ref())?;
             if rule.srcs.as_slice() != [actual.as_str()] {
-                Arc::make_mut(&mut rule).srcs = vec![actual];
+                Arc::make_mut(&mut rule).srcs = vec![actual.into()];
             }
         }
         // Late-bound attributes skip the visibility check
