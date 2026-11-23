@@ -1033,7 +1033,16 @@ impl Engine {
                 record.action_key = crate::aquery_key::action_key(&kind, key_platform, &properties);
                 record.discovers_inputs =
                     matches!(record.mnemonic.as_str(), "CppCompile" | "ObjcCompile");
-                if record.discovers_inputs {
+                // Every CppCompileAction (crate::cc_actions compile_mnemonic),
+                // the linkstamp compile included.
+                if matches!(
+                    record.mnemonic.as_str(),
+                    "CppCompile"
+                        | "ObjcCompile"
+                        | "CppLinkstampCompile"
+                        | "CppHeaderAnalysis"
+                        | "CppDepsScanning"
+                ) {
                     // CppCompileAction.getEnvironment is the configuration's;
                     // the toolchain's variables are only in its effective
                     // environment (the proto output's).

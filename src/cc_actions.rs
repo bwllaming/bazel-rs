@@ -15,7 +15,7 @@ use crate::analysis_runtime::Context;
 use crate::cc_features::{CcToolchainFeatures, FeatureConfiguration};
 use crate::label::Label;
 use crate::language_modules::{bind, failure, param, sequence, type_error};
-use crate::starlark_types::{File, alloc_file, file_list, unpack_file};
+use crate::starlark_types::{Depset, File, alloc_file, file_list, unpack_file};
 use starlark::eval::{Arguments, Evaluator};
 use starlark::values::tuple::AllocTuple;
 use starlark::values::tuple::TupleRef;
@@ -544,20 +544,23 @@ pub(crate) fn call<'v>(
                     "configuration or NoneType",
                 ));
             }
-            if bound[2].is_some_and(|shareable| shareable.unpack_bool() == Some(true)) {
-                return Err(failure(
-                    "cc_internal.wrap_link_actions with sharable_artifacts is not implemented in the native profile (shareable link artifacts, docs/CC_ACTIONS.md)".to_owned(),
-                ));
-            }
+            // sharable_artifacts (LinkActionConstruction.create, CppLinkActionBuilder
+            // .java:59-67): `declare_shareable_artifact` of the wrapped factory
+            // declares a shareable artifact below the bin root, which is what
+            // the plain factory's does already.
             Ok(actions)
         }
         "get_artifact_name_for_category" | "get_artifact_name_extension_for_category" => {
             // CcStarlarkInternal (:345-374) over CcToolchainFeatures.
             // getArtifactNameForCategory (:1338-1352).
             let extension_only = method.ends_with("extension_for_category");
+            // get_artifact_name_for_category's parameters are named only;
+            // get_artifact_name_extension_for_category's are positional as
+            // well (the @Param defaults, :361-367).
+            let positional = extension_only;
             let mut params = vec![
-                param("cc_toolchain", false, true, true),
-                param("category", false, true, true),
+                param("cc_toolchain", positional, true, true),
+                param("category", positional, true, true),
             ];
             if !extension_only {
                 params.push(param("output_name", false, true, true));
@@ -889,12 +892,53 @@ pub(crate) fn call<'v>(
             create_cc_compile_action(args, eval, method, heap)?;
             Ok(Value::new_none())
         }
-        "create_cc_compile_action_template" | "create_lto_backend_action"
-        | "create_lto_backend_action_template" | "collect_per_file_lto_backend_opts" => {
+        "collect_per_file_lto_backend_opts" => {
+            // CcStarlarkInternal.collectPerFileLtoBackendOpts (:530-542): the
+            // options of every `--per_file_ltobackendopt` whose RegexFilter
+            // includes the object's exec path (PerLabelOptions.isIncluded
+            // (Artifact), analysis/config/PerLabelOptions.java:100-106).
+            let bound = bind(
+                method,
+                &[
+                    param("cpp_config", true, false, true),
+                    param("obj", true, false, true),
+                ],
+                args,
+                heap,
+            )?;
+            let entries =
+                crate::subrule_fragments::per_file_lto_backend_opts(bound[0].expect("required"))
+                    .ok_or_else(|| {
+                        type_error(
+                            method,
+                            "cpp_config",
+                            bound[0].expect("required"),
+                            "CppConfiguration",
+                        )
+                    })?;
+            let mut options = Vec::new();
+            if !entries.is_empty() {
+                let object = unpack_file(bound[1].expect("required"))
+                    .map_err(|error| failure(format!("{method}: obj: {error}")))?;
+                for entry in entries {
+                    let (filter, list) = entry.split_once('@').unwrap_or((entry.as_str(), ""));
+                    let filter = crate::coverage::RegexFilter::parse(filter).map_err(failure)?;
+                    if filter.is_included(&object.path) {
+                        options.extend(per_label_option_list(list));
+                    }
+                }
+            }
+            Ok(heap.alloc(options))
+        }
+        "create_lto_backend_action" => {
+            let _ = context;
+            create_lto_backend_action(args, eval, method, heap)?;
+            Ok(Value::new_none())
+        }
+        "create_cc_compile_action_template" | "create_lto_backend_action_template" => {
             let what = match method {
                 "create_cc_compile_action_template" => "tree-artifact compile action templates",
-                "collect_per_file_lto_backend_opts" => "LTO backend options",
-                _ => "LTO backend actions",
+                _ => "tree-artifact LTO backend action templates",
             };
             Err(failure(format!(
                 "cc_internal.{method} is not implemented in the native profile ({what})"
@@ -1085,12 +1129,10 @@ fn create_cc_compile_action<'v>(
         None => None,
     };
 
+    // CppCompileActionBuilder.setShareable (:559-562; the linkstamp
+    // compile, linkstamp_compile.bzl): CppCompileAction.isShareable (:1383).
+    let shareable = bound[22].is_some_and(|shareable| shareable.unpack_bool() == Some(true));
     // Unsupported semantics fail explicitly before anything is registered.
-    if bound[22].is_some_and(|shareable| shareable.unpack_bool() == Some(true)) {
-        return Err(failure(
-            "cc_internal.create_cc_compile_action with shareable artifacts is not implemented in the native profile".to_owned(),
-        ));
-    }
     if bound[21].is_some_and(|scan| scan.unpack_bool() == Some(true)) {
         return Err(failure(
             "cc_internal.create_cc_compile_action with should_scan_includes is not implemented in the native profile (include scanning)".to_owned(),
@@ -1361,10 +1403,10 @@ fn create_cc_compile_action<'v>(
                 runfiles_trees: Vec::new(),
                 build_info: None,
                 // CppCompileActionBuilder.java:99: a C++ compile is not
-                // shareable (`shareable = True` fails above), so equal
+                // shareable unless asked (the linkstamp compile), so equal
                 // compiles of two owners conflict; only one target's
                 // duplicates are one action (Actions.canBeShared).
-                shareable: false,
+                shareable,
             },
             input_memo,
         )
@@ -1384,6 +1426,206 @@ fn create_cc_compile_action<'v>(
                 .cloned()
                 .unwrap_or_default();
             meta.compute_key = Some(key);
+            registered.action.extra.aquery = Some(Arc::new(meta));
+        }
+    }
+    Ok(())
+}
+
+/// `cc_internal.create_lto_backend_action` (CcStarlarkInternal.java:1027-1081
+/// over LtoBackendArtifacts.createLtoBackendActionForStarlark, :149-165): a
+/// CcLtoBackendCompile spawn (LtoBackendAction.java) whose argv is the
+/// `lto-backend` tool and the feature configuration's command line, then
+/// `-fPIC` for a PIC backend (getLtoBackendCommandLine, :103-146), with the
+/// given inputs and outputs and exactly the given environment
+/// (ActionEnvironment.create of `env`).
+///
+/// The action's input discovery (LtoBackendAction.discoverInputs: the
+/// imported bitcode files named by the `imports` file the indexing step
+/// writes, a subset of `all_bitcode_files`) is not modelled: the action has
+/// its mandatory inputs, like genuine's before discovery
+/// (LtoBackendAction.getOriginalInputs, what `Target.actions` and aquery
+/// show), and a sandboxed indexed backend does not see the imported bitcode
+/// files (docs/CC_ACTIONS.md).
+fn create_lto_backend_action<'v>(
+    args: &Arguments<'v, '_>,
+    eval: &mut Evaluator<'v, '_, '_>,
+    method: &str,
+    heap: Heap<'v>,
+) -> starlark::Result<()> {
+    const F: &str = "create_lto_backend_action";
+    const ACTION: &str = "lto-backend";
+    const MNEMONIC: &str = "CcLtoBackendCompile";
+    let params: Vec<_> = [
+        "actions",
+        "feature_configuration",
+        "build_variables",
+        "use_pic",
+        "inputs",
+        "all_bitcode_files",
+        "imports",
+        "outputs",
+        "env",
+    ]
+    .into_iter()
+    .map(|name| param(name, false, true, true))
+    .collect();
+    let bound = bind(F, &params, args, heap)?;
+    let configuration = feature_configuration(F, bound[1].expect("required"))?;
+    let variables = bound[2].expect("required");
+    if !crate::cc_variables::is_variables(variables) {
+        return Err(type_error(F, "build_variables", variables, "Variables"));
+    }
+    let use_pic_value = bound[3].expect("required");
+    let use_pic = use_pic_value
+        .unpack_bool()
+        .ok_or_else(|| type_error(F, "use_pic", use_pic_value, "bool"))?;
+    let inputs_value = bound[4].expect("required");
+    if Depset::from_value(inputs_value).is_none() {
+        return Err(type_error(F, "inputs", inputs_value, "depset"));
+    }
+    let inputs = file_list(inputs_value)
+        .map_err(|error| failure(format!("cc_internal.{F}: inputs: {error}")))?;
+    let all_bitcode_value = bound[5].filter(|value| !value.is_none());
+    if let Some(value) = all_bitcode_value
+        && Depset::from_value(value).is_none()
+    {
+        return Err(type_error(
+            F,
+            "all_bitcode_files",
+            value,
+            "depset or NoneType",
+        ));
+    }
+    let imports = optional_file(F, "imports", bound[6].filter(|value| !value.is_none()))?;
+    // LtoBackendAction's constructor (:104-107).
+    if all_bitcode_value.is_some() != imports.is_some() {
+        return Err(failure(format!(
+            "cc_internal.{F}: Either both or neither bitcodeFiles and imports files should be null"
+        )));
+    }
+    let outputs_value = bound[7].expect("required");
+    let mut outputs = Vec::new();
+    for file in file_list(outputs_value)
+        .map_err(|error| failure(format!("cc_internal.{F}: outputs: {error}")))?
+    {
+        // ImmutableSet.copyOf.
+        if !outputs.contains(&file) {
+            outputs.push(file);
+        }
+    }
+    if outputs.is_empty() {
+        return Err(failure(format!(
+            "cc_internal.{F}: the action must have at least one output"
+        )));
+    }
+    let env_value = bound[8].expect("required");
+    let env_dict = starlark::values::dict::DictRef::from_value(env_value)
+        .ok_or_else(|| type_error(F, "env", env_value, "dict"))?;
+    let mut environment_order = Vec::new();
+    for (key, value) in env_dict.iter() {
+        let (Some(key), Some(value)) = (key.unpack_str(), value.unpack_str()) else {
+            return Err(failure(format!(
+                "cc_internal.{F}: env: got dict<{}, {}>, want dict<string, string>",
+                key.get_type(),
+                value.get_type()
+            )));
+        };
+        environment_order.push((key.to_owned(), value.to_owned()));
+    }
+    drop(env_dict);
+
+    let data = Arc::clone(&configuration.data);
+    let tool = data.tool_path(ACTION).map_err(failure)?;
+    let mut arguments = vec![tool];
+    arguments.extend(data.command_line(ACTION, variables, eval)?);
+    if use_pic {
+        arguments.push("-fPIC".to_owned());
+    }
+    // LtoBackendAction.computeKey (:276-298), before the execution
+    // platform: the GUID, the arguments, the mnemonic, the mandatory
+    // inputs' exec paths, the allowed bitcode files' fingerprint and the
+    // imports file (an indexed backend), the environment (fixed, no
+    // inherited names) and the execution info.
+    let compute_key = if crate::aquery::capturing() {
+        use crate::aquery_key::Fingerprint;
+        const GUID: &str = "72ce1eca-4625-4e24-a0d8-bb91bb8b0e0e";
+        let mut fp = Fingerprint::<Vec<u8>>::default();
+        fp.string(GUID)
+            .strings(arguments.iter().map(String::as_str))
+            .string(MNEMONIC);
+        for input in &inputs {
+            fp.string(&input.path);
+        }
+        if let (Some(value), Some(imports)) = (all_bitcode_value, &imports) {
+            let mut bitcode = Fingerprint::default();
+            for file in file_list(value)
+                .map_err(|error| failure(format!("cc_internal.{F}: all_bitcode_files: {error}")))?
+            {
+                bitcode.string(&file.path);
+            }
+            fp.raw(&bitcode.digest()).string(&imports.path);
+        }
+        fp.string_map(
+            environment_order
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
+        )
+        .strings(std::iter::empty())
+        .string_map(std::iter::empty());
+        Some(fp.into_inner())
+    } else {
+        None
+    };
+    let context = crate::analysis_runtime::context(eval)
+        .map_err(|error| failure(format!("cc_internal.{method}: {error}")))?;
+    let environment: BTreeMap<String, String> = environment_order.iter().cloned().collect();
+    let primary_output = outputs[0].clone();
+    context
+        .register_action(crate::analysis_runtime::Registration {
+            outputs,
+            inputs,
+            command: String::new(),
+            write: None,
+            program: arguments.first().cloned(),
+            arguments: arguments[1..].to_vec(),
+            environment,
+            extra: crate::action::ActionExtra {
+                mnemonic: MNEMONIC.to_owned(),
+                // LtoBackendAction's progress message (:94).
+                progress: Some("LTO Backend Compile %{output}".into()),
+                ..Default::default()
+            },
+            shell_pad: false,
+            executable_file: false,
+            deferred: None,
+            exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
+            runfiles_trees: Vec::new(),
+            build_info: None,
+            // The backend's outputs are shareable artifacts (lto_backends.bzl
+            // declares them through the shareable factory): equal backends of
+            // two owners are one action.
+            shareable: true,
+        })
+        .map_err(|error| failure(format!("cc_internal.{F}: {error}")))?;
+    // aquery's environment in its insertion order.
+    if crate::aquery::capturing() {
+        let mut actions = context.actions.borrow_mut();
+        if let Some(registered) = actions
+            .iter_mut()
+            .rev()
+            .find(|action| action.outputs.contains(&primary_output))
+        {
+            let mut meta = registered
+                .action
+                .extra
+                .aquery
+                .as_deref()
+                .cloned()
+                .unwrap_or_default();
+            meta.environment = Some(crate::aquery::shared_environment(environment_order));
+            meta.progress = Some("LTO Backend Compile %{output}".to_owned());
+            meta.compute_key = compute_key;
             registered.action.extra.aquery = Some(Arc::new(meta));
         }
     }

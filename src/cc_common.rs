@@ -1135,6 +1135,12 @@ _fl = cc_internal.freeze([lambda: 7])
 (_fl[0]() == 7 and type(cc_internal.freeze(_fl)) == "list") or fail("freeze function")
 (sorted(_shallow[:1] + [0]) == [0, 1] and [x for x in _shallow] == _shallow and 1 in _shallow) or fail("freeze reads")
 (repr(_md["s"]) == "struct(f = <built-in function len>)" and str(_shallow) == "[1, [2, 3, 4, 5]]" and {k: v for k, v in _md.items()}["a"] == _inner) or fail("freeze dict reads")
+# Any immutable copy is immutable in Bazel (Dict/StarlarkList.isImmutable),
+# so it may sit in a depset element whatever it holds (rules_cc's
+# LtoCompilationContextInfo: a dict of BitcodeInfo with copts lists).
+_copts = ["-O2"]
+_bitcode = depset([struct(inputs = cc_internal.freeze({"o": struct(copts = _copts)}), l = cc_internal.freeze([[1]]))])
+(_bitcode.to_list()[0].inputs["o"].copts == ["-O2"] and _bitcode.to_list()[0].l == [[1]]) or fail("freeze of mutable values in depset")
 "#
         );
         pass("@@rules_cc+//cc/private:cc_common.bzl", &source);
@@ -1187,12 +1193,6 @@ _fl = cc_internal.freeze([lambda: 7])
             (
                 "x = cc_internal.freeze({'a': struct(f = len)})\nx |= {}",
                 "trying to mutate a frozen dict value",
-            ),
-            // In a depset element the copy's elements are copied natively,
-            // so they must be immutable (Bazel: any immutable copy).
-            (
-                "depset([struct(l = cc_internal.freeze([[1]]))])",
-                "a depset element containing a value of type 'list holding a mutable value (an immutable copy, not frozen yet)' is not implemented in the native profile",
             ),
             (
                 "depset([struct(l = cc_internal.freeze([lambda: 1]))])",

@@ -44,3 +44,16 @@ the `assemble` `.s` source), the archive `ar_files`.
 `bazel_dep(platforms, 1.1.0)` from the BCR (`--batch`, no rc files): the
 compile's `.pic.dwo` output beside its object (CcStarlarkInternal
 .declareOtherOutputFile) and the `per_object_debug_info` flags.
+
+`workspace/lto` (OSS corpus B32) is hand-written: a toolchain with the
+`thin_lto` feature (the flag sets of rules_cc's own test toolchain,
+`tests/cc/testutil/toolchains/cc_toolchain_config.bzl`), a `cc_library`, a
+statically linked `cc_binary` and a `cc_test` with
+`thin_lto_linkstatic_tests_use_shared_nonlto_backends`.
+`genuine_aquery_lto.txt` is genuine Bazel 9.3.1's
+`aquery --extra_toolchains=//lto:tc "mnemonic('CcLtoBackendCompile|CppLTOIndexing|CppLink|CppArchive|CppCompile', //lto:all)"`
+of the same package in a scratch module with `bazel_dep(rules_cc, 0.2.17)`
+and `bazel_dep(platforms, 1.1.0)` from the BCR (`--batch
+--ignore_all_rc_files`): the indexed backends (LtoBackendAction, its
+progress message and ActionKey), the LTO indexing actions and the library's
+shared non-LTO backend (`shared.nonlto/`, index `/dev/null`).

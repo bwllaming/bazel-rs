@@ -690,8 +690,11 @@ fn mutability(value: Value<'_>, depth: usize) -> Mutability {
             return Immutable;
         }
         // An immutable copy not frozen yet (`cc_internal.freeze`) is
-        // immutable in Bazel whatever it holds; its native snapshot copies
-        // the elements, so they must be immutable too.
+        // immutable in Bazel whatever it holds (Dict.isImmutable and
+        // StarlarkList.isImmutable test the container's own mutability):
+        // its native snapshot copies a mutable value it holds, and the
+        // struct or provider element holding it is retained whole
+        // ([`snapshot`]), so a later mutation stays visible like in Bazel.
         let elements: Vec<Value<'_>> = if let Some(list) = ListRef::from_value(value)
             && ListRef::is_immutable_unfrozen(value)
         {
@@ -704,10 +707,7 @@ fn mutability(value: Value<'_>, depth: usize) -> Mutability {
             return Mutable;
         };
         return match all(&mut elements.into_iter()) {
-            Mutable => Unknown(format!(
-                "{} holding a mutable value (an immutable copy, not frozen yet)",
-                value.get_type()
-            )),
+            Mutable => Immutable,
             other => other,
         };
     }
@@ -778,7 +778,16 @@ fn struct_item<'v>(
     eval: &Evaluator<'v, '_, '_>,
     value: Value<'v>,
     mut item: StructItem,
+    holds_mutable: bool,
 ) -> anyhow::Result<Item> {
+    if holds_mutable && value.unpack_frozen().is_none() {
+        // A mutable value below an immutable copy: the element itself when
+        // the evaluating heap retains (else the copy).
+        item.retained = eval.heap().retain(value);
+        if item.retained.is_some() {
+            return Ok(Item::Struct(Arc::new(item)));
+        }
+    }
     if item
         .fields
         .iter()
@@ -799,6 +808,32 @@ pub(crate) fn snapshot<'v>(
     eval: &Evaluator<'v, '_, '_>,
     depth: usize,
 ) -> anyhow::Result<Item> {
+    let mut mutable = false;
+    snapshot_in(value, eval, depth, false, &mut mutable)
+}
+
+/// [`snapshot`] below an immutable copy not frozen yet (`within_copy`),
+/// whose mutable lists and dicts are copied; `mutable` is set when one was,
+/// and the innermost struct or provider instance around it is retained
+/// whole ([`StructItem::retained`]) so that the element is the object
+/// itself, like Bazel's (a copy would not see a later mutation).
+fn snapshot_in<'v>(
+    value: Value<'v>,
+    eval: &Evaluator<'v, '_, '_>,
+    depth: usize,
+    within_copy: bool,
+    mutable: &mut bool,
+) -> anyhow::Result<Item> {
+    let snapshot = |value: Value<'v>, eval: &Evaluator<'v, '_, '_>, depth: usize| {
+        let mut seen = false;
+        let item = snapshot_in(value, eval, depth, within_copy, &mut seen);
+        (item, seen)
+    };
+    let mut nested = |value: Value<'v>, eval: &Evaluator<'v, '_, '_>, depth: usize| {
+        let (item, seen) = snapshot(value, eval, depth);
+        *mutable |= seen;
+        item
+    };
     if depth > MAX_DEPTH {
         bail!("depset element exceeds nesting depth limit {MAX_DEPTH}");
     }
@@ -825,7 +860,7 @@ pub(crate) fn snapshot<'v>(
         Item::Tuple(
             tuple
                 .iter()
-                .map(|item| snapshot(item, eval, depth + 1))
+                .map(|item| nested(item, eval, depth + 1))
                 .collect::<anyhow::Result<_>>()?,
         )
     } else if let Some(depset) = Depset::from_value(value) {
@@ -846,48 +881,71 @@ pub(crate) fn snapshot<'v>(
             }
         }
     } else if let Some(structure) = StructRef::from_value(value) {
+        let mut held = false;
         let mut fields = structure
             .iter()
-            .map(|(name, value)| Ok((name.as_str().to_owned(), snapshot(value, eval, depth + 1)?)))
+            .map(|(name, value)| {
+                let (item, seen) = snapshot(value, eval, depth + 1);
+                held |= seen;
+                Ok((name.as_str().to_owned(), item?))
+            })
             .collect::<anyhow::Result<Vec<_>>>()?;
         fields.sort_by(|a, b| a.0.cmp(&b.0));
-        struct_item(eval, value, StructItem::new(None, fields, None))?
+        struct_item(eval, value, StructItem::new(None, fields, None), held)?
     } else if let Some((identity, name, fields, location)) = crate::providers::instance_parts(value)
     {
+        let mut held = false;
         let item = StructItem::new(
             Some((identity, name)),
             fields
                 .into_iter()
-                .map(|(name, value)| Ok((name, snapshot(value, eval, depth + 1)?)))
+                .map(|(name, value)| {
+                    let (item, seen) = snapshot(value, eval, depth + 1);
+                    held |= seen;
+                    Ok((name, item?))
+                })
                 .collect::<anyhow::Result<Vec<_>>>()?,
             location,
         );
-        struct_item(eval, value, item)?
+        struct_item(eval, value, item, held)?
     } else if let Some(list) = ListRef::from_value(value) {
         // Only a frozen list or an immutable copy (whose elements passed
-        // the element check) passes the element check.
-        if value.unpack_frozen().is_none() && !ListRef::is_immutable_unfrozen(value) {
-            bail!("depset elements must not be mutable values");
+        // the element check) passes the element check; a mutable list
+        // below an immutable copy is copied.
+        let copy = ListRef::is_immutable_unfrozen(value);
+        if value.unpack_frozen().is_none() && !copy {
+            if !within_copy {
+                bail!("depset elements must not be mutable values");
+            }
+            *mutable = true;
         }
-        Item::List(
-            list.iter()
-                .map(|item| snapshot(item, eval, depth + 1))
-                .collect::<anyhow::Result<_>>()?,
-        )
+        let mut seen = false;
+        let items = list
+            .iter()
+            .map(|item| snapshot_in(item, eval, depth + 1, within_copy || copy, &mut seen))
+            .collect::<anyhow::Result<_>>()?;
+        *mutable |= seen;
+        Item::List(items)
     } else if let Some(dict) = DictRef::from_value(value) {
-        if value.unpack_frozen().is_none() && !DictRef::is_immutable_unfrozen(value) {
-            bail!("depset elements must not be mutable values");
+        let copy = DictRef::is_immutable_unfrozen(value);
+        if value.unpack_frozen().is_none() && !copy {
+            if !within_copy {
+                bail!("depset elements must not be mutable values");
+            }
+            *mutable = true;
         }
-        Item::Dict(DictItem(
-            dict.iter()
-                .map(|(key, value)| {
-                    Ok((
-                        snapshot(key, eval, depth + 1)?,
-                        snapshot(value, eval, depth + 1)?,
-                    ))
-                })
-                .collect::<anyhow::Result<_>>()?,
-        ))
+        let mut seen = false;
+        let items = dict
+            .iter()
+            .map(|(key, value)| {
+                Ok((
+                    snapshot_in(key, eval, depth + 1, within_copy || copy, &mut seen)?,
+                    snapshot_in(value, eval, depth + 1, within_copy || copy, &mut seen)?,
+                ))
+            })
+            .collect::<anyhow::Result<_>>()?;
+        *mutable |= seen;
+        Item::Dict(DictItem(items))
     } else if value.get_type() == "set" {
         return gap("a frozen set (immutable in Bazel; no owned native snapshot)");
     } else {

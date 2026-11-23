@@ -416,19 +416,61 @@ fn cc_binary_links_and_the_workspace_status_stamps() {
     );
     assert!(cold.status.success(), "{}", stderr(&cold));
 
-    // The recorded remaining cc boundary: a cc_library `linkstamp` attribute
-    // puts the LinkstampInfo provider (rules_cc's private-API wrapper
-    // closures, created by this analysis) in a depset and
-    // `cc_internal.freeze`s the list of them — both supported (the copy is
-    // an immutable list not frozen yet holding the closures) — and the
-    // binary's link then compiles the linkstamp with shareable artifacts,
-    // which fails explicitly.
-    let output = ws.build("cache", &[&script, "//bin:stamped_tool"]);
-    let text = stderr(&output);
-    assert!(!output.status.success(), "{text}");
-    assert!(
-        text.contains("cc_internal.create_cc_compile_action with shareable artifacts is not implemented in the native profile"),
-        "{text}"
+    // A cc_library `linkstamp` attribute puts the LinkstampInfo provider
+    // (rules_cc's private-API wrapper closures, created by this analysis)
+    // in a depset and `cc_internal.freeze`s the list of them (the copy is
+    // an immutable list not frozen yet holding the closures); the binary's
+    // link compiles the linkstamp with a shareable compile action
+    // (CppCompileActionBuilder.setShareable, OSS corpus B32) and links it.
+    let output = ws.build_with_env("cache3", &[&script, "//bin:stamped_tool"], &pinned);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let (_, tool) = outputs(&output)
+        .into_iter()
+        .find(|(label, _)| label == "//bin:stamped_tool")
+        .unwrap();
+    assert!(Command::new(tool).status().unwrap().success());
+}
+
+/// OSS corpus B32: the linkstamp compile of a stamped binary
+/// (linkstamp_compile.bzl's `create_cc_compile_action(shareable = True)`),
+/// a CppCompileAction whose aquery environment is the configuration's.
+/// genuine_aquery_linkstamp.txt is genuine 9.3.1's `aquery
+/// --workspace_status_command=status.sh "mnemonic('CppLinkstampCompile|CppLink',
+/// //bin:stamped_tool)"` of the same package over BCR rules_cc 0.2.17.
+#[test]
+fn linkstamp_compiles_match_genuine() {
+    let ws = Workspace::new();
+    let script = format!("--workspace_status_command={}/status.sh", ws.root.display());
+    let output = ws.aquery(
+        "cache",
+        &[
+            script.as_str(),
+            "mnemonic('CppLinkstampCompile|CppLink', //bin:stamped_tool)",
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let blocks = |text: &str| -> Vec<String> {
+        let mut blocks: Vec<String> = text
+            .split("\n\n")
+            .filter(|block| !block.trim().is_empty())
+            .map(|block| {
+                block
+                    .lines()
+                    .filter(|line| {
+                        !line.starts_with("  Execution platform: ")
+                            && !line.starts_with("# Configuration: ")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .collect();
+        blocks.sort();
+        blocks
+    };
+    let expected = fs::read_to_string(fixture().join("genuine_aquery_linkstamp.txt")).unwrap();
+    assert_eq!(
+        blocks(&String::from_utf8_lossy(&output.stdout)),
+        blocks(&expected)
     );
 }
 
@@ -545,6 +587,52 @@ fn compiles_stage_the_toolchain_compiler_files_like_genuine() {
         blocks
     };
     let expected = fs::read_to_string(fixture().join("genuine_aquery_tcfiles.txt")).unwrap();
+    assert_eq!(
+        blocks(&String::from_utf8_lossy(&output.stdout)),
+        blocks(&expected)
+    );
+}
+
+/// OSS corpus B32: rules_cc's ThinLTO path over a toolchain with the
+/// `thin_lto` feature — the bitcode compiles, the LTO indexing action, the
+/// indexed backends of a statically linked binary and test
+/// (`cc_internal.create_lto_backend_action`, LtoBackendAction: argv,
+/// mandatory inputs, the "LTO Backend Compile" progress message and its
+/// computeKey) and a library's shared non-LTO backend
+/// (`wrap_link_actions(sharable_artifacts = True)`, `/dev/null` index).
+/// genuine_aquery_lto.txt is genuine 9.3.1's `aquery
+/// --extra_toolchains=//lto:tc "mnemonic('CcLtoBackendCompile|CppLTOIndexing|CppLink|CppArchive|CppCompile',
+/// //lto:all)"` of the same package over BCR rules_cc 0.2.17.
+#[test]
+fn thin_lto_actions_match_genuine() {
+    let ws = Workspace::new();
+    let output = ws.aquery(
+        "cache",
+        &[
+            "--extra_toolchains=//lto:tc",
+            "mnemonic('CcLtoBackendCompile|CppLTOIndexing|CppLink|CppArchive|CppCompile', //lto:all)",
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let blocks = |text: &str| -> Vec<String> {
+        let mut blocks: Vec<String> = text
+            .split("\n\n")
+            .filter(|block| !block.trim().is_empty())
+            .map(|block| {
+                block
+                    .lines()
+                    .filter(|line| {
+                        !line.starts_with("  Execution platform: ")
+                            && !line.starts_with("# Configuration: ")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .collect();
+        blocks.sort();
+        blocks
+    };
+    let expected = fs::read_to_string(fixture().join("genuine_aquery_lto.txt")).unwrap();
     assert_eq!(
         blocks(&String::from_utf8_lossy(&output.stdout)),
         blocks(&expected)

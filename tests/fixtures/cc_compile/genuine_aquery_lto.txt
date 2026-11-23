@@ -1,0 +1,260 @@
+action 'Compiling lto/main.c'
+  Mnemonic: CppCompile
+  Target: //lto:bin
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 48db0fe11e2329d685a78d684c7076d83d210b8354bdd82b4d6d4b03734fde80
+  Inputs: [lto/lib.h, lto/main.c]
+  Outputs: [bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.d, bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.indexing.o, bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.o]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /usr/bin/gcc \
+    -MD \
+    -MF \
+    bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.d \
+    '-frandom-seed=bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.o' \
+    -fPIC \
+    -iquote \
+    . \
+    -iquote \
+    bazel-out/k8-fastbuild/bin \
+    -iquote \
+    external/rules_cc+ \
+    -iquote \
+    bazel-out/k8-fastbuild/bin/external/rules_cc+ \
+    -iquote \
+    external/bazel_tools \
+    -iquote \
+    bazel-out/k8-fastbuild/bin/external/bazel_tools \
+    '-flto=thin' \
+    'lto_indexing_bitcode=bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.indexing.o' \
+    -c \
+    lto/main.c \
+    -o \
+    bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.o)
+# Configuration: 7d89d9d02fd11cc3a9cf0e99fe66ddbd00cca167e1ca4e12d4bf1d989ab3cf45
+# Execution platform: @@platforms//host:host
+
+action 'LTO Backend Compile lto/bin.lto/bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o'
+  Mnemonic: CcLtoBackendCompile
+  Target: //lto:bin
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 6eb7e58c3daedd6d143bb4944785451eedfe23f465972a122bf120b26a762620
+  Inputs: [bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o, bazel-out/k8-fastbuild/bin/lto/bin.lto/bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o.imports, bazel-out/k8-fastbuild/bin/lto/bin.lto/bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o.thinlto.bc]
+  Outputs: [bazel-out/k8-fastbuild/bin/lto/bin.lto/bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o]
+  Command Line: (exec /usr/bin/gcc \
+    'thinlto_index=bazel-out/k8-fastbuild/bin/lto/bin.lto/bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o.thinlto.bc' \
+    'thinlto_output_object_file=bazel-out/k8-fastbuild/bin/lto/bin.lto/bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o' \
+    'thinlto_input_bitcode_file=bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o' \
+    -DLIB \
+    -fPIC)
+# Configuration: 7d89d9d02fd11cc3a9cf0e99fe66ddbd00cca167e1ca4e12d4bf1d989ab3cf45
+# Execution platform: @@platforms//host:host
+
+action 'LTO Backend Compile lto/bin.lto/bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.o'
+  Mnemonic: CcLtoBackendCompile
+  Target: //lto:bin
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 72c633dcdd2f4e93aa9511a79cd6babb4ebe76d8815d09687f1232262591c830
+  Inputs: [bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.o, bazel-out/k8-fastbuild/bin/lto/bin.lto/bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.o.imports, bazel-out/k8-fastbuild/bin/lto/bin.lto/bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.o.thinlto.bc]
+  Outputs: [bazel-out/k8-fastbuild/bin/lto/bin.lto/bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.o]
+  Command Line: (exec /usr/bin/gcc \
+    'thinlto_index=bazel-out/k8-fastbuild/bin/lto/bin.lto/bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.o.thinlto.bc' \
+    'thinlto_output_object_file=bazel-out/k8-fastbuild/bin/lto/bin.lto/bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.o' \
+    'thinlto_input_bitcode_file=bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.o' \
+    -fPIC)
+# Configuration: 7d89d9d02fd11cc3a9cf0e99fe66ddbd00cca167e1ca4e12d4bf1d989ab3cf45
+# Execution platform: @@platforms//host:host
+
+action 'LTO indexing lto/bin.lto/bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o.imports'
+  Mnemonic: CppLTOIndexing
+  Target: //lto:bin
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: b3c079a0e0780fc507b4aab39b74fe864b13df4071a444dd8b0a9550951695e2
+  Inputs: [bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.indexing.o, bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.indexing.o, external/rules_cc+/cc/private/toolchain/build_interface_so, external/rules_cc+/cc/private/toolchain/link_dynamic_library.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/lto/bin-lto-final.params, bazel-out/k8-fastbuild/bin/lto/bin.lto.merged.o, bazel-out/k8-fastbuild/bin/lto/bin.lto/bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.o.imports, bazel-out/k8-fastbuild/bin/lto/bin.lto/bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.o.thinlto.bc, bazel-out/k8-fastbuild/bin/lto/bin.lto/bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o.imports, bazel-out/k8-fastbuild/bin/lto/bin.lto/bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o.thinlto.bc]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, PWD=/proc/self/cwd]
+  Command Line: (exec /usr/bin/gcc \
+    bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.indexing.o \
+    -Wl,--start-lib \
+    bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.indexing.o \
+    -Wl,--end-lib \
+    -Wl,-S)
+# Configuration: 7d89d9d02fd11cc3a9cf0e99fe66ddbd00cca167e1ca4e12d4bf1d989ab3cf45
+# Execution platform: @@platforms//host:host
+
+action 'Linking lto/bin'
+  Mnemonic: CppLink
+  Target: //lto:bin
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: fe68afc84963ffbc2a2ad27bda2512803f02a9af22eef52d3da4944a372c6072
+  Inputs: [bazel-out/k8-fastbuild/bin/lto/bin-lto-final.params, bazel-out/k8-fastbuild/bin/lto/bin.lto.merged.o, bazel-out/k8-fastbuild/bin/lto/bin.lto/bazel-out/k8-fastbuild/bin/lto/_objs/bin/main.pic.o, bazel-out/k8-fastbuild/bin/lto/bin.lto/bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o, external/rules_cc+/cc/private/toolchain/build_interface_so, external/rules_cc+/cc/private/toolchain/link_dynamic_library.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/lto/bin]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, PWD=/proc/self/cwd]
+  Command Line: (exec /usr/bin/gcc \
+    -o \
+    bazel-out/k8-fastbuild/bin/lto/bin \
+    -Wl,@bazel-out/k8-fastbuild/bin/lto/bin-lto-final.params \
+    bazel-out/k8-fastbuild/bin/lto/bin.lto.merged.o \
+    -Wl,-S \
+    'thinlto_param_file=bazel-out/k8-fastbuild/bin/lto/bin-lto-final.params')
+# Configuration: 7d89d9d02fd11cc3a9cf0e99fe66ddbd00cca167e1ca4e12d4bf1d989ab3cf45
+# Execution platform: @@platforms//host:host
+
+action 'Compiling lto/lib.c'
+  Mnemonic: CppCompile
+  Target: //lto:lib
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 20c57b67502ba1b356080e830beecda3533b355e4535dc6806fde52aed9cf4f5
+  Inputs: [lto/lib.c, lto/lib.h]
+  Outputs: [bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.d, bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.indexing.o, bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /usr/bin/gcc \
+    -MD \
+    -MF \
+    bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.d \
+    '-frandom-seed=bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o' \
+    -fPIC \
+    -iquote \
+    . \
+    -iquote \
+    bazel-out/k8-fastbuild/bin \
+    '-flto=thin' \
+    'lto_indexing_bitcode=bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.indexing.o' \
+    -DLIB \
+    -c \
+    lto/lib.c \
+    -o \
+    bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o)
+# Configuration: 7d89d9d02fd11cc3a9cf0e99fe66ddbd00cca167e1ca4e12d4bf1d989ab3cf45
+# Execution platform: @@platforms//host:host
+
+action 'LTO Backend Compile shared.nonlto/bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o'
+  Mnemonic: CcLtoBackendCompile
+  Target: //lto:lib
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 30f973172c7afdfdf1f691af33c27d483e32571dfc0d94a2c15957151129221b
+  Inputs: [bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o]
+  Outputs: [bazel-out/k8-fastbuild/bin/shared.nonlto/bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o]
+  Command Line: (exec /usr/bin/gcc \
+    'thinlto_index=/dev/null' \
+    'thinlto_output_object_file=bazel-out/k8-fastbuild/bin/shared.nonlto/bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o' \
+    'thinlto_input_bitcode_file=bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o' \
+    -DLIB \
+    -fPIC)
+# Configuration: 7d89d9d02fd11cc3a9cf0e99fe66ddbd00cca167e1ca4e12d4bf1d989ab3cf45
+# Execution platform: @@platforms//host:host
+
+action 'Linking lto/liblib.a'
+  Mnemonic: CppArchive
+  Target: //lto:lib
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 790095f550b2b4e447fc241ba4b81585565b1dab7c756add8cb8081256f5e83f
+  Inputs: [bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o]
+  Outputs: [bazel-out/k8-fastbuild/bin/lto/liblib.a]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, PWD=/proc/self/cwd]
+  Command Line: (exec /usr/bin/ar \
+    rcsD \
+    bazel-out/k8-fastbuild/bin/lto/liblib.a \
+    bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o)
+# Configuration: 7d89d9d02fd11cc3a9cf0e99fe66ddbd00cca167e1ca4e12d4bf1d989ab3cf45
+# Execution platform: @@platforms//host:host
+
+action 'Compiling lto/main.c'
+  Mnemonic: CppCompile
+  Target: //lto:test
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 6a1dfa45a246df71ac184fbc5811fc0f3683af506ddcf0d762281fc4f6877e4f
+  Inputs: [lto/lib.h, lto/main.c]
+  Outputs: [bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.d, bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.indexing.o, bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.o]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /usr/bin/gcc \
+    -MD \
+    -MF \
+    bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.d \
+    '-frandom-seed=bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.o' \
+    -fPIC \
+    -iquote \
+    . \
+    -iquote \
+    bazel-out/k8-fastbuild/bin \
+    -iquote \
+    external/rules_cc+ \
+    -iquote \
+    bazel-out/k8-fastbuild/bin/external/rules_cc+ \
+    -iquote \
+    external/bazel_tools \
+    -iquote \
+    bazel-out/k8-fastbuild/bin/external/bazel_tools \
+    '-flto=thin' \
+    'lto_indexing_bitcode=bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.indexing.o' \
+    -c \
+    lto/main.c \
+    -o \
+    bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.o)
+# Configuration: 2796eaf8db050f893c0fd0452bee4c3894b9594dfb1c3cf67fb9e0410da388c6
+# Execution platform: @@platforms//host:host
+
+action 'LTO Backend Compile lto/test.lto/bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.o'
+  Mnemonic: CcLtoBackendCompile
+  Target: //lto:test
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 7f189d396509e23dac88365f907e6187b646454493fc9d18b1d1b431ab44738c
+  Inputs: [bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.o, bazel-out/k8-fastbuild/bin/lto/test.lto/bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.o.imports, bazel-out/k8-fastbuild/bin/lto/test.lto/bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.o.thinlto.bc]
+  Outputs: [bazel-out/k8-fastbuild/bin/lto/test.lto/bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.o]
+  Command Line: (exec /usr/bin/gcc \
+    'thinlto_index=bazel-out/k8-fastbuild/bin/lto/test.lto/bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.o.thinlto.bc' \
+    'thinlto_output_object_file=bazel-out/k8-fastbuild/bin/lto/test.lto/bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.o' \
+    'thinlto_input_bitcode_file=bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.o' \
+    -fPIC)
+# Configuration: 2796eaf8db050f893c0fd0452bee4c3894b9594dfb1c3cf67fb9e0410da388c6
+# Execution platform: @@platforms//host:host
+
+action 'LTO indexing lto/test.lto/bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.o.imports'
+  Mnemonic: CppLTOIndexing
+  Target: //lto:test
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 36e9ce240ed416bca89c05b028a26cfdab7d5e8cb55844f51379800498fbce35
+  Inputs: [bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.indexing.o, bazel-out/k8-fastbuild/bin/shared.nonlto/bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o, external/rules_cc+/cc/private/toolchain/build_interface_so, external/rules_cc+/cc/private/toolchain/link_dynamic_library.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/lto/test-lto-final.params, bazel-out/k8-fastbuild/bin/lto/test.lto.merged.o, bazel-out/k8-fastbuild/bin/lto/test.lto/bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.o.imports, bazel-out/k8-fastbuild/bin/lto/test.lto/bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.o.thinlto.bc]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, PWD=/proc/self/cwd]
+  Command Line: (exec /usr/bin/gcc \
+    bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.indexing.o \
+    -Wl,--start-lib \
+    bazel-out/k8-fastbuild/bin/shared.nonlto/bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o \
+    -Wl,--end-lib \
+    -Wl,-S)
+# Configuration: 2796eaf8db050f893c0fd0452bee4c3894b9594dfb1c3cf67fb9e0410da388c6
+# Execution platform: @@platforms//host:host
+
+action 'Linking lto/test'
+  Mnemonic: CppLink
+  Target: //lto:test
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 4ef22a3b1332090b3c95d215cf0bbd8637e40b1990b6d126a1c3f198ea6aa953
+  Inputs: [bazel-out/k8-fastbuild/bin/lto/test-lto-final.params, bazel-out/k8-fastbuild/bin/lto/test.lto.merged.o, bazel-out/k8-fastbuild/bin/lto/test.lto/bazel-out/k8-fastbuild/bin/lto/_objs/test/main.pic.o, bazel-out/k8-fastbuild/bin/shared.nonlto/bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o, external/rules_cc+/cc/private/toolchain/build_interface_so, external/rules_cc+/cc/private/toolchain/link_dynamic_library.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/lto/test]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, PWD=/proc/self/cwd]
+  Command Line: (exec /usr/bin/gcc \
+    -o \
+    bazel-out/k8-fastbuild/bin/lto/test \
+    -Wl,@bazel-out/k8-fastbuild/bin/lto/test-lto-final.params \
+    bazel-out/k8-fastbuild/bin/lto/test.lto.merged.o \
+    -Wl,--start-lib \
+    bazel-out/k8-fastbuild/bin/shared.nonlto/bazel-out/k8-fastbuild/bin/lto/_objs/lib/lib.pic.o \
+    -Wl,--end-lib \
+    -Wl,-S \
+    'thinlto_param_file=bazel-out/k8-fastbuild/bin/lto/test-lto-final.params')
+# Configuration: 2796eaf8db050f893c0fd0452bee4c3894b9594dfb1c3cf67fb9e0410da388c6
+# Execution platform: @@platforms//host:host
+

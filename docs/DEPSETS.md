@@ -253,12 +253,16 @@ holds the very elements on the evaluating heap, every mutation fails with
 module into an ordinary frozen list or dict (rules_cc's
 LtoCompilationContextInfo, `freeze` of a dict of BitcodeInfo instances
 holding mutable `copts` lists). Starlark.isImmutable of such a copy is true
-whatever it holds; in a depset element the native snapshot copies the
-copy's elements, so they must be immutable themselves, else the element
-fails explicitly (`a depset element containing a value of type 'list
-holding a mutable value (an immutable copy, not frozen yet)' is not
-implemented in the native profile`). A configured target keeps its
-identity through the copy (N55).
+whatever it holds, so it may sit in a depset element whatever it holds
+(OSS corpus B32: rules_cc's LibraryToLinkInfo of a ThinLTO library holds
+LtoCompilationContextInfo's copy of BitcodeInfo instances with mutable
+`copts` lists). The native snapshot copies a mutable list or dict below
+such a copy, and the innermost struct or provider instance around it is
+retained whole (StructItem.retained, like an element holding a function of
+the evaluation), so `to_list()` gives the element object itself and a later
+mutation stays visible as in Bazel; on a heap that does not retain (a
+temporary evaluation) the element is the copy. A configured target keeps
+its identity through the copy (N55).
 
 ## Identity of a depset built from one transitive set (N49b)
 

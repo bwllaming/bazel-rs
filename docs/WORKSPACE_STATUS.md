@@ -190,12 +190,11 @@ genuine** (receipt row `cc/primary`: `//bin:tool`, both stamped headers).
 
 ## Explicit gaps kept
 
-* **cc_library `linkstamp`** — not yet modelled (Short): rules_cc's
-  `LinkstampInfo` provider fields are `wrap_with_check_private_api` closures
-  (`create_linkstamp.bzl:41-44`); a local closure cannot cross analyses in
-  the native depset representation, so a `cc_binary` with a
-  linkstamp-carrying dependency fails explicitly (receipt row
-  `cc/linkstamp` — genuine builds and embeds the stamps).
+* **cc_library `linkstamp`** — supported since OSS corpus B32: the
+  binary's link compiles the linkstamp with rules_cc's shareable
+  `CppLinkstampCompile` action and links it (tests/cc_compile.rs
+  `linkstamp_compiles_match_genuine`, aquery equal to genuine 9.3.1's;
+  receipt row `cc/linkstamp` recorded the earlier explicit failure).
 * The `BuildInfoEvent` (Bazel's build event of the combined status map) is
   posted as the WorkspaceStatus event of the build event files (docs/BEP.md):
   the stable and volatile keys, sorted.

@@ -553,6 +553,9 @@ pub struct CppConfigurationView {
     /// CppOptions.processHeadersInDependencies
     /// (`--process_headers_in_dependencies`).
     pub process_headers_in_dependencies: bool,
+    /// CppOptions.perFileLtoBackendOpts (`--per_file_ltobackendopt`),
+    /// `filter@options` as given.
+    pub per_file_lto_backend_opts: Vec<String>,
 }
 
 impl Default for CppConfigurationView {
@@ -577,6 +580,7 @@ impl Default for CppConfigurationView {
             start_end_lib: true,
             interface_shared_objects: true,
             process_headers_in_dependencies: false,
+            per_file_lto_backend_opts: Vec::new(),
         }
     }
 }
@@ -624,6 +628,7 @@ impl CppConfigurationView {
                 != Some(crate::configuration::OptionValue::Bool(false)),
             process_headers_in_dependencies: native.raw_value("process_headers_in_dependencies")
                 == Some(crate::configuration::OptionValue::Bool(true)),
+            per_file_lto_backend_opts: Vec::new(),
         }
     }
 

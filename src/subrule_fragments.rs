@@ -793,6 +793,14 @@ pub(crate) fn per_file_copts(value: Value<'_>) -> Option<&[String]> {
         .map(|fragment| fragment.view.per_file_copts.as_slice())
 }
 
+/// The `--per_file_ltobackendopt` entries of a `ctx.fragments.cpp` value
+/// (`filter@options` as given).
+pub(crate) fn per_file_lto_backend_opts(value: Value<'_>) -> Option<&[String]> {
+    value
+        .downcast_ref::<CppFragment>()
+        .map(|fragment| fragment.view.per_file_lto_backend_opts.as_slice())
+}
+
 pub(crate) fn alloc_cpp(heap: Heap<'_>, view: CppConfigurationView) -> Value<'_> {
     heap.alloc(CppFragment { view })
 }

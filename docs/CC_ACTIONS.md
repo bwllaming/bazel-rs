@@ -150,24 +150,54 @@ environment, inputs) of CppCompile/CppArchive/CppLink against the native
 string sets are identical modulo that prefix and the section tables are
 identical modulo the shift.
 
+## ThinLTO and linkstamps (OSS corpus B32)
+
+- **`create_lto_backend_action`** (CcStarlarkInternal.java:1027-1081,
+  LtoBackendArtifacts.createLtoBackendActionForStarlark :149-165) registers
+  a `CcLtoBackendCompile` spawn (LtoBackendAction.java): argv = the
+  `lto-backend` tool and the feature configuration's command line, then
+  `-fPIC` for a PIC backend (getLtoBackendCommandLine :103-146); inputs =
+  the given depset; exactly the given environment (ActionEnvironment.create,
+  no configuration environment); progress `LTO Backend Compile %{output}`;
+  its aquery ActionKey is LtoBackendAction.computeKey (:276-298: GUID,
+  arguments, mnemonic, the mandatory inputs' paths, the allowed bitcode
+  files' fingerprint and the imports path of an indexed backend, the
+  environment, the execution info). Its outputs are shareable artifacts.
+  **Not modelled:** LtoBackendAction's input discovery (the imported
+  bitcode files the `.imports` file of the indexing step names, a subset of
+  `all_bitcode_files`, LtoBackendAction.discoverInputs): the action has its
+  mandatory inputs, like genuine's before discovery (what `Target.actions`
+  and aquery show), so a sandboxed indexed backend does not see the
+  imported bitcode files.
+- **`collect_per_file_lto_backend_opts`** (:530-542): the options of every
+  `--per_file_ltobackendopt` whose RegexFilter includes the object's exec
+  path.
+- **`wrap_link_actions(sharable_artifacts = True)`**: the plain action
+  factory, whose `declare_shareable_artifact` already declares a shareable
+  artifact below the bin root (LinkActionConstruction.create,
+  CppLinkActionBuilder.java:59-67).
+- **`create_cc_compile_action(shareable = True)`** (the linkstamp compile,
+  linkstamp_compile.bzl; CppCompileActionBuilder.setShareable :559-562): a
+  shareable compile action. Every CppCompileAction's aquery environment is
+  the configuration's (CppCompileAction.getEnvironment :489-491), the
+  linkstamp compile's included.
+
+tests/cc_compile.rs `thin_lto_actions_match_genuine` and
+`linkstamp_compiles_match_genuine` compare the aquery output with genuine
+9.3.1's, ActionKeys included (tests/fixtures/cc_compile/PROVENANCE.md).
+
 ## What fails explicitly
 
 - **C++20 modules**: `create_cc_compile_action_template` (tree-artifact
   compile action templates), `module_files`/module maps on the compile action.
-- **LTO**: `create_lto_backend_action`, `create_lto_backend_action_template`,
-  `collect_per_file_lto_backend_opts`.
-- **Shareable link artifacts**: `wrap_link_actions(sharable_artifacts = True)`
-  and shareable compile outputs.
+- **LTO over tree artifacts**: `create_lto_backend_action_template` and the
+  wrapped factory's `declare_shareable_directory`.
 - **FDO**: `absolute_symlink` (absolute-path FDO profiles); FDO/propeller
   profiles remain N25d's explicit toolchain-analysis gaps.
 - **libc_top** (N25d5) remains unsupported.
-- **cc_library `linkstamp`** — not yet modelled (Short): rules_cc's
-  `LinkstampInfo` fields are `wrap_with_check_private_api` closures
-  (`create_linkstamp.bzl:41-44`); a local closure cannot cross analyses in
-  the native depset representation, so a linkstamp-carrying dependency fails
-  explicitly at the `depset(linkstamps)` of `cc_library`
-  (tests/fixtures/workspace_status2/reference_receipt.json, row
-  `cc/linkstamp`). The stamped build-info translation itself is supported
+- **cc_library `linkstamp`** — supported since B32 (the shareable
+  linkstamp compile above; the `LinkstampInfo` closures in depsets since
+  N49b/corpus-parity5). The stamped build-info translation itself is supported
   (docs/WORKSPACE_STATUS.md): `cc_binary` over a built `cc_library` links
   byte-identically to genuine, and the `_build_info_files`
   `volatile_file.h`/`non_volatile_file.h` are byte-exact under a fixed
