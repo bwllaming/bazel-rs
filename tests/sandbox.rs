@@ -1166,3 +1166,233 @@ fn visit(directory: &Path, inspect: &mut dyn FnMut(&PathBuf)) {
         }
     }
 }
+
+/// The files and directories of a workspace copy (`dir/` for a directory, a
+/// content digest for a file; convenience symlinks skipped), the snapshot
+/// capture.py of tests/fixtures/test_source_writes takes before and after
+/// each case.
+fn source_tree(root: &Path) -> std::collections::BTreeMap<String, String> {
+    fn walk(root: &Path, dir: &Path, out: &mut std::collections::BTreeMap<String, String>) {
+        let mut entries: Vec<_> = fs::read_dir(dir).unwrap().filter_map(Result::ok).collect();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let relative = path.strip_prefix(root).unwrap().display().to_string();
+            let kind = fs::symlink_metadata(&path).unwrap().file_type();
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                out.insert(format!("{relative}/"), "dir".into());
+                walk(root, &path, out);
+            } else if relative != "MODULE.bazel.lock" {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                fs::read(&path).unwrap().hash(&mut hasher);
+                out.insert(relative, format!("{:x}", hasher.finish()));
+            }
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    walk(root, root, &mut out);
+    out
+}
+
+/// capture.py's `workspace_changes`: `added|removed|modified <path>`, a
+/// bytecode file as `__pycache__/*.pyc` (its name carries the Python
+/// version).
+fn source_tree_changes(
+    before: &std::collections::BTreeMap<String, String>,
+    after: &std::collections::BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut rows = std::collections::BTreeSet::new();
+    for key in before.keys().chain(after.keys()) {
+        if before.get(key) == after.get(key) {
+            continue;
+        }
+        let kind = match (before.contains_key(key), after.contains_key(key)) {
+            (false, _) => "added",
+            (_, false) => "removed",
+            _ => "modified",
+        };
+        let key = match key.split_once("__pycache__/") {
+            Some((head, rest)) if !rest.is_empty() => format!("{head}__pycache__/*.pyc"),
+            _ => key.clone(),
+        };
+        rows.insert(format!("{kind} {key}"));
+    }
+    rows.into_iter().collect()
+}
+
+/// One case of tests/fixtures/test_source_writes in a fresh copy of its
+/// workspace at `ws` (cache beside it): the exit code, the process summary,
+/// the probe's lines and the workspace's changes. Without a host python3
+/// the probe cannot write bytecode, so its `pycache=` line and the
+/// `__pycache__` changes are dropped (from the expectation too, by the
+/// caller's [`without_bytecode`]).
+fn test_source_writes_case(ws: &Path, cache: &Path, args: &[&str]) -> serde_json::Value {
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/test_source_writes/workspace");
+    for name in [
+        "MODULE.bazel",
+        "pkg/BUILD.bazel",
+        "pkg/defs.bzl",
+        "pkg/mod.py",
+    ] {
+        let path = ws.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::copy(fixture.join(name), path).unwrap();
+    }
+    let before = source_tree(ws);
+    let output = Command::new("timeout")
+        .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
+        .arg("--ignore_all_rc_files")
+        .arg(format!("--cache-dir={}", cache.display()))
+        .args(args)
+        .current_dir(ws)
+        .explicit_modules()
+        .output()
+        .unwrap();
+    let after = source_tree(ws);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let lines = |keep: &dyn Fn(&str) -> bool| -> Vec<String> {
+        text.lines()
+            .filter(|line| keep(line))
+            .map(str::to_owned)
+            .collect()
+    };
+    without_bytecode(serde_json::json!({
+        "exit": output.status.code(),
+        "errors": lines(&|line| line.starts_with("ERROR: ")),
+        "probe": lines(&|line| ["resolved=", "pycache=", "mkdir=", "append="]
+            .iter()
+            .any(|key| line.starts_with(key))),
+        "workspace_changes": source_tree_changes(&before, &after),
+    }))
+}
+
+/// A probe observation without what depends on a host python3 (see
+/// [`test_source_writes_case`]).
+fn without_bytecode(mut row: serde_json::Value) -> serde_json::Value {
+    if Path::new("/usr/bin/python3").exists() {
+        return row;
+    }
+    for (field, marker) in [("probe", "pycache="), ("workspace_changes", "__pycache__")] {
+        if let Some(lines) = row[field].as_array_mut() {
+            lines.retain(|line| !line.as_str().unwrap_or_default().contains(marker));
+        }
+    }
+    row
+}
+
+/// tests/fixtures/test_source_writes (genuine 9.3.1 receipt): a test's
+/// runfile of a source file resolves to the live workspace file, and what
+/// the test writes next to it — Python's `__pycache__` (~/code's
+/// pr_review:reviewer_test, whose conftest.py imports from
+/// `Path(__file__).resolve()`), a mkdir, an append — reaches the source tree
+/// exactly when the spawn's sandbox lets it. On a host without user
+/// namespaces genuine's `sandboxed` is processwrapper-sandbox, which isolates
+/// nothing: every strategy writes there, and so does this engine for a
+/// workspace inside its Landlock-writable roots (this test's workspace lies
+/// below the test temporary root: TMPDIR or /tmp). The namespace sandbox
+/// (linux-sandbox) mounts the source tree read-only: the sandboxed cases are
+/// denied there, the unsandboxed ones still write.
+#[test]
+fn test_source_writes_match_the_genuine_receipt() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/test_source_writes");
+    let receipt: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fixture.join("reference_receipt.json")).unwrap())
+            .unwrap();
+    let denied = without_bytecode(serde_json::json!({
+        "exit": 0,
+        "errors": [],
+        "probe": ["resolved=workspace", "pycache=absent", "mkdir=denied", "append=denied"],
+        "workspace_changes": [],
+    }));
+    for row in receipt["rows"].as_array().unwrap() {
+        let id = row["id"].as_str().unwrap();
+        let args: Vec<&str> = row["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|arg| arg.as_str().unwrap())
+            .collect();
+        let temp = tempfile::Builder::new()
+            .prefix("test-source-writes-")
+            .tempdir_in(crate::test_temp::root())
+            .unwrap();
+        let observed =
+            test_source_writes_case(&temp.path().join("ws"), &temp.path().join("cache"), &args);
+        let mut expected = without_bytecode(row["native"].clone());
+        if linux_sandbox() {
+            match id {
+                "default" | "linux-sandbox" => expected = denied.clone(),
+                _ => {}
+            }
+        } else if row["classification"] == "EXACT" {
+            assert_eq!(row["native"], row["genuine"], "{id}");
+        }
+        let fields = ["exit", "probe", "workspace_changes"];
+        let pick = |value: &serde_json::Value| -> Vec<serde_json::Value> {
+            fields.iter().map(|field| value[*field].clone()).collect()
+        };
+        if id == "linux-sandbox" && !linux_sandbox() {
+            // Rejected at startup like genuine (the Valid values list is the
+            // engine's own, tests/fixtures/sandbox_backend).
+            assert_eq!(observed["exit"], expected["exit"], "{id}: {observed}");
+            continue;
+        }
+        assert_eq!(pick(&observed), pick(&expected), "{id}: {observed}");
+    }
+}
+
+/// The same probe in a workspace outside every sandbox-writable root (the
+/// outside base of these tests): there the Landlock sandbox denies the
+/// writes like the linux-sandbox's read-only source tree does — stricter
+/// than genuine's processwrapper-sandbox on such a host, which would let
+/// them through (docs/SANDBOX.md) — and an unsandboxed spawn still writes.
+#[test]
+fn sandboxed_tests_cannot_write_a_source_tree_outside_the_writable_roots() {
+    let share = OutsideBase::share();
+    let ws = share.marker.join("ws");
+    let temp = tempfile::Builder::new()
+        .prefix("test-source-writes-outside-")
+        .tempdir_in(crate::test_temp::root())
+        .unwrap();
+    let denied = without_bytecode(serde_json::json!({
+        "exit": 0,
+        "errors": [],
+        "probe": ["resolved=workspace", "pycache=absent", "mkdir=denied", "append=denied"],
+        "workspace_changes": [],
+    }));
+    let sandboxed = test_source_writes_case(
+        &ws,
+        &temp.path().join("cache"),
+        &["test", "--test_output=all", "//pkg:probe"],
+    );
+    assert_eq!(sandboxed, denied);
+    let local = test_source_writes_case(
+        &ws,
+        &temp.path().join("cache"),
+        &["test", "--test_output=all", "//pkg:probe_no_sandbox"],
+    );
+    assert_eq!(
+        local,
+        without_bytecode(serde_json::json!({
+            "exit": 0,
+            "errors": [],
+            "probe": ["resolved=workspace", "pycache=written", "mkdir=ok", "append=ok"],
+            "workspace_changes": [
+                "added pkg/__pycache__/",
+                "added pkg/__pycache__/*.pyc",
+                "added pkg/probe_dir/",
+                "modified pkg/mod.py",
+            ],
+        }))
+    );
+    let _ = sealed_trees::remove_tree(&share.marker);
+}

@@ -171,6 +171,7 @@ tests/fixtures/td_support
 tests/fixtures/test_args/workspace
 tests/fixtures/test_exec_env/workspace
 tests/fixtures/test_flags/stubs
+tests/fixtures/test_source_writes/workspace
 tests/fixtures/test_suite/workspace
 tests/fixtures/tree_relative_path/workspace
 tests/fixtures/tree_symlinks/workspace

@@ -341,6 +341,32 @@ cannot write. Writes, creates, removes, renames and truncations are denied.
   the path with `--sandbox_writable_path=<dir>`, or tag the action
   `no-sandbox` (Bazel's own answers are `--sandbox_writable_path` and the
   tag).
+- **Writes into the source tree through runfiles** — a test's (or tool's)
+  runfile of a source file resolves to the live workspace file in both
+  engines (genuine's runfiles and sandbox inputs are symlinks to it; here
+  since B15), so a spawn that writes next to a resolved source — Python's
+  `__pycache__` after `Path(__file__).resolve()`, ~/code's
+  `//src/workblocks/bw/pr_review:reviewer_test` — writes into the
+  workspace exactly when its sandbox lets it. Genuine 9.3.1 on a host
+  without user namespaces (processwrapper-sandbox) lets it under every
+  strategy; genuine's linux-sandbox never does for a sandboxed spawn (the
+  source tree is remounted read-only; below /tmp the hermetic /tmp mounts
+  `/tmp/<first segment>` back read-only), the `no-sandbox`/`local` tags and
+  `standalone` always do. The namespace sandbox here does the same as
+  linux-sandbox (docker, `BAZEL_RS_SANDBOX_NAMESPACES=bind-proc`: denied
+  below /tmp and outside it); the Landlock sandbox denies it (EACCES; Python
+  then skips its bytecode cache) unless the workspace lies inside its
+  writable roots — `/tmp`, TMPDIR, `/dev/shm` — where it matches genuine's
+  processwrapper-sandbox instead. Excluding a workspace below `/tmp` from the
+  `/tmp` grant is not expressible: Landlock rules only grant, and a right on
+  `/tmp` covers its whole subtree, so the exclusion would also deny every new
+  entry directly in `/tmp` (where genuine's hermetic `/tmp` lets an action
+  create them). A new directory in a package (`__pycache__`) changes the
+  directory listing, so the next command's analysis snapshot misses — as
+  genuine re-lists the directory. Receipt: `tests/fixtures/test_source_writes`
+  (genuine 9.3.1 on this host: every case writes; `tests/sandbox.rs`
+  `test_source_writes_match_the_genuine_receipt` and
+  `sandboxed_tests_cannot_write_a_source_tree_outside_the_writable_roots`).
 - **A `--cache-dir` under /tmp is writable by actions of the Landlock
   fallback** (the /tmp grant is Bazel-parity; under the namespace sandbox the
   cache is mounted read-only into the hermetic /tmp). Cross-linking docs/HARDLINK_STAGING.md: staged

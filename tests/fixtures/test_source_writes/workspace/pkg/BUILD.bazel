@@ -1,0 +1,7 @@
+load(":defs.bzl", "probe_test")
+
+probe_test(name = "probe", data = ["mod.py"])
+
+probe_test(name = "probe_no_sandbox", data = ["mod.py"], tags = ["no-sandbox"])
+
+probe_test(name = "probe_local", data = ["mod.py"], tags = ["local"])

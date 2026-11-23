@@ -1,0 +1,290 @@
+{
+ "schema": "test-source-writes-receipt-v1",
+ "reference": {
+  "path": "/home/coder/bazel/.direnv/reference/bazel-9.3.1-linux-x86_64",
+  "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+  "version": "9.3.1"
+ },
+ "method": "capture.py in this directory on the dev host (a fresh copy of workspace/ per case below /tmp/opencode/w, private HOME, PATH=/usr/bin:/bin, --nosystem_rc --nohome_rc; genuine --batch with a scratch --output_user_root, native a scratch --cache-dir outside the workspace); native = bazel-rs 0.4.35 (main 35733ea1)",
+ "host": {
+  "user namespaces": "blocked (kernel.apparmor_restrict_unprivileged_userns=1): genuine's sandboxed is processwrapper-sandbox, bazel-rs's is processwrapper-sandbox restricted by Landlock (tests/fixtures/sandbox_backend)",
+  "workspace location": "below /tmp, which the Landlock sandbox keeps writable (linux-sandbox's writable /tmp)"
+ },
+ "findings": [
+  "Genuine's runfile of a source file resolves to the live workspace file (resolved=workspace) under every strategy, like bazel-rs's (B15).",
+  "Genuine 9.3.1 on this host writes into the source tree under every strategy, sandboxed included: processwrapper-sandbox isolates nothing.",
+  "bazel-rs matches every row. Outside its Landlock-writable roots (/tmp, TMPDIR, /dev/shm, the execroot) the Landlock sandbox denies the writes (tests/sandbox.rs sandboxed_tests_cannot_write_a_source_tree_outside_the_writable_roots), stricter than genuine's processwrapper-sandbox, like genuine's linux-sandbox.",
+  "Under the namespace sandbox (docker, BAZEL_RS_SANDBOX_NAMESPACES=bind-proc) a sandboxed test is denied in a workspace below /tmp (hermetic /tmp: /tmp/<first segment> mounted back read-only) and outside it; no-sandbox/local still write (genuine linux-sandbox's layout)."
+ ],
+ "rows": [
+  {
+   "id": "default",
+   "args": [
+    "test",
+    "--test_output=all",
+    "//pkg:probe"
+   ],
+   "classification": "EXACT",
+   "genuine": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 7 processes: 6 internal, 2 processwrapper-sandbox."
+    ],
+    "probe": [
+     "resolved=workspace",
+     "pycache=written",
+     "mkdir=ok",
+     "append=ok"
+    ],
+    "workspace_changes": [
+     "added pkg/__pycache__/",
+     "added pkg/__pycache__/*.pyc",
+     "added pkg/probe_dir/",
+     "modified pkg/mod.py"
+    ]
+   },
+   "native": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 7 processes: 6 internal, 2 processwrapper-sandbox."
+    ],
+    "probe": [
+     "resolved=workspace",
+     "pycache=written",
+     "mkdir=ok",
+     "append=ok"
+    ],
+    "workspace_changes": [
+     "added pkg/__pycache__/",
+     "added pkg/__pycache__/*.pyc",
+     "added pkg/probe_dir/",
+     "modified pkg/mod.py"
+    ]
+   }
+  },
+  {
+   "id": "processwrapper",
+   "args": [
+    "test",
+    "--test_output=all",
+    "--spawn_strategy=processwrapper-sandbox",
+    "//pkg:probe"
+   ],
+   "classification": "EXACT",
+   "genuine": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 7 processes: 6 internal, 2 processwrapper-sandbox."
+    ],
+    "probe": [
+     "resolved=workspace",
+     "pycache=written",
+     "mkdir=ok",
+     "append=ok"
+    ],
+    "workspace_changes": [
+     "added pkg/__pycache__/",
+     "added pkg/__pycache__/*.pyc",
+     "added pkg/probe_dir/",
+     "modified pkg/mod.py"
+    ]
+   },
+   "native": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 7 processes: 6 internal, 2 processwrapper-sandbox."
+    ],
+    "probe": [
+     "resolved=workspace",
+     "pycache=written",
+     "mkdir=ok",
+     "append=ok"
+    ],
+    "workspace_changes": [
+     "added pkg/__pycache__/",
+     "added pkg/__pycache__/*.pyc",
+     "added pkg/probe_dir/",
+     "modified pkg/mod.py"
+    ]
+   }
+  },
+  {
+   "id": "linux-sandbox",
+   "args": [
+    "test",
+    "--test_output=all",
+    "--spawn_strategy=linux-sandbox",
+    "//pkg:probe"
+   ],
+   "classification": "EXACT_EXCEPT_VALID_VALUES_LIST",
+   "genuine": {
+    "exit": 2,
+    "errors": [
+     "ERROR: 'linux-sandbox' was requested for explicit default strategies but no strategy with that identifier was registered. Valid values are: [dynamic_worker, processwrapper-sandbox, standalone, dynamic, remote, worker, sandboxed, local]",
+     "ERROR: Build did NOT complete successfully",
+     "ERROR: Couldn't start the build. Unable to run tests"
+    ],
+    "processes": [],
+    "probe": [],
+    "workspace_changes": []
+   },
+   "native": {
+    "exit": 2,
+    "errors": [
+     "ERROR: 'linux-sandbox' was requested for explicit default strategies but no strategy with that identifier was registered. Valid values are: [standalone, local, sandboxed, processwrapper-sandbox, worker]",
+     "ERROR: Build did NOT complete successfully",
+     "ERROR: Couldn't start the build. Unable to run tests"
+    ],
+    "processes": [],
+    "probe": [],
+    "workspace_changes": []
+   }
+  },
+  {
+   "id": "standalone",
+   "args": [
+    "test",
+    "--test_output=all",
+    "--spawn_strategy=local",
+    "//pkg:probe"
+   ],
+   "classification": "EXACT",
+   "genuine": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 7 processes: 6 internal, 2 local."
+    ],
+    "probe": [
+     "resolved=workspace",
+     "pycache=written",
+     "mkdir=ok",
+     "append=ok"
+    ],
+    "workspace_changes": [
+     "added pkg/__pycache__/",
+     "added pkg/__pycache__/*.pyc",
+     "added pkg/probe_dir/",
+     "modified pkg/mod.py"
+    ]
+   },
+   "native": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 7 processes: 6 internal, 2 local."
+    ],
+    "probe": [
+     "resolved=workspace",
+     "pycache=written",
+     "mkdir=ok",
+     "append=ok"
+    ],
+    "workspace_changes": [
+     "added pkg/__pycache__/",
+     "added pkg/__pycache__/*.pyc",
+     "added pkg/probe_dir/",
+     "modified pkg/mod.py"
+    ]
+   }
+  },
+  {
+   "id": "no-sandbox-tag",
+   "args": [
+    "test",
+    "--test_output=all",
+    "//pkg:probe_no_sandbox"
+   ],
+   "classification": "EXACT",
+   "genuine": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 7 processes: 6 internal, 2 local."
+    ],
+    "probe": [
+     "resolved=workspace",
+     "pycache=written",
+     "mkdir=ok",
+     "append=ok"
+    ],
+    "workspace_changes": [
+     "added pkg/__pycache__/",
+     "added pkg/__pycache__/*.pyc",
+     "added pkg/probe_dir/",
+     "modified pkg/mod.py"
+    ]
+   },
+   "native": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 7 processes: 6 internal, 2 local."
+    ],
+    "probe": [
+     "resolved=workspace",
+     "pycache=written",
+     "mkdir=ok",
+     "append=ok"
+    ],
+    "workspace_changes": [
+     "added pkg/__pycache__/",
+     "added pkg/__pycache__/*.pyc",
+     "added pkg/probe_dir/",
+     "modified pkg/mod.py"
+    ]
+   }
+  },
+  {
+   "id": "local-tag",
+   "args": [
+    "test",
+    "--test_output=all",
+    "//pkg:probe_local"
+   ],
+   "classification": "EXACT",
+   "genuine": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 7 processes: 6 internal, 2 local."
+    ],
+    "probe": [
+     "resolved=workspace",
+     "pycache=written",
+     "mkdir=ok",
+     "append=ok"
+    ],
+    "workspace_changes": [
+     "added pkg/__pycache__/",
+     "added pkg/__pycache__/*.pyc",
+     "added pkg/probe_dir/",
+     "modified pkg/mod.py"
+    ]
+   },
+   "native": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 7 processes: 6 internal, 2 local."
+    ],
+    "probe": [
+     "resolved=workspace",
+     "pycache=written",
+     "mkdir=ok",
+     "append=ok"
+    ],
+    "workspace_changes": [
+     "added pkg/__pycache__/",
+     "added pkg/__pycache__/*.pyc",
+     "added pkg/probe_dir/",
+     "modified pkg/mod.py"
+    ]
+   }
+  }
+ ]
+}
