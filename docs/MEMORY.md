@@ -299,36 +299,52 @@ the planning structures) hold 136 / 106 MB of strings, of which 127 / 95 MB are 
 (none within one heap); deduplicating across frozen heaps would need values of one heap pointing into another and
 is not done.
 
-`crate::interner::IStr` is a process-global, sharded (64 mutexes, picked by the text's hash) interner of strings
-copied into leaked arena chunks: an `IStr` is one pointer (8 bytes, the text's length word and bytes behind it) and
-equal texts are one copy, so equality is pointer equality. It hashes, orders, prints (`Display`, `Debug`) and
-serializes exactly as the `String` of its text, so maps keep their order, action keys and the snapshot's encoded
-bytes are unchanged, and a snapshot decode interns what it reads (a hit shares the texts too). It never frees: it
-holds only long-lived, repeating strings — a planned action's arguments, a dependency's producer id, a `Label`'s
-repository, package and name (`Label` is 24 bytes instead of 72 and its clone copies three pointers). A transient
-label parsed and dropped adds nothing new: the distinct label texts of a build are a few MB.
+`crate::interner::IStr` is a process-global, sharded (64 mutexes, picked by the text's hash) interner in safe code.
+A distinct text is copied once into a leaked arena chunk (split off the chunk's front and validated back into a
+`str`) and gets the next id; an `IStr` is that 4-byte id (`NonZeroU32`, so `Option<IStr>` is 4 bytes too). The ids
+name slots of a table of segments, each twice the size of the one before and allocated on first use; a slot is a
+`OnceLock<&'static str>` set once when the text is interned and read without a lock. Equal texts are one id, so
+equality compares ids. A thread's last 2,048 interns (by hash) answer repeats without the shard lock, which keeps a
+snapshot hit's decode as fast as before. It hashes, orders, prints (`Display`, `Debug`) and serializes exactly as the
+`String` of its text, so maps keep their order, action keys and the snapshot's encoded bytes are unchanged, and a
+snapshot decode interns what it reads (a hit shares the texts too). It never frees: it holds only long-lived,
+repeating strings — a planned action's arguments, a dependency's producer id, a `Label`'s repository, package and
+name (`Label` is 12 bytes instead of 72 and its clone copies three ids), aquery's described arguments
+(`InternedStrings`, which replaced the per-list packed allocation of `PackedStrings`). A transient label parsed and
+dropped adds nothing new: the distinct label texts of a build are a few MB.
 
-Result (non-LTO builds of main db047837 and the branch, alternating, three rounds, load 15–66; private caches;
-peak RSS of the bazel-rs process; MB). The branch's third cold round ran while the host was overloaded (load ~670,
-8 hours) and was repeated with a fourth main round at load 15–25; the cold runs are dominated by downloads:
+The representation matters (non-LTO, alternating, three rounds; peak RSS in MB): an `&'static str` (16 bytes) held
+~300 MB more than an 8-byte thin pointer, which needs `unsafe`; the 4-byte id holds less than either:
+
+| `IStr` | ~/code miss | OpenROAD miss |
+|---|---|---|
+| main a3fc9f40 (no interning) | 7,685 / 7,672 / 7,650 | 6,716 / 6,696 / 6,701 |
+| `&'static str`, 16 bytes | 6,866 / 6,918 / 6,794 | 5,726 / 5,720 / 5,721 |
+| thin pointer, 8 bytes (unsafe; not merged) | 6,528 / 6,508 / 6,583 | 5,422 / 5,416 / 5,415 |
+| id, 4 bytes | 6,426 / 6,543 / 6,474 | 5,293 / 5,295 / 5,274 |
+
+Result (non-LTO builds of main a3fc9f40 and the branch, alternating, three rounds, load 10–25; private caches;
+peak RSS of the bazel-rs process; MB):
 
 | run | main | string-interning |
 |---|---|---|
-| ~/code `--nobuild //src/...`, snapshot miss | 22.0 / 23.0 / 22.8 s, 7,835 / 7,887 / 7,880 | 19.7 / 18.9 / 21.2 s, 6,861 / 6,791 / 6,797 |
-| ~/code snapshot hit | 0.6 / 0.6 / 0.7 s, 1,157 / 1,158 / 1,171 | 0.7 / 0.6 / 0.7 s, 1,048 / 1,059 / 1,042 |
-| OpenROAD `--nobuild //...`, snapshot miss | 31.9 / 32.0 / 30.9 s, 6,875 / 6,883 / 6,875 | 29.5 / 28.0 / 29.0 s, 5,606 / 5,645 / 5,622 |
-| OpenROAD snapshot hit | 1.2 / 1.2 / 1.3 s, 1,802 / 1,801 / 1,801 | 1.2 / 1.3 / 1.2 s, 1,546 / 1,538 / 1,541 |
-| OpenROAD cold (fetches everything) | 71.3 / 76.0 / 95.0 / 67.6 s, 6,926 / 6,932 / 6,929 / 6,935 | 75.2 / 75.6 / 70.7 s, 5,668 / 5,677 / 5,619 |
+| ~/code `--nobuild //src/...`, snapshot miss | 23.3 / 23.0 / 23.2 s, 7,615 / 7,665 / 7,605 | 21.3 / 21.3 / 21.0 s, 6,514 / 6,387 / 6,486 |
+| ~/code snapshot hit | 0.6 / 0.7 / 0.6 s, 1,166 / 1,157 / 1,166 | 0.6 / 0.6 / 0.6 s, 1,043 / 1,061 / 1,047 |
+| OpenROAD `--nobuild //...`, snapshot miss | 32.2 / 31.5 / 31.2 s, 6,705 / 6,697 / 6,708 | 28.5 / 28.5 / 29.0 s, 5,260 / 5,295 / 5,309 |
+| OpenROAD snapshot hit | 1.2 / 1.2 / 1.2 s, 1,800 / 1,802 / 1,800 | 1.2 / 1.2 / 1.2 s, 1,529 / 1,529 / 1,529 |
+| ~/code `aquery 'kind("cc_.*", //src/...)'` | 55.4 / 54.7 / 55.1 s, 10,718 / 10,725 / 10,737 | 46.2 s, 8,577 |
 
-The saving is larger than the census rows: every `Label` copy outside the measured maps (attribute values,
-dependency edges, providers' owners, query and planning tables) shrank too. The action dumps of ~/code `//src/...`
-(5.7 M lines) and OpenROAD `//:openroad` (17.6 M lines) and the aquery output (text and jsonproto; OpenROAD
-`//src/utl:utl`, ~/code `//src/rust/...`) are byte-identical.
+The cold OpenROAD run (everything fetched, on main db047837 with the 8-byte representation) peaked at 6,926–6,935
+MB on main and 5,619–5,677 MB on the branch, in about the same time (downloads dominate). The saving is larger than
+the census rows: every `Label` copy outside the measured maps (attribute values, dependency edges, providers'
+owners, query and planning tables) shrank too. The action dumps of ~/code `//src/...` (5.7 M lines) and OpenROAD
+`//:openroad` (17.6 M lines) and the aquery output (text, jsonproto and proto; OpenROAD `//src/utl:utl`, ~/code
+`//src/rust/...`) are byte-identical.
 
 Not done (each under ~80 MB on either workload): sharing equal environment and execution-info maps through one
 `Arc` (~40 MB on ~/code), write-action contents (83 MB on OpenROAD), the artifacts' owner strings and File paths,
 the Starlark `Label` value (`LabelValue`, three Strings in the frozen heaps; it is part of the frozen-heap page
 format). Lazily expanded command lines (keeping a Starlark spawn's `Args` with its depsets and expanding argv only
-for the key, the execution and aquery) would now save at most the 8-byte argument slots (OpenROAD: 42 MB of
+for the key, the execution and aquery) would now save at most the 4-byte argument slots (OpenROAD: 21 MB of
 5.3 M arguments) and the 8 MB of distinct texts, while every key computation, snapshot encode and aquery would
 expand again and byte identity would rest on a second expansion path; not worth it.
