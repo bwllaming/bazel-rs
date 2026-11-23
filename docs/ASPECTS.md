@@ -52,7 +52,10 @@ in the exec configuration). `required_providers` is checked against the
 class's advertised providers (`platform`: PlatformInfo, `toolchain_type`:
 ToolchainTypeInfo, nothing for the others; ANY for the alias-like
 classes). An aspect's `ctx.rule.attr` of a Starlark rule also keeps
-`aspect_hints` (filtered from the rule's own `ctx.attr` only).
+`aspect_hints` (filtered from the rule's own `ctx.attr` only), and its
+`target_compatible_with`/`exec_compatible_with` Targets: the application
+analyzes those prerequisites like the rule's own analysis does (OSS corpus
+B54).
 
 ## Propagation functions
 
