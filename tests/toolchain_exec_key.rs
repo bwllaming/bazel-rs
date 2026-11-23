@@ -44,7 +44,7 @@ fn strings(value: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-fn run(workspace: &Path, case: &serde_json::Value, analysis: Option<&str>) -> Output {
+fn run(workspace: &Path, case: &serde_json::Value, environment: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_bazel-rs"));
     command
         .current_dir(workspace)
@@ -54,9 +54,7 @@ fn run(workspace: &Path, case: &serde_json::Value, analysis: Option<&str>) -> Ou
         .env("TMPDIR", workspace.join("tmp"))
         .env("BAZEL_RS_RESULT_LINES", "1")
         .env("BAZEL_RS_CACHE_GC", "off");
-    if let Some(analysis) = analysis {
-        command.env("BAZEL_RS_ANALYSIS", analysis);
-    }
+    command.envs(environment.iter().copied());
     command
         .arg("--ignore_all_rc_files")
         .args([
@@ -97,7 +95,7 @@ fn normalized(command: &str, stdout: &str) -> Vec<String> {
     parts
 }
 
-fn check(analysis: Option<&str>) {
+fn check(environment: &[(&str, &str)]) {
     let reference: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(fixture().join("reference_receipt.json")).unwrap(),
     )
@@ -110,7 +108,7 @@ fn check(analysis: Option<&str>) {
         for directory in ["home", "tmp"] {
             fs::create_dir(workspace.join(directory)).unwrap();
         }
-        let output = run(&workspace, case, analysis);
+        let output = run(&workspace, case, environment);
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         let command = case["command"].as_str().unwrap();
@@ -169,11 +167,18 @@ fn check(analysis: Option<&str>) {
 
 #[test]
 fn toolchain_exec_key_matches_genuine() {
-    check(None);
+    check(&[]);
 }
 
 /// The sequential walk keys the copies alike.
 #[test]
 fn toolchain_exec_key_matches_genuine_walk() {
-    check(Some("walk"));
+    check(&[("BAZEL_RS_ANALYSIS", "walk")]);
+}
+
+/// The evaluator's restarts (every body's first need answered `Missing`
+/// once, docs/EVALUATOR.md) reach the same keys.
+#[test]
+fn toolchain_exec_key_matches_genuine_restarts() {
+    check(&[("BAZEL_RS_EVAL_RESTARTS", "7")]);
 }

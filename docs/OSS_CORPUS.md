@@ -208,7 +208,7 @@ counted). `query //...` labels match on all 37 projects.
 | rules_cc | DIFF | 21.0 / 20.2 | 5.3 / 0.4 / 5.4 | 64.3 / 60.3 | 2416 / 1750 | 1978, 6, 0, 0 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:1 PASSED:451 SKIPPED:2 | B32 |
 | protobuf | DIFF¹³ | 43.7† / 73.3† | 6.2† / 0.6† / 14.8† | 290.5† / 302.1† | 2970 / 3625 | 19840, 21247, 0, 0 | — | B33, C2, C5 |
 | rules_kotlin | DIFF¹⁴ | 46.0 / 47.7 | 4.5 / 0.3 / 0.2 | 62.0 / 63.7 | 2426 / 2098 | 2235, 1116, 0, 1 | 30-minute cap on both: genuine at 244, bazel-rs at 224 of 268 (B53) | C2, B53 |
-| rules_zig | RS-FAIL | 38.0 / 37.5† | 14.1 / 0.3 / 12.0† | 38.0 / 12.2† | 2517 / 1933 | 0, 1292, 0, 0 | PASSED:211 SKIPPED:4 / SKIPPED:4 | B13c |
+| rules_zig | RS-FAIL | 33.9 / 35.4† | 14.3 / 0.6 / 11.5† | 39.6 / 40.2† | 2739 / 1283 | 0, 1292, 0, 0 | PASSED:211 SKIPPED:4 / FAILED:2 PASSED:206 SKIPPED:4 | B56, B57 |
 
 Notes:
 
@@ -291,13 +291,17 @@ bugs:
   and rules_jvm_external-simple (B47) where genuine fails too, rules_cc
   (B32: 451 of genuine's 453 tests pass), protobuf (B33), rules_kotlin
   (builds; its `test //...` does not finish in 30 minutes on either tool, B53).
-- **1 blocked**: rules_zig (B13c ends analysis).
+- **rules_zig** (no longer blocked: B13c is fixed on b13c and its
+  `version_validation_test` passes) fails 3 analysis tests on B56 and 2
+  tests on B57; with the failed build bazel-rs leaves no `bazel-bin` to
+  compare (the outputs column).
 
 corpus-parity6 (2026-11-21, its LTO release binary) reran protobuf,
 examples-rust-deps-cargo, rules_kotlin and capnproto (their rows and notes
 10, 11, 13 and 14); corpus-rulescc (2026-11-23, a non-LTO release build)
 reran rules_cc (its row: 451 of genuine's 453 tests, 6 outputs only
-genuine's — the two failing analysis tests' scripts); the other rows are
+genuine's — the two failing analysis tests' scripts); b13c (2026-11-23, a
+non-LTO release build) reran rules_zig (its row); the other rows are
 the corpus-rerun run's.
 
 `query //...` matches on all 37. Every common output sampled is
@@ -318,7 +322,9 @@ ranked by the projects they affect in that run, then the fixed ones.
 | B53 | not a bazel-rs bug (test-exec-speed); 1 (rules_kotlin); `test //...` | rules_kotlin's `test //...` runs 51 nested Bazel integration tests (`//examples:*_test`), each a genuine Bazel 7/8/9 whose server sizes itself to the whole host (64 CPUs) and builds with its own cold caches. One test alone takes the same under both tools (`android_.bazelversion_test` 280 s genuine, 279 s bazel-rs), and so does the batch of 51 at 16 jobs (445 s genuine, 412 s bazel-rs, low outside load). The test environment matches too (env, TEST_TMPDIR layout, limits, cgroup, namespaces, network). Small differences: stdin is /dev/null rather than a closed pipe, NoNewPrivs is set (Landlock), and test-setup.sh got `name` where genuine passes `./name`; that last one is fixed, fixture tests/fixtures/test_exec_env. In the full `test //...`, each tool runs 16 nested servers at once (both tools are scheduled alike). The 64-core machine then reaches a load of about 1,300 and almost stops making new processes, and both tools hit the 30-minute cap (genuine at 244/268 in run3 and run4, bazel-rs at 224/268). Genuine's 772 s in corpus-parity6 was a luckier window. oss_corpus.py now kills the nested servers that outlive a timed-out command: they had kept building for hours and skewed later measurements |
 | B54 | fixed (corpus-rulescc); 1 (rules_cc `//tests/debug_files`) | an aspect over a Starlark rule target that sets `target_compatible_with` (or `exec_compatible_with`) failed with `attribute target_compatible_with: dependency ... was not resolved`: the aspect's `ctx.rule.attr` had no prerequisites of those built-in attributes, which the rule's own analysis has (skylib's `_action_retrieving_aspect` on rules_cc's `dwo_files` targets) |
 | B55 | fixed (corpus-rulescc); 1 (rules_cc `test_wrong_cc_import_definitions_fails`) | `--allow_analysis_failures`: prerequisite validation errors (`target ... does not exist`, `... does not produce any ... files`, misplaced files, missing providers) failed the build instead of becoming the target's `AnalysisFailureInfo` causes (the attribute errors' own messages), and an aspect applied to an errored target ran instead of being the errored aspect with the target's causes (ConfiguredTargetFactory.createAspect, MergedConfiguredTarget.getAnalysisFailures; capture tests/fixtures/corpus_rulescc `prerequisite_failures_allowed`) |
-| B13c | open, 1 (rules_zig); blocking | one toolchain implementation for two execution platforms in one configuration (ConfiguredTargetKey.executionPlatformLabel), a fatal error (needs the execution platform in the configured-target key; design below) |
+| B56 | open, 1 (rules_zig); 3 analysis tests | a Starlark transition on `//command_line_option:apple_generate_dsym` (AppleCommandLineOptions; rules_zig's `dsym_test_test_4..6` set it through `analysistest.make(config_settings = ...)`) is not a modelled native option: the three tests are not analyzed |
+| B57 | open, 1 (rules_zig); 2 tests | `Target.actions`' `inputs` of a Starlark spawn whose `executable` is a File list that File first; genuine lists the declared inputs, then the tools with the executable among them (StarlarkActionFactory; aquery's primary input and print_action already use that order, `Meta::input_order`). rules_zig's `module_binary_test` and `multiple_sources_binary_test` assert that the main source is the first input |
+| B13c | fixed (b13c); 1 (rules_zig) | one toolchain implementation for two execution platforms in one configuration (ConfiguredTargetKey.executionPlatformLabel) ended the command; the key carries the execution platform of toolchain dependencies now (design and soundness below) |
 | B32 | open, 1 (rules_cc's own tests: 451 of genuine's 453 pass) | rules_cc's own analysis tests. Fixed on corpus-parity4: `--fission`, `--build_test_dwp`, `--legacy_whole_archive`, `--incompatible_remove_legacy_whole_archive` are configuration options and `--dynamic_mode` is transitionable; a fission compile's `.dwo` is declared where genuine declares it. Fixed on corpus-parity5: `cc_internal.freeze` is Bazel's shallow immutable copy (the vendored starlark's immutable list/dict that is not frozen yet, docs/DEPSETS.md; the 38 thin-LTO and linkstamp targets), `create_header_info_with_deps` adds the merged deps' headers (cc_import's `direct_public_headers`), a toolchain's `artifact_name_pattern` applies (mingw/msvc dll names), `objc.target_should_alwayslink` of an explicit `alwayslink`, map_each's `must be declared by a top-level def statement` error, structs/providers with frozen list fields are hashable, and transitions on `instrumentation_filter`, `save_temps`, `start_end_lib`, `interface_shared_objects`, `process_headers_in_dependencies` (tests/fixtures/corpus_parity5). Fixed on corpus-rulescc (tests/fixtures/corpus_rulescc, tests/cc_compile.rs `thin_lto_actions_match_genuine`, `linkstamp_compiles_match_genuine`, `fdo_profiles_match_genuine`; 346 → 387 → 441 → 451): the ThinLTO backends (`cc_internal.create_lto_backend_action`, LtoBackendAction's argv, progress message and computeKey; `collect_per_file_lto_backend_opts`; `wrap_link_actions(sharable_artifacts = True)`), the shareable linkstamp compile, any `cc_internal.freeze` copy in a depset element (LtoCompilationContextInfo's BitcodeInfo with mutable `copts`), `get_artifact_name_extension_for_category` positional; the FDO/Propeller/memprof options (`--fdo_optimize`, `--fdo_profile`, `--xbinary_fdo`, `--cs_fdo_profile`, `--cs_fdo_absolute_path`, `--fdo_prefetch_hints`, `--propeller_optimize*`, `--memprof_profile`, `--fdo_instrument`, `--cs_fdo_instrument`), `--custom_malloc`, `--grte_top`/`--host_grte_top`, `--experimental_cpp_modules`, `--ltobackendopt`/`--ltoindexopt`/`--per_file_ltobackendopt` and `--action_env` as configuration options (command line, transitions, config_setting, ST- hashes), the cpp fragment's accessors of them, the late-bound `configuration_field("cpp", ...)` defaults per configuration (`custom_malloc`, `fdo_*`, `xbinary_fdo` and `propeller_optimize` with genuine's precedence, `libc_top`, `zipper`), `cc_internal.absolute_symlink` (aquery-equal, executing it fails explicitly), C++20 module compiles' module map inputs, `cc_internal.expand_and_tokenize`, `Target.actions` of every target of an analysis test's configuration, B54 and B55. Left (tests): `test_fdo_profile_action_graph` reads a native genrule's `Target.actions` (not kept for native rules), `test_propeller_host_builds` a propagating testing aspect's `target.actions` of an exec tool's dependencies (outside the test's configuration, not kept). Not modelled: the input discovery of LtoBackendAction (imports file) and of C++20 module compiles (module map). |
 | B33 | open, 1 (protobuf); 1 target | protobuf analysis. Fixed on corpus-parity4: symbolic-macro visibility delegation and alias select() keys under `--incompatible_config_setting_private_default_visibility` (5 visibility errors), `declare_file(sibling=)` from another package, per-attribute aspect views of aspects propagating over one attribute (`UpbMinitableCcInfo`/`JavaInfo` on proto_library targets), `Target.actions` of targets merged with aspects and of a rule under test's dependencies, `--dynamic_mode` transitions (rules_fuzzing). Fixed on corpus-parity5: transitions writing `instrumentation_filter` (`generated_sources_not_coverage_instrumented`; the filter is per configuration natively too). Left: `experimental_output_paths=strip` with `modify_execution_info` (`test_compile_path_mapping`): its `Target.actions` argv shows path-mapped `bazel-out/cfg/bin` paths, so path mapping would have to be modelled for execution too (not attempted) |
 | B34 | open, 1 (rules_python-bzlmod); not blocking | `external/other_module+/other_module/pkg/bin_zipapp.zip` differs from genuine's: rules_python's zipper stores each input's mode and relative symlinks as it finds them in the sandbox; native staging hardlinks read-only store blobs (docs/HARDLINK_STAGING.md) |
@@ -678,6 +684,103 @@ outputs (`ActionKey`'s owned files) must include it, since genuine's
 Artifact owner is the full ConfiguredTargetKey: two copies' equal C++
 compiles conflict in genuine, while today's native owner (label and
 configuration) would share them.
+
+**B13c (fixed, b13c): the execution platform in the configured-target
+key.** `ConfiguredTargetKey` (crate::config_registry) has
+`exec_platform: Option<ExecPlatform>`, genuine's `executionPlatformLabel`
+(DependencyProducer.java:160-175, PrerequisitesProducer.getPrerequisiteKey);
+`ExecPlatform` is a two-byte process-wide interned id, so the key keeps its
+48 bytes (a unit test pins the size). The key orders by label,
+configuration, rule-transition flag, then the platform's label (absent
+first, TransitiveDependencyState's comparator); `Display` (cycle reports)
+is unchanged.
+
+- Set only on toolchain dependency edges (phase 1's
+  `analyze_toolchain_dependency`, for a rule's default and exec-group
+  contexts and an aspect's own contexts), to the context's selected
+  execution platform P, *normalized*: the configuration's first execution
+  platform candidate (the registered platforms, then the host platform:
+  PlatformKeys.build) keeps the plain key (`None`). The context records it
+  at resolution (`UnloadedToolchainContext::key_exec_platform`). A rule
+  transition's or `config.none()`'s delegate keeps the key's platform
+  (RuleTransitionApplier.java:150-160, TargetAndConfigurationProducer).
+- A key with a platform forces it in its own toolchain resolution
+  (`toolchain_context_key`: ToolchainContextUtil.java:136-141), so its
+  `cfg = "exec"` dependencies follow P. The plain key keeps the existing
+  first-claim record (`toolchain_implementations`, linearize pass 1 in the
+  evaluator). Only claims of the first candidate are made, so two claims of
+  one key cannot disagree: the former whole-command stop is kept as an
+  internal error.
+- A consumer reads such a dependency by key: its ToolchainInfo and
+  TemplateVariableInfo (`load_toolchain_context`, aspects' `ctx.var`), its
+  transitive repositories, and the waits of the parallel planning
+  (`ahead_requirements`, `native_requirements`, the buffer's
+  `requirements`). It has no dependency view (views are per label and
+  configuration); the copy's own planning is keyed by its key throughout
+  (its contexts, exec configurations, plan entry, providers, files to
+  build, and its actions' execution platform, `action_execution_table`).
+  Its action owner is `L[@P]` (`L[<config8>@P]` outside the top-level
+  configuration), so the copies own distinct action ids.
+- Outputs: the copies register their outputs separately; the shared-action
+  check (corpus-parity5) decides. Equal shareable actions share only on one
+  execution platform (it is in the action key); an unshareable action (C++
+  compiles) of another owner always conflicts (`sharing_between_owners`),
+  so the "owner of a C++ compile's outputs" prerequisite holds as is.
+- cquery: the capture and the configured graph identify a node by (label,
+  configuration, platform), so both copies are results, printed alike, as
+  genuine prints them (`label_kind`, `files` with each copy's files,
+  `graph` merging the equal labels). aquery maps each copy's actions to
+  its own node (a side table; the stored graph format is unchanged).
+- Incremental analysis: the tracker's key identity and the snapshot INDEX
+  section's `IndexKey` carry the platform (snapshot FORMAT 7). The new
+  analysis input, the configuration's candidate list, is the registered
+  execution platforms toolchain resolution already reads (a shared
+  computation). A key that appears or changes its platform between runs is
+  a key the saved index does not have, which falls back to the full
+  analysis ("the re-analysis reached //tc:impl, which the saved analysis
+  did not").
+
+Soundness. (1) The common case is the old code path: when every toolchain
+context of a configuration selects its first candidate (one execution
+platform, or the unconstrained default), every key is plain, no key with a
+platform exists and every branch taken is the previous one (claims, views,
+`analyze(label, config)`), so keys, action ids, plans and outputs are
+unchanged (abseil and OpenROAD action dumps compared, below). (2) The
+platform of a key is a function of the selected platform and the
+configuration only, never of visit order, and a key with a platform forces
+from its own key rather than from shared state: the evaluator's attempts,
+restarts and pass 1 see the same keys in any schedule (the default and
+`BAZEL_RS_EVAL_RESTARTS=7` suites; the fixture also under the walk,
+`BAZEL_RS_EVAL_VERIFY`, `BAZEL_RS_EVAL_VERIFY_PHASE1`, the ahead/view/
+artifact/delta verifiers and snapshot `verify` after incremental edits). (3)
+The native key N(L, C, P) is plain exactly when P is C's first candidate,
+so it is one-to-one on toolchain edges; the one merge left is genuine's
+key without a platform (a top-level or attribute edge to L) with
+(L, C, first candidate), which is the previous behaviour, and the forced
+platform equals what an unforced resolution of an implementation without
+toolchain types or execution constraints picks.
+
+Measured (2026-11-23, non-LTO release builds of main 5e58574b and of this
+change, `build --nobuild --keep_going //...`, snapshot off, warm
+repositories, load 10–20): abseil-cpp 2.5/2.6/2.6 s against 2.7/2.6/2.6 s,
+peak RSS 476/474/479 against 477/478/485 MB, stderr with
+`BAZEL_RS_DUMP_ACTIONS=1` (2,313 actions) identical in each of three
+pairs; OpenROAD 21.6/22.4/24.6 s against 22.2/23.3/23.1 s, peak RSS
+4919/4955/4888 against 4940/4884/4925 MB, the action dump (43,868 actions,
+43.6 M stderr lines) identical but for the peak-RSS line (22,213 against
+22,215 MB). Neither project has a toolchain resolved off its first
+execution platform: no key with a platform, as expected.
+
+Explicit gaps (errors, never another target's result): aspects propagated
+by `toolchains_aspects` to a toolchain keyed by a platform, and a genrule
+whose `toolchains` resolve for a non-first platform. A dependency keyed by
+a platform has no view, so under `--allow_analysis_failures` its
+AnalysisFailureInfo does not propagate to the consumer (genuine's would).
+Capture: tests/fixtures/toolchain_exec_key (two copies, one copy on the
+second platform, the implementation also top-level, an alias
+implementation whose actual stays unforced, the copies' conflicting
+equal FileWrite, cquery `label_kind`/`files`/`graph`, aquery with the
+genuine ActionKeys), tests/toolchain_exec_key.rs (default and walk).
 
 **B36–B42 (corpus-ccshared).** OpenROAD's analysis after B18/B30 hit B36
 (rules_cc_autoconf), B37 and B38 (sv-elab's repository rules); its
@@ -1102,8 +1205,8 @@ were runs with the download cache pre-filled too, the fully cold runs take
 
 From the corpus-rerun run (2026-11-20):
 
-1. The blocked project: B13c (rules_zig; the design above). (B48–B52
-   are fixed on corpus-parity6.)
+1. rules_zig: B56 and B57 (B13c, which blocked it, is fixed on b13c;
+   B48–B52 are fixed on corpus-parity6).
 2. B53 (not a bazel-rs bug): rules_kotlin's `test //...` runs 16 nested
    host-sized Bazel servers at once and overloads the machine under both
    tools; comparing its test statuses needs a longer cap or fewer

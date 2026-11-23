@@ -333,7 +333,10 @@ Code: `src/config_registry.rs`, `src/engine.rs`, `src/analysis.rs`,
   `bazel-out/<mnemonic>/bin` (`short_path`, `declare_file(sibling = ...)`,
   `json.encode(File)`'s `root`). There is no ambient (thread-local) root.
 * **Keys.** Every analysis and planning map is keyed by
-  `ConfiguredTargetKey { label, config }`: configured nodes, the analysis
+  `ConfiguredTargetKey { label, config }` (plus the rule-transition flag
+  and, on a toolchain dependency resolved for a platform other than the
+  configuration's first execution platform candidate, that platform: B13c
+  in docs/OSS_CORPUS.md): configured nodes, the analysis
   plan, the per-target artifacts and providers, declared
   artifacts (`(config, exec path)`), output producers (paths stay global, so
   overlapping outputs of different configurations still conflict),

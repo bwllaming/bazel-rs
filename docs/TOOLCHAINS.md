@@ -199,8 +199,11 @@ resolving toolchains for target L (CONFIG): MESSAGE`
 **Implementations** are dependencies after the attribute dependencies
 (`analysis/DependencyResolutionHelpers.java:358-373`), each once, analyzed in
 the parent's configuration (`analysis/producers/DependencyProducer.java:160-175`,
-`skyframe/DependencyResolver.java:835-866`); the execution platform part of
-the native configured-target key is always the host platform. Only selected
+`skyframe/DependencyResolver.java:835-866`), keyed by the parent's execution
+platform (`ConfiguredTargetKey::exec_platform`, B13c in docs/OSS_CORPUS.md:
+the configuration's first execution platform candidate keeps the plain key,
+any other platform its own copy of the implementation, which forces that
+platform in its own resolution). Only selected
 implementations are analyzed (the `toolchain` attribute is NODEP). An
 implementation whose analysis is not supported fails explicitly in its own
 analysis (rules_cc's `cc_toolchain` is analyzed, docs/CC_TOOLCHAIN.md); an optional type that
