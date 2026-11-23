@@ -55,6 +55,21 @@ static SLOTS: [OnceLock<Box<[OnceLock<&'static str>]>>; SEGMENTS] =
 /// The next id to hand out.
 static NEXT_ID: AtomicU32 = AtomicU32::new(2);
 
+/// Entries of a thread's cache of recent interns (a power of two).
+const RECENT_ENTRIES: usize = 2048;
+
+thread_local! {
+    /// A thread's recent interns by hash (direct-mapped; the empty text's
+    /// hash 0 entries never match a non-empty text's comparison).
+    static RECENT: std::cell::RefCell<Box<[(u64, IStr)]>> =
+        std::cell::RefCell::new(vec![(0, IStr(EMPTY)); RECENT_ENTRIES].into_boxed_slice());
+}
+
+/// A hash's entry in [`RECENT`] (low bits: the shard used the middle ones).
+fn recent_slot(hash: u64) -> usize {
+    (hash as usize) & (RECENT_ENTRIES - 1)
+}
+
 /// The segment and the index in it of an id's slot.
 fn slot_of(id: NonZeroU32) -> (usize, usize) {
     let n = u64::from(id.get()) + (1 << FIRST_SEGMENT_BITS);
@@ -148,6 +163,22 @@ impl IStr {
             return IStr::default();
         }
         let hash = hash_text(text);
+        // A thread's recent texts: most interns repeat one (the flags of a
+        // package's compiles, a snapshot decode's labels) and skip the lock.
+        let cached = RECENT.with(|recent| {
+            let (cached_hash, cached) = recent.borrow()[recent_slot(hash)].clone();
+            (cached_hash == hash && cached.as_str() == text).then_some(cached)
+        });
+        if let Some(cached) = cached {
+            return cached;
+        }
+        let interned = Self::new_shared(text, hash);
+        RECENT.with(|recent| recent.borrow_mut()[recent_slot(hash)] = (hash, interned.clone()));
+        interned
+    }
+
+    /// [`IStr::new`] through the shared table.
+    fn new_shared(text: &str, hash: u64) -> IStr {
         let mut shard = TABLE[shard_of(hash)]
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
