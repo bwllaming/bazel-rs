@@ -1,8 +1,9 @@
-//! Parity cases of the open-source corpus bugs B56 and B57 fixed on
+//! Parity cases of the open-source corpus bugs B56, B57 and B58 fixed on
 //! branch corpus-zig (docs/OSS_CORPUS.md, rules_zig): Starlark transitions,
 //! `select()`, the command line and `ctx.fragments.cpp.apple_generate_dsym`
-//! on `--apple_generate_dsym` (B56), and a Starlark spawn's inputs in
-//! Bazel's order in `Target.actions` and print_action (B57), the cases
+//! on `--apple_generate_dsym` (B56), a Starlark spawn's inputs in Bazel's
+//! order in `Target.actions` and print_action (B57) and `--flag_alias` with
+//! its aliases in `info` and `clean` (B58), the cases
 //! listed in tests/fixtures/corpus_zig/capture.py. Every case replays the
 //! genuine Bazel 9.3.1 capture tests/fixtures/corpus_zig/reference_receipt.json
 //! (written by capture.py beside it).

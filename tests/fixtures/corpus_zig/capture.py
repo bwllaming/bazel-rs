@@ -3,9 +3,10 @@
 
 Usage: capture.py --bazel /path/to/bazel-9.3.1 --scratch DIR > reference_receipt.json
 
-Parity cases of the open-source corpus bugs B56 and B57 fixed on branch
-corpus-zig (docs/OSS_CORPUS.md, rules_zig): `--apple_generate_dsym` as a
-configuration option and the order of a Starlark spawn's inputs. Each case
+Parity cases of the open-source corpus bugs B56, B57 and B58 fixed on
+branch corpus-zig (docs/OSS_CORPUS.md, rules_zig): `--apple_generate_dsym`
+as a configuration option, the order of a Starlark spawn's inputs and
+`--flag_alias` in `info` and `clean`. Each case
 runs once in a fresh copy of workspace/ (--batch, no rc files, private HOME
 and output user root) and records the exit code, the stdout, the stderr
 lines matching the case's patterns (the workspace path replaced by <WS>)
@@ -37,6 +38,13 @@ CASES = {
         [], 'build', BUILD, ['//inputs:inputs_test'], [], ['inputs_test.sh']),
     'spawn_input_order_print_action': (
         [], 'print_action', BUILD, ['//inputs:subject'], [], []),
+    'flag_alias_info': (
+        [], 'info', ['--flag_alias=zig_alias=//dsym:setting', '--zig_alias=x'], ['package_path'], [], []),
+    'flag_alias_clean': (
+        [], 'clean', ['--flag_alias=zig_alias=//dsym:setting', '--zig_alias=x'], [], [], []),
+    'flag_alias_info_not_starlark': (
+        [], 'info', ['--flag_alias=zig_alias=dsym'], ['package_path'],
+        [r'only supports Starlark build settings'], []),
 }
 
 TIME = re.compile(r'^\(\d\d:\d\d:\d\d\) ')

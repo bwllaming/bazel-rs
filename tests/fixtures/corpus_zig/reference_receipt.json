@@ -56,6 +56,59 @@
    ],
    "workspace": "workspace"
   },
+  "flag_alias_clean": {
+   "bin_paths": {},
+   "command": "clean",
+   "exit": 0,
+   "flags": [
+    "--flag_alias=zig_alias=//dsym:setting",
+    "--zig_alias=x"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [],
+   "workspace": "workspace"
+  },
+  "flag_alias_info": {
+   "bin_paths": {},
+   "command": "info",
+   "exit": 0,
+   "flags": [
+    "--flag_alias=zig_alias=//dsym:setting",
+    "--zig_alias=x"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [],
+   "stdout": "%workspace%\n",
+   "targets": [
+    "package_path"
+   ],
+   "workspace": "workspace"
+  },
+  "flag_alias_info_not_starlark": {
+   "bin_paths": {},
+   "command": "info",
+   "exit": 2,
+   "flags": [
+    "--flag_alias=zig_alias=dsym"
+   ],
+   "outputs": {},
+   "startup": [],
+   "stderr": [
+    {
+     "line": "ERROR: While parsing option --flag_alias=zig_alias=dsym: --flag_alias only supports Starlark build settings.",
+     "pattern": "only supports Starlark build settings"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "package_path"
+   ],
+   "workspace": "workspace"
+  },
   "spawn_input_order": {
    "bin_paths": {},
    "command": "build",

@@ -1944,12 +1944,16 @@ fn info_command(
                 }
                 Ok(())
             }
+            None if bazel_rs::flag_alias::definition_value(unit).is_some() => Ok(()),
             None => native.parse("build", unit),
         }
     }
+    // The inherited build options' flag aliases (`--flag_alias`, checked
+    // and applied by the first pass; B58).
+    let aliased = first_pass_flag_alias_options(options, "info");
     // Errors in Bazel's parse order, values in priority order (like the
     // other commands).
-    for (step, position) in &options.steps {
+    for (step, position) in &aliased.steps {
         let result = match step {
             bazelrc::Step::Fail(error) => Err(error.clone()),
             bazelrc::Step::Unit(unit) => parse(
@@ -1964,7 +1968,7 @@ fn info_command(
     }
     let mut native = NativeOptions::with_startup("build", line);
     let mut info = bazel_rs::info::Options::default();
-    for unit in &options.priority {
+    for unit in &aliased.priority {
         parse(&mut native, &mut info, unit)?;
     }
     announce(options);
@@ -6355,8 +6359,10 @@ fn parse_command_option(
     command: &str,
     unit: &bazelrc::Unit,
 ) -> Result<(), String> {
-    if analyzes(command) && bazel_rs::flag_alias::definition_value(unit).is_some() {
-        // Registered/replayed in parse order after MODULE resolution.
+    if bazel_rs::flag_alias::definition_value(unit).is_some() {
+        // Checked by the first pass (first_pass_flag_alias_options); an
+        // analyzing command registers/replays it in parse order after
+        // MODULE resolution.
         return Ok(());
     }
     if PRINT_ACTION.load(std::sync::atomic::Ordering::Relaxed) {
@@ -6406,10 +6412,12 @@ fn alias_candidate_error(error: &str, unit: Option<&bazelrc::Unit>) -> Result<bo
 /// must not feed "arbitrary" to the native compilation-mode converter.
 fn first_pass_flag_alias_options(options: &bazelrc::Expanded, command: &str) -> bazelrc::Expanded {
     use bazel_rs::flag_alias;
+    // Every command with CoreOptions parses `--flag_alias` and rewrites the
+    // aliases it defines (OptionsParser.withAliasFlag,
+    // BlazeCommandDispatcher.createOptionsParser): `info` reading a project's
+    // `build --flag_alias=...` rc lines (rules_zig, OSS corpus B58); a
+    // command that does not analyze skips the Starlark flags they become.
     let mut result = options.clone();
-    if !analyzes(command) {
-        return result;
-    }
     let mut aliases = flag_alias::Aliases::new();
     let mut mapped = Vec::new();
     for (step, _) in &mut result.steps {
@@ -6725,9 +6733,14 @@ fn clean_command(
             clean.asynchronous = true;
             return Ok(());
         }
+        if bazel_rs::flag_alias::definition_value(unit).is_some() {
+            return Ok(());
+        }
         native.parse("build", unit)
     }
-    for (step, position) in &options.steps {
+    // The inherited build options' flag aliases (first pass; B58).
+    let aliased = first_pass_flag_alias_options(options, "clean");
+    for (step, position) in &aliased.steps {
         let result = match step {
             bazelrc::Step::Fail(error) => Err(error.clone()),
             bazelrc::Step::Unit(unit) => parse(
@@ -6742,7 +6755,7 @@ fn clean_command(
     }
     let mut native = NativeOptions::with_startup("build", line);
     let mut clean = bazel_rs::output_base::CleanOptions::default();
-    for unit in &options.priority {
+    for unit in &aliased.priority {
         parse(&mut native, &mut clean, unit)?;
     }
     announce(options);
