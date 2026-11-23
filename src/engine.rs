@@ -10006,7 +10006,9 @@ impl Engine {
                 // B13c: tool dependencies are read per label and
                 // configuration; a toolchain keyed by an execution platform
                 // is an explicit gap.
-                if let Some(platform) = context.key_exec_platform {
+                if let Some(platform) = context.key_exec_platform
+                    && !context.resolved.is_empty()
+                {
                     return Err(format!(
                         "{}: a genrule whose toolchains resolve for the execution platform {} (not its configuration's first execution platform) is not implemented in the native profile (configured targets keyed by their execution platform: B13c)",
                         crate::rule_declarations::canonical_form(&rule.label),

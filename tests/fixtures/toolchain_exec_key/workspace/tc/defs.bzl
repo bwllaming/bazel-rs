@@ -57,3 +57,33 @@ def _use_alias_impl(ctx):
     return [DefaultInfo(files = depset([out], transitive = [info.files]))]
 
 use_alias = rule(implementation = _use_alias_impl, toolchains = ["//tc:alias_type"])
+
+# A toolchain implementation with an incoming rule transition to a
+# configuration whose first execution platform is //tc:eb: its delegate key
+# for //tc:eb is that configuration's plain key, which a toolchain edge in
+# that configuration reaches too (one configured target).
+def _to_eb_impl(_settings, _attr):
+    return {"//command_line_option:extra_execution_platforms": ["//tc:eb", "//tc:ea"]}
+
+to_eb = transition(
+    implementation = _to_eb_impl,
+    inputs = [],
+    outputs = ["//command_line_option:extra_execution_platforms"],
+)
+
+my_toolchain_t = rule(
+    implementation = _my_toolchain_impl,
+    cfg = to_eb,
+    attrs = {
+        "clash": attr.bool(),
+        "_exec_platform": attr.label(default = "//tc:exec_platform", cfg = "exec"),
+    },
+)
+
+def _use_t_impl(ctx):
+    info = ctx.toolchains["//tc:t_type"]
+    return [DefaultInfo(files = info.files)]
+
+use_t = rule(implementation = _use_t_impl, toolchains = ["//tc:t_type"])
+
+use_t_in_eb = rule(implementation = _use_t_impl, toolchains = ["//tc:t_type"], cfg = to_eb)

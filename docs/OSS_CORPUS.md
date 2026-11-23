@@ -702,8 +702,15 @@ is unchanged.
   platform candidate (the registered platforms, then the host platform:
   PlatformKeys.build) keeps the plain key (`None`). The context records it
   at resolution (`UnloadedToolchainContext::key_exec_platform`). A rule
-  transition's or `config.none()`'s delegate keeps the key's platform
-  (RuleTransitionApplier.java:150-160, TargetAndConfigurationProducer).
+  transition's delegate keeps the key's platform (RuleTransitionApplier.java:150-160),
+  normalized against the transitioned configuration C′ like a toolchain
+  edge there: when P is C′'s first candidate the delegate is C′'s plain key,
+  claimed for P (`normalize_delegate`), so the delegate and a toolchain
+  edge in C′ reach one configured target as they reach genuine's one
+  (L, C′, P). A `config.none()` delegate is the plain key: the no-config
+  configuration resolves no toolchains, nothing there observes P
+  (genuine keeps P in that key, TargetAndConfigurationProducer.java:300-310;
+  natively the copies' analyses would be identical).
 - A key with a platform forces it in its own toolchain resolution
   (`toolchain_context_key`: ToolchainContextUtil.java:136-141), so its
   `cfg = "exec"` dependencies follow P. The plain key keeps the existing
@@ -735,10 +742,15 @@ is unchanged.
   section's `IndexKey` carry the platform (snapshot FORMAT 7). The new
   analysis input, the configuration's candidate list, is the registered
   execution platforms toolchain resolution already reads (a shared
-  computation). A key that appears or changes its platform between runs is
-  a key the saved index does not have, which falls back to the full
+  computation). A key that appears or gains a platform between runs is a
+  key the saved index does not have, which falls back to the full
   analysis ("the re-analysis reached //tc:impl, which the saved analysis
-  did not").
+  did not"). A key that loses its platform (its consumer now selects the
+  first candidate) does not always: the splice's graph check accepts a
+  dependency planned before the consumer (`check_graph`'s `late` filter),
+  and the copy (L, C, P) nobody reaches any more stays in the merged plan
+  with its actions — the existing behaviour for any dependency removed
+  that way.
 
 Soundness. (1) The common case is the old code path: when every toolchain
 context of a configuration selects its first candidate (one execution
@@ -773,14 +785,18 @@ execution platform: no key with a platform, as expected.
 
 Explicit gaps (errors, never another target's result): aspects propagated
 by `toolchains_aspects` to a toolchain keyed by a platform, and a genrule
-whose `toolchains` resolve for a non-first platform. A dependency keyed by
+whose `toolchains` resolve to implementations for a non-first platform (a
+genrule without toolchains on such a platform builds). A dependency keyed by
 a platform has no view, so under `--allow_analysis_failures` its
 AnalysisFailureInfo does not propagate to the consumer (genuine's would).
 Capture: tests/fixtures/toolchain_exec_key (two copies, one copy on the
 second platform, the implementation also top-level, an alias
 implementation whose actual stays unforced, the copies' conflicting
 equal FileWrite, cquery `label_kind`/`files`/`graph`, aquery with the
-genuine ActionKeys), tests/toolchain_exec_key.rs (default and walk).
+genuine ActionKeys, a genrule without toolchains on the second platform,
+a toolchain whose incoming rule transition makes //tc:eb the first
+candidate — one configured target), tests/toolchain_exec_key.rs (default,
+walk, `BAZEL_RS_EVAL_RESTARTS=7`).
 
 **B36–B42 (corpus-ccshared).** OpenROAD's analysis after B18/B30 hit B36
 (rules_cc_autoconf), B37 and B38 (sv-elab's repository rules); its

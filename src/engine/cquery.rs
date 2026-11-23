@@ -1749,8 +1749,14 @@ impl Engine {
             }
             _ => key.clone(),
         };
+        // A delegate's platform is its own (normalized against its
+        // configuration: Engine's normalize_delegate).
         let delegated = self.rule_delegations.get(&owner).unwrap_or(&owner);
-        Ok((key.label.clone(), Some(delegated.config), key.exec_platform))
+        Ok((
+            key.label.clone(),
+            Some(delegated.config),
+            delegated.exec_platform,
+        ))
     }
 
     fn finish_cquery_graph(

@@ -161,8 +161,10 @@ pub(crate) trait Phase1: Host {
             let delegate = self.rule_transition(&rule, config)?;
             if let Some(mut owner) = delegate {
                 // The delegate keeps the execution platform
-                // (RuleTransitionApplier.java:150-160).
+                // (RuleTransitionApplier.java:150-160), normalized against
+                // the transitioned configuration's first candidate.
                 owner.exec_platform = key.exec_platform;
+                self.normalize_delegate(&rule, &mut owner)?;
                 self.analyze_key(
                     &rule.label,
                     owner.config,
@@ -189,13 +191,13 @@ pub(crate) trait Phase1: Host {
         {
             let no_config = self.intern_no_config();
             if no_config != config {
-                // The delegate keeps the execution platform
-                // (TargetAndConfigurationProducer.java:300-310).
-                let owner = ConfiguredTargetKey::toolchain(
-                    rule.label.clone(),
-                    no_config,
-                    key.exec_platform,
-                );
+                // Genuine's delegate keeps the execution platform
+                // (TargetAndConfigurationProducer.java:300-310); the
+                // no-config configuration resolves no toolchains and has no
+                // exec transition, so nothing observes it there and the
+                // delegate is the plain key (B13c: no candidate list to
+                // normalize against).
+                let owner = ConfiguredTargetKey::new(rule.label.clone(), no_config);
                 self.active_push(&key);
                 self.analyze_key(
                     &rule.label,
@@ -3158,18 +3160,84 @@ pub(crate) trait Phase1: Host {
         exec_platform: &Label,
         location: Option<&str>,
     ) -> Result<(), String> {
-        let _shared = incremental::SharedScope::enter("toolchain_implementation");
         let key = ConfiguredTargetKey::new(implementation.clone(), config);
+        self.claim_plain_key(key, exec_platform, location)
+    }
+
+    /// The claim of [`Self::toolchain_implementation`] on the plain key
+    /// `key` (a rule transition's delegate keeps its `apply_rule_transition`).
+    fn claim_plain_key(
+        &mut self,
+        key: ConfiguredTargetKey,
+        exec_platform: &Label,
+        location: Option<&str>,
+    ) -> Result<(), String> {
+        let _shared = incremental::SharedScope::enter("toolchain_implementation");
+        let implementation = key.label.clone();
         match self.claim_toolchain_implementation(key, exec_platform, location) {
             Some(existing) if existing != *exec_platform => {
                 Err(crate::engine::eval::linearize::pass1::toolchain_conflict(
-                    implementation,
+                    &implementation,
                     &existing,
                     exec_platform,
                 ))
             }
             Some(_) | None => Ok(()),
         }
+    }
+
+    /// B13c: a rule transition's delegate `owner` of a key with an execution
+    /// platform P is normalized against the transitioned configuration C′
+    /// like a toolchain edge in C′ (UnloadedToolchainContext::key_exec_platform):
+    /// when P is C′'s first execution platform candidate the delegate is
+    /// the plain key, claimed for P (genuine's (L, C′, P) is one key
+    /// whichever edge reaches it).
+    fn normalize_delegate(
+        &mut self,
+        rule: &Rule,
+        owner: &mut ConfiguredTargetKey,
+    ) -> Result<(), String> {
+        let Some(platform) = owner.exec_platform else {
+            return Ok(());
+        };
+        if self.configuration(owner.config).native.no_config {
+            // No toolchain resolution observes the platform there.
+            owner.exec_platform = None;
+            return Ok(());
+        }
+        let label = platform.label();
+        if self.first_execution_candidate(rule, owner.config)? == label {
+            owner.exec_platform = None;
+            self.claim_plain_key(owner.clone(), &label, rule.location.as_deref())
+                .map_err(|error| located(rule.location.as_deref(), error))?;
+        }
+        Ok(())
+    }
+
+    /// The first execution platform candidate of `config` as
+    /// [`Self::resolve_toolchains`] orders them for a context with
+    /// toolchain types: the registered platforms (`--extra_execution_platforms`,
+    /// then the modules'), else the host platform (PlatformKeys.build).
+    fn first_execution_candidate(
+        &mut self,
+        rule: &Rule,
+        config: ConfigId,
+    ) -> Result<Label, String> {
+        let configuration = self.configuration(config).clone();
+        let extra = !configuration.native.extra_execution_platforms.is_empty()
+            || !self.module_execution_platforms(true)?.is_empty();
+        if extra {
+            let registered =
+                self.execution_platforms(rule, config, &ToolchainContextKey::default())?;
+            if let Some(first) = registered.first() {
+                return Ok(first.label.clone());
+            }
+        }
+        let host = configuration.native.host_platform.clone();
+        let host_info = self
+            .platform_info(&host, config)
+            .map_err(|error| self.platform_resolution_error(rule, config, &host, error))?;
+        Ok(host_info.label.clone())
     }
 
     /// ToolchainContextUtil.getUnloadedToolchainContextsInputs

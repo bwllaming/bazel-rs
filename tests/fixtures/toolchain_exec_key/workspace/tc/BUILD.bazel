@@ -1,4 +1,4 @@
-load(":defs.bzl", "exec_platform", "my_toolchain", "use_alias", "use_clash", "use_tc")
+load(":defs.bzl", "exec_platform", "my_toolchain", "my_toolchain_t", "use_alias", "use_clash", "use_t", "use_t_in_eb", "use_tc")
 
 constraint_setting(name = "side")
 
@@ -104,5 +104,43 @@ use_alias(
 
 use_alias(
     name = "alias_b",
+    exec_compatible_with = [":cb"],
+)
+
+toolchain_type(name = "t_type")
+
+my_toolchain_t(name = "impl_t")
+
+toolchain(
+    name = "t_tc",
+    toolchain = ":impl_t",
+    toolchain_type = ":t_type",
+)
+
+use_t(
+    name = "use_t_b",
+    exec_compatible_with = [":cb"],
+)
+
+use_t_in_eb(
+    name = "use_t_in_eb_b",
+    exec_compatible_with = [":cb"],
+)
+
+filegroup(
+    name = "both_t",
+    srcs = [
+        ":use_t_b",
+        ":use_t_in_eb_b",
+    ],
+)
+
+# A genrule without toolchains that runs on //tc:eb (not the first
+# execution platform): its context selects //tc:eb, it has no toolchain
+# dependency.
+genrule(
+    name = "gen_b",
+    outs = ["gen_b.txt"],
+    cmd = "echo b > $@",
     exec_compatible_with = [":cb"],
 )

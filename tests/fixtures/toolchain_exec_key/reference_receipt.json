@@ -61,6 +61,23 @@
     "//tc:clash_b"
    ]
   },
+  "build_genrule_second_platform": {
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--extra_execution_platforms=//tc:ea,//tc:eb"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/tc/gen_b.txt": "b\n"
+   },
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//tc:gen_b"
+   ]
+  },
   "build_second_exec_platform_only": {
    "command": "build",
    "exit": 0,
@@ -149,6 +166,22 @@
    "stdout": "digraph mygraph {\n  node [shape=box];\n  \"//tc:impl (6850211)\\n//tc:impl (6850211)\"\n}\n",
    "targets": [
     "filter(\"impl\", deps(//tc:both))"
+   ]
+  },
+  "cquery_transitioned_toolchain": {
+   "command": "cquery",
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--extra_execution_platforms=//tc:ea,//tc:eb",
+    "--output=label_kind"
+   ],
+   "outputs": {},
+   "stderr": [],
+   "stdout": "my_toolchain_t rule //tc:impl_t (fdfda9e)\n",
+   "targets": [
+    "filter(\"impl_t\", deps(//tc:both_t))"
    ]
   },
   "cquery_two_results": {
