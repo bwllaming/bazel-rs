@@ -726,8 +726,9 @@ outside the changed packages: `suite_packages`) and no pattern names file
 targets (`:*`, `:all-targets`).
 
 - **The new labels.** The tracker records which packages each pattern's
-  wildcard expanded (`patterns`; the directory listings are unchanged, or
-  the miss is not attributable). `Engine::package_selection` replays the
+  wildcard expanded (`patterns`; the directory listings are unchanged or
+  excused (docs/ANALYSIS_SNAPSHOT.md "Discovery listings"), or the miss is
+  not attributable). `Engine::package_selection` replays the
   patterns (`select_filtered`'s rules: FILTER_MANUAL for positive
   wildcards, negative patterns remove, single labels must exist, an
   ambiguous `:all` falls back) over each package whose pattern summary

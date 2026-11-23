@@ -1836,7 +1836,8 @@ mod tests {
             ["src/a", "src/b", "src/c/d/.cache/deep"]
         );
         fs::remove_file(root.join("src/c/d/.cache/deep/BUILD")).unwrap();
-        // Even a dangling link or a directory named BUILD refuses.
+        // A dangling BUILD link is no package (discovery and Bazel's isFile agree),
+        // so it is excused; a directory named BUILD refuses (conservatively).
         std::os::unix::fs::symlink("nowhere", root.join("src/c/d/.cache/BUILD.bazel")).unwrap();
         assert!(validate_for_hit(&recording, &environment).is_ok());
         fs::remove_file(root.join("src/c/d/.cache/BUILD.bazel")).unwrap();

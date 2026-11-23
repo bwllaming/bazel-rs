@@ -172,8 +172,9 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
      lists now that are not among them are *added* and must each be a
      directory whose tree, walked now like discovery walks but into every
      subdirectory (not following links; at most 10,000 directories per
-     validation), has no `BUILD.bazel` / `BUILD` of any type in any
-     directory, every directory listable and every entry's type readable;
+     validation), has no `BUILD.bazel` / `BUILD` in any directory
+     (any entry of that name that resolves refuses, a directory named BUILD
+     included; a dangling link is no package, as for discovery), every directory listable and every entry's type readable;
      those among them it no longer lists are *removed* and must be gone
      (lstat ENOENT), and the discovery listings at or below them are
      excused too (a removed package misses by its BUILD file's STAT; a
