@@ -156,7 +156,44 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
      of doing both again, and reads its family's candidates only until one
      serves (`PERF-SNAPSHOT derive` under `BAZEL_RS_TIMING`). Below 4,000
      checks one thread runs them; on more threads
-     the reported mismatch is still the first failing check in path order.
+     the reported mismatch is still the first failing check in path order
+     (a changed discovery listing, decided last, yields to any other
+     mismatch). **Discovery listings** (incr-newdir): a changed
+     READDIR[dirs] listing of package discovery is decided after every
+     other check passed, and *excused* when it changed only by directories
+     that hold no package — a test's `__pycache__`, an editor's or a tool's
+     cache directory written beside sources under `//src/...` used to miss
+     and, a listing of the target patterns, re-analyze everything. The
+     recorded listing must digest to exactly the directories the recording
+     saw below it (a discovery listing of each, or the LSTAT discovery now
+     records of each subdirectory it skips: reserved and invalid names,
+     ignored paths, store prefixes — or that without LSTAT-only ones with
+     observations below them, a glob's), with their type now; then those it
+     lists now that are not among them are *added* and must each be a
+     directory whose tree, walked now like discovery walks but into every
+     subdirectory (not following links; at most 10,000 directories per
+     validation), has no `BUILD.bazel` / `BUILD` of any type in any
+     directory, every directory listable and every entry's type readable;
+     those among them it no longer lists are *removed* and must be gone
+     (lstat ENOENT), and the discovery listings at or below them are
+     excused too (a removed package misses by its BUILD file's STAT; a
+     directory replaced by a link misses). Then discovery finds the same
+     packages and no error, given the other observations, which hold. No
+     other reader uses these listings: a glob records its own projection
+     (a new directory a `**` pattern descends into misses, and incremental
+     analysis attributes it to the globbing package); `.bazelignore`,
+     REPO.bazel and `--deleted_packages` are READs and the key. An excused
+     listing keeps its recorded digest and key (no refresh), so every later
+     lookup checks it again — a BUILD file added in the new directory later
+     is a miss then. The hit's EXPLAIN line counts them (`N discovery
+     listing(s) changed only by directories without packages (A added, W
+     directories checked; R removed)`); incremental analysis's changed
+     observations leave them out (`validate::changed_observations`); verify
+     mode's shadow full analysis may record another outcome for an excused
+     listing and, below an added directory, the discovery listings, absent
+     BUILD-file STATs and skipped-directory LSTATs of its walk (a note, not
+     a mismatch: `verify::compare_recordings`). The record mode's dry run
+     still counts every changed listing.
    * **replay** of every `local = True` repository rule the recorded run
      executed (`snapshot::replay`), against the pinned repository set,
      with **this command line's** resolver options and repository
@@ -1309,6 +1346,9 @@ one workspace renamed into one path, byte-identical outside the
 diagnostics — no-op hits replaying prints; a source edit hits and re-runs
 its action; BUILD and `.bzl` edits miss then hit; glob-matching files miss,
 swap files hit; new `.go` files under `//...` hit, new packages miss;
+new and removed directories without packages under `//...` hit, a BUILD
+file deep in one misses and a glob descending into one runs incremental
+analysis;
 watched variables miss, inherited `--action_env` values re-key; options
 select their own snapshot; racy and mtime-restoring edits miss; lockfile and
 MODULE.bazel edits miss, lockfile writes do not save; a file or a

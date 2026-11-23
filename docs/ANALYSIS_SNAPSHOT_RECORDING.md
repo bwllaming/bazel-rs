@@ -37,7 +37,10 @@ caller actually used:
 
 Listings are projected to what the caller uses, so unrelated changes do not
 invalidate a snapshot: package discovery (`//x/...`, toolchain patterns)
-records only subdirectories; a glob listing records the entries the include
+records only subdirectories (and an LSTAT of each subdirectory it does not
+descend into, so a hit can tell the directories added since: a listing
+changed only by directories without packages is excused,
+docs/ANALYSIS_SNAPSHOT.md "Discovery listings"); a glob listing records the entries the include
 pattern can match or descend into at that depth plus the BUILD markers a
 subpackage lookup consults (`glob::listing_keeps`); recorded repository inputs
 (`dirents`) record everything. While recording, the facade returns only the

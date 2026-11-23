@@ -332,7 +332,9 @@ against 130 s for main on `//src/beyondwork.ai/...` (245 s against 239 s on
    entry or a local repository's replay; a path in the cache or outside the
    main repository; a repository's or extension's recorded input; a `.bzl`
    file; any other READ; a listing of the target patterns or a repository
-   (`dirs`, `all`); a BUILD file's existence (a package boundary); a
+   (`dirs`, `all`) — but a discovery listing changed only by directories
+   without packages, no change at all (docs/ANALYSIS_SNAPSHOT.md
+   "Discovery listings"); a BUILD file's existence (a package boundary); a
    package that is global, printed while loading, or defines shared kinds.
 2. **Reload** the packages (in this engine, before anything else is
    analyzed). A loaded package whose fingerprint is unchanged and has no
