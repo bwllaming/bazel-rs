@@ -1468,11 +1468,12 @@ impl<'a> DeltaBuilder<'a> {
         // The tree mapping; conflicts are reported by the manifest action.
         let conflicts = precomputed.conflicts;
         let mapping = precomputed.mapping;
-        let mut inputs: Vec<Artifact> = Vec::new();
+        let mut inputs: Vec<Artifact> = Vec::with_capacity(mapping.len());
         // One copy of each runfiles path, shared by the manifest and tree
-        // actions' entries and the target's runfiles entries (MEM4).
-        let mut entries: Vec<(Arc<str>, Option<SharedPath>)> = Vec::new();
-        let mut mapped: Vec<(Arc<str>, Option<Artifact>)> = Vec::new();
+        // actions' entries and the target's runfiles entries (MEM4); the
+        // target's entries kept exactly sized (OpenROAD: 3.7 M of them).
+        let mut entries: Vec<(Arc<str>, Option<SharedPath>)> = Vec::with_capacity(mapping.len());
+        let mut mapped: Vec<(Arc<str>, Option<Artifact>)> = Vec::with_capacity(mapping.len());
         for (path, file) in mapping {
             // Equal runfiles paths of different executables share one copy
             // (the tests of a repository stage the same tool runfiles).
