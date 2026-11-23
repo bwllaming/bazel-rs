@@ -348,3 +348,46 @@ format). Lazily expanded command lines (keeping a Starlark spawn's `Args` with i
 for the key, the execution and aquery) would now save at most the 4-byte argument slots (OpenROAD: 21 MB of
 5.3 M arguments) and the 8 MB of distinct texts, while every key computation, snapshot encode and aquery would
 expand again and byte identity would rest on a second expansion path; not worth it.
+
+## Snapshot misses, round 2 (openroad-mem2, OpenROAD and ~/code)
+
+Heap profiles at every `PERF` mark (`BAZEL_RS_TIMING_HEAP_DUMP`), `BAZEL_RS_TIMING_ALLOC`, the string census, and the
+process's RSS polled every 5 ms beside the marks (the marks alone missed where the peak was). New marks
+`snapshot.save.sections_started`, `snapshot.save.plan_encoded` and `snapshot.save.sections_joined` bracket the
+save's encoding; jemalloc's `prof.gdump` switched on between the first two (a throwaway build) dumped the heap at
+each new high of the save. On ~/code the snapshot save was the process's peak (+0.45 GB over the analysis), and on
+OpenROAD it rose as high as the analysis peak (+0.66 GB) once that came down:
+
+| what | before | fix |
+|---|---|---|
+| the GROUPS table found distinct shared input groups by their encodings, every path in full, held as map keys | OpenROAD ~0.6 GB at the save (361 groups), the plan's encoding 2.9 s | a hash of each group's encoding (no buffer), equal hashes compared by value (`codec::group_table`); the GROUPS section encodes on its own thread beside the chunks: 1.4 s |
+| every NODES chunk and the GROUPS section encoded whole (a doubling buffer, then a copy with its path table prepended) and then compressed; the DERIVE and INDEX sections encoded whole too (~/code: ~150 MB raw each) | ~/code ~0.3 GB at the save | sections stream into compressed frames as they are written (`codec::encode_parts_framed`, `codec::encode_compressed`): a path table and its body framed apart inflate to the same bytes, DERIVE and INDEX are byte-identical to `compress_plan`'s; a section's path table holds each path once |
+| INPUTS sorted the 0.5 M observations with a stable sort's scratch copy, in a doubling vector, beside the plan's encoding | ~/code ~0.2 GB at the save | sorted per path (each path's list stably by operation: the same order), exactly sized, the per-tree selection's room returned; INPUTS starts once the plan is encoded (two transient peaks one after the other; the plan's encoding got faster by more than INPUTS takes) |
+| an executable's runfiles paths (`Arc<str>`), one copy per executable | OpenROAD 141 MB (3.7 M entries, a few thousand paths) | shared by content (`interner::shared_str`) |
+| write-action contents (each executable's repository mapping manifest, launcher scripts) | OpenROAD 83 MB saving | `WriteContent`: an `Arc<[u8]>` shared by content (`interner::shared_bytes`), deref, `Debug` and encoding as the `Vec<u8>` it replaced |
+| `package::Rule::srcs`, a `String` per dependency label in each rule and in each configured copy (a select() or late-bound default clones the rule) | OpenROAD ~150 MB | interned (`IStr`) |
+| a compilation context's headers memoized only from their second request in the run that created them: a target's first compile (the only one of a single-source `cc_test`) listed all of its dependencies' headers as its own inputs | OpenROAD CppCompile own inputs 190 MB | on the first request the run is the node's first child's memoized walk (`MemoUse::Shared` as `MemoUse::FirstChild` there; still a function of the run's sequential requests): 66 MB |
+| a shared run's namespace computed twice (the walk's for the analysis check, the run's for planning) and a third map of first occurrences equal to the namespace's | OpenROAD ~150 MB at the walk's end | the walk's namespace when every execution path is its File's path (the same function of the same bytes), its map for the first occurrences |
+| the growth room of deltas' reads and operations, captured events and load units' observations waiting for their merge | tens of MB | shrunk when built |
+
+Result (non-LTO builds of main 5e58574b and the branch, alternating, three rounds, load 10–17; private caches; the
+bazel-rs process's peak RSS, MB):
+
+| run | main | openroad-mem2 |
+|---|---|---|
+| OpenROAD `--nobuild //...`, snapshot miss | 30.5 / 28.7 / 29.3 s, 5,327 / 5,299 / 5,289 | 25.6 / 26.9 / 28.0 s, 4,694 / 4,715 / 4,703 |
+| OpenROAD snapshot hit | 1.2 / 1.2 / 1.3 s, 1,544 / 1,543 / 1,544 | 1.2 / 1.2 / 1.2 s, 1,281 / 1,276 / 1,277 |
+| ~/code `--nobuild //src/...`, snapshot miss | 21.8 / 20.8 / 21.0 s, 6,538 / 6,398 / 6,431 | 19.7 / 18.4 / 21.1 s, 5,985 / 5,987 / 5,977 |
+| ~/code snapshot hit | 0.6 / 0.7 / 0.7 s, 1,039 / 1,050 / 1,050 | 0.7 / 0.7 / 0.7 s, 1,032 / 1,030 / 1,029 |
+
+The action dumps of OpenROAD `//:openroad` (17.6 M lines) and ~/code `//src/...` (5.7 M lines), stdout and stderr
+(but progress counters) are byte-identical; `BAZEL_RS_SNAPSHOT=verify` reports `verified` for both misses' hits.
+
+What remains: both peaks are now at the end of the deferred walk, where the analysis is complete and what the walk
+held for its last merges coexists with it (OpenROAD ~4.6 GB live, ~0.58 GB of it freed within ~0.3 s after the
+walk). The largest parts there: the frozen analysis heaps (~0.5 GB), the planned actions (~0.5 GB: CppCompile and
+GenerateMoc own inputs 66 and 122 MB — GenerateMoc's inputs walk a dozen header depsets whose files overlap, so
+only the first is a clean run —, the test runfiles trees' and manifests' identical input lists 118 MB), packages
+and the configured rules' attribute maps (a select() or late-bound default deep-copies `CustomInvocation::attrs`:
+~0.1 GB), loaded `.bzl` modules (~0.3 GB), the evaluator's phase-1 tables (~0.37 GB) and the shared runs' groups
+with their source lists (~0.16 GB). OpenROAD's goal of 4.5 GB is not reached.
