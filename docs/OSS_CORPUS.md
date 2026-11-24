@@ -421,18 +421,18 @@ still stops at startup (`strip`).
 | bazel-remote | DIFF | 28.2† / 27.9† | 4.9† / 0.4† / 2.8† | 38.1† / 35.7† | 1606 / 844 | 973, 0, 0, 1 | PASSED:13 / same | stamp |
 | grpc | DIFF² | 39.5 / 43.4 | 5.2 / 0.3 / 0.2 | 362.4 / 384.5 | 1704 / 1149 | 9360, 0, 0, 0 | — | query B66 (fixed on main since) |
 | rules_foreign_cc-examples | DIFF² | 25.7 / 14.0 | 5.9 / 0.2 / 0.2 | 24.5 / 19.1 | 1446 / 724 | 345, 0, 0, 17 | PASSED:23 / same | C4 |
-| rules_lint-python | DIFF² | 29.0 / 49.1 | 4.2 / 0.3 / 0.2 | 25.1† / 22.9† | 1585 / 779 | 311, 1, 0, 20 | FAILED:2 FAILED TO BUILD:1 PASSED:41 / same | B62, C4, C5 |
-| rules_lint-shell | DIFF | 31.8 / 28.1 | 4.0 / 0.4 / 0.2 | 25.3 / 22.1 | 1340 / 452 | 65, 0, 0, 3 | PASSED:8 / same | B62 |
+| rules_lint-python | DIFF³ | 28.7 / 53.6 | 4.2 / 0.3 / 0.2 | 26.4† / 24.4† | 1876 / 814 | 311, 1, 0, 20 | FAILED:2 FAILED TO BUILD:1 PASSED:41 / same | B62 (aspect dependencies), C4, C5 |
+| rules_lint-shell | DIFF³ | 31.0 / 23.8 | 3.9 / 0.3 / 0.2 | 25.4 / 22.7 | 1341 / 490 | 65, 0, 0, 3 | PASSED:8 / same | B62 (aspect dependencies) |
 | rules_nodejs-smoke | DIFF | 14.2 / 9.6 | 3.8 / 0.4 / 0.2 | 4.2 / 1.9 | 1300 / 592 | 54, 0, 0, 1 | PASSED:10 / same | C4 |
 | rules_pkg | DIFF² | 19.6 / 17.8 | 3.6 / 0.2 / 0.2 | 57.0† / 53.9† | 1222 / 577 | 955, 1, 0, 2 | FAILED:1 PASSED:104 SKIPPED:19 / FAILED:2 PASSED:103 SKIPPED:19 | B34, C5 |
-| rules_rust-all_crate_deps | DIFF | 66.8 / 53.6 | 3.7 / 0.3 / 0.2 | 32.8 / 31.4 | 1748 / 580 | 368, 0, 0, 1 | PASSED:3 / same | B62 |
+| rules_rust-all_crate_deps | **OK**³ | 71.8 / 54.8 | 3.4 / 0.4 / 0.2 | 34.4 / 31.0 | 1528 / 593 | 368, 0, 0, 0 | PASSED:3 / same | |
 | rules_rust-sys | DIFF | 25.1 / 20.3 | 9.0 / 0.2 / 7.8 | 36.6 / 35.2 | 1441 / 386 | 815, 0, 0, 3 | PASSED:1 / same | C4 |
 | rules_scala-scala3 | DIFF | 22.6 / 18.5 | 3.1 / 0.1 / 0.2 | 11.7† / 11.6† | 1057 / 326 | 10, 2, 0, 0 | — | C5 |
-| aspect-bazel-examples | RS-FAIL² | 163.5 / 109.8† | 6.3 / 0.9 / 7.9† | 81.7 / 158.7† | 2550 / 2059 | 156499, 2587, 3, 1 | FAILED:3 PASSED:31 / FAILED:1 FAILED TO BUILD:5 PASSED:25 | B78, B79 |
-| bb-storage | RS-FAIL² | 159.0 / 162.6† | 7.4 / 0.3 / 6.1† | 60.9 / 62.0† | 2168 / 1269 | 4153, 368, 0, 0 | PASSED:36 / PASSED:9 | B69 |
-| rules_java | RS-FAIL² | 29.3 / 31.0† | 4.6 / 0.3 / 4.3† | 8.2 / 8.7† | 1923 / 1057 | 901, 134, 0, 0 | PASSED:321 / PASSED:281 | B67, B61 |
+| aspect-bazel-examples | RS-FAIL³ | 144.3 / 148.8 | 7.0 / 0.7 / 0.5 | 83.3 / 97.0† | 2462 / 2083 | 156499, 2587, 3, 1 | FAILED:2 PASSED:32 / FAILED:1 FAILED TO BUILD:5 PASSED:25 | B78 |
+| bb-storage | **OK**³ | 151.0 / 138.9 | 5.5 / 0.3 / 0.2 | 57.1 / 68.2 | 2034 / 1306 | 4521, 0, 0, 0 | PASSED:36 / same | |
+| rules_java | RS-FAIL³ | 29.5 / 33.4† | 5.2 / 0.3 / 6.2† | 8.6 / 10.9† | 1862 / 1640 | 973, 62, 0, 0 | PASSED:321 / PASSED:305 | B67 (classpath, output paths, lint, coverage, aspect platform), B33 |
 | rules_py | RS-FAIL² | 38.5 / 0.1† | 7.8 / 0.9 / 0.1† | 118.7 / 0.1† | 3923 / — | 0, 4004, 0, 0 | FAILED:2 PASSED:413 / 0 | B33 (`strip` at startup) |
-| rules_rust-proto | RS-FAIL | 71.1 / 73.1† | 4.1 / 0.5 / 2.2† | 64.8 / 43.9† | 1633 / 714 | 2, 400, 0, 0 | PASSED:3 / 0 | B61 |
+| rules_rust-proto | RS-FAIL³ | 69.7 / 81.3† | 3.7 / 0.2 / 2.5† | 65.6 / 42.7† | 1565 / 717 | 2, 400, 0, 0 | PASSED:3 / 0 | B61 |
 
 Notes:
 
@@ -537,7 +537,7 @@ tests/fixtures/corpus2_quick):
   ["i%d" % i for i in range(150000)])` (an `attr.string_list`): bazel-rs
   `repository @@+ext+r: host preparation node limit exceeded (100000 nodes)`.
 - **B73**: any MODULE.bazel error (e.g. `bazel_dep(name = "BAD", version =
-  "1")`): genuine exits 48, bazel-rs 1 (open).
+  "1")`): genuine exits 48, bazel-rs 1 (fixed on corpus2-rest).
 - **B74**: `ctx.actions.declare_file("a///b.txt")` (genuine `a/b.txt`;
   `../x` and `/abs` keep genuine's `not under package directory` error).
 - **B75**: `r(name = "t", deps = {":a": "x"})` for an `attr.label_list`
@@ -558,6 +558,37 @@ B34; aspect-bazel-examples (B78, B79), bb-storage (B69), rules_java (B67,
 B61) and rules_py (`strip`, B33) still fail. Fixed: B59 (except `strip`),
 B60, B63, B64, B65, B68, B70, B71 and the rerun's B72, B74–B77; new open:
 B73, B78, B79.
+
+### Rerun (corpus2-rest, 2026-11-24)
+
+³ Rerun of rules_rust-all_crate_deps, rules_lint-shell, rules_lint-python,
+rules_java, bb-storage, rules_rust-proto and aspect-bazel-examples with
+branch corpus2-rest (`e56ed089`, a non-LTO release build), host load 8–23:
+
+- bb-storage: **identical** (B69 fixed: all 36 tests and 4,521 outputs).
+- rules_rust-all_crate_deps: **identical** (B62's config_setting part
+  fixed).
+- rules_lint-shell, rules_lint-python: the `.repo_mapping` hash differences
+  are the open aspect-dependency part of B62 (rules_lint's lint aspect's
+  dependencies and toolchains); rules_lint-python's others are C4/C5.
+- rules_java: 305 of 321 tests (B67 mostly fixed; `artifact_closure`'s
+  `Target.actions`, counted as B61 before, no longer fails). Left: 12
+  `experimental_output_paths` (B33), `experimental_java_classpath`,
+  `experimental_run_android_lint_on_java_rules`, `java_common.compile`
+  under coverage, and `test_strict_java_deps_error`: rules_testing's
+  `testing_aspect` reads `ctx.var` where the target platform was not
+  resolved yet (`rule implementation needs the target platform`; aspect
+  applications have no deferred-platform retry).
+- rules_rust-proto: B61 (rules_rust's `rust_analyzer_aspect`, attached by
+  prost's toolchain attributes, reads `target.actions` of `rust_proc_macro`
+  crates).
+- aspect-bazel-examples: B79 fixed (`//tools:bazel_env` analyzes and
+  builds); B78 is the blocker (2,587 Go outputs, 5 tests): the cgo
+  wrapper's `toolchain_path_prefix` is
+  `<cache>/repositories/direct/trees/toolchains_llvm++llvm+llvm_toolchain_llvm/`.
+
+Also fixed on corpus2-rest: B73 (module resolution failures exit 48). New:
+B80 (`mod graph` evaluates no extensions).
 
 ### New bugs (second batch), with minimal repros
 
@@ -699,11 +730,11 @@ rows lead the table.
 | B75 | fixed (corpus2-quick); 1 (rules_py, behind B59's `strip`) | a list-typed attribute rejected a dict (bazel_env.bzl's `toolchain_targets = {}`); Type.ListType.convert takes any Iterable (a dict's keys, a set's elements) |
 | B76 | fixed (corpus2-quick); 1 (aspect-bazel-examples) | a glob exclusion with an empty segment (`exclude = ["dist/"]`) failed as an invalid pattern; Bazel never validates exclusions (UnixGlob.removeExcludes), such a pattern matches nothing |
 | B77 | fixed (corpus2-quick); 1 (aspect-bazel-examples `//tools:bazel_env`) | Starlark transitions on `--host_cpu` and `--platform_suffix` (bazel_env.bzl's `_flip_output_dir`) were not modelled |
-| B78 | open (corpus2-quick); 1 (aspect-bazel-examples, 2,587 outputs, 5 tests) | a repository script that finds a sibling repository through its own `realpath` (toolchains_llvm's `cc_wrapper.sh`: `dirname` twice, then the sibling's name) lands in the native repository store, whose directories are content digests, not canonical names; genuine's realpath is `<output_base>/external/<repo>` |
+| B78 | open (corpus2-rest); 1 (aspect-bazel-examples, 2,587 outputs, 5 tests) | a repository script that finds a sibling repository through its own `realpath` (toolchains_llvm's `cc_wrapper.sh`, run by rules_go's GoStdlib with an absolute path: `realpath`, `dirname` twice, then the sibling's canonical name) lands in the native repository store, whose directories are content digests: `toolchain_path_prefix=<cache>/repositories/direct/trees/toolchains_llvm++llvm+llvm_toolchain_llvm/`. Genuine's realpath is `<output_base>/external/<repo>/...`, whose siblings are named. Any fix must make the parent of a repository file's real directory hold every repository by canonical name: a staged symlink cannot (realpath resolves it into the store); a per-worktree `external/` of real directories would need hardlink mirrors of whole repositories. Smallest sound-enough design (not implemented): constant links `direct/trees/<canonical name>` → `../../external/<canonical name>` (the repository's slot, docs/REPOSITORY_SLOTS.md, which already binds names cache-wide), created with the slot; it covers repositories with slots (module extension and builtin ones, toolchains_llvm's), inherits the slots' cache-wide binding (two worktrees using different versions of one canonical repository at once could see each other's), and needs the store's directory scans and the GC to skip non-digest entries |
 | B79 | fixed (corpus2-rest); 1 (aspect-bazel-examples `//tools:bazel_env`) | two aspect-planning gaps behind bazel_env.bzl. (1) An aspect's `ctx.rule.attr` of a Starlark-transition attribute that declares aspects (`_toolchain.target`, `cfg = _flip_output_dir, aspects = [_extract_toolchain_info]`) is the attribute's aspect view; the application inserted it under the plain transition key only (`attribute target: dependency … was not resolved`). (2) A top-level aspect (rules_mypy's `--aspects`) on a target whose rule transition is not idempotent (`_bazel_env_rule`'s `cfg = _flip_output_dir`) was keyed by the delegate's configuration with `shouldApplyRuleTransition` true, a key nothing was analyzed under: its exec edges fell back to the target configuration (`internal analysis order error: …function_transition_allowlist`). Phase 1 and the plan key the application by the delegate's own key now. Genuine fixture tests/fixtures/aspect_transition_attribute |
 | B59 | fixed (corpus2-quick) except `strip`; 4 (aspect-bazel-examples, bb-storage, grpc, rules_py) | rc options rejected at startup. `--client_env` (crate::client_env: rc values under the process environment, command-line values over it), `--macos_minimum_os`/`--host_macos_minimum_os`, `--protocopt` and `--noincompatible_enable_proto_toolchain_resolution` are modelled (docs/RC_OPTIONS.md; tests/fixtures/corpus2_quick). `--experimental_output_paths=strip` stays the explicit path-mapping gap (B33, corpus-last), so rules_py still stops at startup |
 | B60 | fixed (corpus2-quick); 2 (rules_py, rules_lint-python) | `config.string(allow_multiple = True)`: repeated values accumulate into a list, `[default]` by default, config_setting matches an element, transitions must set a list and always stay in the configuration (genuine compares with the default wrapped twice) (docs/BUILD_SETTINGS.md) |
-| B61 | open (corpus-expand), 2 (rules_rust-proto, rules_java 2 tests) | `Target.actions` read by an aspect outside analysis tests (rules_rust `rust_analyzer_aspect`, rules_java `artifact_closure`): the "not kept" marker |
+| B61 | open (corpus2-rest), 1 (rules_rust-proto; rules_java's `artifact_closure` analyzes since corpus2-rest's rerun) | `Target.actions` read by an aspect outside analysis tests (rules_rust `rust_analyzer_aspect` on prost's toolchain attributes): the "not kept" marker. Design options (not implemented): (a) keep views for the base targets of attribute and top-level aspect applications, which phase 1 knows (`analyze_aspect_applications`) — needs every base's phase-2 analysis to start after phase 1's aspect tables are complete (the evaluator's speculative phase 2s and build-setting analyses run earlier); (b) on a not-kept read, fail the application with a sentinel, re-analyze the base target for its views and retry (the NEEDS_TARGET_PLATFORM pattern; no memory cost, one re-analysis per base actually read); (c) record the wanted targets and re-plan the request once (sound and simple, but a second analysis and duplicated console output in builds that hit it) |
 | B62 | partly fixed (corpus2-rest), 2 (rules_rust-all_crate_deps, rules_lint-shell); not blocking | `.repo_mapping` missed the repositories of a select() key's config_setting dependencies: a config_setting's `constraint_values` and `flag_values` keys, a constraint_value's `constraint_setting`, a platform's constraints and parents, an alias's `actual` (not dependency edges of those native rules, and a select() key is looked up before its dependent is configured) are walked over their loaded packages now (`Engine::prerequisite_repositories_in`; rules_rust-all_crate_deps' manifest identical; tests/fixtures/repo_mapping_closure `from_constraint`). Open: the packages of an attribute aspect's dependencies — its implicit attributes, its toolchains — are not a dependent's transitive packages (rules_lint's `shellcheck_test`: its lint aspect's `shellcheck_bin`, `.shellcheckrc` and the sarif_parser toolchain built from Go source; 8 lines of rules_lint-shell's manifests) |
 | B63 | fixed (corpus2-quick); 1 (aspect-bazel-examples) | `include()` in MODULE.bazel: Bazel's syntax check, breadth-first segment reading with its BAD_MODULE messages, in-place evaluation with per-segment bindings, one module-wide tag order (the lockfile usages digest is genuine's), the cycle error, dev includes, the registry-module error (docs/MODULE_INCLUDE.md) |
 | B64 | fixed (corpus2-quick); 1 (rules_foreign_cc-examples) | `ctx.resolve_command`: CommandHelper over `tools`/`label_dict`, exec-path location expansion, Make variables, `/bin/bash -c` argv and the tools' inputs (docs/CTX_SURFACE.md) |
