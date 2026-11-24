@@ -230,6 +230,25 @@ impl StarlarkStr {
         self.str.len & Self::ASCII_FLAG != 0
     }
 
+    /// The cached hash, [`Self::UNINIT_HASH`] when not computed yet
+    /// (modified: a copy carries it over).
+    #[inline]
+    pub(crate) fn cached_hash(&self) -> StarlarkHashValue {
+        StarlarkHashValue::new_unchecked(self.str.hash.load(atomic::Ordering::Relaxed))
+    }
+
+    /// Set the ASCII flag of a copy of a string whose flag is known
+    /// (modified).
+    #[inline]
+    pub(crate) fn set_ascii(&mut self, ascii: bool) {
+        debug_assert_eq!(ascii, self.as_str().is_ascii());
+        if ascii {
+            self.str.len |= Self::ASCII_FLAG;
+        } else {
+            self.str.len &= !Self::ASCII_FLAG;
+        }
+    }
+
     /// Flag the string ASCII if its content is (once its bytes are
     /// written; modified).
     #[inline]
@@ -721,6 +740,11 @@ len("😿") == 1
         let long = "x".repeat(100);
         let joined = assert::pass(&format!("'{long}' + 'y'"));
         assert!(joined.value().unpack_starlark_str().unwrap().is_ascii());
+        // Frozen copies carry the flag over (both ways).
+        let accented = assert::pass("'\u{e9}' * 50");
+        let accented = accented.value().unpack_starlark_str().unwrap();
+        assert!(!accented.is_ascii());
+        assert_eq!(accented.len(), 100);
     }
 
     /// The ASCII path of start/end arguments, char indices and `at` gives

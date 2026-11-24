@@ -372,6 +372,20 @@ impl<A: ArenaAllocator> Arena<A> {
         hash: StarlarkHashValue,
         init: impl FnOnce(*mut u8),
     ) -> *mut AValueHeader {
+        self.alloc_str_init_ascii(len, hash, None, init)
+    }
+
+    /// [`Self::alloc_str_init`] with the ASCII flag known (`Some`: a copy
+    /// of a string whose flag is known, the bytes not scanned again;
+    /// modified).
+    #[inline]
+    pub(crate) fn alloc_str_init_ascii(
+        &self,
+        len: usize,
+        hash: StarlarkHashValue,
+        ascii: Option<bool>,
+        init: impl FnOnce(*mut u8),
+    ) -> *mut AValueHeader {
         assert!(len > 1);
         let (v, extra) = self.alloc_extra::<_>(starlark_str(len, hash));
         let extra = unsafe { &mut *extra };
@@ -382,13 +396,28 @@ impl<A: ArenaAllocator> Arena<A> {
         init(extra.as_mut_ptr() as *mut u8);
         // Modified: flag an ASCII string (docs/STARLARK_VENDOR.md "ASCII
         // strings" of bazel-rs).
-        unsafe { (*v).payload.1.decide_ascii() };
+        match ascii {
+            None => unsafe { (*v).payload.1.decide_ascii() },
+            Some(ascii) => unsafe { (*v).payload.1.set_ascii(ascii) },
+        }
         unsafe { &mut (*v).header }
     }
 
+    // Modified: test-only (copies carry the flag over: `alloc_str_copy`).
+    #[cfg(test)]
     #[inline]
     pub(crate) fn alloc_str(&self, x: &str) -> *mut AValueHeader {
         self.alloc_str_init(x.len(), StarlarkStr::UNINIT_HASH, |dest| unsafe {
+            ptr::copy_nonoverlapping(x.as_ptr(), dest, x.len())
+        })
+    }
+
+    /// A copy of string `x` (a garbage collection's): its ASCII flag and
+    /// cached hash carried over, the bytes not scanned again (modified).
+    #[inline]
+    pub(crate) fn alloc_str_copy(&self, x: &StarlarkStr) -> *mut AValueHeader {
+        let hash = x.cached_hash();
+        self.alloc_str_init_ascii(x.len(), hash, Some(x.is_ascii()), |dest| unsafe {
             ptr::copy_nonoverlapping(x.as_ptr(), dest, x.len())
         })
     }

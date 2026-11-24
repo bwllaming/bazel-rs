@@ -1271,7 +1271,18 @@ impl FrozenHeap {
         hash: StarlarkHashValue,
         init: impl FnOnce(*mut u8),
     ) -> FrozenStringValue {
-        let v = self.arena.alloc_str_init(len, hash, init);
+        self.alloc_str_init_ascii(len, hash, None, init)
+    }
+
+    /// [`Self::alloc_str_init`] with the ASCII flag known (modified).
+    pub(in crate::values::layout) fn alloc_str_init_ascii(
+        &self,
+        len: usize,
+        hash: StarlarkHashValue,
+        ascii: Option<bool>,
+        init: impl FnOnce(*mut u8),
+    ) -> FrozenStringValue {
+        let v = self.arena.alloc_str_init_ascii(len, hash, ascii, init);
 
         unsafe {
             let value = FrozenValue::new_ptr(&*v, true);
@@ -1547,8 +1558,14 @@ impl<'v> Tracer<'v> {
         (v, r, extra)
     }
 
-    pub(crate) fn alloc_str(&self, x: &str) -> Value<'v> {
-        let v = self.arena.alloc_str(x);
+    /// Allocate a copy of string `x` (modified: was `alloc_str(&str)`; its
+    /// ASCII flag and cached hash carried over, docs/STARLARK_VENDOR.md
+    /// "ASCII strings" of bazel-rs).
+    pub(crate) fn alloc_str_copy(
+        &self,
+        x: &crate::values::string::str_type::StarlarkStr,
+    ) -> Value<'v> {
+        let v = self.arena.alloc_str_copy(x);
         unsafe { Value::new_ptr(&*v, true) }
     }
 

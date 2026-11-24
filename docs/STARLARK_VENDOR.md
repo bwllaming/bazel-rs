@@ -749,6 +749,16 @@ the same for every string: the ASCII path is the general one's for ASCII
 text (test `ascii_indices_are_the_general_ones`, every start/end pair in
 -9..9, `None` and the `i32` extremes; `ascii_flag_is_set_where_strings_are_made`).
 
+Copies carry the flag over instead of scanning again: a garbage
+collection's copy (`Tracer::alloc_str_copy`, which replaces
+`Tracer::alloc_str(&str)`; `Arena::alloc_str` is test-only now) and a
+freeze's (`FrozenHeap::alloc_str_frozen_copy`, interned like
+`alloc_str`) take the flag and the cached hash from the string they copy
+(`Arena::alloc_str_init_ascii`; `StarlarkStr::set_ascii` checks the flag
+against the bytes in debug builds). The provenance records the four
+files' hashes (`arena.rs`, `heap_type.rs`, `avalues/str_.rs`,
+`str_type.rs`).
+
 Not covered: a non-ASCII string still scans (in the repository/extension
 Latin-1 model a single byte >= 0x80 makes the whole downloaded file
 non-ASCII). The isolated vendored test run (this crate as a workspace

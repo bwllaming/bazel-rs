@@ -98,8 +98,11 @@ impl<'v> AValue<'v> for StarlarkStrAValue {
                 "short strings are allocated statically"
             );
 
-            let s = (*me).payload.as_str();
-            let fv = freezer.alloc(s);
+            // Modified: the ASCII flag and the hash carried over (no scan).
+            let fv = freezer
+                .heap
+                .alloc_str_frozen_copy(&(*me).payload)
+                .to_frozen_value();
             debug_assert!(fv.is_str());
             AValueHeader::overwrite_with_forward::<Self::StarlarkValue>(
                 me,
@@ -119,8 +122,8 @@ impl<'v> AValue<'v> for StarlarkStrAValue {
                 "short strings are allocated statically"
             );
 
-            let s = (*me).payload.as_str();
-            let v = tracer.alloc_str(s);
+            // Modified: the ASCII flag and the cached hash carried over.
+            let v = tracer.alloc_str_copy(&(*me).payload);
             debug_assert!(v.is_str());
             AValueHeader::overwrite_with_forward::<Self::StarlarkValue>(
                 me,
@@ -180,6 +183,23 @@ impl FrozenHeap {
     /// Intern string.
     pub(crate) fn alloc_str_intern(&self, s: &str) -> FrozenStringValue {
         self.alloc_str_hashed(Hashed::new(s))
+    }
+
+    /// [`Self::alloc_str`] of a string being frozen: interned like it, its
+    /// ASCII flag and hash carried over (modified: docs/STARLARK_VENDOR.md
+    /// "ASCII strings" of bazel-rs).
+    pub(crate) fn alloc_str_frozen_copy(&self, x: &StarlarkStr) -> FrozenStringValue {
+        let s = x.as_str_hashed();
+        if let Some(s) = constant_string(*s) {
+            s
+        } else {
+            let ascii = x.is_ascii();
+            self.string_interner().intern(s, || {
+                self.alloc_str_init_ascii(s.len(), s.hash(), Some(ascii), |dest| unsafe {
+                    copy_nonoverlapping(s.as_ptr(), dest, s.len())
+                })
+            })
+        }
     }
 
     /// Allocate prehashed string.
