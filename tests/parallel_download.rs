@@ -53,6 +53,8 @@ impl Server {
                     }
                     Err(error) => panic!("listener: {error}"),
                 };
+                // macOS: an accepted socket inherits the listener's O_NONBLOCK.
+                stream.set_nonblocking(false).unwrap();
                 let (logged, peaked, current) = (logged.clone(), peaked.clone(), current.clone());
                 std::thread::spawn(move || {
                     stream.set_nonblocking(false).unwrap();
