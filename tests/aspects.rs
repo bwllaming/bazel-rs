@@ -1072,3 +1072,53 @@ fn rules_must_declare_their_aspects_required_parameters() {
 fn aspect_applied_dependencies_are_merged_targets_whatever_the_request() {
     compare_genuine_builtin("aspect_merged_alias", &["A ", "M "], false);
 }
+
+/// B79 (tests/fixtures/aspect_transition_attribute/rule_transition, genuine
+/// 9.3.1): a top-level aspect on a target with a non-idempotent rule
+/// transition applies to the delegate's own key (bazel_env.bzl's
+/// `_flip_output_dir` rule `cfg` under rules_mypy's `--aspects`).
+#[test]
+fn aspects_apply_to_a_non_idempotent_rule_transition_delegate() {
+    let ws = Workspace(
+        tempfile::Builder::new()
+            .prefix("aspects-")
+            .tempdir_in(crate::test_temp::root())
+            .unwrap(),
+    );
+    copy(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/aspect_transition_attribute/rule_transition"),
+        ws.path(),
+    );
+    let text = ok(&ws.build_builtin(
+        &[
+            "--platforms=//:p",
+            "--host_platform=//:p",
+            "--aspects=//:defs.bzl%top",
+        ],
+        &["//:e"],
+    ));
+    assert!(
+        text.contains("top on @@//:e: mode=opt tool=@@//:tool"),
+        "{text}"
+    );
+}
+
+/// B79 (tests/fixtures/aspect_transition_attribute, genuine 9.3.1): an
+/// aspect's `ctx.rule.attr` of a Starlark-transition attribute that declares
+/// aspects is the attribute's aspect view (bazel_env.bzl's `_toolchain`).
+#[test]
+fn transition_attributes_with_aspects_resolve_in_aspects() {
+    let platform = ["--platforms=//:p", "--host_platform=//:p"];
+    for aspects in [&["--aspects=//:defs.bzl%top"][..], &[]] {
+        let flags = [&platform[..], aspects].concat();
+        let flags = flags.as_slice();
+        let ws = Workspace::fixture("aspect_transition_attribute");
+        ok(&ws.build_builtin(flags, &["//:e"]));
+        assert_eq!(
+            ws.output("e.txt"),
+            "@@//:w: list @@//:leaf @@//:leaf\n",
+            "{flags:?}"
+        );
+    }
+}

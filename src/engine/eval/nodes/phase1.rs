@@ -1096,7 +1096,15 @@ pub(crate) trait Phase1: Host {
         {
             base_label = actual;
         }
-        let base_key = ConfiguredTargetKey::new(base_label.clone(), config);
+        // A rule transition's delegate keeps its own key: a non-idempotent
+        // transition's delegate does not apply it again
+        // (ConfiguredTargetKey.shouldApplyRuleTransition false), the key its
+        // configured state is under (B79; as aspect_plan::plan_collection).
+        let base_key = if base_label == key.label {
+            key.clone()
+        } else {
+            ConfiguredTargetKey::new(base_label.clone(), config)
+        };
         let base_rule = match self.target(&base_label)? {
             // Loading declarations still contain select() placeholders. Using
             // them here omits selected deps, whereas phase 2 later walks the

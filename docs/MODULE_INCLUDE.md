@@ -42,8 +42,9 @@ variable bindings stay in the file that makes them. Implementation:
   non-registry overrides`). `local_path_override`, `git_override` and
   `archive_override` modules read their segments from their own trees.
 * **Not modelled**: `mod tidy` of a root module with segments fails
-  explicitly (docs/MOD_COMMAND.md). A MODULE.bazel failure exits 1 natively
-  where Bazel exits 48 (all module file failures, B73).
+  explicitly (docs/MOD_COMMAND.md).
+* A MODULE.bazel failure, an include's included, exits 48 like Bazel's
+  (EXTERNAL_DEPS_ERROR; 37 in `mod`; B73, tests/fixtures/module_failure_exit_codes).
 
 Genuine fixture: tests/fixtures/corpus2_quick (`include_*` cases), replayed
 by tests/corpus2_quick.rs; unit test `bzlmod::tests::include_evaluates_segments_in_place`.

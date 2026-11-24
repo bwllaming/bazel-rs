@@ -755,10 +755,19 @@ fn plan_collection<C: AspectCx>(
             base_label = generating.label.clone();
         }
     }
-    let base_key = ConfiguredTargetKey::new(
-        base_label.clone(),
-        cx.engine().delegated_config(&requested, edge_config),
-    );
+    // The delegate's own key: a non-idempotent rule transition's delegate
+    // does not apply it again (ConfiguredTargetKey.shouldApplyRuleTransition
+    // false), the key phase 1 analyzed the application under
+    // (analyze_aspect_applications) and the target's configured state is
+    // keyed by (bazel_env.bzl's `_flip_output_dir` rule transition under a
+    // top-level aspect, B79).
+    let owner = cx.engine().rule_delegations.get(&requested);
+    let base_key = ConfiguredTargetKey {
+        label: base_label.clone(),
+        config: owner.map_or(edge_config, |owner| owner.config),
+        apply_rule_transition: owner.is_none_or(|owner| owner.apply_rule_transition),
+        exec_platform: None,
+    };
     let platform_key = ConfiguredTargetKey::new(
         cx.engine()
             .configurations
@@ -1222,7 +1231,12 @@ fn plan_application<C: AspectCx>(
                 || spec.is_some_and(|spec| !spec.declaration.aspects.is_empty());
             let aspect_key = spec
                 .filter(|_| own_view)
-                .filter(|spec| !analysis::starlark_transition(spec))
+                // A Starlark-transition attribute has its own aspect view
+                // only when it declares aspects (analysis::lookup_dependency;
+                // bazel_env's `_toolchain.target`, B79).
+                .filter(|spec| {
+                    !analysis::starlark_transition(spec) || !spec.declaration.aspects.is_empty()
+                })
                 .filter(|_| !matches!(&edge.cfg, EdgeCfg::NoConfig))
                 .filter(|_| {
                     !base_rule.custom.as_ref().is_some_and(|custom| {

@@ -171,6 +171,7 @@ tests/fixtures/sealed_copies/workspace
 tests/fixtures/sh_binary/rules_shell
 tests/fixtures/sh_binary/workspace
 tests/fixtures/shared_actions/workspace
+tests/fixtures/shared_runfiles_support/workspace
 tests/fixtures/signal_dispositions/workspace
 tests/fixtures/snapshot_audit/workspace
 tests/fixtures/source_directories/workspace
