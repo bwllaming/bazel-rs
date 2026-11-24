@@ -178,6 +178,17 @@ CASES = [
         ],
     },
     {
+        "name": "cc_hello",
+        "workspace": "cc_hello/workspace",
+        "steps": [
+            {"args": ["cquery", "//...", "--output=label_kind"], "cquery": True},
+            {"args": ["aquery", "mnemonic('CppCompile|CppLink|CppArchive', //...)"], "aquery": True},
+            {"args": ["build", "//..."], "stderr": [r"^INFO: \d+ processes?: "]},
+            {"args": ["run", "//:hello"]},
+            {"args": ["test", "//:hello_test"], "stderr": [r"^//:hello_test "]},
+        ],
+    },
+    {
         "name": "aquery_genrules",
         "workspace": "aquery/genrules/ws",
         "steps": [
