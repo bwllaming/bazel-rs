@@ -503,12 +503,12 @@ fn lifted_private_label_attributes_reach_nested_subrules_with_late_bound_none() 
         "defs.bzl",
         LIFTED.replace(
             "configuration_field('cpp','custom_malloc')",
-            "configuration_field('proto','proto_compiler')",
+            "configuration_field('j2objc','dead_code_report')",
         ),
     );
     rejected(
         &ws.run(&["build", ":check"]),
-        "late-bound default (configuration_field proto.proto_compiler)",
+        "late-bound default (configuration_field j2objc.dead_code_report)",
     );
     // Bazel 9.3 crashes (InvalidStarlarkValueException) passing any lifted
     // label_list to the implementation, even an empty one: explicit failure.
