@@ -1,0 +1,33 @@
+{
+ "schema": "aspect-target-actions-reference-receipt/v1",
+ "purpose": "B61 (docs/OSS_CORPUS.md, docs/ANALYSIS_TESTS.md): Target.actions read outside analysis tests, by an attribute aspect that propagates (its base targets analyzed earlier, by a select() on a Starlark flag, without the aspect), by hasattr(), by a rule implementation (ctx.attr.dep.actions) and by a top-level aspect; and the merged target of an aspect over an aspect that registered actions (that aspect's actions first). Genuine Bazel 9.3.1 capture; tests/aspects.rs target_actions_outside_analysis_tests_like_bazel asserts these bytes and the print counts.",
+ "reference": {
+  "binary": "bazel-9.3.1-linux-x86_64",
+  "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private>",
+  "commands": [
+   "build --lockfile_mode=off --platforms=//:p --host_platform=//:p //:all //rule_reader:r //merged:mc",
+   "build --lockfile_mode=off --platforms=//:p --host_platform=//:p //:b --aspects=//:defs.bzl%reader_aspect"
+  ],
+  "workspace": "tests/fixtures/aspect_target_actions/workspace"
+ },
+ "outputs": {
+  "bazel-bin/c.actions": "b hasattr=True\nb FileWrite argv=None -> b.txt\nb LibCopy argv=[\"/bin/bash\", \"-c\", \"cp $1 $2\", \"\", \"bazel-out/k8-fastbuild/bin/b.txt\", \"bazel-out/k8-fastbuild/bin/b.copy\"] -> b.copy\na hasattr=True\na FileWrite argv=None -> a.txt\na LibCopy argv=[\"/bin/bash\", \"-c\", \"cp $1 $2\", \"\", \"bazel-out/k8-fastbuild/bin/a.txt\", \"bazel-out/k8-fastbuild/bin/a.copy\"] -> a.copy\n",
+  "bazel-bin/rule_reader/r.count": "2 [\"FileWrite\", \"LibCopy\"]\n",
+  "bazel-bin/merged/mc.actions": "m hasattr=True\nm FileWrite argv=None -> merged/m.first\nm FileWrite argv=None -> merged/m.txt\nm LibCopy argv=[\"/bin/bash\", \"-c\", \"cp $1 $2\", \"\", \"bazel-out/k8-fastbuild/bin/merged/m.txt\", \"bazel-out/k8-fastbuild/bin/merged/m.copy\"] -> merged/m.copy\n"
+ },
+ "prints": {
+  "first command": [
+   "READER @@//:a",
+   "READER @@//:b"
+  ],
+  "second command": [
+   "READER @@//:a",
+   "READER @@//:b"
+  ]
+ },
+ "analyzed": {
+  "first command": "3 targets, 12 targets configured, 4 aspect applications",
+  "second command": "2 aspect applications"
+ }
+}

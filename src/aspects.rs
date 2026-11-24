@@ -640,10 +640,17 @@ pub(crate) fn merge_providers(
         .into_iter()
         .collect();
     let mut aspect_failures = false;
+    // B62: the applications' transitive repositories, one set for the
+    // merged target (crate::aspect_repositories).
+    let mut aspect_repositories: Vec<&OwnedFrozenValue> = Vec::new();
     for (_, aspect_providers) in aspects {
         for (id, value) in aspect_providers {
             if id == crate::target_actions::PROVIDER_ID {
                 aspect_actions.push(value.clone());
+                continue;
+            }
+            if id == crate::aspect_repositories::PROVIDER_ID {
+                aspect_repositories.push(value);
                 continue;
             }
             if id == crate::analysis_failures::PROVIDER_ID {
@@ -714,11 +721,30 @@ pub(crate) fn merge_providers(
     }
     if !aspect_actions.is_empty()
         && let Some(base_actions) = providers.get(crate::target_actions::PROVIDER_ID)
-        && let Some(merged) = crate::target_actions::TargetActions::merged(
+    {
+        // An application or a base target whose actions are not kept (B61:
+        // a base target's views on demand, crate::target_actions::Lazy, are
+        // never merged): no `actions` field, never a part of the list.
+        let merged = crate::target_actions::TargetActions::merged(
             aspect_actions.iter().chain(std::iter::once(base_actions)),
         )
-    {
+        .unwrap_or_else(crate::target_actions::not_kept);
         providers.insert(crate::target_actions::PROVIDER_ID.to_owned(), merged);
+    }
+    match aspect_repositories.as_slice() {
+        [] => {}
+        [one] => {
+            providers.insert(
+                crate::aspect_repositories::PROVIDER_ID.to_owned(),
+                (*one).clone(),
+            );
+        }
+        several => {
+            providers.insert(
+                crate::aspect_repositories::PROVIDER_ID.to_owned(),
+                crate::aspect_repositories::union(several.iter().copied()),
+            );
+        }
     }
     if aspect_failures {
         providers.insert(
@@ -773,7 +799,10 @@ pub(crate) fn merged_dependency(
     let merged = merge_providers(&base.providers, &base.files, aspects)?;
     let mut provider_keys = base.provider_keys.clone();
     for id in aspects.iter().flat_map(|(_, providers)| providers.keys()) {
-        if id != crate::target_actions::PROVIDER_ID && !provider_keys.contains(id) {
+        if id != crate::target_actions::PROVIDER_ID
+            && id != crate::aspect_repositories::PROVIDER_ID
+            && !provider_keys.contains(id)
+        {
             provider_keys.push(id.clone());
         }
     }

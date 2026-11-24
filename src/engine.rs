@@ -54,6 +54,7 @@ mod split;
 mod starlark_doc_extract;
 mod string_census;
 mod sweep;
+mod target_views;
 
 /// `BAZEL_RS_ANALYSIS_ORDER` is this binary's default (docs/EVALUATOR.md
 /// "Genuine parity, task C"; `false` for an invalid value): otherwise
@@ -1519,6 +1520,9 @@ struct PlanState<'a> {
     pub input_groups: &'a delta::InputGroups,
     pub input_memos: &'a delta::InputMemos,
     pub listed_tree_actions: &'a mut usize,
+    /// The planned targets' transitive repositories (an aspect
+    /// application's, B62: crate::aspect_repositories).
+    pub repositories: &'a KeyMap<Arc<BTreeSet<String>>>,
 }
 
 impl ActionPlanning {
@@ -1566,6 +1570,7 @@ impl ActionPlanning {
             input_groups,
             input_memos,
             listed_tree_actions,
+            repositories,
             ..
         } = self;
         PlanState {
@@ -1590,6 +1595,7 @@ impl ActionPlanning {
             input_groups,
             input_memos,
             listed_tree_actions,
+            repositories,
         }
     }
 }
@@ -3071,6 +3077,8 @@ struct ComputeSnapshot {
     evaluating_for_analysis_test: bool,
     /// ConfiguredOutputs.retain_actions.
     retain_actions: bool,
+    /// ConfiguredOutputs.views_key: the configured target's key.
+    views_key: ConfiguredTargetKey,
     /// ConfiguredOutputs.prerequisite_failures.
     prerequisite_failures: Vec<String>,
 }
@@ -3081,6 +3089,9 @@ struct ComputeSnapshot {
 /// lines are dropped with it.
 struct ComputeOutcome {
     analyzed: Result<analysis::AnalysisResult, String>,
+    /// The targets whose `Target.actions` views the implementation asked
+    /// for (its error is the NEEDS_VIEWS sentinel; crate::target_views).
+    wanted_views: Vec<crate::target_actions::Wanted>,
     printed: Vec<String>,
     /// The pure part of the target's runfiles support, computed by the
     /// analysis worker after the implementation (P3): `None` computes it
@@ -8858,6 +8869,7 @@ impl Engine {
             allow_analysis_failures: snapshot.allow_analysis_failures,
             evaluating_for_analysis_test: snapshot.evaluating_for_analysis_test,
             retain_actions: snapshot.retain_actions,
+            views_key: Some(&snapshot.views_key),
             prerequisite_failures: snapshot.prerequisite_failures.clone(),
         };
         crate::platforms::take_deferred_read();
@@ -8868,10 +8880,20 @@ impl Engine {
             &outputs,
         );
         let platform_read = crate::platforms::take_deferred_read();
+        // B61: the targets whose views it asked for (crate::target_views).
+        let wanted_views = if analyzed
+            .as_ref()
+            .is_err_and(|error| crate::target_actions::needs_views(error))
+        {
+            crate::target_actions::take_wanted()
+        } else {
+            Vec::new()
+        };
         (
             snapshot,
             ComputeOutcome {
                 analyzed,
+                wanted_views,
                 printed,
                 runfiles: None,
                 outputs_checked: None,
@@ -9247,6 +9269,14 @@ impl Engine {
                         .is_some_and(|spec| !spec.declaration.aspects.is_empty())
             });
             let view = cx.edge_view(rule, &label, edge_config, aspects)?;
+            // B62: the transitive repositories of the edge's aspect
+            // applications (their own dependencies and toolchains,
+            // crate::aspect_repositories) are the target's too.
+            if execution_plan
+                && let Some(repositories) = crate::aspect_repositories::of(&view.providers)
+            {
+                transitive.extend(repositories.iter().cloned());
+            }
             if with_aspects {
                 // The attribute's own view (analysis::aspect_dependency_key);
                 // under the plain key only when no attribute without the
@@ -9528,6 +9558,7 @@ impl Engine {
             // aspect that propagates reads `target.actions` of the subject's
             // dependencies, B32).
             retain_actions: engine.retains_actions(&rule.label, config),
+            views_key: key.clone(),
             prerequisite_failures,
         };
         Ok(PreparedTarget {
@@ -9717,6 +9748,34 @@ impl Engine {
         Ok(())
     }
 
+    /// The target's own configuration's target platform, deferred by its
+    /// prepare, in the snapshot of an analysis that asked for it
+    /// (NEEDS_TARGET_PLATFORM).
+    fn resolve_deferred_platform(
+        &mut self,
+        snapshot: &mut ComputeSnapshot,
+        config: ConfigId,
+        configured: &mut ConfiguredNodes,
+    ) -> Result<(), String> {
+        let platform = self.deferred_target_platform(config, configured)?;
+        if let Some(custom) = snapshot.rule.custom.as_mut() {
+            // A rule without toolchain resolution keeps its absent
+            // platform (ctx.target_platform_has_constraint); the
+            // configuration's platform serves `$(TARGET_CPU)`.
+            if matches!(
+                custom.target_platform,
+                crate::platforms::TargetPlatform::Deferred
+            ) {
+                custom.target_platform =
+                    crate::platforms::TargetPlatform::Resolved(platform.clone());
+            }
+            let mut surface = (*custom.surface).clone();
+            surface.target_platform = crate::platforms::TargetPlatform::Resolved(platform);
+            custom.surface = Arc::new(surface);
+        }
+        Ok(())
+    }
+
     /// The commit of one custom rule (the tail of the split plan_target):
     /// prerequisite validation, the NEEDS_TARGET_PLATFORM retry (inline at
     /// the commit slot, review §1.7), print emission (review §1.8), and
@@ -9744,23 +9803,7 @@ impl Engine {
             .as_ref()
             .is_err_and(|error| error.contains(crate::platforms::NEEDS_TARGET_PLATFORM))
         {
-            // The target's own configuration's target platform.
-            let platform = self.deferred_target_platform(config, configured)?;
-            if let Some(custom) = snapshot.rule.custom.as_mut() {
-                // A rule without toolchain resolution keeps its absent
-                // platform (ctx.target_platform_has_constraint); the
-                // configuration's platform serves `$(TARGET_CPU)`.
-                if matches!(
-                    custom.target_platform,
-                    crate::platforms::TargetPlatform::Deferred
-                ) {
-                    custom.target_platform =
-                        crate::platforms::TargetPlatform::Resolved(platform.clone());
-                }
-                let mut surface = (*custom.surface).clone();
-                surface.target_platform = crate::platforms::TargetPlatform::Resolved(platform);
-                custom.surface = Arc::new(surface);
-            }
+            self.resolve_deferred_platform(&mut snapshot, config, configured)?;
             let timer = crate::plan_timings::StageTimer::start(
                 crate::plan_timings::PlanStage::CommitRetry,
                 u64::MAX,
@@ -9792,8 +9835,21 @@ impl Engine {
         } else {
             (outcome, snapshot)
         };
+        // B61: an implementation that read the `Target.actions` of a target
+        // whose views were not kept: they are filled, and it is analyzed
+        // again here (crate::engine::target_views).
+        let (outcome, snapshot) = if outcome
+            .analyzed
+            .as_ref()
+            .is_err_and(|error| crate::target_actions::needs_views(error))
+        {
+            self.rule_with_target_views(state, configured, snapshot, outcome)
+        } else {
+            (outcome, snapshot)
+        };
         let ComputeOutcome {
             analyzed,
+            wanted_views: _,
             printed,
             runfiles: precomputed,
             outputs_checked,

@@ -1539,6 +1539,7 @@ impl Engine {
                 crate::output_group_info::PROVIDER_ID => output_group = true,
                 crate::providers::DEFAULT_INFO_PROVIDER_ID => {}
                 crate::target_actions::PROVIDER_ID => {}
+                crate::aspect_repositories::PROVIDER_ID => {}
                 crate::instrumented_files::PROVIDER_ID => instrumented = true,
                 id => declared.push(crate::cquery_starlark::provider_key_name(id)),
             }

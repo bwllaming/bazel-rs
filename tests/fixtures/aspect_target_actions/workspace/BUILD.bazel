@@ -1,0 +1,45 @@
+load(":defs.bzl", "collect", "flag", "lib")
+
+flag(
+    name = "f",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "on",
+    flag_values = {":f": "True"},
+)
+
+lib(name = "a")
+
+lib(
+    name = "b",
+    deps = [":a"],
+)
+
+# Reaches :b and :a without the aspect first; its select() on a Starlark flag
+# analyzes them (the walk's flush) before :c's aspect is met.
+lib(
+    name = "plain",
+    deps = [":b"] + select({
+        ":on": [],
+        "//conditions:default": [],
+    }),
+)
+
+# The aspect reads target.actions of :b and :a (propagated over deps).
+collect(
+    name = "c",
+    deps = [":b"],
+)
+
+filegroup(
+    name = "all",
+    srcs = [
+        ":plain",
+        ":c",
+    ],
+)
+
+# The target and host platform (no @platforms needed).
+platform(name = "p")

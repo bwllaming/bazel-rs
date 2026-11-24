@@ -1,0 +1,9 @@
+load("//:defs.bzl", "lib")
+load(":defs.bzl", "collect2")
+
+lib(name = "m")
+
+collect2(
+    name = "mc",
+    deps = [":m"],
+)

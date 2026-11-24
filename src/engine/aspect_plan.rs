@@ -137,6 +137,7 @@ impl AspectCommit {
             allow_analysis_failures: false,
             evaluating_for_analysis_test: false,
             retain_actions: self.retain_actions,
+            views_key: None,
             prerequisite_failures: Vec::new(),
             output_root: &self.output_root,
             action_owner: &self.action_owner,
@@ -415,6 +416,7 @@ impl AspectCx for CoordAspects<'_, '_> {
     fn with_reads<R>(&self, f: impl FnOnce(&dyn PlanReads) -> R) -> R {
         f(&MapReads {
             custom_providers: Some(&*self.state.custom_providers),
+            repositories: Some(self.state.repositories),
             ..MapReads::default()
         })
     }
@@ -460,7 +462,17 @@ impl AspectCx for CoordAspects<'_, '_> {
         }
         let (analyzed, printed) = match parallel::aspects::analysis(key, application, &outputs) {
             parallel::aspects::Analysis::Here(application) => {
-                analysis::analyze_aspect_buffered(&application, &outputs)
+                // B61: one that read a `Target.actions` not kept is
+                // analyzed again once the views are filled
+                // (crate::engine::target_views).
+                let attempt = analysis::analyze_aspect_buffered(&application, &outputs);
+                self.engine.with_target_views(
+                    self.state,
+                    self.configured,
+                    attempt,
+                    crate::target_actions::take_wanted,
+                    || analysis::analyze_aspect_buffered(&application, &outputs),
+                )
             }
             parallel::aspects::Analysis::Done { analyzed, printed } => (Ok(*analyzed), printed),
             parallel::aspects::Analysis::Dry(providers) => return providers,
@@ -885,6 +897,19 @@ fn identity_variant(requested: &str, applications: &AspectApplications) -> Strin
     text
 }
 
+/// B62: the transitive repositories `applications` carry
+/// (crate::aspect_repositories), added to `transitive`.
+fn add_application_repositories(
+    transitive: &mut BTreeSet<String>,
+    applications: &AspectApplications,
+) {
+    for (_, providers) in applications {
+        if let Some(repositories) = crate::aspect_repositories::of(providers) {
+            transitive.extend(repositories.iter().cloned());
+        }
+    }
+}
+
 /// The planned dependencies of the label attributes of `owner` (the
 /// applied aspect itself, or a base aspect of its path restricted to
 /// `names`) in one application, keyed like a rule context's
@@ -898,6 +923,7 @@ fn plan_attribute_dependencies<C: AspectCx>(
     names: Option<&[String]>,
     attribute_configs: &BTreeMap<String, TransitionConfigurations>,
     path: &[Arc<crate::aspects::AspectDefinition>],
+    transitive: &mut Option<BTreeSet<String>>,
 ) -> Result<
     (
         BTreeMap<String, DependencyTarget>,
@@ -927,7 +953,7 @@ fn plan_attribute_dependencies<C: AspectCx>(
             labels.push(dependency.clone());
             for (_, attribute_config) in branches.iter() {
                 let attribute_config = *attribute_config;
-                let (view, _) =
+                let (view, applications) =
                     match plan_dependency(cx, &dependency, attribute_config, propagating.clone()) {
                         Err(error) if error == parallel::aspects::PENDING => {
                             pending = true;
@@ -935,6 +961,18 @@ fn plan_attribute_dependencies<C: AspectCx>(
                         }
                         planned => planned?,
                     };
+                // B62: the dependency's transitive repositories, and its
+                // applications' (crate::aspect_repositories).
+                if let Some(transitive) = transitive.as_mut() {
+                    transitive.extend(cx.with_reads(|reads| {
+                        cx.engine().dependency_repositories_in(
+                            reads,
+                            dependency.clone(),
+                            Some(attribute_config),
+                        )
+                    }));
+                    add_application_repositories(transitive, &applications);
+                }
                 aspect_dependencies.insert(
                     if split {
                         analysis::split_dependency_key(
@@ -1067,17 +1105,30 @@ fn plan_application<C: AspectCx>(
     let path = cx
         .computed_attr_aspects(collection.clone(), base_key, &base_rule)?
         .path_aspects(&aspect.descriptor);
+    // B62: the application's transitive repositories (AspectValue's
+    // transitive packages): its base target's repository, its own
+    // attributes' and toolchains' dependencies and the applications it
+    // propagates to, with their own; none for cquery (manifest content
+    // only, as a rule's).
+    let mut transitive: Option<BTreeSet<String>> = (!cx.engine().semantic_only())
+        .then(|| BTreeSet::from([base_key.label.repository.to_string()]));
     // T3's dry walk: what waits for an analysis below is pending; the
     // rest of the application's dependencies are walked on.
     let mut pending = false;
-    let (aspect_dependencies, aspect_split_dependencies) =
-        match plan_attribute_dependencies(cx, aspect, None, &attribute_configs, &path) {
-            Err(error) if error == parallel::aspects::PENDING => {
-                pending = true;
-                Default::default()
-            }
-            planned => planned?,
-        };
+    let (aspect_dependencies, aspect_split_dependencies) = match plan_attribute_dependencies(
+        cx,
+        aspect,
+        None,
+        &attribute_configs,
+        &path,
+        &mut transitive,
+    ) {
+        Err(error) if error == parallel::aspects::PENDING => {
+            pending = true;
+            Default::default()
+        }
+        planned => planned?,
+    };
     // The base aspects' attributes `ctx.rule.attr` holds, planned as
     // phase 1 analyzed them (Self::analyze_aspect_attribute_edges).
     let mut base_aspect_attributes = Vec::new();
@@ -1089,14 +1140,20 @@ fn plan_application<C: AspectCx>(
                     owner.identity, aspect.identity, base_key.label
                 )
             })?;
-        let (dependencies, split_dependencies) =
-            match plan_attribute_dependencies(cx, &owner, Some(&names), &owner_configs, &path) {
-                Err(error) if error == parallel::aspects::PENDING => {
-                    pending = true;
-                    continue;
-                }
-                planned => planned?,
-            };
+        let (dependencies, split_dependencies) = match plan_attribute_dependencies(
+            cx,
+            &owner,
+            Some(&names),
+            &owner_configs,
+            &path,
+            &mut transitive,
+        ) {
+            Err(error) if error == parallel::aspects::PENDING => {
+                pending = true;
+                continue;
+            }
+            planned => planned?,
+        };
         base_aspect_attributes.push(analysis::BaseAspectAttributes {
             aspect: owner,
             names,
@@ -1176,14 +1233,19 @@ fn plan_application<C: AspectCx>(
         };
         let dependency = cx.engine().resolve_rule_src(&base_rule, &edge.label)?;
         for edge_config in edge_configs.ids() {
-            let (view, _) = match plan_dependency(cx, &dependency, edge_config, propagating.clone())
-            {
-                Err(error) if error == parallel::aspects::PENDING => {
-                    pending = true;
-                    continue;
-                }
-                planned => planned?,
-            };
+            let (view, applications) =
+                match plan_dependency(cx, &dependency, edge_config, propagating.clone()) {
+                    Err(error) if error == parallel::aspects::PENDING => {
+                        pending = true;
+                        continue;
+                    }
+                    planned => planned?,
+                };
+            // B62: the applications it propagates to (the dependency's own
+            // repositories are the base target's already).
+            if let Some(transitive) = transitive.as_mut() {
+                add_application_repositories(transitive, &applications);
+            }
             let spec = base_rule
                 .custom
                 .as_ref()
@@ -1301,6 +1363,9 @@ fn plan_application<C: AspectCx>(
                     }
                     planned => planned?,
                 };
+                if let Some(transitive) = transitive.as_mut() {
+                    add_application_repositories(transitive, &applications);
+                }
                 providers = crate::aspects::merge_providers(&BTreeMap::new(), &[], &applications)?
                     .with_groups();
             }
@@ -1390,6 +1455,35 @@ fn plan_application<C: AspectCx>(
                 aspect.identity, base_key.label
             )
         })?;
+    // B62: the aspect's resolved toolchains are its dependencies too.
+    if let Some(transitive) = transitive.as_mut() {
+        for context in std::iter::once(toolchains.default.as_ref())
+            .chain(
+                toolchains
+                    .groups
+                    .groups
+                    .iter()
+                    .map(|group| group.context.as_ref()),
+            )
+            .flatten()
+        {
+            for implementation in context.resolved_labels() {
+                let dependency = context.implementation_key(implementation, base_key.config);
+                transitive.extend(cx.with_reads(|reads| {
+                    if dependency.exec_platform.is_some() {
+                        cx.engine()
+                            .toolchain_dependency_repositories_in(reads, &dependency)
+                    } else {
+                        cx.engine().dependency_repositories_in(
+                            reads,
+                            dependency.label.clone(),
+                            Some(dependency.config),
+                        )
+                    }
+                }));
+            }
+        }
+    }
     let target_description = format!(
         "aspect {} applied to {} rule {}",
         aspect.identity,
@@ -1599,6 +1693,7 @@ fn plan_application<C: AspectCx>(
         rule_toolchains,
         toolchains: aspect_toolchains,
         repositories,
+        transitive: transitive.map(intern_repositories),
     };
     let commit = AspectCommit {
         output_root,

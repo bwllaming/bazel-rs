@@ -1,0 +1,3 @@
+module(name = "asptc")
+
+bazel_dep(name = "ext")

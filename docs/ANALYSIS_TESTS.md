@@ -98,13 +98,43 @@ views sit under a reserved provider key, `builtin:Target.actions`
 cquery provider listings skip it. `dir(target)` lists `actions` for rule
 targets, as genuine does.
 
-Every other Starlark rule target holds one shared "not kept" marker under
-that key, and `target.actions` fails there as an unknown field. That is a
-deliberate, explicit gap: genuine answers the actions for any rule target.
-It is reached only by a rule that is not an analysis test reading
-`dep.actions`, or by an analysis test that is not requested itself (only a
-dependency of the request). skylib's and rules_testing's aspects read the
-direct attribute dependencies of the requested tests, which are kept.
+Every other Starlark rule target keeps no views but answers them on
+demand (B61: rules_rust's `rust_analyzer_aspect` reads `target.actions` of
+every `rust_proc_macro` crate it propagates to; genuine answers the actions
+of any rule target). Its analysis holds a small marker under that key
+(`target_actions::Lazy`: the target's ConfiguredTargetKey and an empty
+cell, on the target's own analysis heap). An analysis that reads
+`target.actions` (or `hasattr(target, "actions")`) of a marker not filled
+yet — a rule implementation, an aspect application, wherever it runs —
+ends with the internal sentinel `NEEDS_VIEWS` (even where the configuration
+allows analysis failures: never an AnalysisFailureInfo). Work off the
+coordinator with that error is never used: an aspect job's or a prefetched
+application's analysis is unusable (the coordinator analyzes it at its
+point), a worker's compute reaches its commit. On the coordinator the
+engine then analyzes each target asked for again with its views kept
+(`Engine::fill_target_views`, crate::engine::target_views: the target's
+prepare over the planning state — its dependency views and aspect
+applications are memo hits, its owners and prerequisites were noted and
+checked by its own prepare — and its implementation, isolated: console
+dropped, observations committed, nothing registered), fills the marker and
+runs the reader again from its start; the attempt that asked is dropped
+whole, its prints included, so the reader prints once. The answer is the
+target's own analysis's views, kept or filled, so it never depends on the
+analysis order, the evaluator's scheduling or which targets were analyzed
+before an aspect met them (a select() on a Starlark flag analyzes a plan
+prefix early). Nothing about it is recorded: an analysis snapshot holds no
+providers, and an incremental re-analysis of the base target makes a new
+marker. Cost: one marker per Starlark rule target, and one implementation
+run again per target actually read.
+
+The merged target of an aspect application whose actions were not kept
+(it registered actions; its base target is not inspected) holds the
+shared "not kept" marker instead, and `target.actions` fails there as an
+unknown field (never the base target's actions alone). That is a
+deliberate, explicit gap: genuine answers the aspects' actions then the
+base target's (an aspect reading the `target` of another aspect it
+requires, tests/fixtures/aspect_target_actions `//merged:mc`). Native rules
+other than the kept genrules answer as below.
 
 | field | value |
 |---|---|

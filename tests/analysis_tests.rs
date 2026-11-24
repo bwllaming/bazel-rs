@@ -175,8 +175,10 @@ check_test = rule(_impl, analysis_test = True, attrs = {
 def make(name, **kwargs):
     testing.analysis_test(name = name, implementation = _impl, **kwargs)
 
+CountInfo = provider(fields = ["n"])
+
 def _reader(ctx):
-    return [DefaultInfo(files = depset([])), OutputGroupInfo(n = depset([str(len(ctx.attr.dep.actions))]))]
+    return [DefaultInfo(files = depset([])), CountInfo(n = len(ctx.attr.dep.actions))]
 
 reader = rule(_reader, attrs = {"dep": attr.label()})
 "#,
@@ -220,16 +222,11 @@ check_test(name = "outer_test", target_under_test = ":inner_test")
         "{}",
         stderr(&output)
     );
-    // Target.actions of a target no requested analysis test names is not
-    // kept natively (docs/ANALYSIS_TESTS.md): an explicit failure, where
-    // genuine answers the target's actions.
+    // Target.actions of a target no requested analysis test names: its
+    // views are not kept, but filled when a rule reads them (B61,
+    // docs/ANALYSIS_TESTS.md), as genuine answers the target's actions.
     let output = f.run("build", &["--nobuild", "//reader:r"]);
-    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
-    assert!(
-        stderr(&output).contains("has no field or method 'actions'"),
-        "{}",
-        stderr(&output)
-    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     for (pattern, message) in [
         (
             "//badname:all",

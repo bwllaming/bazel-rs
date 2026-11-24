@@ -610,7 +610,7 @@ impl Drop for AnalysisPool {
 /// What work off its turn would have written where the turn order is
 /// observable, applied at the turn ([`Effects::apply`]).
 #[derive(Default)]
-struct Effects {
+pub(super) struct Effects {
     console: Vec<crate::ui::Deferred>,
     observations: crate::observed_fs::Observations,
     roots: Vec<String>,
@@ -618,7 +618,7 @@ struct Effects {
 
 impl Effects {
     /// Apply at the sequential point: notes, observations, roots.
-    fn apply(self, engine: &Engine, console: bool) {
+    pub(super) fn apply(self, engine: &Engine, console: bool) {
         if console {
             crate::ui::replay(self.console);
         }
@@ -638,7 +638,7 @@ impl Effects {
 /// console held, observations and obtained roots kept, no repository
 /// demand. [`Isolation::finish`] returns what it held and whether a
 /// no-demand sentinel was raised (possibly swallowed by a caller).
-struct Isolation {
+pub(super) struct Isolation {
     console: crate::ui::DeferredConsole,
     roots: crate::repository::UnitRoots,
     scope: crate::observed_fs::UnitScope,
@@ -650,7 +650,7 @@ struct Isolation {
 }
 
 impl Isolation {
-    fn enter() -> Self {
+    pub(super) fn enter() -> Self {
         let console = crate::ui::DeferredConsole::start();
         let roots = crate::repository::UnitRoots::record();
         let scope = crate::observed_fs::unit_scope();
@@ -667,7 +667,7 @@ impl Isolation {
         }
     }
 
-    fn finish(self) -> (Effects, bool) {
+    pub(super) fn finish(self) -> (Effects, bool) {
         let Self {
             console,
             roots,

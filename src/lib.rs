@@ -23,6 +23,7 @@ pub mod aquery_key;
 pub mod archive;
 pub mod args;
 mod aspect_propagation;
+mod aspect_repositories;
 pub mod aspects;
 mod attribute_values;
 pub mod bazel_bytes;

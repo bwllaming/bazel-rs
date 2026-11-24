@@ -1,0 +1,9 @@
+load("//:defs.bzl", "lib")
+load(":defs.bzl", "count")
+
+lib(name = "s")
+
+count(
+    name = "r",
+    dep = ":s",
+)

@@ -1122,3 +1122,71 @@ fn transition_attributes_with_aspects_resolve_in_aspects() {
         );
     }
 }
+
+/// B61: `Target.actions` read outside analysis tests — by an attribute
+/// aspect that propagates over base targets analyzed earlier without it
+/// (a select() on a Starlark flag analyzes them first), by `hasattr`, by a
+/// rule implementation and by a top-level aspect — answers each target's
+/// actions, as genuine Bazel 9.3.1 does
+/// (tests/fixtures/aspect_target_actions/reference_receipt.json): the views
+/// not kept are filled on demand, and the reader runs once (its prints
+/// once). A merged target over an aspect that registered actions not kept
+/// stays an explicit gap (docs/ANALYSIS_TESTS.md).
+#[test]
+fn target_actions_outside_analysis_tests_like_bazel() {
+    let receipt: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/aspect_target_actions/reference_receipt.json"
+    ))
+    .unwrap();
+    let expected = |name: &str| receipt["outputs"][name].as_str().unwrap().to_owned();
+    let platforms = ["--platforms=//:p", "--host_platform=//:p"];
+    // The walk, the evaluator, and the evaluator with the aspect jobs'
+    // walks ahead for every aspect and each prefetched analysis verified.
+    for environment in [
+        vec![("BAZEL_RS_ANALYSIS", "walk")],
+        vec![],
+        vec![
+            ("BAZEL_RS_T3_ASPECT_HELPERS", "all"),
+            ("BAZEL_RS_VERIFY_DELTA", "1"),
+        ],
+    ] {
+        let ws = Workspace::fixture("aspect_target_actions");
+        let build = |flags: &[&str], targets: &[&str]| {
+            Command::new(TIMEOUT)
+                .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
+                .args(["--ignore_all_rc_files", "--cache-dir=cache", "build"])
+                .args(platforms)
+                .args(flags)
+                .args(targets)
+                .current_dir(ws.path())
+                .env("BAZEL_RS_VERIFY_VIEWS", "1")
+                .envs(environment.iter().copied())
+                .explicit_modules()
+                .output()
+                .unwrap()
+        };
+        let text = ok(&build(&[], &["//:all", "//rule_reader:r"]));
+        assert_eq!(
+            prints(&text, "READER"),
+            ["READER @@//:a", "READER @@//:b"],
+            "{environment:?}: {text}"
+        );
+        assert_eq!(ws.output("c.actions"), expected("bazel-bin/c.actions"));
+        assert_eq!(
+            ws.output("r.count"),
+            expected("bazel-bin/rule_reader/r.count")
+        );
+        let text = ok(&build(&["--aspects=//:defs.bzl%reader_aspect"], &["//:b"]));
+        assert_eq!(
+            prints(&text, "READER"),
+            ["READER @@//:a", "READER @@//:b"],
+            "{environment:?}: {text}"
+        );
+        // Genuine: `m FileWrite argv=None -> merged/m.first` first (the
+        // required aspect's action), then the base target's.
+        rejected(
+            &build(&[], &["//merged:mc"]),
+            "has no field or method 'actions'",
+        );
+    }
+}

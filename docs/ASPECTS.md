@@ -261,6 +261,28 @@ location):
 - (the internal `FileProvider`/`AnalysisFailureInfo`/
   `RequiredConfigFragmentsProvider` merge internally and never fail the
   merge; they are not Starlark-visible here.)
+- (two native-only reserved keys merge internally too: `Target.actions`,
+  docs/ANALYSIS_TESTS.md, and the application's transitive repositories,
+  below.)
+
+An application's transitive repositories (B62; AspectValue's transitive
+packages: its TransitiveDependencyState over the aspect's own attribute
+dependencies, its resolved toolchains and the applications it propagates
+to, which ConfiguredAspectProducer adds to the consumer's) ride with its
+providers under the reserved key `builtin:AspectTransitiveRepositories`
+(crate::aspect_repositories; no exported provider can name it, cquery and
+the provider keys skip it): the base target's repository, each aspect
+attribute dependency's and resolved toolchain implementation's transitive
+repositories, and the sets of the applications it propagates to (over the
+base rule's edges, its aspect attributes and its toolchains). A merged
+view unions its applications' sets, and a Starlark rule's prepare adds
+those of its aspect-applied edges to its own transitive repositories —
+the packages its runfiles' repo mapping manifest lists (rules_lint's lint
+aspect's `shellcheck_bin` and sarif_parser toolchain under
+`shellcheck_test`; tests/fixtures/repo_mapping_closure `from_aspect`,
+`over_aspect`). Because they are part of the application's providers they
+follow every path an application's providers take (the aspect memo, the
+aspect jobs' table, the dry walk's replay). Cquery computes none.
 
 ## The aspect context
 

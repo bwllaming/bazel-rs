@@ -731,6 +731,7 @@ impl PlanReads for MissReads<'_> {
         self.reads.validation(key)
     }
     fn repositories(&self, key: &ConfiguredTargetKey) -> Option<Arc<BTreeSet<String>>> {
+        self.note(key);
         self.reads.repositories(key)
     }
 }

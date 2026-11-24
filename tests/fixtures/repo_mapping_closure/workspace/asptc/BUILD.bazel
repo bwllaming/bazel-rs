@@ -1,0 +1,14 @@
+load("//:defs.bzl", "tc_impl")
+
+toolchain_type(
+    name = "tc_type",
+    visibility = ["//visibility:public"],
+)
+
+tc_impl(name = "impl")
+
+toolchain(
+    name = "tc",
+    toolchain = ":impl",
+    toolchain_type = ":tc_type",
+)

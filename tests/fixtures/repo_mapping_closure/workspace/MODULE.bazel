@@ -17,3 +17,12 @@ local_path_override(module_name = "constr", path = "constr")
 
 bazel_dep(name = "setting")
 local_path_override(module_name = "setting", path = "setting")
+
+bazel_dep(name = "asp")
+local_path_override(module_name = "asp", path = "asp")
+
+bazel_dep(name = "asptool")
+local_path_override(module_name = "asptool", path = "asptool")
+
+bazel_dep(name = "asptc")
+local_path_override(module_name = "asptc", path = "asptc")

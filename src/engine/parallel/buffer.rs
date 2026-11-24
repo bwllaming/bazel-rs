@@ -745,6 +745,7 @@ fn final_outcome(key: &ConfiguredTargetKey, outcome: &frozen::FrozenOutcome) -> 
                 && !worker.outcome.analyzed.as_ref().is_err_and(|error| {
                     error.contains(crate::platforms::NEEDS_TARGET_PLATFORM)
                         || crate::repository_demand::is_needs_repository(error)
+                        || crate::target_actions::needs_views(error)
                 })
                 && (!redo
                     || (!worker.outcome.platform_read

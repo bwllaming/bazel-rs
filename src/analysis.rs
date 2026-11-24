@@ -2091,6 +2091,7 @@ pub fn analyze_in(
         allow_analysis_failures: false,
         evaluating_for_analysis_test: false,
         retain_actions: true,
+        views_key: None,
         prerequisite_failures: Vec::new(),
         output_root: crate::label::GENERATED_EXEC_ROOT,
         action_owner: &owner,
@@ -2144,6 +2145,9 @@ pub(crate) struct AspectApplication {
     /// The aspect's own ToolchainCollection (crate::engine).
     pub toolchains: AspectToolchains,
     pub repositories: Arc<RepositorySet>,
+    /// B62: the application's transitive repositories, carried with its
+    /// providers (crate::aspect_repositories); `None` for cquery.
+    pub transitive: Option<Arc<std::collections::BTreeSet<String>>>,
     /// The configured facts of a native base rule (`None` for a Starlark
     /// one, whose CustomInvocation carries them).
     pub native: Option<native_aspect::NativeAspectBase>,
@@ -2177,6 +2181,17 @@ pub(crate) struct AspectToolchains {
 /// and a returned DefaultInfo is kept as a provider (its files join the
 /// merged files to build at the consumer, MergedConfiguredTarget).
 pub(crate) fn analyze_aspect_buffered(
+    application: &AspectApplication,
+    target: &ConfiguredOutputs<'_>,
+) -> (Result<AnalysisResult, String>, Vec<String>) {
+    // A read of a Target.actions not kept (B61) answers the sentinel
+    // (crate::target_actions::NEEDS_VIEWS).
+    let scope = crate::target_actions::WantScope::enter();
+    let (result, printed) = analyze_aspect_unscoped(application, target);
+    (scope.finish(result), printed)
+}
+
+fn analyze_aspect_unscoped(
     application: &AspectApplication,
     target: &ConfiguredOutputs<'_>,
 ) -> (Result<AnalysisResult, String>, Vec<String>) {
@@ -2367,6 +2382,13 @@ fn analyze_aspect_inner(
         let provider_keys = crate::providers::returned_provider_key_names(returned)?;
         crate::providers::check_freezable_payloads(custom.values().copied())?;
         let mut custom = custom;
+        // B62: its transitive repositories (crate::aspect_repositories).
+        if let Some(transitive) = &application.transitive {
+            custom.insert(
+                crate::aspect_repositories::PROVIDER_ID.to_owned(),
+                crate::aspect_repositories::alloc(module.heap(), transitive.clone()),
+            );
+        }
         // Target.actions of the merged target (crate::target_actions,
         // MergedConfiguredTarget.rawGetStarlarkProvider): the aspects'
         // actions, kept like the base target's, only for a target an
@@ -2407,6 +2429,16 @@ fn analyze_aspect_inner(
                     .map_err(|error| anyhow!(error.to_string()))
             })
             .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
+        let mut providers = providers;
+        if !target.retain_actions && !context.actions.borrow().is_empty() {
+            // Its actions are not kept: a merged target over it has no
+            // `actions` field (crate::aspects::merged_providers), never
+            // only its base target's.
+            providers.insert(
+                crate::target_actions::PROVIDER_ID.to_owned(),
+                crate::target_actions::not_kept(),
+            );
+        }
         Ok(AnalysisResult {
             files: Vec::new(),
             declared: context.declared.borrow().clone(),
@@ -2895,6 +2927,10 @@ pub(crate) struct ConfiguredOutputs<'a> {
     /// Keep the target's `Target.actions` views (crate::target_actions):
     /// an analysis test of the request names it.
     pub retain_actions: bool,
+    /// The configured target's key, for the views of a rule target that
+    /// keeps none: a reader asks for them (crate::target_actions::Lazy,
+    /// B61). `None`: the shared "not kept" marker.
+    pub views_key: Option<&'a crate::config_registry::ConfiguredTargetKey>,
     /// The target's prerequisite validation errors
     /// (RuleContext.Builder.validateDirectPrerequisite) when its
     /// configuration allows analysis failures: suppressed rule errors, so
@@ -2977,6 +3013,20 @@ impl starlark::PrintHandler for BufferedPrints {
 /// [`analyze_in`] without writing the implementation's `print()` output:
 /// the result and the printed lines, in order.
 pub(crate) fn analyze_buffered(
+    rule: &Rule,
+    dependencies: &BTreeMap<String, DependencyTarget>,
+    repositories: Arc<RepositorySet>,
+    target: &ConfiguredOutputs<'_>,
+) -> (Result<AnalysisResult, String>, Vec<String>) {
+    // A read of a Target.actions not kept (B61) answers the sentinel
+    // (crate::target_actions::NEEDS_VIEWS), also where the configuration
+    // allows analysis failures (never an AnalysisFailureInfo).
+    let scope = crate::target_actions::WantScope::enter();
+    let (result, printed) = analyze_unscoped(rule, dependencies, repositories, target);
+    (scope.finish(result), printed)
+}
+
+fn analyze_unscoped(
     rule: &Rule,
     dependencies: &BTreeMap<String, DependencyTarget>,
     repositories: Arc<RepositorySet>,
@@ -3504,6 +3554,15 @@ fn analyze_inner(
             // Target.actions (crate::target_actions): the registered
             // actions' views, kept only for a target an analysis test of
             // the request names (docs/ANALYSIS_TESTS.md).
+            if !target.retain_actions
+                && let Some(key) = target.views_key
+            {
+                // Not kept: the views on demand (B61).
+                custom.insert(
+                    crate::target_actions::PROVIDER_ID.to_owned(),
+                    crate::target_actions::Lazy::alloc(module.heap(), key.clone()),
+                );
+            }
             if target.retain_actions {
                 custom.insert(
                     crate::target_actions::PROVIDER_ID.to_owned(),
@@ -3554,9 +3613,11 @@ fn analyze_inner(
         },
     )?;
     let mut providers = providers;
-    if !target.retain_actions {
-        // A Starlark rule target no analysis test of the request names:
-        // its actions are not kept, and `target.actions` is no field.
+    if !target.retain_actions && !providers.contains_key(crate::target_actions::PROVIDER_ID) {
+        // A Starlark rule target no analysis test of the request names,
+        // analyzed outside the engine's planning (no key to analyze it
+        // again): its actions are not kept, and `target.actions` is no
+        // field.
         providers.insert(
             crate::target_actions::PROVIDER_ID.to_owned(),
             crate::target_actions::not_kept(),

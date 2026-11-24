@@ -656,6 +656,7 @@ impl Engine {
             input_groups,
             input_memos,
             listed_tree_actions,
+            repositories,
             ..
         } = state;
         let mut planning = PlanState {
@@ -680,6 +681,7 @@ impl Engine {
             input_groups: &*input_groups,
             input_memos: &*input_memos,
             listed_tree_actions,
+            repositories: &*repositories,
         };
         self.plan_aspect_dependency(&mut planning, configured, label, edge_config, aspects)
             .map(|_| ())
@@ -709,6 +711,7 @@ fn analyze(job: Job) -> Outcome {
         allow_analysis_failures: false,
         evaluating_for_analysis_test: false,
         retain_actions: false,
+        views_key: None,
         prerequisite_failures: Vec::new(),
         output_root: &output_root,
         action_owner: &action_owner,

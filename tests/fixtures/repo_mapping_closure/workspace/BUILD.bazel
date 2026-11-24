@@ -1,4 +1,4 @@
-load("//:defs.bzl", "my_bin")
+load("//:defs.bzl", "asp_bin", "my_bin", "node")
 
 # A data dependency on an output file: the generating rule's transitive
 # packages (its exec tool in @maker) are the consumer's.
@@ -44,4 +44,23 @@ my_bin(
         ":constrained": "constrained",
         "//conditions:default": "other",
     }),
+)
+
+# An attribute aspect's own dependencies and toolchains (@asptool, @asptc)
+# are transitive packages of the target whose dependency it is applied to.
+node(name = "base")
+
+asp_bin(
+    name = "from_aspect",
+    data = ["@ext//:e.txt"],
+    deps = [":base"],
+)
+
+# A target over it inherits them.
+my_bin(
+    name = "over_aspect",
+    data = [
+        ":from_aspect",
+        "@ext//:e.txt",
+    ],
 )

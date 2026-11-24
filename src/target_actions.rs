@@ -20,6 +20,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::analysis_runtime::RegisteredAction;
+use crate::config_registry::ConfiguredTargetKey;
 use crate::repository::RepositorySet;
 use crate::starlark_types::{Depset, File, Item, Order};
 
@@ -382,6 +383,18 @@ mod owned {
         pub repositories: Option<Arc<RepositorySet>>,
     }
 
+    /// The `Target.actions` of a Starlark rule target whose views the
+    /// analysis did not keep (B61): its key, and the views once a reader
+    /// asked for them ([`Lazy::views`]: the engine analyzes the target again
+    /// with its views kept and fills them here, then runs the reader again).
+    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+    pub(crate) struct Lazy {
+        #[allocative(skip)]
+        pub key: ConfiguredTargetKey,
+        #[allocative(skip)]
+        pub views: std::sync::OnceLock<TargetActions>,
+    }
+
     /// One `Action` (ActionApi).
     #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
     pub(crate) struct ActionValue {
@@ -392,10 +405,141 @@ mod owned {
     }
 }
 use owned::ActionValue;
-pub(crate) use owned::TargetActions;
+pub(crate) use owned::{Lazy, TargetActions};
 
 starlark_simple_value!(TargetActions);
 starlark_simple_value!(ActionValue);
+starlark_simple_value!(Lazy);
+
+impl fmt::Display for Lazy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<actions>")
+    }
+}
+
+#[starlark_value(type = "TargetActions")]
+impl<'v> StarlarkValue<'v> for Lazy {}
+
+impl Lazy {
+    /// The marker of the target `key` (allocated on its analysis heap).
+    pub(crate) fn alloc<'v>(heap: Heap<'v>, key: ConfiguredTargetKey) -> Value<'v> {
+        heap.alloc(Lazy {
+            key,
+            views: std::sync::OnceLock::new(),
+        })
+    }
+
+    /// The views, once filled.
+    pub(crate) fn views(&self) -> Option<&TargetActions> {
+        self.views.get()
+    }
+
+    /// Fill the views (the target analyzed again with its views kept). A
+    /// second fill keeps the first: both are the same analysis's.
+    pub(crate) fn fill(&self, views: TargetActions) {
+        let _ = self.views.set(views);
+    }
+}
+
+/// The sentinel of an analysis that read the `Target.actions` of a target
+/// whose views were not kept and not filled yet ([`Lazy`]): the engine
+/// fills them ([`take_wanted`]) and analyzes it again. Never shown: a
+/// caller that cannot fill them reports [`unwanted`]'s text.
+pub(crate) const NEEDS_VIEWS: &str = "\u{0}analysis reads Target.actions not kept yet: ";
+
+/// A [`Lazy`] an analysis read before it was filled: the target's key and
+/// the marker it read.
+#[derive(Clone)]
+pub(crate) struct Wanted {
+    pub key: ConfiguredTargetKey,
+    pub marker: starlark::values::OwnedFrozenValue,
+}
+
+thread_local! {
+    /// The targets whose views the running analysis asked for.
+    static WANTED: std::cell::RefCell<Vec<Wanted>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Those of the last analysis that asked ([`take_wanted`]).
+    static LAST_WANTED: std::cell::RefCell<Vec<Wanted>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `target.actions` (or `hasattr(target, "actions")`) on the [`Lazy`]
+/// `marker` of `key`, not filled: the running analysis will answer
+/// [`NEEDS_VIEWS`].
+pub(crate) fn note_wanted(key: &ConfiguredTargetKey, marker: &starlark::values::OwnedFrozenValue) {
+    WANTED.with(|wanted| {
+        let mut wanted = wanted.borrow_mut();
+        if !wanted.iter().any(|known| known.key == *key) {
+            wanted.push(Wanted {
+                key: key.clone(),
+                marker: marker.clone(),
+            });
+        }
+    });
+}
+
+/// The scope of one analysis (a rule implementation, an aspect
+/// application): what it asks for, apart from an enclosing one's.
+pub(crate) struct WantScope(Vec<Wanted>);
+
+impl WantScope {
+    pub(crate) fn enter() -> Self {
+        LAST_WANTED.with(|last| last.borrow_mut().clear());
+        WantScope(WANTED.with(|wanted| std::mem::take(&mut *wanted.borrow_mut())))
+    }
+
+    /// The analysis ends with `result`: the [`NEEDS_VIEWS`] sentinel when it
+    /// asked for views (kept for [`take_wanted`]), else `result`.
+    pub(crate) fn finish<T>(self, result: Result<T, String>) -> Result<T, String> {
+        let asked = WANTED.with(|wanted| std::mem::replace(&mut *wanted.borrow_mut(), self.0));
+        if asked.is_empty() {
+            return result;
+        }
+        let message = match &result {
+            Ok(_) => String::new(),
+            Err(error) => error.clone(),
+        };
+        let labels = asked
+            .iter()
+            .map(|wanted| crate::rule_declarations::canonical_form(&wanted.key.label))
+            .collect::<Vec<_>>()
+            .join(", ");
+        LAST_WANTED.with(|last| *last.borrow_mut() = asked);
+        Err(format!("{NEEDS_VIEWS}{labels}\u{0}{message}"))
+    }
+}
+
+/// The targets whose views the last analysis on this thread that answered
+/// [`NEEDS_VIEWS`] asked for.
+pub(crate) fn take_wanted() -> Vec<Wanted> {
+    LAST_WANTED.with(|last| std::mem::take(&mut *last.borrow_mut()))
+}
+
+/// Whether `error` is the [`NEEDS_VIEWS`] sentinel.
+pub(crate) fn needs_views(error: &str) -> bool {
+    error.contains(NEEDS_VIEWS)
+}
+
+/// The error a [`NEEDS_VIEWS`] sentinel stands for when the views could
+/// not be filled: the analysis's own error, else (it only tested
+/// `hasattr`) an explicit one.
+pub(crate) fn unwanted(error: String) -> String {
+    let Some(at) = error.find(NEEDS_VIEWS) else {
+        return error;
+    };
+    let rest = &error[at + NEEDS_VIEWS.len()..];
+    let (labels, message) = rest.split_once('\u{0}').unwrap_or((rest, ""));
+    let message = if message.is_empty() {
+        format!(
+            "reading the Target.actions of {labels}, not kept, {}",
+            crate::language_modules::NOT_IMPLEMENTED
+        )
+    } else {
+        message.to_owned()
+    };
+    format!("{}{message}", &error[..at])
+}
 
 impl fmt::Display for TargetActions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -1,0 +1,7 @@
+module(name = "asp")
+
+bazel_dep(name = "ext")
+bazel_dep(name = "asptool")
+bazel_dep(name = "asptc")
+
+register_toolchains("@asptc//:tc")

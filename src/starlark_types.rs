@@ -2698,10 +2698,20 @@ impl<'v> StarlarkValue<'v> for TargetValue {
             "actions" => match self.0.providers.get(crate::target_actions::PROVIDER_ID) {
                 // The views, or the "not kept" marker of a Starlark rule
                 // target no analysis test of the request names (no field).
-                Some(provider) => {
-                    crate::target_actions::TargetActions::from_value(provider.value())?
-                        .alloc_list(heap)
-                }
+                Some(provider) => match crate::target_actions::Lazy::from_value(provider.value()) {
+                    // Not kept (B61): its views once filled; until then the
+                    // analysis asks for them (no field here, the sentinel at
+                    // its end: the engine fills them and runs it again).
+                    Some(lazy) => match lazy.views() {
+                        Some(views) => views.alloc_list(heap),
+                        None => {
+                            crate::target_actions::note_wanted(&lazy.key, provider);
+                            return None;
+                        }
+                    },
+                    None => crate::target_actions::TargetActions::from_value(provider.value())?
+                        .alloc_list(heap),
+                },
                 // A native rule target: the native rules but genrule,
                 // genquery and starlark_doc_extract register no actions
                 // (theirs are not retained: no field).

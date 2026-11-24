@@ -320,6 +320,7 @@ impl PrepareCx for CoordPrepare<'_> {
             input_groups,
             input_memos,
             listed_tree_actions,
+            repositories,
             ..
         } = &mut *self.state;
         if aspects.is_empty() {
@@ -364,6 +365,7 @@ impl PrepareCx for CoordPrepare<'_> {
             input_groups: &*input_groups,
             input_memos: &*input_memos,
             listed_tree_actions,
+            repositories: &*repositories,
         };
         Ok(self
             .engine
