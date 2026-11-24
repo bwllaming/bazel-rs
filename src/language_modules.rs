@@ -1902,7 +1902,6 @@ fn apple_common(heap: &FrozenHeap) -> FrozenValue {
         })
     };
     let objc = provider("ObjcInfo", "common/objc/objc_info.bzl");
-    let unimplemented = Behavior::Unimplemented(Domain::Apple);
     sorted_struct(
         heap,
         vec![
@@ -1924,25 +1923,14 @@ fn apple_common(heap: &FrozenHeap) -> FrozenValue {
                 "XcodeVersionConfig",
                 crate::apple_xcode::xcode_version_info(heap),
             ),
+            // The verbatim @_builtins functions (crate::apple_xcode).
             (
                 "apple_host_system_env",
-                builtins_function(
-                    heap,
-                    "apple_host_system_env",
-                    "common/objc/apple_env.bzl",
-                    "apple_common.apple_host_system_env",
-                    unimplemented,
-                ),
+                crate::apple_xcode::apple_env_function(heap, "apple_host_system_env"),
             ),
             (
                 "target_apple_env",
-                builtins_function(
-                    heap,
-                    "target_apple_env",
-                    "common/objc/apple_env.bzl",
-                    "apple_common.target_apple_env",
-                    unimplemented,
-                ),
+                crate::apple_xcode::apple_env_function(heap, "target_apple_env"),
             ),
             (
                 "dotted_version",
@@ -2591,16 +2579,29 @@ apple_toolchain = apple_common.apple_toolchain()
 fragment = struct(single_arch_platform = apple_common.platform.ios_simulator)
 (apple_toolchain.platform_developer_framework_dir(fragment) == "__BAZEL_XCODE_DEVELOPER_DIR__/Platforms/iPhoneSimulator.platform/Developer/Library/Frameworks") or fail("framework dir")
 (apple_common.apple_toolchain() == apple_toolchain) or fail("struct equality")
+# builtins_bzl/common/objc/apple_env.bzl, evaluated verbatim.
+(repr(apple_common.apple_host_system_env) == "<function apple_host_system_env from @@_builtins//:common/objc/apple_env.bzl>") or fail(repr(apple_common.apple_host_system_env))
+(apple_common.apple_host_system_env(None) == {}) or fail("no xcode config")
+x = apple_common.XcodeVersionConfig(
+    ios_sdk_version = "17.0", ios_minimum_os_version = "15.0", visionos_sdk_version = "1.0",
+    visionos_minimum_os_version = "1.0", watchos_sdk_version = "10", watchos_minimum_os_version = "8.0",
+    tvos_sdk_version = "17.0", tvos_minimum_os_version = "15.0", macos_sdk_version = "14.0",
+    macos_minimum_os_version = "12.0", xcode_version = "15.0.1", availability = "LOCAL",
+    xcode_version_flag = "15.0.1", include_xcode_execution_info = True,
+)
+(apple_common.apple_host_system_env(x) == {"XCODE_VERSION_OVERRIDE": "15.0.1"}) or fail(apple_common.apple_host_system_env(x))
+(apple_common.target_apple_env(x, apple_common.platform.macos) == {"APPLE_SDK_PLATFORM": "MacOSX", "APPLE_SDK_VERSION_OVERRIDE": "14.0"}) or fail("macos env")
+(apple_common.target_apple_env(x, apple_common.platform.watchos_device) == {"APPLE_SDK_PLATFORM": "WatchOS", "APPLE_SDK_VERSION_OVERRIDE": "10.0"}) or fail("watchos env")
 "#,
         );
         for (call, message) in [
             (
                 "apple_common.target_apple_env(None, apple_common.platform.macos)",
-                "apple_common.target_apple_env is not implemented in the native profile (analysis-time Apple API)",
+                "'NoneType' value has no field or method 'sdk_version_for_platform'",
             ),
             (
-                "apple_common.apple_host_system_env(None)",
-                "apple_common.apple_host_system_env is not implemented",
+                "apple_common.apple_host_system_env(1)",
+                "'int' value has no field or method 'xcode_version'",
             ),
             (
                 "apple_common.apple_toolchain(1)",

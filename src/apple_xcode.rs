@@ -286,6 +286,12 @@ fn evaluate_providers() -> Result<FrozenModule, String> {
     }
     // Blank the load (same line count) and bind its symbols as globals.
     let source = PROVIDERS_SOURCE.replacen(PLATFORM_LOAD, "", 1);
+    evaluate_builtins_file(PROVIDERS_LABEL, source)
+}
+
+/// Evaluates a verbatim `@_builtins` file with the globals providers.bzl
+/// needs (struct, the providers, the platform tables and `_builtins`).
+fn evaluate_builtins_file(label: &str, source: String) -> Result<FrozenModule, String> {
     let globals = GlobalsBuilder::extended_by(&[LibraryExtension::StructType])
         .with(crate::providers::globals)
         .with(|builder| {
@@ -300,7 +306,7 @@ fn evaluate_providers() -> Result<FrozenModule, String> {
         })
         .build();
     let context = crate::loading::ExtensionContext {
-        label: crate::label::Label::parse_canonical(PROVIDERS_LABEL)?,
+        label: crate::label::Label::parse_canonical(label)?,
         repositories: Arc::new(crate::repository::RepositorySet::new(".".into())),
         byte_strings: false,
     };
@@ -309,7 +315,7 @@ fn evaluate_providers() -> Result<FrozenModule, String> {
         enable_load_reexport: false,
         ..Dialect::Standard
     };
-    let ast = AstModule::parse(PROVIDERS_LABEL, source, &dialect).map_err(|e| e.to_string())?;
+    let ast = AstModule::parse(label, source, &dialect).map_err(|e| e.to_string())?;
     Module::with_temp_heap(|module| {
         {
             let mut eval = Evaluator::new(&module);
@@ -318,6 +324,33 @@ fn evaluate_providers() -> Result<FrozenModule, String> {
         }
         module.freeze().map_err(|e| format!("{e:?}"))
     })
+}
+
+// ---------------------------------------------------------------------------
+// apple_common.apple_host_system_env / target_apple_env: the verbatim
+// builtins_bzl/common/objc/apple_env.bzl functions (apple_common.bzl binds
+// them directly).
+
+const APPLE_ENV_LABEL: &str = "@@_builtins//:common/objc/apple_env.bzl";
+const APPLE_ENV_SOURCE: &str = include_str!("../resources/builtins_bzl/common/objc/apple_env.bzl");
+
+fn apple_env_module() -> &'static FrozenModule {
+    static MODULE: OnceLock<FrozenModule> = OnceLock::new();
+    MODULE.get_or_init(|| {
+        evaluate_builtins_file(APPLE_ENV_LABEL, APPLE_ENV_SOURCE.to_owned())
+            .unwrap_or_else(|e| panic!("embedded {APPLE_ENV_LABEL} failed to evaluate: {e}"))
+    })
+}
+
+/// `apple_host_system_env` or `target_apple_env` of the evaluated
+/// apple_env.bzl, kept alive by `heap`.
+pub(crate) fn apple_env_function(heap: &FrozenHeap, name: &str) -> FrozenValue {
+    apple_env_module()
+        .get(name)
+        .unwrap_or_else(|_| panic!("apple_env.bzl defines {name}"))
+        .owned_value(heap)
+        .unpack_frozen()
+        .expect("module globals are frozen")
 }
 
 fn providers_module() -> &'static FrozenModule {
