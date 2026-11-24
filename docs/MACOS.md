@@ -125,6 +125,14 @@ checks the sha256 and the signature (`codesign --verify`) and runs
 `bazel-rs --version`. Not notarized: curl downloads run as they are; a
 browser download is quarantined (`xattr -d com.apple.quarantine bazel-rs`).
 
+Rehearsed before the first such release (a temporary workflow on the port's
+pull request, 2026-11-24): `release.py --ci --dry-run --stage build
+--smoke-network --target aarch64-apple-darwin` on `macos-15` built, checked
+("macOS ≥ 11.0; system libraries only": libSystem, libiconv, the Security and
+CoreFoundation frameworks; `Signature=adhoc`), smoke-tested (query, two
+builds, the built-in profile build) and packaged the archive, whose extracted
+binary passed `codesign --verify` and ran `--version`.
+
 ## Phase 3
 
 - Genuine-captured fixtures on a Mac runner (bazelisk / `bazel-9.3.1-darwin-arm64`)
