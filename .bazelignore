@@ -116,6 +116,7 @@ tests/fixtures/java_native_deps_dirs/workspace
 tests/fixtures/java_plugins_alias/workspace
 tests/fixtures/java_runtime_classpath/archive
 tests/fixtures/java_runtime_classpath/workspace
+tests/fixtures/java_transition_options/workspace
 tests/fixtures/label_list_files/workspace
 tests/fixtures/label_passthrough/workspace
 tests/fixtures/load_declarations
