@@ -202,13 +202,13 @@ counted). `query //...` labels match on all 37 projects.
 | yalantinglibs | DIFF⁸ | 12.0 / 6.8 | 3.4 / 0.2 / 0.2 | 58.6† / 52.2† | 679 / 244 | 126, 6, 0, 0 | FAILED TO BUILD:1 PASSED:2 SKIPPED:2 / same | C5 |
 | examples-frontend | DIFF⁹ | 88.3† / 121.6† | 60.9† / 110.9† / 97.7† | 60.8† / 137.7† | 1488 / 1806 | 215801, 12, 2, 0 | PASSED:14 / same | C3 |
 | examples-rust-deps-cargo | DIFF¹⁰ | 39.6 / 28.8 | 3.4 / 0.2 / 0.2 | 27.7 / 24.7 | 1016 / 371 | 103, 0, 0, 1 | — | C4 |
-| rules_python-bzlmod | DIFF | 43.2 / 36.2 | 4.6 / 0.6 / 0.2 | 43.7 / 39.7 | 1959 / 2577 | 319, 0, 0, 1 | PASSED:31 / same | B34 |
-| with_cfg-examples | DIFF | 33.2 / 28.2 | 4.0 / 0.4 / 0.1 | 8.9 / 5.9 | 1737 / 1678 | 207, 37, 0, 0 | PASSED:20 / same | C2, B43 |
+| rules_python-bzlmod | DIFF | 41.6 / 37.2 | 4.5 / 0.3 / 0.2 | 41.8 / 42.1 | 2118 / 2605 | 319, 0, 0, 1 | PASSED:31 / same | B34 |
+| with_cfg-examples | DIFF | 36.1 / 27.6 | 4.3 / 0.5 / 0.1 | 9.1 / 6.8 | 1921 / 1111 | 213, 31, 0, 0 | PASSED:20 / same | C2 |
 | capnproto | DIFF¹¹ | 17.1 / 11.1 | 3.5 / 0.2 / 0.2 | 23.9 / 18.1 | 1079 / 385 | 1270, 132, 0, 0 | FAILED TO BUILD:5 SKIPPED:14 / same | C5 |
 | flatbuffers | DIFF¹² | 17.1† / 7.4† | 3.0† / 0.3† / 0.5† | 3.1† / 0.4† | 763 / 207 | 0, 0, 0, 0 | — | B12 |
 | rules_jvm_external-simple | DIFF¹² | 72.9† / 38.1† | 4.2† / 0.4† / 1.8† | 4.0† / 1.5† | 1625 / 655 | 0, 0, 0, 0 | — | B47 |
-| rules_cc | DIFF | 21.0 / 20.2 | 5.3 / 0.4 / 5.4 | 64.3 / 60.3 | 2416 / 1750 | 1978, 6, 0, 0 | FAILED:1 PASSED:453 SKIPPED:2 / FAILED:1 PASSED:451 SKIPPED:2 | B32 |
-| protobuf | DIFF¹³ | 43.7† / 73.3† | 6.2† / 0.6† / 14.8† | 290.5† / 302.1† | 2970 / 3625 | 19840, 21247, 0, 0 | — | B33, C2, C5 |
+| rules_cc | BOTH-FAIL¹⁶ | 18.1 / 20.6 | 5.0 / 0.6 / 5.5 | 46.6 / 46.6 | 2295 / 1754 | 1984, 0, 0, 0 | FAILED:1 PASSED:453 SKIPPED:2 / same | |
+| protobuf | DIFF¹³ | 67.4† / 58.7† | 6.5† / 0.6† / 11.5† | 262.9† / 278.6† | 2586 / 2749 | 19840, 21247, 0, 0 | — | B33, C2, C5 |
 | rules_kotlin | DIFF¹⁴ | 46.0 / 47.7 | 4.5 / 0.3 / 0.2 | 62.0 / 63.7 | 2426 / 2098 | 2235, 1116, 0, 1 | 30-minute cap on both: genuine at 244, bazel-rs at 224 of 268 (B53) | C2, B53 |
 | rules_zig | DIFF¹⁵ | 32.2 / 35.3 | 13.4 / 0.5 / 11.2 | 36.6 / 37.2 | 2484 / 1329 | 1292, 0, 0, 5 | PASSED:211 SKIPPED:4 / same | C6 |
 
@@ -260,9 +260,10 @@ Notes:
     21,247 only-genuine files, 21,243 are C2 `_javac` class files and 3 are
     B33's target. corpus-parity6 (B48, B49 fixed): 13,940 processes against
     13,945 (the 5 are B33's target), the build 302 s against 290 s (was
-    648 s). Its warm run re-analyses (14.8 s): a command whose analysis
-    failed saves no snapshot. The cold and warm rows ran at a load of up to
-    250 from other work.
+    648 s). corpus-last: unchanged (13,940 against 13,945 processes, 279 s
+    against 263 s); B33's target now fails with the path-mapping reason
+    named. Its warm run re-analyses (11.5 s): a command whose analysis
+    failed saves no snapshot.
 14. corpus-parity6 (B51 fixed): `build //...` succeeds on both; the
     only-genuine files are C2's `_javac` classes, the hash difference a
     KSP-generated srcjar. `test //...` runs nested Bazel integration tests
@@ -281,6 +282,11 @@ Notes:
     depend on the shared host `/tmp/zig-cache` (C6); a genuine rebuild of
     two of them after `clean` differs from genuine's own first build too.
 
+16. corpus-last (B32 fixed): both tools fail the same `//...` analyses
+    (`//cc/private:srcs` and the integration tests needing a local `bazel`)
+    and the same test (`//tests/system_library:system_library_test`); all
+    456 test statuses and all 1,984 `bazel-bin` files match.
+
 **Summary.** 37 projects ran, all with no workaround edits for bazel-rs
 bugs:
 
@@ -291,28 +297,31 @@ bugs:
   limdor-rust, openroad (nobuild, query and the full `//:openroad` build:
   19,201 identical files), rules-template, rules_go-basic_gazelle,
   rules_python-pip_parse, tink-cc-examples.
-- **6 fail identically** (the project's own failures): bazel-gazelle,
-  bazel-skylib, buildtools, examples-configurations, re2, riegeli.
-- **15 differ**: 7 only cosmetically (examples-java-maven,
-  examples-java-tutorial, junit5-starter: C2; yalantinglibs, capnproto:
-  C5; examples-rust-deps-cargo: C4; rules_zig: C6, its tests and file
-  lists match since B56, B57 and B58), and examples-frontend (C3),
-  rules_python-bzlmod (B34), with_cfg-examples (C2, B43), flatbuffers (B12)
-  and rules_jvm_external-simple (B47) where genuine fails too, rules_cc
-  (B32: 451 of genuine's 453 tests pass), protobuf (B33), rules_kotlin
-  (builds; its `test //...` does not finish in 30 minutes on either tool, B53).
+- **7 fail identically** (the project's own failures): bazel-gazelle,
+  bazel-skylib, buildtools, examples-configurations, re2, riegeli, and
+  rules_cc since corpus-last (B32 fixed: all 456 test statuses match).
+- **14 differ**: 8 only cosmetically (examples-java-maven,
+  examples-java-tutorial, junit5-starter, with_cfg-examples since B43: C2;
+  yalantinglibs, capnproto: C5; examples-rust-deps-cargo: C4; rules_zig:
+  C6, its tests and file lists match since B56, B57 and B58), and
+  examples-frontend (C3), rules_python-bzlmod (B34: file modes and
+  symlinks in one zipapp), flatbuffers (B12) and rules_jvm_external-simple
+  (B47) where genuine fails too, protobuf (B33: one analysis test needs
+  path mapping, an explicit gap), rules_kotlin (builds; its `test //...`
+  does not finish in 30 minutes on either tool, B53).
 
 corpus-parity6 (2026-11-21, its LTO release binary) reran protobuf,
 examples-rust-deps-cargo, rules_kotlin and capnproto (their rows and notes
 10, 11, 13 and 14); corpus-rulescc (2026-11-23, a non-LTO release build)
-reran rules_cc (its row: 451 of genuine's 453 tests, 6 outputs only
-genuine's — the two failing analysis tests' scripts); corpus-zig
+reran rules_cc (451 of genuine's 453 tests then); corpus-zig
 (2026-11-23, a non-LTO release build) reran rules_zig (its row and note
-15); the other rows are the corpus-rerun run's.
+15); corpus-last (2026-11-24, non-LTO release builds of its commits) reran
+rules_cc, with_cfg-examples, protobuf and rules_python-bzlmod (their rows,
+notes 13 and 16); the other rows are the corpus-rerun run's.
 
 `query //...` matches on all 37. Every common output sampled is
-byte-identical except B34's zipapp, C4's dep-info file, rules_cc's one
-file and rules_zig's 5 Zig outputs (C6). Fixed since the previous runs, by this run's evidence: B1, B2 (every
+byte-identical except B34's zipapp, C4's dep-info file and rules_zig's 5
+Zig outputs (C6). Fixed since the previous runs, by this run's evidence: B1, B2 (every
 rc option of the corpus; all `comment_out` edits dropped), B3, B9 (no
 vendored archive for OpenROAD), B10, B11, B14, B20, B21, B23, B24, B25.
 
@@ -621,10 +630,10 @@ batch (corpus-expand, 2026-11-24); their rows lead the table.
 | B57 | fixed (corpus-zig); 1 (rules_zig); 2 tests | `Target.actions`' `inputs` of a Starlark spawn listed a File `executable` first; rules_zig's `module_binary_test` and `multiple_sources_binary_test` assert that the main source is the first input. Genuine's inputs are a STABLE_ORDER NestedSet: the declared inputs, then the tools, whose transitive sets (an executable's or tool's FilesToRunProvider: its files to build, its `<executable>.runfiles` tree artifact, the executable; a depset) precede the direct Files (a File executable without runfiles, File tools) (SpawnAction.Builder.buildSpawnAction). `Target.actions`, aquery's primary input and print_action use that order now (print_action leaves out the runfiles trees, as SpawnInfo does); the registered inputs, and so the action keys, keep their order (tests/fixtures/corpus_zig) |
 | B58 | fixed (corpus-zig); 1 (rules_zig); the outputs column | `info` and `clean` rejected `--flag_alias` (and the aliases it defines) from the inherited `build` rc options as an unsupported option, so the corpus read no `bazel-rs info bazel-bin` for rules_zig (its `.bazelrc.flags`). Every command with CoreOptions parses it (OptionsParser.withAliasFlag): the first parsing pass now checks the definitions and rewrites the aliases for every command (tests/fixtures/corpus_zig) |
 | B13c | fixed (b13c); 1 (rules_zig) | one toolchain implementation for two execution platforms in one configuration (ConfiguredTargetKey.executionPlatformLabel) ended the command; the key carries the execution platform of toolchain dependencies now (design and soundness below) |
-| B32 | open, 1 (rules_cc's own tests: 451 of genuine's 453 pass) | rules_cc's own analysis tests. Fixed on corpus-parity4: `--fission`, `--build_test_dwp`, `--legacy_whole_archive`, `--incompatible_remove_legacy_whole_archive` are configuration options and `--dynamic_mode` is transitionable; a fission compile's `.dwo` is declared where genuine declares it. Fixed on corpus-parity5: `cc_internal.freeze` is Bazel's shallow immutable copy (the vendored starlark's immutable list/dict that is not frozen yet, docs/DEPSETS.md; the 38 thin-LTO and linkstamp targets), `create_header_info_with_deps` adds the merged deps' headers (cc_import's `direct_public_headers`), a toolchain's `artifact_name_pattern` applies (mingw/msvc dll names), `objc.target_should_alwayslink` of an explicit `alwayslink`, map_each's `must be declared by a top-level def statement` error, structs/providers with frozen list fields are hashable, and transitions on `instrumentation_filter`, `save_temps`, `start_end_lib`, `interface_shared_objects`, `process_headers_in_dependencies` (tests/fixtures/corpus_parity5). Fixed on corpus-rulescc (tests/fixtures/corpus_rulescc, tests/cc_compile.rs `thin_lto_actions_match_genuine`, `linkstamp_compiles_match_genuine`, `fdo_profiles_match_genuine`; 346 → 387 → 441 → 451): the ThinLTO backends (`cc_internal.create_lto_backend_action`, LtoBackendAction's argv, progress message and computeKey; `collect_per_file_lto_backend_opts`; `wrap_link_actions(sharable_artifacts = True)`), the shareable linkstamp compile, any `cc_internal.freeze` copy in a depset element (LtoCompilationContextInfo's BitcodeInfo with mutable `copts`), `get_artifact_name_extension_for_category` positional; the FDO/Propeller/memprof options (`--fdo_optimize`, `--fdo_profile`, `--xbinary_fdo`, `--cs_fdo_profile`, `--cs_fdo_absolute_path`, `--fdo_prefetch_hints`, `--propeller_optimize*`, `--memprof_profile`, `--fdo_instrument`, `--cs_fdo_instrument`), `--custom_malloc`, `--grte_top`/`--host_grte_top`, `--experimental_cpp_modules`, `--ltobackendopt`/`--ltoindexopt`/`--per_file_ltobackendopt` and `--action_env` as configuration options (command line, transitions, config_setting, ST- hashes), the cpp fragment's accessors of them, the late-bound `configuration_field("cpp", ...)` defaults per configuration (`custom_malloc`, `fdo_*`, `xbinary_fdo` and `propeller_optimize` with genuine's precedence, `libc_top`, `zipper`), `cc_internal.absolute_symlink` (aquery-equal, executing it fails explicitly), C++20 module compiles' module map inputs, `cc_internal.expand_and_tokenize`, `Target.actions` of every target of an analysis test's configuration, B54 and B55. Left (tests): `test_fdo_profile_action_graph` reads a native genrule's `Target.actions` (not kept for native rules), `test_propeller_host_builds` a propagating testing aspect's `target.actions` of an exec tool's dependencies (outside the test's configuration, not kept). Not modelled: the input discovery of LtoBackendAction (imports file) and of C++20 module compiles (module map). |
-| B33 | open, 1 (protobuf); 1 target | protobuf analysis. Fixed on corpus-parity4: symbolic-macro visibility delegation and alias select() keys under `--incompatible_config_setting_private_default_visibility` (5 visibility errors), `declare_file(sibling=)` from another package, per-attribute aspect views of aspects propagating over one attribute (`UpbMinitableCcInfo`/`JavaInfo` on proto_library targets), `Target.actions` of targets merged with aspects and of a rule under test's dependencies, `--dynamic_mode` transitions (rules_fuzzing). Fixed on corpus-parity5: transitions writing `instrumentation_filter` (`generated_sources_not_coverage_instrumented`; the filter is per configuration natively too). Left: `experimental_output_paths=strip` with `modify_execution_info` (`test_compile_path_mapping`): its `Target.actions` argv shows path-mapped `bazel-out/cfg/bin` paths, so path mapping would have to be modelled for execution too (not attempted) |
-| B34 | open, 2 (rules_python-bzlmod; rules_pkg `pkg_tar_test` fails, corpus-expand) | `external/other_module+/other_module/pkg/bin_zipapp.zip` differs from genuine's: rules_python's zipper stores each input's mode and relative symlinks as it finds them in the sandbox; native staging hardlinks read-only store blobs (docs/HARDLINK_STAGING.md). rules_pkg's `test_preserve_mode` (corpus-expand) fails for the same reason: `pkg_tar(preserve_mode = True)` of a 0644 source records 0444 |
-| B43 | open, 1 (with_cfg); not blocking | genuine builds `cc_no_copt_binary/binary_/binary.runfiles_manifest` and `.repo_mapping` (the manual `cc_binary` behind with_cfg's frontend and transitioning alias, a no-op transition); bazel-rs does not (not investigated) |
+| B32 | fixed (corpus-last); 1 (rules_cc's own tests: all 456 statuses match) | rules_cc's own analysis tests. Fixed on corpus-parity4: `--fission`, `--build_test_dwp`, `--legacy_whole_archive`, `--incompatible_remove_legacy_whole_archive` are configuration options and `--dynamic_mode` is transitionable; a fission compile's `.dwo` is declared where genuine declares it. Fixed on corpus-parity5: `cc_internal.freeze` is Bazel's shallow immutable copy (the vendored starlark's immutable list/dict that is not frozen yet, docs/DEPSETS.md; the 38 thin-LTO and linkstamp targets), `create_header_info_with_deps` adds the merged deps' headers (cc_import's `direct_public_headers`), a toolchain's `artifact_name_pattern` applies (mingw/msvc dll names), `objc.target_should_alwayslink` of an explicit `alwayslink`, map_each's `must be declared by a top-level def statement` error, structs/providers with frozen list fields are hashable, and transitions on `instrumentation_filter`, `save_temps`, `start_end_lib`, `interface_shared_objects`, `process_headers_in_dependencies` (tests/fixtures/corpus_parity5). Fixed on corpus-rulescc (tests/fixtures/corpus_rulescc, tests/cc_compile.rs `thin_lto_actions_match_genuine`, `linkstamp_compiles_match_genuine`, `fdo_profiles_match_genuine`; 346 → 387 → 441 → 451): the ThinLTO backends (`cc_internal.create_lto_backend_action`, LtoBackendAction's argv, progress message and computeKey; `collect_per_file_lto_backend_opts`; `wrap_link_actions(sharable_artifacts = True)`), the shareable linkstamp compile, any `cc_internal.freeze` copy in a depset element (LtoCompilationContextInfo's BitcodeInfo with mutable `copts`), `get_artifact_name_extension_for_category` positional; the FDO/Propeller/memprof options (`--fdo_optimize`, `--fdo_profile`, `--xbinary_fdo`, `--cs_fdo_profile`, `--cs_fdo_absolute_path`, `--fdo_prefetch_hints`, `--propeller_optimize*`, `--memprof_profile`, `--fdo_instrument`, `--cs_fdo_instrument`), `--custom_malloc`, `--grte_top`/`--host_grte_top`, `--experimental_cpp_modules`, `--ltobackendopt`/`--ltoindexopt`/`--per_file_ltobackendopt` and `--action_env` as configuration options (command line, transitions, config_setting, ST- hashes), the cpp fragment's accessors of them, the late-bound `configuration_field("cpp", ...)` defaults per configuration (`custom_malloc`, `fdo_*`, `xbinary_fdo` and `propeller_optimize` with genuine's precedence, `libc_top`, `zipper`), `cc_internal.absolute_symlink` (aquery-equal, executing it fails explicitly), C++20 module compiles' module map inputs, `cc_internal.expand_and_tokenize`, `Target.actions` of every target of an analysis test's configuration, B54 and B55. Fixed on corpus-last (tests/fixtures/corpus_last, tests/corpus_last.rs; 451 → 453): a kept `genrule` answers its GenRuleAction as `Target.actions` (`test_fdo_profile_action_graph`; also when a frozen walk's worker would have published it), an executable's views end with its RunfilesSupport actions, a registered symlink is `Symlink`/`ExecutableSymlink`/`SolibSymlink`/`UnresolvedSymlink`, and a requested analysis test with a propagating attribute aspect keeps every target's actions (`test_propeller_host_builds` reads an exec tool's, its toolchains' and wrappers'; docs/ANALYSIS_TESTS.md). Not modelled: the input discovery of LtoBackendAction (imports file) and of C++20 module compiles (module map). |
+| B33 | explicit gap (corpus-last), 1 (protobuf); 1 target | protobuf analysis. Fixed on corpus-parity4: symbolic-macro visibility delegation and alias select() keys under `--incompatible_config_setting_private_default_visibility` (5 visibility errors), `declare_file(sibling=)` from another package, per-attribute aspect views of aspects propagating over one attribute (`UpbMinitableCcInfo`/`JavaInfo` on proto_library targets), `Target.actions` of targets merged with aspects and of a rule under test's dependencies, `--dynamic_mode` transitions (rules_fuzzing). Fixed on corpus-parity5: transitions writing `instrumentation_filter` (`generated_sources_not_coverage_instrumented`; the filter is per configuration natively too). Left, an explicit gap: `experimental_output_paths=strip` with `modify_execution_info` (`test_compile_path_mapping`). Genuine's path mapping (PathMappers/StrippingPathMapper) rewrites `bazel-out/<cfg>/` to `bazel-out/cfg/` in the argv of every action with `supports-path-mapping` (or a listed mnemonic) that is not `local`, executes it with its inputs and outputs staged at the mapped paths (a genuine capture: such an action that echoes its argv writes `bazel-out/cfg/bin/...` into its output), keys it with the mapper's GUID and falls back when two inputs collide after mapping. Modelling it needs a mapper in Args expansion (File arguments, map_each roots, some mnemonics' string heuristics), path-rewritten staging and publication, and the key: not cheap, and running such actions unmapped would silently change their outputs. So `--experimental_output_paths=strip` on the command line and a transition writing it fail explicitly, naming path mapping (`off`, the default, is accepted) |
+| B34 | open, 2 (rules_python-bzlmod; rules_pkg `pkg_tar_test` fails, corpus-expand); assessed on corpus-last | `external/other_module+/other_module/pkg/bin_zipapp.zip` differs from genuine's: the same 2,076 entries, 2,059 of them with another mode and 10 a file instead of a symlink. rules_python's zipper (`tools/zipapp/zipper.py`) stores `st_mode` of each input (`os.stat` through the sandbox symlink: genuine's 0664/0644/0775/0755 for source and repository files, set by the checkout's umask and the download, against bazel-rs's read-only store blobs, 0444/0555), and stores an input as a relative symlink when the sandbox symlink's target is itself a relative symlink (10 links of the downloaded Python toolchain, `bin/python3 -> python3.11`, `lib/pkgconfig/python3.pc`; bazel-rs stages their resolved content, so the zip holds the file). Declared symlinks (`_bin.venv/bin/python3`) already match. Options: (1) genuine's modes need writable inodes (hardlinks share the inode's mode), which gives up the read-only blob protection of the store (docs/HARDLINK_STAGING.md): not sound; genuine's own modes also follow the umask, so its zip is not hermetic either. (2) Stage an input that is a relative symlink in an immutable repository tree as an absolute symlink to that tree entry (genuine's view, `readlink(readlink(p))` relative): sound for repository trees only (the workspace is live), but the executor rejects symlink inputs, verifies staged inodes and keys identities by blob, so it touches staging, verification and the REAPI input root: not cheap. Neither implemented |
+| B43 | fixed (corpus-last); 1 (with_cfg) | genuine builds `cc_no_copt_binary/binary_/binary.runfiles_manifest` and `.repo_mapping`: with_cfg's frontend forwards the wrapped `cc_binary`'s OutputGroupInfo, whose `_hidden_top_level_INTERNAL_` group is the `cc_binary`'s runfiles tree artifact (RuleConfiguredTargetBuilder.java:155-173: a target with a RunfilesSupport has its tree there, not its runfiles' artifacts). bazel-rs put the default runfiles' artifacts there. Now the group holds `<exe>.runfiles`, and a requested group holding another target's tree builds that tree (its manifests and runfiles; tests/fixtures/corpus_last, `forwarded_runfiles_tree`) |
 | B12 | open, 1 (flatbuffers; genuine fails too) | `@local_config_platform` unknown (aspect_bazel_lib 1.x `platform_utils.bzl:3`) |
 | B47 | open, 1 (rules_jvm_external-simple; genuine fails too, no Android SDK) | rules_android's `android_split_transition` reads `//command_line_option:Android configuration distinguisher`: "transition inputs ... do not correspond to valid settings" (an unmodelled Android native option) |
 | B52 | fixed (corpus-parity6) | the test summary listed `FAILED TO BUILD` targets in string order (`//a/b:c` before `//a:z`); genuine orders them as Label.compareTo, package before name (capnproto's first five lines) |
@@ -1530,8 +1539,8 @@ From the corpus-rerun run (2026-11-20):
    host-sized Bazel servers at once and overloads the machine under both
    tools; comparing its test statuses needs a longer cap or fewer
    concurrent tests (e.g. `--local_test_jobs=4` for both tools).
-3. Output parity left: B43, B34, and the rules_cc/protobuf analysis gaps
-   B32 (two rules_cc tests) and B33.
+3. Output parity left: B34 (a zipapp's file modes and symlinks, not
+   blocking) and B33 (path mapping, an explicit gap).
 4. Performance: OpenROAD cold analysis (P7) and peak RSS (6.9 GB against
    3.7 GB), `//:openroad` build time, protobuf's memory, examples-frontend.
 5. Rerun the corpus after each fix: `oss_corpus.py run --only <project>`.
