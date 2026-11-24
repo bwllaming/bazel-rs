@@ -1189,6 +1189,13 @@ pub(super) fn run_native(
         let output_group = super::native_results::selected_output_group(rule);
         let mut declared = Vec::new();
         let genrule = matches!(rule.kind, RuleKind::Genrule);
+        // A genrule whose `Target.actions` views are kept (an analysis test
+        // can inspect it, crate::target_actions) is committed at its turn:
+        // its views come from its command's expansion (B32).
+        if genrule && engine.retains_actions(&rule.label, key.config) {
+            let _ = isolation.finish();
+            return None;
+        }
         let plain = Engine::inputs_in(&mut cx, reads, rule, key.config).and_then(|inputs| {
             if genrule {
                 // T3: a genrule's results are its outputs (its commit's
