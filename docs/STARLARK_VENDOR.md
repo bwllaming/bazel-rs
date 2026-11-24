@@ -717,3 +717,43 @@ immutable one not frozen yet, contributes its contents to the struct's hash
 crate::providers); a list is still never a dict key by itself
 (StarlarkList.checkHashable). Genuine capture: tests/fixtures/corpus_parity5
 case `immutable_fields_hash` (rules_cc's ExtraLinkTimeLibraryInfo `_key`).
+
+## ASCII strings
+
+Upstream strings store UTF-8 and index by character, so every operation
+that turns a character index into a byte offset scans the string from its
+start (`fast_string::split_at`, `len`, `at`): `s[i]`, `s[a:b]`, `len(s)`
+and the `start`/`end` arguments of `find`, `rfind`, `index`, `rindex`,
+`count`, `startswith` and `endswith`, plus the char index `find`-like
+methods return. A loop that walks a long string with `find(x, cursor)`
+and slices is quadratic. rules_python's `parse_simpleapi_html`
+(`pip.parse` with an index URL) does exactly that over pypi.org's 49 MB
+simple index (about 700,000 `<a …>` entries, three `find`/`rfind` calls
+and two slices each): gRPC's `query` ran past the OSS corpus' 20-minute cap
+on one core (B66; genuine: Java strings index in O(1)).
+
+The length word of `StarlarkStrN` (`len: u32`) now keeps the byte length
+in its low 31 bits and an all-ASCII flag in the top bit
+(`StarlarkStr::ASCII_FLAG`; at most 2^31 - 1 bytes, a Java string's limit;
+the header stays 8 bytes). The flag is decided where a string's bytes are
+written: `Arena::alloc_str_init` (every heap and frozen-heap string, also
+those a garbage collection or a freeze copies), the pagable
+deserialization (`avalues/str_.rs`) and the constant strings
+(`static_string.rs`, at compile time). `StarlarkStr::is_ascii`,
+`str_indices` (the cases of `fast_string::convert_str_indices`, with byte
+offsets) and `char_index` give O(1) answers for an ASCII string and fall
+back to the general code otherwise; `at`, `length`, `slice` and the seven
+methods use them (`str_type.rs`, `methods.rs`; the methods take a
+`StringValue` instead of `&str`, their error texts unchanged). Results are
+the same for every string: the ASCII path is the general one's for ASCII
+text (test `ascii_indices_are_the_general_ones`, every start/end pair in
+-9..9, `None` and the `i32` extremes; `ascii_flag_is_set_where_strings_are_made`).
+
+Not covered: a non-ASCII string still scans (in the repository/extension
+Latin-1 model a single byte >= 0x80 makes the whole downloaded file
+non-ASCII). The isolated vendored test run (this crate as a workspace
+member with the vendored `starlark_syntax` patched in, 1.99.0, the
+dev-dependencies from crates.io): 975 lib tests pass, 157 doc tests pass
+(17 ignored); `tests::uncategorized::test_tabs_fail` fails as on the
+unmodified tree (973 + that one: bazel-rs's lexer accepts tabs, "Tab
+whitespace parser parity" above). The provenance records the five files' hashes.

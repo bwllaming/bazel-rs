@@ -49,11 +49,13 @@ use crate::values::string::str_type::StarlarkStr;
 pub(crate) const VALUE_STR_A_VALUE_PTR: AValueHeader =
     AValueHeader::new_const::<StarlarkStrAValue>();
 
+// Modified: the concrete type, so the arena flags an ASCII string once
+// its bytes are written (`StarlarkStr::decide_ascii`).
 #[inline]
 pub(crate) fn starlark_str<'v>(
     len: usize,
     hash: StarlarkHashValue,
-) -> AValueImpl<'v, impl AValue<'v, ExtraElem = usize> + Send + Sync> {
+) -> AValueImpl<'v, StarlarkStrAValue> {
     AValueImpl::<StarlarkStrAValue>::new(unsafe { StarlarkStr::new(len, hash) })
 }
 
@@ -158,6 +160,8 @@ impl<'v> AValue<'v> for StarlarkStrAValue {
             }
             // Copy string bytes.
             copy_nonoverlapping(s.as_ptr(), extra_ptr as *mut u8, len);
+            // Modified: an ASCII string's flag.
+            (*me).payload.decide_ascii();
         }
         Ok(())
     }

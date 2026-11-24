@@ -17,6 +17,10 @@
 
 // Modified for native Bazel 9.3 `x in <string>` with a non-string `x`
 // (net/starlark/java/eval/EvalUtils.java:382-386); see vendor provenance.
+// Modified: an all-ASCII flag in the length word, set when the string is
+// made, so char indices of an ASCII string are byte indices (O(1) indexing,
+// slicing, `len` and `find`-like start/end arguments instead of a scan
+// from the start; docs/STARLARK_VENDOR.md "ASCII strings").
 
 use std::cmp;
 use std::cmp::Ordering;
@@ -68,7 +72,8 @@ pub const STRING_TYPE: &str = "string";
 pub(crate) struct StarlarkStrN<const N: usize> {
     // Lazily-initialized cached hash code.
     pub(crate) hash: atomic::AtomicU32,
-    // Length in bytes.
+    // Length in bytes, with [`StarlarkStr::ASCII_FLAG`] set when every byte
+    // is ASCII (modified).
     pub(crate) len: u32,
     // Followed by an unsized block, meaning this type is unsized.
     // But we can't mark it as such since we really want &StarlarkStr to
@@ -145,10 +150,26 @@ impl StarlarkStr {
         len.div_ceil(mem::size_of::<usize>())
     }
 
+    /// The bit of the length word set when every byte is ASCII (modified).
+    pub(crate) const ASCII_FLAG: u32 = 1 << 31;
+
+    /// The length word of an ASCII (`ascii`) or other string of `len`
+    /// bytes (modified).
+    #[inline]
+    pub(crate) const fn len_word(len: usize, ascii: bool) -> u32 {
+        // At most 2^31 - 1 bytes, as many as a Java string's chars.
+        assert!(len < Self::ASCII_FLAG as usize, "len overflow");
+        if ascii {
+            len as u32 | Self::ASCII_FLAG
+        } else {
+            len as u32
+        }
+    }
+
     /// Unsafe because if you do `unpack` on this it will blow up
     #[inline]
     pub(crate) const unsafe fn new(len: usize, hash: StarlarkHashValue) -> Self {
-        assert!(len as u32 as usize == len, "len overflow");
+        let len = Self::len_word(len, false) as usize;
         StarlarkStr {
             str: StarlarkStrN {
                 hash: atomic::AtomicU32::new(hash.get()),
@@ -194,12 +215,74 @@ impl StarlarkStr {
 
     /// String length, in bytes.
     pub fn len(&self) -> usize {
-        self.str.len as usize
+        (self.str.len & !Self::ASCII_FLAG) as usize
     }
 
     /// Is this string empty?
     pub fn is_empty(&self) -> bool {
-        self.str.len == 0
+        self.len() == 0
+    }
+
+    /// Whether every byte is ASCII (decided when the string was made): its
+    /// char indices are byte indices (modified).
+    #[inline]
+    pub fn is_ascii(&self) -> bool {
+        self.str.len & Self::ASCII_FLAG != 0
+    }
+
+    /// Flag the string ASCII if its content is (once its bytes are
+    /// written; modified).
+    #[inline]
+    pub(crate) fn decide_ascii(&mut self) {
+        if self.as_str().is_ascii() {
+            self.str.len |= Self::ASCII_FLAG;
+        }
+    }
+
+    /// [`fast_string::convert_str_indices`], in O(1) for an ASCII string
+    /// (the same cases, byte offsets for char offsets; modified).
+    #[inline]
+    pub(crate) fn str_indices(
+        &self,
+        start: Option<i32>,
+        end: Option<i32>,
+    ) -> Option<StrIndices<'_>> {
+        if !self.is_ascii() {
+            return fast_string::convert_str_indices(self.as_str(), start, end);
+        }
+        let s = self.as_str();
+        let len = s.len();
+        let indices = |start: usize, end: usize| StrIndices {
+            start: CharIndex(start),
+            haystack: &s[start..end],
+        };
+        match (start, end) {
+            (None, None) => Some(indices(0, len)),
+            // `split_at`: past the end, none.
+            (Some(start), None) if start >= 0 => {
+                (start as usize <= len).then(|| indices(start as usize, len))
+            }
+            (None, Some(end)) if end >= 0 => Some(indices(0, cmp::min(end as usize, len))),
+            (Some(start), Some(end)) if start >= 0 && end >= start => (start as usize <= len)
+                .then(|| indices(start as usize, cmp::min(end as usize, len))),
+            (Some(start), Some(end)) if ((start >= 0) == (end >= 0)) && start > end => None,
+            (start, end) => {
+                let (start, end) =
+                    starlark_syntax::convert_indices::convert_indices(len as i32, start, end);
+                (start <= end).then(|| indices(start, end))
+            }
+        }
+    }
+
+    /// The char index of byte offset `index` of `haystack` (a part of this
+    /// string), in O(1) for an ASCII string (modified).
+    #[inline]
+    pub(crate) fn char_index(&self, haystack: &str, index: usize) -> CharIndex {
+        if self.is_ascii() {
+            CharIndex(index)
+        } else {
+            fast_string::len(&haystack[..index])
+        }
     }
 
     pub(crate) fn offset_of_content() -> usize {
@@ -287,6 +370,16 @@ impl<'v> StarlarkValue<'v> for StarlarkStr {
         // This method is disturbingly hot. Use the logic from `convert_index`,
         // but modified to be UTF8 string friendly.
         let i = i32::unpack_param(index)?;
+        // Modified: an ASCII string's chars are its bytes.
+        if self.is_ascii() {
+            let len = self.len() as i64;
+            let at = if i >= 0 { i as i64 } else { len + i as i64 };
+            return if (0..len).contains(&at) {
+                Ok(heap.alloc(self.as_bytes()[at as usize] as char))
+            } else {
+                Err(ValueError::IndexOutOfBound(i).into())
+            };
+        }
         if i >= 0 {
             match fast_string::at(self, CharIndex(i as usize)) {
                 None => Err(ValueError::IndexOutOfBound(i).into()),
@@ -307,6 +400,9 @@ impl<'v> StarlarkValue<'v> for StarlarkStr {
     }
 
     fn length(&self) -> crate::Result<i32> {
+        if self.is_ascii() {
+            return Ok(self.len() as i32);
+        }
         Ok(fast_string::len(self).0 as i32)
     }
 
@@ -346,7 +442,7 @@ impl<'v> StarlarkValue<'v> for StarlarkStr {
 
         let (start, stop) = (start_stop_to_none_or(start)?, start_stop_to_none_or(stop)?);
 
-        match fast_string::convert_str_indices(self, start.into_option(), stop.into_option()) {
+        match self.str_indices(start.into_option(), stop.into_option()) {
             Some(StrIndices { haystack, .. }) => Ok(heap.alloc_str(haystack).to_value()),
             None => Ok(heap.alloc_str("").to_value()),
         }
@@ -592,5 +688,89 @@ len("😿") == 1
             }
         }
         Ok(())
+    }
+
+    // Modified: ASCII strings (docs/STARLARK_VENDOR.md "ASCII strings" of
+    // bazel-rs).
+    #[test]
+    fn ascii_flag_is_set_where_strings_are_made() {
+        use crate::values::FrozenHeap;
+        use crate::values::string::StarlarkStr;
+        let frozen = FrozenHeap::new();
+        Heap::temp(|heap| {
+            for (text, ascii) in [
+                ("", true),
+                ("a", true),
+                ("ab", true),
+                ("hello world, 0123456789 and more", true),
+                ("h\u{e9}llo", false),
+                ("\u{ff}", false),
+                ("\u{10ff41}x", false),
+            ] {
+                let value = heap.alloc_str(text);
+                assert_eq!(value.is_ascii(), ascii, "{text:?}");
+                assert_eq!(value.len(), text.len());
+                assert_eq!(frozen.alloc_str(text).is_ascii(), ascii, "{text:?}");
+                let concat = heap.alloc_str_concat(text, "xy");
+                assert_eq!(concat.is_ascii(), ascii, "{text:?}");
+                assert_eq!(concat.as_str(), format!("{text}xy"));
+            }
+        });
+        assert!(StarlarkStr::len_word(5, true) & StarlarkStr::ASCII_FLAG != 0);
+        assert!(crate::values::constant_string("a").unwrap().is_ascii());
+        let long = "x".repeat(100);
+        let joined = assert::pass(&format!("'{long}' + 'y'"));
+        assert!(joined.value().unpack_starlark_str().unwrap().is_ascii());
+    }
+
+    /// The ASCII path of start/end arguments, char indices and `at` gives
+    /// the general path's results.
+    #[test]
+    fn ascii_indices_are_the_general_ones() {
+        use starlark_syntax::fast_string;
+
+        use crate::values::StarlarkValue;
+        let bounds: Vec<Option<i32>> = std::iter::once(None)
+            .chain((-9..=9).map(Some))
+            .chain([Some(i32::MIN), Some(i32::MAX)])
+            .collect();
+        Heap::temp(|heap| {
+            for text in ["", "a", "ab", "abc", "hello world"] {
+                let value = heap.alloc_str(text);
+                assert!(value.is_ascii());
+                for start in &bounds {
+                    for end in &bounds {
+                        let fast = value.str_indices(*start, *end);
+                        let general = fast_string::convert_str_indices(text, *start, *end);
+                        assert_eq!(fast, general, "{text:?}[{start:?}:{end:?}]");
+                        if let Some(indices) = fast {
+                            for index in 0..=indices.haystack.len() {
+                                assert_eq!(
+                                    value.char_index(indices.haystack, index),
+                                    fast_string::len(&indices.haystack[..index])
+                                );
+                            }
+                        }
+                    }
+                }
+                let len = text.len() as i32;
+                for i in -len - 3..len + 3 {
+                    let got = value
+                        .at(heap.alloc(i), heap)
+                        .ok()
+                        .map(|v| v.unpack_str().unwrap().to_owned());
+                    let expected = if i >= 0 {
+                        text.chars().nth(i as usize)
+                    } else if -i <= len {
+                        text.chars().nth((len + i) as usize)
+                    } else {
+                        None
+                    }
+                    .map(String::from);
+                    assert_eq!(got, expected, "{text:?}[{i}]");
+                }
+                assert_eq!(value.length().unwrap(), len);
+            }
+        });
     }
 }

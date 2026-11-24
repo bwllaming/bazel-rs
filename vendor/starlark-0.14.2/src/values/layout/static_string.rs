@@ -67,11 +67,18 @@ impl<const N: usize> StarlarkStrNRepr<N> {
             i += 1;
         }
 
+        // Modified: an ASCII string's flag (`StarlarkStr::is_ascii`).
+        let mut ascii = true;
+        let mut j = 0;
+        while j != s.len() {
+            ascii &= s.as_bytes()[j] < 0x80;
+            j += 1;
+        }
         Self {
             repr: AValueRepr {
                 header: VALUE_STR_A_VALUE_PTR,
                 payload: StarlarkStrN {
-                    len: s.len() as u32,
+                    len: StarlarkStr::len_word(s.len(), ascii),
                     hash: AtomicU32::new(0),
                     body: payload,
                 },

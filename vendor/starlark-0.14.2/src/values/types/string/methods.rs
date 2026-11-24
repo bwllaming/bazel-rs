@@ -24,7 +24,6 @@ use std::cmp;
 use starlark_derive::starlark_module;
 use starlark_syntax::fast_string;
 use starlark_syntax::fast_string::StrIndices;
-use starlark_syntax::fast_string::convert_str_indices;
 
 use crate as starlark;
 use crate::environment::MethodsBuilder;
@@ -379,8 +378,8 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// # "#);
     /// ```
     #[starlark(speculative_exec_safe)]
-    fn count(
-        this: &str,
+    fn count<'v>(
+        this: StringValue<'v>,
         #[starlark(require = pos)] sub: &str,
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
@@ -388,7 +387,7 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
         // Modified: Bazel's parameter names (StringModule.java).
         let needle = sub;
         if let Some(StrIndices { haystack, .. }) =
-            convert_str_indices(this, start.into_option(), end.into_option())
+            this.str_indices(start.into_option(), end.into_option())
         {
             Ok(fast_string::count_matches(haystack, needle) as i32)
         } else {
@@ -411,15 +410,15 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// # "#);
     /// ```
     #[starlark(speculative_exec_safe)]
-    fn endswith(
-        this: &str,
+    fn endswith<'v>(
+        this: StringValue<'v>,
         #[starlark(require = pos)] sub: StringOrTuple,
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
     ) -> anyhow::Result<bool> {
         // Modified: Bazel's parameter names (StringModule.java).
         let suffix = sub;
-        let haystack = match convert_str_indices(this, start.into_option(), end.into_option()) {
+        let haystack = match this.str_indices(start.into_option(), end.into_option()) {
             Some(StrIndices { haystack, .. }) => haystack,
             None => return Ok(false),
         };
@@ -451,8 +450,8 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// # "#);
     /// ```
     #[starlark(speculative_exec_safe)]
-    fn find(
-        this: &str,
+    fn find<'v>(
+        this: StringValue<'v>,
         #[starlark(require = pos)] sub: &str,
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
@@ -460,10 +459,10 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
         // Modified: Bazel's parameter names (StringModule.java).
         let needle = sub;
         if let Some(StrIndices { start, haystack }) =
-            convert_str_indices(this, start.into_option(), end.into_option())
+            this.str_indices(start.into_option(), end.into_option())
         {
             if let Some(index) = haystack.find(needle) {
-                let index = fast_string::len(&haystack[..index]);
+                let index = this.char_index(haystack, index);
                 return Ok((start + index).0 as i32);
             }
         }
@@ -555,8 +554,8 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// # "#, "not found");
     /// ```
     #[starlark(speculative_exec_safe)]
-    fn index(
-        this: &str,
+    fn index<'v>(
+        this: StringValue<'v>,
         #[starlark(require = pos)] sub: &str,
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
@@ -564,17 +563,17 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
         // Modified: Bazel's parameter names (StringModule.java).
         let needle = sub;
         if let Some(StrIndices { start, haystack }) =
-            convert_str_indices(this, start.into_option(), end.into_option())
+            this.str_indices(start.into_option(), end.into_option())
         {
             if let Some(index) = haystack.find(needle) {
-                let index = fast_string::len(&haystack[..index]);
+                let index = this.char_index(haystack, index);
                 return Ok((start + index).0 as i32);
             }
         }
         Err(anyhow::anyhow!(
             "Substring '{}' not found in '{}'",
             needle,
-            this
+            this.as_str()
         ))
     }
 
@@ -990,8 +989,8 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// # "#);
     /// ```
     #[starlark(speculative_exec_safe)]
-    fn rfind(
-        this: &str,
+    fn rfind<'v>(
+        this: StringValue<'v>,
         #[starlark(require = pos)] sub: &str,
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
@@ -999,10 +998,10 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
         // Modified: Bazel's parameter names (StringModule.java).
         let needle = sub;
         if let Some(StrIndices { start, haystack }) =
-            convert_str_indices(this, start.into_option(), end.into_option())
+            this.str_indices(start.into_option(), end.into_option())
         {
             if let Some(index) = haystack.rfind(needle) {
-                let index = fast_string::len(&haystack[..index]);
+                let index = this.char_index(haystack, index);
                 return Ok((start + index).0 as i32);
             }
         }
@@ -1027,8 +1026,8 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// # "#, "not found");
     /// ```
     #[starlark(speculative_exec_safe)]
-    fn rindex(
-        this: &str,
+    fn rindex<'v>(
+        this: StringValue<'v>,
         #[starlark(require = pos)] sub: &str,
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
@@ -1036,17 +1035,17 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
         // Modified: Bazel's parameter names (StringModule.java).
         let needle = sub;
         if let Some(StrIndices { start, haystack }) =
-            convert_str_indices(this, start.into_option(), end.into_option())
+            this.str_indices(start.into_option(), end.into_option())
         {
             if let Some(index) = haystack.rfind(needle) {
-                let index = fast_string::len(&haystack[..index]);
+                let index = this.char_index(haystack, index);
                 return Ok((start + index).0 as i32);
             }
         }
         Err(anyhow::anyhow!(
             "Substring '{}' not found in '{}'",
             needle,
-            this
+            this.as_str()
         ))
     }
 
@@ -1267,15 +1266,15 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// # "#);
     /// ```
     #[starlark(speculative_exec_safe)]
-    fn startswith(
-        this: &str,
+    fn startswith<'v>(
+        this: StringValue<'v>,
         #[starlark(require = pos)] sub: StringOrTuple,
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
     ) -> anyhow::Result<bool> {
         // Modified: Bazel's parameter names (StringModule.java).
         let prefix = sub;
-        let haystack = match convert_str_indices(this, start.into_option(), end.into_option()) {
+        let haystack = match this.str_indices(start.into_option(), end.into_option()) {
             Some(StrIndices { haystack, .. }) => haystack,
             None => return Ok(false),
         };

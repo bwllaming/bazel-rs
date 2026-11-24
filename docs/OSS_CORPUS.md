@@ -562,7 +562,12 @@ files shown, run as `bazel --ignore_all_rc_files build //:t`; genuine
   the same file takes 2 s in a module extension), nor extension
   speculation or async downloads (`BAZEL_RS_DEBUG_NO_EXTENSION_SPECULATION`,
   `BAZEL_RS_DEBUG_NO_ASYNC_DOWNLOAD` hang the same); not narrowed further
-  (no profiler on the host).
+  (no profiler on the host). Fixed (frozen-assert): a stack sample (a static gdb, the process
+  started with `PR_SET_PTRACER_ANY`) showed `fast_string::skip_at_most_1byte`
+  under string methods: `parse_simpleapi_html`'s `find`/`rfind` with a
+  start and its slices scanned from the start of the 49 MB string (948,160
+  entries, several calls each; with the main binary a 5 MB prefix of the
+  index took 54 s in such an extension); see the bugs table.
 - **B67: Java options in Starlark transitions** (rules_java, 36 + 1 analysis
   tests): `Starlark transition on '//command_line_option:<opt>' is not
   implemented in the native profile` (src/starlark_transitions.rs:940) for
@@ -617,7 +622,7 @@ batch (corpus-expand, 2026-11-24); their rows lead the table.
 | B63 | open (corpus-expand), 1 (aspect-bazel-examples, behind B59) | `include()` in MODULE.bazel unsupported |
 | B64 | open (corpus-expand), 1 (rules_foreign_cc-examples) | `ctx.resolve_command` not implemented |
 | B65 | open (corpus-expand), 1 (rules_ts-examples; 8 tests) | `Args` formats a bool as `True`/`False`; genuine `true`/`false` |
-| B66 | open (corpus-expand), 1 (grpc `query //...`) | query of packages loading a rules_python `pip.parse` hub (gRPC's, 6 Python versions) spins past the 20-minute cap; genuine 10 s |
+| B66 | fixed (frozen-assert); 1 (grpc `query //...`) | query of packages loading a rules_python `pip.parse` hub (gRPC's, 6 Python versions) spun past the 20-minute cap; genuine 10 s. rules_python's `parse_simpleapi_html` walks pypi.org's 49 MB simple index with `find(x, cursor)` and slices, each a scan from the string's start in the vendored starlark: ASCII strings index in O(1) now (docs/STARLARK_VENDOR.md "ASCII strings"). gRPC `query --keep_going //...` with the extension evaluated: 12.8 s; `//src/python/grpcio_tests/tests/status:all` 11.4 s (genuine cold 25 s). The output then lacks 10 of genuine's 11,419 labels: the targets `examples/objective-c/BUILD` defines before its failing `objc_library` (a package with errors; genuine's `--keep_going` query keeps them, new, not numbered) |
 | B67 | open (corpus-expand), 1 (rules_java; 37 analysis tests) | Starlark transitions on Java options (`experimental_strict_java_deps`, `java_header_compilation`, `experimental_one_version_enforcement`, `java_launcher`, …) and `java_common.compile` with coverage |
 | B68 | open (corpus-expand), 1 (grpc, behind B59) | `config_setting(values = {"compiler": …})` unsupported |
 | B69 | open (corpus-expand), 1 (bb-storage, behind B59) | conflicting `.repo_mapping` actions for a rules_js `*_binary` used as a `js_run_binary` tool |

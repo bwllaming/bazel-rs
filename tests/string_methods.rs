@@ -163,3 +163,80 @@ fn expectations_cover_every_method_sample_and_declared_divergence() {
         assert!(rows.contains(&row), "missing {row:?}");
     }
 }
+
+/// B66 (docs/STARLARK_VENDOR.md "ASCII strings"): a `find(x, cursor)` and
+/// slice loop over a long ASCII string, as rules_python's
+/// `parse_simpleapi_html` walks pypi.org's simple index, is linear: char
+/// indices of an ASCII string are byte offsets. Before, each call scanned
+/// from the string's start (gRPC's `query` ran past 20 minutes). The
+/// results are the general path's: the same walk over the text behind a
+/// non-ASCII prefix finds the same entries one char further.
+#[test]
+fn a_find_loop_over_a_long_ascii_string_is_linear() {
+    let ws = Workspace::new(
+        r#"load(":index.bzl", "check")
+[filegroup(name = name) for name in check()]
+"#,
+    );
+    ws.file(
+        "index.bzl",
+        r#"def _walk(content, count):
+    names = []
+    cursor = 0
+    for _ in range(count):
+        start = content.find("<a ", cursor)
+        if start == -1:
+            break
+        end = content.find("</a>", start)
+        if end == -1:
+            break
+        tag_end = content.rfind(">", start, end)
+        if not content.startswith("<a ", start) or not content.endswith("</a>", start, end + 4):
+            fail("bounds at %d" % start)
+        names.append((start, content[tag_end + 1:end].strip()))
+        cursor = end + 4
+    return names
+
+def check():
+    entries = 60000
+    content = "".join(['<a href="/simple/p%d/">p%d</a>\n' % (i, i) for i in range(entries)])
+    walked = _walk(content, entries + 1)
+    if len(walked) != entries or walked[-1][1] != "p%d" % (entries - 1):
+        fail("walked %d" % len(walked))
+    if content[len(content) - 5] != "<" or content[-5:] != "</a>\n" or content.index("p59999") <= 0:
+        fail("indexing")
+    if content.count("<a ", 10, len(content) - 10) != entries - 1:
+        fail("count")
+    # The general path: the same text behind a non-ASCII char.
+    shifted = _walk("é" + content[:4000], 200)
+    plain = _walk(content[:4000], 200)
+    if [(start - 1, name) for start, name in shifted] != plain:
+        fail("non-ASCII walk")
+    return [walked[0][1], walked[-1][1], "n%d" % len(walked)]
+"#,
+    );
+    let started = std::time::Instant::now();
+    let output = Command::new("timeout")
+        // Linear: seconds in a debug build; the quadratic walk took minutes.
+        .args(["--kill-after=5s", "120s", env!("CARGO_BIN_EXE_bazel-rs")])
+        .arg("--ignore_all_rc_files")
+        .arg(format!(
+            "--cache-dir={}",
+            ws.path().join("private-cache").display()
+        ))
+        .args(["query", "//:all"])
+        .current_dir(ws.path())
+        .explicit_modules()
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "after {:?}: {}",
+        started.elapsed(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "//:n60000\n//:p0\n//:p59999\n"
+    );
+}

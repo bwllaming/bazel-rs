@@ -380,6 +380,9 @@ impl<A: ArenaAllocator> Arena<A> {
             extra.last_mut().unwrap_unchecked().write(0usize);
         }
         init(extra.as_mut_ptr() as *mut u8);
+        // Modified: flag an ASCII string (docs/STARLARK_VENDOR.md "ASCII
+        // strings" of bazel-rs).
+        unsafe { (*v).payload.1.decide_ascii() };
         unsafe { &mut (*v).header }
     }
 
