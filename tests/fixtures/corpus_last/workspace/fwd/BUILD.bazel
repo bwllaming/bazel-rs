@@ -1,0 +1,13 @@
+load(":defs.bzl", "bin", "files_only", "fwd", "lib", "show")
+
+bin(name = "b", data = ["data.txt"], tags = ["manual"])
+
+lib(name = "l", data = ["data.txt"], tags = ["manual"])
+
+fwd(name = "f", dep = ":b")
+
+fwd(name = "fl", dep = ":l")
+
+files_only(name = "only", dep = ":b")
+
+show(name = "seen", dep = ":f")

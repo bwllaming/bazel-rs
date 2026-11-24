@@ -2759,7 +2759,7 @@ impl<'v> StarlarkValue<'v> for TargetValue {
         {
             return Ok(heap.alloc(crate::output_group_info::merged(
                 Vec::new(),
-                self.0.runfiles.default_runfiles().all_artifacts_depset(),
+                self.0.runfiles.hidden_top_level(),
             )));
         }
         let provider = self.0.providers.get(&identity).ok_or_else(|| {

@@ -8611,7 +8611,7 @@ impl Engine {
         if is_rule && !providers.contains_key(crate::output_group_info::PROVIDER_ID) {
             let value = cx.native_output_group(&actual_key, &mut |engine: &Engine| {
                 crate::output_group_info::freeze(
-                    runfiles.default_runfiles().all_artifacts_depset(),
+                    runfiles.hidden_top_level(),
                     engine.planned_validation_in(reads, &actual_key),
                 )
             })?;
@@ -12111,6 +12111,14 @@ impl Engine {
         // The build event plan's output groups (crate::bep::plan): per
         // requested label, each reported group's indices into `requested`.
         let mut bep_groups: Vec<(Label, String, usize, usize)> = Vec::new();
+        let runfiles_requested = selected.contains(crate::output_group_info::HIDDEN_TOP_LEVEL);
+        // B43: the runfiles tree artifacts (`<exe>.runfiles`) a requested
+        // group holds — a target's HIDDEN_TOP_LEVEL group is its own tree
+        // when it has a RunfilesSupport (crate::runfiles::TargetRunfiles::
+        // hidden_top_level), and a rule forwarding another's OutputGroupInfo
+        // (with_cfg's frontend) holds that one's — by their owner's key,
+        // listed on the first one met.
+        let mut tree_owners: Option<crate::fast_hash::FxHashMap<File, ConfiguredTargetKey>> = None;
         for label in labels {
             let key = self.configurations.top_key(label.clone());
             let merged = top_level_aspects.get(label);
@@ -12153,8 +12161,9 @@ impl Engine {
                 // rule's own files in it (rules_cc's cc_library puts its
                 // and its deps' objects there,
                 // cc_helper._collect_library_hidden_top_level_artifacts)
-                // and the default runfiles' artifacts the framework merged
-                // into it (also added below).
+                // and what the framework merged into it: the runfiles tree
+                // of a target with a RunfilesSupport, else the default
+                // runfiles' artifacts (both also added below).
                 if matches!(
                     group.as_str(),
                     crate::output_group_info::DEFAULT | crate::output_group_info::TEMP_FILES
@@ -12181,6 +12190,52 @@ impl Engine {
                     Some(files) if base_files.is_empty() => files,
                     _ => base_files.clone(),
                 };
+                // Building a runfiles tree artifact builds its runfiles
+                // tree (RunfilesTreeAction's inputs: the mapping's
+                // artifacts, the manifests): unreported, like the
+                // requested target's own tree (built below with its
+                // runfiles, so skipped here when the hidden group is).
+                let mut files = files;
+                if files
+                    .iter()
+                    .any(|file| !file.is_source && file.path.ends_with(".runfiles"))
+                {
+                    let owners = tree_owners.get_or_insert_with(|| {
+                        runfiles_nodes
+                            .keys()
+                            .filter_map(|owner| {
+                                let tree = runfiles_info.get(owner)?.runfiles_tree()?;
+                                Some((tree.clone(), owner.clone()))
+                            })
+                            .collect()
+                    });
+                    let own = self
+                        .output_group_key(forwarded.get(&key).unwrap_or(label), top)
+                        .ok();
+                    let mut kept = Vec::with_capacity(files.len());
+                    for file in files {
+                        let Some(owner) = owners.get(&file) else {
+                            kept.push(file);
+                            continue;
+                        };
+                        if runfiles_requested && own.as_ref() == Some(owner) {
+                            continue;
+                        }
+                        let Some(support) = runfiles_nodes.get(owner) else {
+                            continue;
+                        };
+                        let links = self.configured_runfiles_options(owner.config).links();
+                        let tree = support.tree.iter().filter(|_| links);
+                        for artifact in std::iter::once(&support.repo_mapping)
+                            .chain(&support.manifest)
+                            .chain(tree)
+                            .chain(support.entries.iter().filter_map(|(_, a)| a.as_ref()))
+                        {
+                            unreported.push((key.clone(), artifact.clone()));
+                        }
+                    }
+                    files = kept;
+                }
                 if reports(group) {
                     for file in &base_files {
                         own.extend(resolve(self, file)?);
@@ -12262,7 +12317,6 @@ impl Engine {
         // but not reported. The runfiles tree itself is not created (docs/RUNFILES.md).
         // An `--output_groups` override drops the group from the request
         // (determineOutputGroups), so the runfiles artifacts are not built.
-        let runfiles_requested = selected.contains(crate::output_group_info::HIDDEN_TOP_LEVEL);
         // A hidden artifact names its target by the index of the target's
         // key in `owners` (MEM4): one key per target, not one copy per
         // runfile of every requested executable.

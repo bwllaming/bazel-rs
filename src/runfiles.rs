@@ -1329,6 +1329,30 @@ impl TargetRunfiles {
         self
     }
 
+    /// The runfiles tree artifact (`<executable>.runfiles`) of the target's
+    /// RunfilesSupport, if it has one.
+    pub fn runfiles_tree(&self) -> Option<&File> {
+        self.files_to_run
+            .as_ref()
+            .and_then(FilesToRun::runfiles_tree)
+            .map(|(_, tree)| tree)
+    }
+
+    /// The OutputGroupInfo.HIDDEN_TOP_LEVEL group the framework adds
+    /// (RuleConfiguredTargetBuilder.java:155-173): with a RunfilesSupport,
+    /// its runfiles tree artifact alone (a STABLE_ORDER set of it; building
+    /// it builds the manifests and every runfile, crate::engine expands it),
+    /// else the default runfiles' artifacts. A target forwarding another's
+    /// OutputGroupInfo builds that one's runfiles tree too (B43: with_cfg's
+    /// frontend forwards the wrapped `cc_binary`'s group, so genuine builds
+    /// the `cc_binary`'s `.runfiles_manifest` and `.repo_mapping`).
+    pub(crate) fn hidden_top_level(&self) -> crate::starlark_types::Depset {
+        match self.runfiles_tree() {
+            Some(tree) => crate::starlark_types::Depset::from_files(vec![tree.clone()]),
+            None => self.default_runfiles().all_artifacts_depset(),
+        }
+    }
+
     /// RunfilesProvider.DEFAULT_RUNFILES (RunfilesProvider.java:48-60).
     pub fn default_runfiles(&self) -> Runfiles {
         self.provider

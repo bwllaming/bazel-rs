@@ -3480,10 +3480,8 @@ fn analyze_inner(
                     transitive_validation(rule, invocation, dependencies, &repositories),
                 );
             }
-            let merged = crate::output_group_info::merged(
-                groups,
-                target_runfiles.default_runfiles().all_artifacts_depset(),
-            );
+            let merged =
+                crate::output_group_info::merged(groups, target_runfiles.hidden_top_level());
             custom.insert(
                 crate::output_group_info::PROVIDER_ID.to_owned(),
                 module.heap().alloc(merged),
