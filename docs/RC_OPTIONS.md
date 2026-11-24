@@ -23,7 +23,7 @@ Paths are relative to `src/main/java/com/google/devtools/build/lib/`.
 | `--macos_sdk_version` (and `--ios_sdk_version`, `--tvos_sdk_version`, `--watchos_sdk_version`) | `AppleCommandLineOptions` (:59-100), `DottedVersionConverter`, `DottedVersion.Option`. Equality is by string representation (`DottedVersion.java:128-139`). `AppleConfiguration` (:104-107) exposes them as `*_sdk_version_flag`. The exec transition propagates them (`builtin_exec_platforms.bzl:170-176`). | Configuration options. `DottedVersion.fromString` validation gives Bazel's `Dotted version components must all start with the form …` text, and values are stored as given. `config_setting(values=…)` compares strings, so `10.13` ≠ `10.13.0`, as in Bazel. A null value is `null`, and `@null` in output-path hashes. The options are part of the identity only when set, and exec configurations copy them. Not `query` options. `ctx.fragments.apple`, a parallel branch, reads `NativeOptions::apple_sdk_versions`. A parallel `dotted_version` module may replace the local validator at integration. |
 | `--noremote_upload_local_results` (`build:dev`) | `RemoteOptions` (:333-340), default true. Consulted only with a disk, HTTP or gRPC cache or remote execution. Otherwise the remote module is a placeholder (`remote/RemoteModule.java:526-531`). | N41's `crate::remote_cache::RemoteOptions` parses it (no longer `RcOptions`): with an http(s) `--remote_cache` it disables uploads; without a cache it has no effect, which is Bazel's behavior (docs/REMOTE_CACHE.md). |
 | `--experimental_isolated_extension_usages` | `BuildLanguageOptions` (:278-286), default false. `use_extension(isolate=)` has `enableOnlyWithFlag` (`bazel/bzlmod/ModuleFileGlobals.java:436-449`). Without the flag, passing `isolate` at all fails while arguments are bound (`net/starlark/java/eval/BuiltinFunction.java:369-375`). | A Starlark-semantics flag for every MODULE.bazel evaluation (`ResolverOptions`, `EvaluationContext`; `mod` receives it too). Without it, `isolate=True` and `isolate=False` fail with Bazel's message. Before N40, native accepted `isolate` unconditionally. With the flag, a root-module isolated usage that imports no repository fails with Bazel's `the isolated usage at … has no effect as no repositories are imported from it. …` (`ModuleFileFunction.java:573-584`; on `query`/`build` after Bazel's `Error computing the main repository mapping: ` wrapper, `skyframe/RepositoryMappingValue.java:158-171`). Isolated usages themselves keep their existing bounded profile. |
-| `--incompatible_enable_proto_toolchain_resolution` | `BuildLanguageOptions` (:644-652), default **true** (`FlagConstants.java:48`). Exposed as `proto_common_do_not_use.INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION` (`builtins_bzl/common/exports.bzl:23-24`). | `true` is accepted; native exports `True`. `=false` fails explicitly, because the legacy `--proto_compiler`/`--proto_toolchain_for_*` path is not modelled. |
+| `--incompatible_enable_proto_toolchain_resolution` | `BuildLanguageOptions` (:644-652), default **true** (`FlagConstants.java:48`). Exposed as `proto_common_do_not_use.INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION` (`builtins_bzl/common/exports.bzl:23-24`); with `false` protobuf's rules take protoc and the lang toolchains from their legacy `configuration_field("proto", …)` attributes. | Both values (corpus2-quick, B59; rules_py's `.bazelrc`): the command's value is the exported constant (`crate::language_modules`, one value per process, set before any `.bzl` globals are built) and `info starlark-semantics` shows `false`. The `proto` late-bound fields (`proto_compiler`, `proto_toolchain_for_{java,java_lite,cc,j2objc}`) resolve to their option defaults (`@bazel_tools//tools/proto:protoc`, …; crate::late_bound): `--proto_compiler` and `--proto_toolchain_for_*` themselves are accepted at their defaults only. |
 | `--@com_google_protobuf//…:prefer_prebuilt_protoc`, `--@rules_python//…:bootstrap_impl=script` | Starlark options | N31: rc Starlark flags reach the Starlark option parser on `build`, and `query` skips them. On `~/code`, `build` loads them, which needs the module graph (next stop below). |
 | `--platforms` (`build:linux_*`) | `PlatformOptions` | Already modelled. |
 | `--sandbox_add_mount_pair` (`build:linux_*`) | `SandboxOptions` (:173-180, `MountPairConverter` :50-80). Bind mounts of linux-sandbox; an identity mount of `/tmp` also disables hermetic /tmp (`LinuxSandboxedSpawnRunner.useHermeticTmp`:218-245). Genuine on this host runs processwrapper-sandbox, which ignores mounts. | Building commands and `info` (which inherit build's options) parse it with the converter's errors; `query` rejects it as unrecognized like Bazel. An identity mount of an absolute path (`/tmp`, `/tmp:/tmp`) is accepted with no further effect: the Landlock sandbox already shows every host path at its own path and keeps the host `/tmp` writable (docs/SANDBOX.md). Any real remount (`SRC:DST`, relative paths) fails explicitly naming the rc file:line. Receipt: `tests/fixtures/sandbox_mount_pair/`. |
@@ -79,7 +79,8 @@ named otherwise. Genuine treats an option at its default exactly like an
 absent one. Not covered: repeatable options, computed (`see description`) and
 `null` defaults, expansion/`Void` options, options whose presence warns or
 implies others (`deprecationWarning`, `implicitRequirements`), and the
-client-supplied ones (`--isatty`, `--client_env`, …).
+client-supplied ones (`--isatty`, …; `--client_env` is modelled, "Options of the
+OSS corpus").
 
 #### Sweep
 
@@ -165,6 +166,10 @@ registration. Implementation: `src/download_options.rs`, `src/rc_options.rs`,
 | `--incompatible_no_implicit_file_export` (rules_python) | BuildLanguageOptions (:485-494), Package.createAssumedInputFiles (:893-960) | **Implemented**: source files not named by `exports_files` are private (PrivateVisibilityInputFile); shown by `info starlark-semantics`. |
 | `--[no]experimental_check_output_files` (rules_zig CI) | PackageOptions (:181-191): false stops a server from checking the previous build's outputs for outside modifications | **Accepted without effect**: native commands verify outputs against the action cache (a modified output re-executes its action); the results equal genuine's unless outputs are edited by hand, which genuine then misses. |
 | `--minimum_os_version` | CppOptions (:140-148), `ctx.fragments.cpp.minimum_os_version()` | **Implemented**: a nullable configuration option (`@null` in the ST hash), readable and writable by Starlark transitions (skylib's unittest tests, B13a). |
+| `--client_env` (grpc's `tools/bazel.rc`) | ClientOptions (:100-109, AssignmentConverter, allowMultiple); the client passes its own environment as `--client_env` after the rc options (option_processor.cc:694-728), CommandEnvironment folds them into a map, later wins (:333, 598-605) | **Implemented** (crate::client_env, B59): the command's client environment is the rc files' values, then the process environment, then the command line's (a `--config` expansion has its `--config`'s priority). It is the environment of everything downstream: the repository environment (`--repo_env` over it), inherited `--action_env`/`--test_env` values, `run`'s and the test runner's client environment, `USER` of the workspace status and the BEP. Genuine capture tests/fixtures/corpus2_quick (`client_env_*`). |
+| `--macos_minimum_os`, `--host_macos_minimum_os` (aspect's bazel-examples) | AppleCommandLineOptions (:136-156), DottedVersion; the exec transition sets `macos_minimum_os` to `host_macos_minimum_os` and propagates the latter (builtin_exec_platforms.bzl:177-189); `ctx.fragments.apple.macos_minimum_os_flag` | **Implemented** like the SDK versions: configuration options (config_setting, ST hash, identity only when set), the exec rule, the apple fragment's flag (B59). |
+| `--protocopt` (bb-storage) | ProtoConfiguration.Options (:49-56), allowMultiple; propagated to exec (builtin_exec_platforms.bzl:422-436); `ctx.fragments.proto.experimental_protoc_opts` | **Implemented**: a repeatable configuration option (config_setting's any-element match, the ST hash, Starlark transitions), the proto fragment's list (B59). |
+| `--compiler`, `--host_compiler` (grpc's opencensus `config_setting`) | CppOptions (:113-127), nullable Strings no Bazel 9.3.1 code reads but config_setting and transitions; exec: `compiler` = `host_compiler`, which propagates (builtin_exec_platforms.bzl:297, 338) | **Implemented** as configuration options (B68). |
 
 Options of the corpus's rc files that bazel-rs still rejects (a scan of every
 `*bazelrc*` file of the 37 projects, sub-workspaces included, branch
@@ -182,9 +187,9 @@ the remote-only `--experimental_remote_cache_lease_extension`,
 `--remote_grpc_service_config` (`remote`/BuildBuddy configs),
 `--experimental_generate_llvm_lcov`, `--experimental_use_llvm_covmap`
 (openroad's `coverage:coverage`), `--xcode_version_config`,
-`--apple_crosstool_top`, `--host_crosstool_top`, `--macos_minimum_os`,
-`--host_macos_minimum_os`, `--compiler=clang-cl|msvc-cl|mingw-gcc` (Windows
-and macOS configs), `--custom_malloc` and `--explain`;
+`--apple_crosstool_top`, `--host_crosstool_top` (macOS configs; the
+second batch's `--macos_minimum_os`, `--host_macos_minimum_os` and
+`--compiler` are modelled since corpus2-quick), `--custom_malloc` and `--explain`;
 `--all_incompatible_changes` is rejected by genuine too. Each still fails
 explicitly when used.
 
@@ -195,7 +200,10 @@ explicitly when used.
 with its default and, for booleans, both spellings; `default`/`other` says
 whether the probe spelled the genuine default). Every probe below still fails
 with the explicit `unsupported option … options are never silently ignored`
-error (or a native limitation message). Rejected even at the default: only the
+error (or a native limitation message); the rows of the options modelled
+since (corpus2-quick: `--client_env`, `--compiler`, `--host_compiler`,
+`--[host_]macos_minimum_os`, `--protocopt`,
+`--noincompatible_enable_proto_toolchain_resolution`) are removed. Rejected even at the default: only the
 deliberate exclusions of crate::option_defaults (client-supplied
 `--isatty`/`--emacs`/`--command_wait_time`/`--startup_time`/
 `--extract_data_time`/`--restart_reason`, the deprecated `--fat_apk_cpu`).
@@ -249,10 +257,8 @@ rejection of any value.
 | `--check_licenses` | other | build,test,run,query,cquery |
 | `--check_tests_up_to_date` | other | build,test,run,cquery |
 | `--client_cwd=/tmp/x` | other | build,test,run,query,cquery |
-| `--client_env=x=y` | other | build,test,run,query,cquery |
 | `--command_wait_time=0` | default | build,test,run,query,cquery |
 | `--compile_one_dependency` | other | build,test,run,cquery |
-| `--compiler=x` | other | build,test,run,cquery |
 | `--consistent_labels` | other | cquery |
 | `--cs_fdo_absolute_path=x` | other | build,test,run,cquery |
 | `--cs_fdo_instrument=x` | other | build,test,run,cquery |
@@ -426,14 +432,12 @@ rejection of any value.
 | `--heuristically_drop_nodes` | other | build,test,run,query,cquery |
 | `--hide_aspect_results=x` | other | build,test,run,cquery |
 | `--high_priority_workers=x` | other | build,test,run,cquery |
-| `--host_compiler=x` | other | build,test,run,cquery |
 | `--host_crosstool_top=x` | other | build,test,run,cquery |
 | `--host_force_python=x` | other | build,test,run,query,cquery |
 | `--host_grte_top=x` | other | build,test,run,cquery |
 | `--host_java_launcher=//:x` | other | build,test,run,cquery |
 | `--host_java_toolchain=x` | other | build,test,run,query,cquery |
 | `--host_javabase=x` | other | build,test,run,query,cquery |
-| `--host_macos_minimum_os=1.0` | other | build,test,run,cquery |
 | `--incompatible_autoload_externally=x` | other | build,test,run,query,cquery |
 | `--incompatible_bep_cpu_from_platform` | other | build,test,run,query,cquery |
 | `--incompatible_check_external_repo_source_dir_package_boundary` | other | build,test,run,query,cquery |
@@ -487,7 +491,6 @@ rejection of any value.
 | `--ltobackendopt=x` | other | build,test,run,cquery |
 | `--ltoindexopt=x` | other | build,test,run,cquery |
 | `--macos_cpus=x` | other | build,test,run,cquery |
-| `--macos_minimum_os=1.0` | other | build,test,run,cquery |
 | `--materialize_param_files` | other | build,test,run,cquery |
 | `--memprof_profile=//:x` | other | build,test,run,cquery |
 | `--merge_android_manifest_permissions` | other | build,test,run,cquery |
@@ -573,7 +576,6 @@ rejection of any value.
 | `--noincompatible_do_not_split_linking_cmdline` | other | build,test,run,query,cquery |
 | `--noincompatible_dont_enable_host_nonhost_crosstool_features` | other | build,test,run,cquery |
 | `--noincompatible_enable_deprecated_label_apis` | other | build,test,run,query,cquery |
-| `--noincompatible_enable_proto_toolchain_resolution` | other | build,test,run,query,cquery |
 | `--noincompatible_enforce_config_setting_visibility` | other | build,test,run,query,cquery |
 | `--noincompatible_fail_on_unknown_attributes` | other | build,test,run,query,cquery |
 | `--noincompatible_filegroup_runfiles_for_data` | other | build,test,run,query,cquery |
@@ -653,7 +655,6 @@ rejection of any value.
 | `--proto:instantiation_stack` | other | cquery |
 | `--proto:rule_classes` | other | cquery |
 | `--proto_profile_path=//:x` | other | build,test,run,cquery |
-| `--protocopt=x` | other | build,test,run,cquery |
 | `--python_native_rules_allowlist=//:x` | other | build,test,run,cquery |
 | `--python_path=x` | other | build,test,run,cquery |
 | `--python_top=x` | other | build,test,run,cquery |

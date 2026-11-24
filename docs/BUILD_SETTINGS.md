@@ -14,8 +14,17 @@ unsupported.
 The `.bzl` `config` namespace provides keyword-only `bool`, `int`, `string` and
 `string_list` constructors. Each accepts `flag=False`; string lists also accept
 `repeatable=False`, with repeatability requiring `flag=True`.
-`config.string(allow_multiple=False)` is accepted, while `True` remains explicitly
-unsupported. String-set constructors are not implemented; label-typed settings are the
+`config.string(allow_multiple=...)` is accepted both ways: an allow_multiple
+setting (corpus2-quick, B60) holds a list of strings, `[build_setting_default]`
+by default, and each command-line occurrence adds one element (no comma
+splitting; StarlarkOptionsParser.java:192-252); `config_setting(flag_values)`
+converts its expected value as one string and matches an element of a set
+list, or the raw default when unset (ConfigSetting.java:684-756); a
+transition must set it to a list (`'L' allows multiple values and must be set
+in transition using a starlark list instead of single value 'V'`) and, like
+genuine (StarlarkTransition.java:259 compares with the default wrapped
+twice), its output always stays in the configuration (an ST- hash even at
+the default). String-set constructors are not implemented; label-typed settings are the
 native `label_flag`/`label_setting` rules, which are analyzed (docs/CONFIGURATION.md).
 
 `rule(build_setting=descriptor)` injects a mandatory typed
@@ -78,7 +87,8 @@ its `native.unsupported` family (`--//:string_flag=blue`, `--//:bool_flag`,
 `--no//:bool_flag`): they are never executed and are recorded as
 `SUPERSEDED` with the reason "superseded by N16b: ..." (`SUPERSEDED`,
 `SUPERSEDED_REASON`); a report passes only with exactly that record. The
-other boundary probes (`allow_multiple`, `string_set`, legacy `True`) remain.
+`allow-multiple` probe is retired the same way (`ALLOW_MULTIPLE_REASON`,
+B60). The other boundary probes (`string_set`, legacy `True`) remain.
 
 Reference mutation contracts and fixture provenance are retained in
 `artifacts/build-settings-mutability-contract.json` and

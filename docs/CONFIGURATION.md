@@ -262,8 +262,9 @@ the native options and before target patterns
 * Only values different from the default are stored
   (`StarlarkOptionsParser.java:232-254`), so a value equal to the default gives
   the default configuration identity. Ints outside the signed 64-bit range
-  (Bazel accepts any `StarlarkInt`) fail explicitly; `allow_multiple` settings
-  are not modelled (rejected when declared, docs/BUILD_SETTINGS.md).
+  (Bazel accepts any `StarlarkInt`) fail explicitly. An `allow_multiple`
+  string setting accumulates its occurrences into a list
+  (docs/BUILD_SETTINGS.md).
 
 `query` does not analyze, so Bazel never parses its Starlark options
 (`BlazeOptionHandler.java:417-423`): the native `query` accepts and ignores
@@ -1524,7 +1525,7 @@ inputs/outputs. Query records declarations without applying MODULE aliases.
   `flags`, `required_settings`/select() in a target platform's tree,
   incompatible target skipping (a compatible `target_compatible_with` is
   analyzed), `--experimental_platforms_api` (docs/PLATFORMS.md).
-* `config_feature_flag`, `allow_multiple` string settings,
+* `config_feature_flag`,
   Starlark int values outside 64 bits, `scope = "project"` and
   `--incompatible_exclude_starlark_flags_from_exec_config`. Option names are loaded with the native target-pattern subset
   (`//pkg:all`, `//pkg/...` must then match exactly one rule: `user-defined

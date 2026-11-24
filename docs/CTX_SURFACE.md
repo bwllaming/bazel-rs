@@ -41,7 +41,7 @@ of every native configuration (for example `--features`, `--action_env`, `--test
 | `build_setting_value` | of a non-setting: `attempting to access 'build_setting_value' of non-build setting L`. |
 | `resolve_tools` | Bazel's `--incompatible_disallow_ctx_resolve_tools` error. |
 | `info_file`, `version_file` | the workspace status action's `bazel-out/stable-status.txt` / `bazel-out/volatile-status.txt` (`SkyframeExecutor.java:1479-1496`): generated Files without an owner (`owner` None, root `bazel-out`, short path the basename). Since N63 they are real generated artifacts of the system workspace-status action and valid action inputs (docs/WORKSPACE_STATUS.md; the N54-era explicit input failure is superseded — tests/fixtures/workspace_status2/reference_receipt.json). |
-| `resolve_command` | **fails explicitly** (command resolution is not modelled). |
+| `resolve_command` | StarlarkRuleContext.resolveCommand (corpus2-quick, B64): a CommandHelper over `tools` (each tool's label as written maps to its executable, else its files to build; inputs are the files to build, then the runfiles trees and executables) and `label_dict`; `expand_locations` expands with exec paths over that map and the rule's location map (errors: an attribute error of `attribute`, else a rule error); `make_variables` over the configuration's Make variables; returns `(inputs, ["/bin/bash", "-c", COMMAND], [])`. A command over 64000 characters (Bazel's generated `.resolve_command_N.script.sh`) fails explicitly. |
 
 Every configuration-derived member (`configuration`, `bin_dir`,
 `genfiles_dir`, `var`, `fragments`, `features`) is computed per configured

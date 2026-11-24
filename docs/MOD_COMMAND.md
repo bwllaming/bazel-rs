@@ -47,8 +47,10 @@ of `@bazel_tools` (`buildozer -f -` in the workspace), like ModCommand.runTidy:
 MODULE.bazel is rewritten and formatted, `INFO: Updated use_repo calls for
 EXT` follows each applied fixup, buildozer's exit code 3 (nothing changed) is
 success, a failed extension is reported and counted (`Failed to process N
-extension(s) due to errors.`, exit 2). `include()` is not supported natively,
-so only MODULE.bazel is processed. Never run it on a checkout you must not
+extension(s) due to errors.`, exit 2). A root module with `include()`
+segments fails explicitly (genuine fixes each proxy in the segment that
+contains it and formats every segment; the native fixups name MODULE.bazel
+only). Never run it on a checkout you must not
 modify: it writes the root MODULE.bazel.
 
 ## Differences from genuine 9.3
