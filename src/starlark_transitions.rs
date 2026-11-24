@@ -936,8 +936,11 @@ pub(crate) fn apply(
         .map(|(setting, _)| setting)
     {
         if let SettingKey::Native(name) = &setting.key {
+            let reason = crate::option_defaults::unmodelled_reason(name)
+                .map(|reason| format!(": {reason}"))
+                .unwrap_or_default();
             return Err(Failure::message(format!(
-                "Starlark transition on '{COMMAND_LINE_OPTION_PREFIX}{name}' is not implemented in the native profile (modelled native options: {}; read only: {})",
+                "Starlark transition on '{COMMAND_LINE_OPTION_PREFIX}{name}' is not implemented in the native profile{reason} (modelled native options: {}; read only: {})",
                 MODELLED_NATIVE_OPTIONS.join(", "),
                 READ_ONLY_NATIVE_OPTIONS.join(", ")
             )));
