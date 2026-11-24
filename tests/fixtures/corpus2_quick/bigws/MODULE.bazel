@@ -1,0 +1,3 @@
+module(name = "big")
+ext = use_extension("//:ext.bzl", "ext")
+use_repo(ext, "r")

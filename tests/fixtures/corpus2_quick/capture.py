@@ -90,6 +90,9 @@ CASES = {
                                                  r'CAUSE //to:lib2 .//to:a.y. does not produce']),
     # B71: the test summary names a test in the main repository's display form.
     'test_summary_display_form': case('test', [], ['//:all'], workspace='tlws'),
+    # B72: an extension-generated repository with a large attribute (no
+    # native host budget on extension results).
+    'extension_repository_large_attribute': case('build', [], ['//:t'], workspace='bigws'),
     # B63: include() in the root MODULE.bazel; the lockfile's extension
     # entry (usages digest) is compared too.
     'include_segments': case(

@@ -6512,7 +6512,10 @@ impl RepositorySet {
             // Reserve the whole group's copied defaults and supplied payloads
             // before binding any declaration. A budget per invocation would
             // miss amplification by many name-only uses of one large default.
-            let mut budget = crate::repository_budget::HostBudget::default();
+            // An innate usage is a module extension: unbounded like the
+            // others (Bazel bounds no extension result, B72); the depth and
+            // overflow still fail.
+            let mut budget = crate::repository_budget::HostBudget::unbounded();
             for declaration in &group.declarations {
                 budget.schema(&definition.schema)?;
                 definition.environ.charge(&mut budget)?;

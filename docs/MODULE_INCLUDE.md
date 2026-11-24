@@ -43,7 +43,7 @@ variable bindings stay in the file that makes them. Implementation:
   `archive_override` modules read their segments from their own trees.
 * **Not modelled**: `mod tidy` of a root module with segments fails
   explicitly (docs/MOD_COMMAND.md). A MODULE.bazel failure exits 1 natively
-  where Bazel exits 48 (all module file failures, B72).
+  where Bazel exits 48 (all module file failures, B73).
 
 Genuine fixture: tests/fixtures/corpus2_quick (`include_*` cases), replayed
 by tests/corpus2_quick.rs; unit test `bzlmod::tests::include_evaluates_segments_in_place`.

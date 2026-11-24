@@ -381,6 +381,24 @@
    ],
    "workspace": "workspace"
   },
+  "extension_repository_large_attribute": {
+   "command": "build",
+   "env": {},
+   "exit": 0,
+   "flags": [],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
+   "outputs": {},
+   "patterns": [],
+   "rc": false,
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//:t"
+   ],
+   "workspace": "bigws"
+  },
   "host_macos_minimum_os": {
    "command": "build",
    "env": {},

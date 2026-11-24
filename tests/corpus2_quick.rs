@@ -175,7 +175,7 @@ fn corpus2_quick_matches_genuine() {
         let mut problems = Vec::new();
         // A MODULE.bazel failure is Bazel's EXTERNAL_DEPS_ERROR (48); the
         // native CLI exits 1 for every module file failure (docs/OSS_CORPUS.md
-        // B72), so 48 is compared as 1 here.
+        // B73), so 48 is compared as 1 here.
         let genuine_exit = case["exit"]
             .as_i64()
             .map(|code| if code == 48 { 1 } else { code as i32 });

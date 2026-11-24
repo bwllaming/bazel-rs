@@ -598,8 +598,11 @@ pub fn bind_recorded_attributes_where(
     repo_mapping_where: &str,
 ) -> Result<BTreeMap<String, AttrValue>, String> {
     // The ordinary recorder supplies a cumulative reservation. Also guard this
-    // public host entry point before converting snapshots or expanding defaults.
-    let mut budget = HostBudget::default();
+    // public host entry point before converting snapshots or expanding
+    // defaults: unbounded like the recording (Bazel bounds no extension
+    // result; a repository generated with a large attribute, aspect's
+    // bazel-examples, B72), only the nesting depth and overflow fail.
+    let mut budget = HostBudget::unbounded();
     budget.schema(&definition.schema)?;
     budget.string(canonical_name)?;
     for (name, value) in raw {
