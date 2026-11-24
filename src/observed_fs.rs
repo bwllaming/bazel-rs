@@ -1233,12 +1233,12 @@ impl Recorder {
         &self,
         directory: &Path,
         projection: &Projection,
-    ) -> io::Result<Vec<io::Result<fs::DirEntry>>> {
+    ) -> io::Result<Vec<io::Result<DirEntry>>> {
         let op = Op::ReadDir(projection.clone());
         let before = fs::metadata(directory)
             .ok()
             .map(|metadata| StatKey::of(&metadata));
-        let entries = match fs::read_dir(directory) {
+        let entries = match open_dir(directory) {
             Ok(entries) => entries,
             Err(error) => {
                 self.observe(directory, op, Outcome::Error(errno(&error)));
@@ -1251,6 +1251,7 @@ impl Recorder {
         for entry in entries {
             match entry {
                 Ok(entry) => {
+                    let entry = DirEntry::of(&entry);
                     let name = entry.file_name();
                     let kind = entry.file_type().ok().map(FileKind::of);
                     if projection.keeps(directory, &name, kind) {
@@ -2972,20 +2973,95 @@ pub fn read_link(path: impl AsRef<Path>) -> io::Result<PathBuf> {
     result
 }
 
+/// An entry of a [`read_dir_projected`] listing. Unlike [`fs::DirEntry`],
+/// which shares its directory stream (and so its open descriptor) with
+/// every entry read from it, it owns its name and type: a listing kept
+/// after the read (the glob walker queues the early-read listings of every
+/// pending subdirectory, thousands in a large repository) holds no
+/// descriptor, so loading under a low open-file limit does not run out.
+#[derive(Debug)]
+pub struct DirEntry {
+    path: PathBuf,
+    name: OsString,
+    /// [`fs::DirEntry::file_type`] taken at the read (free with the
+    /// dirent's `d_type`, an `lstat` of the entry otherwise).
+    file_type: Result<fs::FileType, OwnedError>,
+}
+
+/// An [`io::Error`] kept to be returned again (it is not `Clone`).
+#[derive(Debug)]
+struct OwnedError {
+    raw: Option<i32>,
+    kind: io::ErrorKind,
+    text: String,
+}
+
+impl OwnedError {
+    fn of(error: &io::Error) -> Self {
+        Self {
+            raw: error.raw_os_error(),
+            kind: error.kind(),
+            text: error.to_string(),
+        }
+    }
+
+    fn error(&self) -> io::Error {
+        match self.raw {
+            Some(raw) => io::Error::from_raw_os_error(raw),
+            None => io::Error::new(self.kind, self.text.clone()),
+        }
+    }
+}
+
+impl DirEntry {
+    fn of(entry: &fs::DirEntry) -> Self {
+        Self {
+            path: entry.path(),
+            name: entry.file_name(),
+            file_type: entry.file_type().map_err(|error| OwnedError::of(&error)),
+        }
+    }
+
+    /// [`fs::DirEntry::file_name`].
+    pub fn file_name(&self) -> OsString {
+        self.name.clone()
+    }
+
+    /// [`fs::DirEntry::path`].
+    pub fn path(&self) -> PathBuf {
+        self.path.clone()
+    }
+
+    /// [`fs::DirEntry::file_type`] (not following a symlink).
+    pub fn file_type(&self) -> io::Result<fs::FileType> {
+        self.file_type.as_ref().copied().map_err(OwnedError::error)
+    }
+}
+
 /// [`fs::read_dir`] collected in directory order, with every entry's error
 /// kept in place (callers report the first error exactly where they did
 /// while iterating). While recording, only the entries `projection` keeps
 /// are returned and recorded (READDIR with the projected digest); outside the
 /// window every entry is returned — callers skip what the projection drops.
+/// The directory's descriptor is closed when this returns ([`DirEntry`]);
+/// its open is retried while the descriptor table is exhausted
+/// (crate::fd_budget::retry).
 pub fn read_dir_projected(
     directory: impl AsRef<Path>,
     projection: &Projection,
-) -> io::Result<Vec<io::Result<fs::DirEntry>>> {
+) -> io::Result<Vec<io::Result<DirEntry>>> {
     let directory = directory.as_ref();
     match active() {
-        None => Ok(fs::read_dir(directory)?.collect()),
+        None => Ok(open_dir(directory)?
+            .map(|entry| entry.map(|entry| DirEntry::of(&entry)))
+            .collect()),
         Some(recorder) => recorder.read_dir_projected(directory, projection),
     }
+}
+
+/// [`fs::read_dir`] retried while the descriptor table is exhausted.
+fn open_dir(directory: &Path) -> io::Result<fs::ReadDir> {
+    crate::fd_budget::retry(|| fs::read_dir(directory))
 }
 
 // ---- semantic records ------------------------------------------------------

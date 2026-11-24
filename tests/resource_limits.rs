@@ -125,3 +125,44 @@ fn many_parallel_actions_fit_a_hard_limit_of_256() {
     assert!(!err.contains("Too many open files"), "{err}");
     assert!(err.contains("160 processwrapper-sandbox"), "{err}");
 }
+
+/// A hard RLIMIT_NOFILE of 256 while loading packages whose globs walk wide
+/// trees (hundreds of subdirectories each, like a large pip or npm
+/// repository): the glob walker queues the early-read listings of every
+/// pending subdirectory, which held one directory descriptor each until it
+/// was walked (std's `DirEntry` keeps its directory stream open) and so ran
+/// out of descriptors; the listings now own their entries
+/// (crate::observed_fs::DirEntry) and loading succeeds.
+#[test]
+fn wide_globbed_trees_load_under_a_hard_limit_of_256() {
+    let ws = Workspace::new(&[]);
+    for package in 0..4 {
+        ws.file(
+            &format!("p{package}/BUILD.bazel"),
+            "filegroup(name = 'all', srcs = glob(['**/*.txt'], exclude = ['**/x*.txt']))\n\
+             filegroup(name = 'every', srcs = glob(['**']))\n",
+        );
+        for directory in 0..300 {
+            for leaf in ["a", "b"] {
+                ws.file(&format!("p{package}/d{directory:03}/{leaf}/f.txt"), "x\n");
+            }
+        }
+    }
+    let output = ws.run_limited(
+        "-n 256",
+        &["build", "--nobuild", "//...", "--loading_phase_threads=16"],
+    );
+    let err = stderr(&output);
+    assert!(output.status.success(), "{err}");
+    assert!(!err.contains("Too many open files"), "{err}");
+    let query = ws.run_limited(
+        "-n 256",
+        &["query", "labels(srcs, //p0:all) + labels(srcs, //p3:every)"],
+    );
+    let err = stderr(&query);
+    assert!(query.status.success(), "{err}");
+    let stdout = String::from_utf8(query.stdout).unwrap();
+    // 600 files of p0, and of p3 its BUILD file and 600 files.
+    assert_eq!(stdout.lines().count(), 1201, "{stdout}");
+    assert!(stdout.contains("//p0:d299/b/f.txt\n"), "{stdout}");
+}

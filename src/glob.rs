@@ -32,7 +32,6 @@
 //! repository-relative directory path. Regular files are never checked.
 
 use std::collections::{BTreeSet, HashMap};
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -287,7 +286,7 @@ struct Pending {
     relative: String,
     /// Its entries when already read by UnixGlob's early readdir (see
     /// [`Walker::walk`]).
-    listing: Option<Vec<fs::DirEntry>>,
+    listing: Option<Vec<crate::observed_fs::DirEntry>>,
 }
 
 /// One include pattern's traversal result.
@@ -328,7 +327,7 @@ fn read_listing(
     relative: &str,
     host: bool,
     excludes: &[String],
-) -> Result<Vec<fs::DirEntry>, String> {
+) -> Result<Vec<crate::observed_fs::DirEntry>, String> {
     let full = host || pattern.subpackages;
     let projection = if !excludes.is_empty() && !pattern.subpackages {
         // The regular files the excludes remove are never results: the
@@ -1005,7 +1004,7 @@ impl Walker<'_> {
 /// does not model and so reports as its own error.
 fn is_subpackage(
     directory: &Path,
-    listing: Option<&[fs::DirEntry]>,
+    listing: Option<&[crate::observed_fs::DirEntry]>,
     deferred: &mut Option<String>,
 ) -> bool {
     let mut followed_file = |path: &Path| match crate::observed_fs::metadata(path) {
@@ -1043,6 +1042,7 @@ mod tests {
     use super::*;
     use crate::ignored::IgnoredSubdirectories;
     use crate::source_links::LinkPolicy;
+    use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
