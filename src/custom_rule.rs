@@ -831,8 +831,23 @@ pub(crate) fn sequence_ref<'v>(value: Value<'v>) -> Option<&'v [Value<'v>]> {
         .or_else(|| TupleRef::from_value(value).map(TupleRef::content))
 }
 
+/// The elements Type.ListType.convert iterates (packages/Type.java:730-765):
+/// any Java Iterable (a list or tuple, a dict's keys, a set's elements),
+/// not only a sequence (bazel_env.bzl passes a dict to `attr.label_list`,
+/// OSS corpus B75).
+fn iterable_items<'v>(value: Value<'v>) -> Option<Vec<Value<'v>>> {
+    if let Some(items) = sequence_ref(value) {
+        return Some(items.to_vec());
+    }
+    if let Some(dict) = DictRef::from_value(value) {
+        return Some(dict.keys().collect());
+    }
+    use starlark::values::UnpackValue;
+    starlark::values::set::SetRef::unpack_value_opt(value).map(|set| set.iter().collect())
+}
+
 fn string_list(value: Value<'_>) -> anyhow::Result<Vec<String>> {
-    sequence_ref(value)
+    iterable_items(value)
         .ok_or_else(|| anyhow!("expected a list of strings"))?
         .iter()
         .map(|v| {
@@ -1160,14 +1175,15 @@ impl AttrKind {
         let expected = match self {
             Self::String if value.unpack_str().is_none() => Some("a string"),
             Self::StringList
-                if !sequence_ref(value)
+                if !iterable_items(value)
                     .is_some_and(|list| list.iter().all(|v| v.unpack_str().is_some())) =>
             {
                 Some("a list of strings")
             }
             // Outputs are labels (BuildType.OutputType.convert).
             Self::OutputList
-                if !sequence_ref(value).is_some_and(|list| list.iter().copied().all(is_label)) =>
+                if !iterable_items(value)
+                    .is_some_and(|list| list.iter().copied().all(is_label)) =>
             {
                 Some("a list of strings")
             }
@@ -1175,7 +1191,7 @@ impl AttrKind {
                 if !DictRef::from_value(value).is_some_and(|dict| {
                     dict.iter().all(|(key, values)| {
                         key.unpack_str().is_some()
-                            && sequence_ref(values).is_some_and(|values| {
+                            && iterable_items(values).is_some_and(|values| {
                                 values.iter().all(|value| value.unpack_str().is_some())
                             })
                     })
@@ -1194,7 +1210,7 @@ impl AttrKind {
             }
             Self::Int if value.unpack_i32().is_none() => Some("a 32-bit int"),
             Self::IntList
-                if !sequence_ref(value)
+                if !iterable_items(value)
                     .is_some_and(|list| list.iter().all(|v| v.unpack_i32().is_some())) =>
             {
                 Some("a list of 32-bit ints")
@@ -1219,7 +1235,7 @@ impl AttrKind {
                 if !DictRef::from_value(value).is_some_and(|dict| {
                     dict.iter().all(|(key, values)| {
                         key.unpack_str().is_some()
-                            && sequence_ref(values)
+                            && iterable_items(values)
                                 .is_some_and(|values| values.iter().copied().all(is_label))
                     })
                 }) =>
@@ -1229,7 +1245,8 @@ impl AttrKind {
             Self::Bool if attr_bool(value).is_none() => Some("a bool"),
             Self::Label if !value.is_none() && !is_label(value) => Some("a string or Label"),
             Self::LabelList
-                if !sequence_ref(value).is_some_and(|list| list.iter().copied().all(is_label)) =>
+                if !iterable_items(value)
+                    .is_some_and(|list| list.iter().copied().all(is_label)) =>
             {
                 Some("a list of strings or Labels")
             }
@@ -1270,8 +1287,11 @@ impl AttrKind {
             Ok(())
         };
         charge(value).map_err(anyhow::Error::msg)?;
-        if let Some(list) = sequence_ref(value) {
-            for &value in list {
+        // A dict's entries are charged below (its keys once).
+        if DictRef::from_value(value).is_none()
+            && let Some(list) = iterable_items(value)
+        {
+            for &value in &list {
                 charge(value).map_err(anyhow::Error::msg)?;
             }
         }
@@ -1281,7 +1301,7 @@ impl AttrKind {
                 charge(values).map_err(anyhow::Error::msg)?;
                 // The complete shape was checked above, before any budget errors.
                 if matches!(self, Self::StringListDict | Self::LabelListDict) {
-                    for &value in sequence_ref(values).expect("validated attribute sequence") {
+                    for &value in &iterable_items(values).expect("validated attribute sequence") {
                         charge(value).map_err(anyhow::Error::msg)?;
                     }
                 }
@@ -1364,7 +1384,7 @@ impl AttrKind {
                 Some(label_value(value, resolver)?)
             }),
             Self::LabelList => AttrValue::Labels(
-                sequence_ref(value)
+                iterable_items(value)
                     .ok_or_else(|| anyhow!("expected a list of strings or Labels"))?
                     .iter()
                     .copied()
@@ -1380,14 +1400,14 @@ impl AttrKind {
                 Some(output_name(value, resolver)?)
             }),
             Self::OutputList => AttrValue::Outputs(
-                sequence_ref(value)
+                iterable_items(value)
                     .ok_or_else(|| anyhow!("expected a list of strings"))?
                     .iter()
                     .map(|&value| output_name(value, resolver))
                     .collect::<anyhow::Result<_>>()?,
             ),
             Self::IntList => AttrValue::Ints(
-                sequence_ref(value)
+                iterable_items(value)
                     .ok_or_else(|| anyhow!("expected a list of 32-bit ints"))?
                     .iter()
                     .map(|value| {
@@ -1439,7 +1459,7 @@ impl AttrKind {
                         let key = key
                             .unpack_str()
                             .ok_or_else(|| anyhow!("expected dict keys to be strings"))?;
-                        let labels = sequence_ref(values)
+                        let labels = iterable_items(values)
                             .ok_or_else(|| anyhow!("expected a list of strings or Labels"))?
                             .iter()
                             .map(|value| label_value(*value, resolver))
@@ -2687,7 +2707,7 @@ fn lift<'v>(
     Ok(match kind {
         AttrKind::Label => label(value)?,
         AttrKind::LabelList => heap.alloc(
-            sequence_ref(value)
+            iterable_items(value)
                 .ok_or_else(|| anyhow!("expected a list of strings or Labels"))?
                 .iter()
                 .map(|value| label(*value))
@@ -2717,7 +2737,7 @@ fn lift<'v>(
             })?;
             let mut entries = Vec::new();
             for (key, values) in dict.iter() {
-                let labels = sequence_ref(values)
+                let labels = iterable_items(values)
                     .ok_or_else(|| anyhow!("expected a list of strings or Labels"))?
                     .iter()
                     .map(|value| label(*value))
@@ -4490,6 +4510,19 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] configurable: Option<bool>,
     ) -> anyhow::Result<Descriptor> {
         let declared: anyhow::Result<Descriptor> = (|| {
+            // @Param allowedTypes Sequence<String> (StarlarkAttrModuleApi.java):
+            // the default itself is a sequence; its elements convert like any
+            // value (Type.ListType iterates).
+            if let Some(value) = default
+                && sequence_ref(value).is_none()
+            {
+                return Err(crate::rule_declarations::param_type_error(
+                    "string_list",
+                    "default",
+                    value,
+                    "sequence",
+                ));
+            }
             let mut descriptor =
                 descriptor(AttrKind::StringList, default, mandatory, false, false)?;
             descriptor.0.non_empty = !allow_empty;
@@ -6496,7 +6529,6 @@ z = attr.string_dict()
             "attr.string_list_dict(default=[])",
             "attr.string_list_dict(default={1: []})",
             "attr.string_list_dict(default={'x': 'text'})",
-            "attr.string_list_dict(default={'x': {}})",
             "attr.string_list_dict(default={'x': [1]})",
             "attr.string_list_dict(default={'x': (True,)})",
             "attr.string_list_dict(default={'x': [Label('//:x')]})",

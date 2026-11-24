@@ -99,6 +99,9 @@ CASES = {
     'declare_file_outside_package': case(
         'build', BUILD + ['--keep_going'], ['//df:d', '//df:e'],
         patterns=[r"the output artifact 'x.txt' is not under", r"the output artifact '/abs.txt' is not under"]),
+    # B75: list-typed attributes take any iterable (dict keys, set elements).
+    'list_attributes_from_iterables': case(
+        'build', BUILD, ['//it:d', '//it:s', '//it:e'], outputs=['d.txt', 's.txt', 'e.txt']),
     # B63: include() in the root MODULE.bazel; the lockfile's extension
     # entry (usages digest) is compared too.
     'include_segments': case(

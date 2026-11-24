@@ -1,0 +1,6 @@
+load(":defs.bzl", "r")
+filegroup(name = "a")
+filegroup(name = "b")
+r(name = "d", deps = {":a": "x", ":b": "y"}, strs = {"k1": 1, "k2": 2}, ints = {3: "c", 1: "a"})
+r(name = "s", deps = set([":b", ":a"]), strs = set(["z", "y"]), ints = set([5, 4]))
+r(name = "e", deps = {})

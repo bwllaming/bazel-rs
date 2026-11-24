@@ -680,6 +680,33 @@
    ],
    "workspace": "incws"
   },
+  "list_attributes_from_iterables": {
+   "command": "build",
+   "env": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
+   "outputs": {
+    "k8-fastbuild/bin/it/d.txt": "[[\"@@//it:a\", \"@@//it:b\"], [\"k1\", \"k2\"], [3, 1]]\n",
+    "k8-fastbuild/bin/it/e.txt": "[[], [], []]\n",
+    "k8-fastbuild/bin/it/s.txt": "[[\"@@//it:b\", \"@@//it:a\"], [\"z\", \"y\"], [5, 4]]\n"
+   },
+   "patterns": [],
+   "rc": false,
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//it:d",
+    "//it:s",
+    "//it:e"
+   ],
+   "workspace": "workspace"
+  },
   "proto_toolchain_resolution_default": {
    "command": "build",
    "env": {},
