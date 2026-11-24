@@ -22,6 +22,9 @@ messages differ).
   mapping (`build`, `test`, `run`, `query`, `cquery`, `aquery`, `fetch`;
   `fetch` reports it as is, not as `Fetching some target dependencies
   failed`), 37 in `mod` (MOD_COMMAND_UNKNOWN), 0 in `info`.
+- A failure of the native profile's own limits (a host preparation budget,
+  an explicit `not implemented` gap) while reading the root module keeps
+  exit 1: Bazel has no such failure.
 - A `local_path_override` whose directory does not exist fails the
   override's repository fetch: 37 (the repository's failure has no
   ExternalDeps code), also in `mod`.

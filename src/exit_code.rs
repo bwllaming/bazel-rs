@@ -67,6 +67,11 @@ static MODULE_FAILURE: std::sync::OnceLock<(String, i32)> = std::sync::OnceLock:
 /// own failure, [`UNKNOWN_FAILURE`] (ModuleFileFunction.getModuleFile).
 /// Genuine captures: tests/fixtures/module_failure_exit_codes.
 pub fn note_module_failure(message: &str) {
+    // The native profile's own limits (host preparation budgets, explicit
+    // gaps) are no ExternalDeps failures of Bazel's: exit 1.
+    if native_limitation(message) || message.contains("limit exceeded") {
+        return;
+    }
     let code = if message.starts_with("cannot resolve local override for ")
         || message.starts_with("error fetching git_override of module ")
         || message.starts_with("error fetching archive_override of module ")

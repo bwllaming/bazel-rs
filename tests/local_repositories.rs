@@ -201,10 +201,11 @@ fn local_repository_version_does_not_inject_native_into_top_level_files() {
         "MODULE.bazel",
         "module(name='main')\nobserved=native.bazel_version\n",
     );
-    // Root recording rejects both local and external demand; retain both scopes.
-    f.reject(&["query", "//:all"], "native");
-    f.reject(&["build", "//:all"], "native");
-    f.reject(&["query", "@missing//:all"], "native");
+    // Root recording rejects both local and external demand; retain both
+    // scopes (a MODULE.bazel failure: EXTERNAL_DEPS_ERROR, B73).
+    f.reject_with(&["query", "//:all"], 48, "native");
+    f.reject_with(&["build", "//:all"], 48, "native");
+    f.reject_with(&["query", "@missing//:all"], 48, "native");
 }
 
 #[test]

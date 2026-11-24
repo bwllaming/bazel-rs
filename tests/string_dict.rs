@@ -114,12 +114,20 @@ impl Fixture {
     }
 
     fn reject(&self, args: &[&str], markers: &[&str]) -> String {
+        self.reject_module(args, markers, false)
+    }
+
+    /// [`Self::reject`]; `module`: a root MODULE.bazel failure, Bazel's
+    /// EXTERNAL_DEPS_ERROR (exit 48, B73).
+    fn reject_module(&self, args: &[&str], markers: &[&str], module: bool) -> String {
         let output = self.run(args);
         let diagnostic = errors(&output);
         // A query whose BUILD file fails part-way (a package with errors)
         // fails at its end, exit 7 like Bazel (tests/package_errors.rs);
         // a failing `.bzl` load or repository, or another command, exits 1.
-        let expected = if args[0] == "query"
+        let expected = if module {
+            48
+        } else if args[0] == "query"
             && (diagnostic.contains("ERROR: Evaluation of query")
                 || diagnostic.contains("ERROR: no such target"))
         {
@@ -699,7 +707,7 @@ fn string_dict_loaded_aliases_descriptors_and_intentional_build_constructor_dive
     for file in ["BUILD.bazel", "MODULE.bazel"] {
         let f = Fixture::new();
         f.file(file, "a=attr.string_dict()\n");
-        f.reject(&["query", "//:all"], &["attr"]);
+        f.reject_module(&["query", "//:all"], &["attr"], file == "MODULE.bazel");
     }
 }
 

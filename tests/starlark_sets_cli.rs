@@ -103,7 +103,11 @@ fn success(output: &Output) {
 }
 
 fn rejected(output: &Output, diagnostic: &str) {
-    assert_eq!(output.status.code(), Some(1), "{}", stderr(output));
+    rejected_with(output, 1, diagnostic);
+}
+
+fn rejected_with(output: &Output, code: i32, diagnostic: &str) {
+    assert_eq!(output.status.code(), Some(code), "{}", stderr(output));
     assert!(output.stdout.is_empty(), "partial stdout on failure");
     assert!(stderr(output).contains(diagnostic), "{}", stderr(output));
     assert!(!stderr(output).contains("panicked"), "{}", stderr(output));
@@ -170,7 +174,8 @@ fn build_and_root_module_use_real_constructor_before_local_query() {
     ws.untouched();
     assert_eq!(content(&ws.run(&["build", ":check"])), [b"b,a".to_vec()]);
     ws.file("MODULE.bazel", "module(name='sets_fixture')\nS=set([[]])\n");
-    rejected(&ws.run(&["query", ":check"]), "hashable");
+    // A root MODULE.bazel failure: EXTERNAL_DEPS_ERROR (B73).
+    rejected_with(&ws.run(&["query", ":check"]), 48, "hashable");
 }
 
 #[test]

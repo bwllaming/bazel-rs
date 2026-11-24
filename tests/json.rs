@@ -261,7 +261,8 @@ fn root_module_json_is_undefined_even_for_direct_local_query() {
     let ws = Workspace::new("", "filegroup(name='check')\n");
     ws.file("MODULE.bazel", "module(name='json_fixture')\nx=json\n");
     let output = ws.run(&["query", ":check"]);
-    assert_eq!(output.status.code(), Some(1));
+    // A root MODULE.bazel failure: EXTERNAL_DEPS_ERROR (B73).
+    assert_eq!(output.status.code(), Some(48));
     assert!(
         errors(&output).contains("name 'json' is not defined")
             && errors(&output).contains("MODULE.bazel"),

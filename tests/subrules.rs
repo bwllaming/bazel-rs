@@ -636,8 +636,8 @@ fn constructor_is_absent_from_build_and_root_module_globals() {
         let output = ws.run(&["query", ":check"]);
         // A BUILD file failing part-way is a package with errors: the query
         // fails at its end, exit 7 like Bazel (tests/package_errors.rs); a
-        // root module failure stays fatal.
-        let code = if file == "BUILD.bazel" { 7 } else { 1 };
+        // root module failure stays fatal (EXTERNAL_DEPS_ERROR, B73).
+        let code = if file == "BUILD.bazel" { 7 } else { 48 };
         assert_eq!(output.status.code(), Some(code), "{}", stderr(&output));
         assert!(
             stderr(&output).contains("name 'subrule' is not defined"),

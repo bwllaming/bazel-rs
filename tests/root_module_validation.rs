@@ -200,6 +200,26 @@ fn rejected(output: &Output, diagnostic: &str) {
     assert!(!stderr(output).contains("panicked"), "{}", stderr(output));
 }
 
+/// A root MODULE.bazel failure: Bazel's ExternalDepsException, exit 48
+/// (tests/fixtures/module_failure_exit_codes; a directory or bytes that do
+/// not decode as well, both genuine-checked).
+fn module_rejected(output: &Output, diagnostic: &str) {
+    module_rejected_with(output, 48, diagnostic);
+}
+
+/// [`module_rejected`] with `code`: 37 for a `local_path_override` whose
+/// directory does not exist (the override repository's fetch failure).
+fn module_rejected_with(output: &Output, code: i32, diagnostic: &str) {
+    assert_eq!(output.status.code(), Some(code), "{}", stderr(output));
+    assert!(
+        output.stdout.is_empty(),
+        "partial stdout: {:?}",
+        output.stdout
+    );
+    assert!(stderr(output).contains(diagnostic), "{}", stderr(output));
+    assert!(!stderr(output).contains("panicked"), "{}", stderr(output));
+}
+
 fn content(output: &Output) -> Vec<Vec<u8>> {
     success(output);
     String::from_utf8_lossy(&output.stdout)
@@ -221,7 +241,7 @@ fn invalid_root(source: &str, diagnostic: &str) {
     ] {
         let ws = Workspace::new(&format!("module(name='root_fixture')\n{source}\n"));
         let output = ws.run(&args);
-        rejected(&output, diagnostic);
+        module_rejected(&output, diagnostic);
         assert!(
             stderr(&output).contains("MODULE.bazel"),
             "{}",
@@ -301,7 +321,7 @@ fn root_module_loading_stays_lazy_but_analysis_resolves_dependency_aliases() {
         Workspace::new("module(name='root_fixture')\nbazel_dep(name='unused',version='9.9.9')\n");
     ws.local_query_success();
     assert!(!ws.path().join("private-cache/repositories").exists());
-    rejected(&ws.run(&["build", "//app:check"]), "registry");
+    module_rejected(&ws.run(&["build", "//app:check"]), "registry");
 }
 
 #[test]
@@ -343,9 +363,9 @@ fn root_module_missing_local_override_fails_on_analysis_alias_resolution() {
         "module(name='root_fixture')\nbazel_dep(name='dep',version='1',repo_name='alias')\nlocal_path_override(module_name='dep',path='nonexistent')\n",
     );
     ws.local_query_success();
-    rejected(&ws.run(&["build", "//app:check"]), "nonexistent");
+    module_rejected_with(&ws.run(&["build", "//app:check"]), 37, "nonexistent");
     let demanded = ws.run(&["query", "@alias//:data"]);
-    rejected(&demanded, "nonexistent");
+    module_rejected_with(&demanded, 37, "nonexistent");
 }
 
 #[test]
@@ -382,7 +402,7 @@ fn root_module_directory_and_invalid_utf8_are_not_optional_absence() {
                 ws.file("MODULE.bazel", [0xff, 0xfe]);
             }
             let output = ws.run(&[command, "//app:check"]);
-            rejected(&output, "MODULE.bazel");
+            module_rejected(&output, "MODULE.bazel");
             ws.not_loaded(&output);
         }
     }
@@ -431,7 +451,7 @@ fn root_module_nested_cwd_uses_workspace_root_and_current_package() {
         let cwd = bad.path().join("app/nested");
         fs::create_dir_all(&cwd).unwrap();
         let output = bad.run_in(&cwd, &[command, ":check"]);
-        rejected(&output, "UnknownRootSymbol");
+        module_rejected(&output, "UnknownRootSymbol");
         bad.not_loaded(&output);
     }
 }
@@ -458,7 +478,7 @@ fn root_module_cli_argument_errors_and_metadata_commands_precede_recording() {
     // An unknown build option may be a MODULE alias. Like the genuine
     // dispatcher's second parsing round, module resolution precedes its error.
     let alias_candidate = ws.run(&["build", "--unsupported-root-module-option", "//app:check"]);
-    rejected(&alias_candidate, "Floor division by zero");
+    module_rejected(&alias_candidate, "Floor division by zero");
     assert!(stderr(&alias_candidate).contains("G_ROOT_ONCE"));
     ws.not_loaded(&alias_candidate);
     // QueryOptionHelper.java:61-68, before any loading: readQuery's
