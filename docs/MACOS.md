@@ -64,6 +64,9 @@ literal; `(deny file-read*)` below each `--sandbox_block_path` (resolved);
 for `block-network` or `--nosandbox_default_allow_network` without
 `requires-network`, the network denied except localhost and unix sockets.
 genuine writes the writable directories from a hash set, bazel-rs sorted.
+`tests/darwin_sandbox.rs` (macOS) replays genuine's captured behaviour and
+profiles (`tests/fixtures/darwin_sandbox/reference_receipt.json`, extracted
+from a macOS CI host parity report by the fixture's `capture.py`).
 `--sandbox_debug` keeps the profile in the spawn's sandbox directory
 (`<cache>/work/<key>-<pid>-<n>/sandbox.sb`). `BAZEL_RS_DARWIN_SANDBOX=off`
 falls back to processwrapper-sandbox. The captured behaviour (host_parity's
@@ -192,7 +195,7 @@ the Linux genuine binary (the darwin-only case skipped).
 | host_parity (tests/fixtures/host_parity) | `info` paths, query/cquery/aquery, Make variables (`TARGET_CPU`, `BINDIR`, ...), the genrule action environment and shell, selects on `@platforms//os:macos`, `--cpu=darwin_arm64`, `--host_cpu`, `@bazel_tools//src/conditions:darwin_arm64`; an exec tool's runfiles; `sh_test`'s environment, runfiles, `test.xml`; `run`; what rules see (`ctx.var`, `ctx.fragments.apple` / `cpp` / `platform`, the sh toolchain path, the Xcode configuration of `@local_config_xcode` through `xcode_config_label`, `apple_common.apple_host_system_env` / `target_apple_env`); a repository rule's `os` and environment | equal (cquery `deps()` omits toolchain_type targets: known, also on Linux) |
 | darwin_sandbox (tests/fixtures/darwin_sandbox) | reads, writes (workspace, execroot, /tmp, TMPDIR, home, `~/Library/Caches`, /Users/Shared), network, `/bin/ps` per `block-network` / `requires-network` / `no-sandbox` / `local`, `--sandbox_default_allow_network`, `--sandbox_writable_path`, `--sandbox_block_path` on a symlink; the profiles | equal (input kind: hardlinks, known) |
 | cc_hello | `cc_library` / `cc_binary` / `cc_test` with rules_cc's auto-configured Xcode clang toolchain: cquery, the CppCompile/CppArchive/CppLink command lines, build, run, test | equal |
-| py_go_hello | rules_python's hermetic interpreter and rules_go's downloaded SDK: build, run, test, the Go actions | see the report |
+| py_go_hello | rules_python's hermetic interpreter and rules_go's downloaded SDK (1.27.1, cgo through Xcode's clang): build, run, test, the GoCompilePkg/GoLink command lines | equal |
 | aquery_genrules, runfiles_symlinks, test_args | platform-neutral fixtures of the Linux suite | equal |
 
 Fixed on the way: `apple_common.apple_host_system_env` and
