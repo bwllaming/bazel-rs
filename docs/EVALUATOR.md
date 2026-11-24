@@ -1168,7 +1168,21 @@ Branch `eval-s2-load` (rebased on main `f397e89a`, eval-s2-pass1 merged).
 - **Observations**: in a pooled evaluation every attempt observes in its
   own `observed_fs` frame (`Bodies::Attempt`), committed where the tape
   replays the node (entered, first used); an abandoned attempt's frame is
-  dropped.
+  dropped. The tape and its pass-2 walks are applied outside every frame
+  (`observed_fs::outside_frames` in `Coord::linearize` and
+  `Coord::with_engine`): the sequential pass applies the tape inside a
+  running attempt when a nested need linearizes first (a config_setting
+  whose `flag_values` key is a rule returning FeatureFlagInfo needs that
+  key's phase 2 at once), and the walk's results stay whatever becomes of
+  that attempt. Until 2026-11-24 the walk observed into the attempt's
+  frame (a frozen walk's merges committed there too, tripping the
+  frozen-everywhere suite's debug assertion in `buffer.rs`): an abandoned
+  attempt dropped them while the loaded packages, materialized roots and
+  memoized sources stayed — a recording (and so a saved snapshot) without
+  them, in the default mode too. Test hook
+  `BAZEL_RS_EVAL_TEST_ABANDON_WALKED=1` (the attempt a walk ran in is
+  answered `Missing` at the need's return); test
+  `eval_pass2::a_walk_inside_an_abandoned_attempt_is_in_the_recording`.
 
 Results (2026-11-08, ~/code `80d6724f3a`, LTO release binary, warm
 repositories, `BAZEL_RS_SNAPSHOT=off`, `build --nobuild //src/...`, one run

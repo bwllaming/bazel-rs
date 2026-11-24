@@ -88,6 +88,37 @@ fn restarts_seed() -> Option<u64> {
     })
 }
 
+/// `BAZEL_RS_EVAL_TEST_ABANDON_WALKED=1` (a hidden test hook): an attempt
+/// inside which this thread ran a pass-2 walk (a nested need linearized
+/// first: [`note_walked`]) is answered `Missing` at the need's return, once
+/// per walk, so it is abandoned and runs again (its frame dropped; what the
+/// walk observed must still reach the recording:
+/// `observed_fs::outside_frames`).
+fn abandon_walked() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        // snapshot-unrecorded: a test hook; the analysis result must not change.
+        std::env::var_os("BAZEL_RS_EVAL_TEST_ABANDON_WALKED").is_some_and(|value| value == "1")
+    })
+}
+
+thread_local! {
+    /// [`abandon_walked`]: the depth of the running attempt a walk ran in.
+    static WALKED_AT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// A pass-2 walk ran on this thread (`Coord::catch_up`): under
+/// [`abandon_walked`], the innermost running attempt is abandoned at its
+/// need's return.
+pub(crate) fn note_walked() {
+    if abandon_walked() {
+        let depth = with_running(|running| running.len());
+        if depth > 0 {
+            WALKED_AT.with(|at| at.set(Some(depth)));
+        }
+    }
+}
+
 impl Coord<'_> {
     pub(crate) fn ct1(&self, key: &ConfiguredTargetKey) -> Option<Arc<Ct1Value>> {
         self.ct1_done.get(key)
@@ -384,6 +415,19 @@ impl Cx for BodyCx<'_, '_, '_> {
                 return Err(missing);
             }
         };
+        if abandon_walked()
+            && WALKED_AT.with(|at| {
+                let depth = with_running(|running| running.len());
+                at.get() == Some(depth) && at.take().is_some()
+            })
+        {
+            eprintln!(
+                "bazel-rs: BAZEL_RS_EVAL_TEST_ABANDON_WALKED: an attempt a walk ran in abandoned"
+            );
+            self.bodies.missing_here();
+            let ids = keys.iter().map(|key| self.cx.id_of(key)).collect();
+            return Err(Missing::Nodes(ids));
+        }
         // BAZEL_RS_EVAL_RESTARTS=<seed> (a test hook): the first need of a
         // key by a node is answered `Missing` at random (one in four), as
         // a parallel evaluation parks an attempt: the attempt is abandoned

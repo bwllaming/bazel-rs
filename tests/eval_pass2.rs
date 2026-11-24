@@ -640,6 +640,139 @@ fn comparable_recording(dump: &str) -> Vec<String> {
         .collect()
 }
 
+/// Remove `ws`'s cache (the repository store's trees are read-only:
+/// `Workspace::build`'s removal stops at them).
+fn fresh_cache(ws: &Workspace) {
+    fn writable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = fs::symlink_metadata(path)
+            && metadata.is_dir()
+        {
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o755));
+            for entry in fs::read_dir(path).into_iter().flatten().flatten() {
+                writable(&entry.path());
+            }
+        }
+    }
+    let cache = ws.path().join("cache");
+    writable(&cache);
+    let _ = fs::remove_dir_all(&cache);
+    assert!(!cache.exists());
+}
+
+/// A config_setting whose `flag_values` key is a rule returning
+/// FeatureFlagInfo (not a build setting) needs the key's phase 2 at once:
+/// the sequential pass's attempt of a target selecting on it linearizes
+/// inside its need, and the tape's pass-2 walk runs there, inside that
+/// attempt's observation frame. The walk's results stay whatever becomes
+/// of the attempt, so what it observed (the host platform's and the
+/// built-in repositories' packages it loads first, a frozen walk's
+/// merges) must reach the recording itself: an abandoned attempt
+/// (`BAZEL_RS_EVAL_TEST_ABANDON_WALKED`) dropped the walk's
+/// observations before (and a frozen walk's merge hit the debug
+/// assertion that none is framed), in the default mode too.
+#[test]
+fn a_walk_inside_an_abandoned_attempt_is_in_the_recording() {
+    let ws = Workspace::new(
+        1,
+        r#"load("//:keys.bzl", "key", "top")
+key(name = "k", srcs = ["kdata.txt"])
+config_setting(name = "k_opt", flag_values = {":k": "opt"})
+[top(
+    name = "t%d" % i,
+    deps = ["//p0:leaf"],
+    mode = select({":k_opt": "saw opt", "//conditions:default": "no opt"}),
+) for i in range(8)]
+filegroup(name = "keyed", srcs = [":t%d" % i for i in range(8)])
+"#,
+    );
+    for (path, text) in [
+        (
+            "keys.bzl",
+            r#"def _key(ctx):
+    return [config_common.FeatureFlagInfo(value = ctx.var["COMPILATION_MODE"])]
+
+key = rule(implementation = _key, attrs = {"srcs": attr.label_list(allow_files = True)})
+
+def _top(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, ctx.attr.mode)
+    return [DefaultInfo(files = depset([out]))]
+
+top = rule(implementation = _top, attrs = {"deps": attr.label_list(), "mode": attr.string()})
+"#,
+        ),
+        ("kdata.txt", "x\n"),
+    ] {
+        fs::write(ws.path().join(path), text).unwrap();
+    }
+    let args = [
+        "//:keyed",
+        "-c",
+        "opt",
+        "--experimental-builtin-modules=true",
+    ];
+    let recorded = |mode: &str, env: &[(&str, &str)]| {
+        let record = ws.path().join("tmp/record.txt");
+        let _ = fs::remove_file(&record);
+        let mut recording: Vec<(&str, &str)> = vec![
+            ("BAZEL_RS_SNAPSHOT", "record"),
+            ("BAZEL_RS_SNAPSHOT_DUMP", record.to_str().unwrap()),
+        ];
+        recording.extend_from_slice(env);
+        fresh_cache(&ws);
+        let output = ws.build(mode, 8, &recording, &args);
+        assert!(output.status.success(), "{env:?}: {}", stable(&output));
+        let record = fs::read_to_string(&record).expect("the record mode's dump");
+        // The incremental index of a miss too (the tracker is the walk's,
+        // moved into the engine for it, whatever the attempt).
+        let index = ws.path().join("tmp/index.txt");
+        let _ = fs::remove_file(&index);
+        let mut tracking: Vec<(&str, &str)> = vec![
+            ("BAZEL_RS_SNAPSHOT", "on"),
+            ("BAZEL_RS_SNAPSHOT_INDEX_DUMP", index.to_str().unwrap()),
+        ];
+        tracking.extend_from_slice(env);
+        fresh_cache(&ws);
+        let tracked = ws.build(mode, 8, &tracking, &args);
+        assert!(tracked.status.success(), "{env:?}: {}", stable(&tracked));
+        let index = fs::read_to_string(&index)
+            .unwrap_or_else(|error| panic!("the index dump: {error}: {}", stable(&tracked)));
+        (comparable_recording(&record), index, output)
+    };
+    let (walk, walk_index, walk_output) = recorded("walk", &[]);
+    assert!(walk_index.contains("accesses"), "{walk_index}");
+    for env in [
+        &[][..],
+        &[("BAZEL_RS_EVAL_TEST_ABANDON_WALKED", "1")],
+        &[
+            ("BAZEL_RS_EVAL_TEST_ABANDON_WALKED", "1"),
+            ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all"),
+        ],
+        &[("BAZEL_RS_EVAL_FROZEN_PREPARES", "all")],
+    ] {
+        let (eval, index, output) = recorded("eval", env);
+        if env.iter().any(|(name, _)| name.contains("ABANDON")) {
+            // (The hook found an attempt a walk ran in.)
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains(
+                    "BAZEL_RS_EVAL_TEST_ABANDON_WALKED: an attempt a walk ran in abandoned"
+                ),
+                "{env:?}: {}",
+                stable(&output)
+            );
+        }
+        let missing: Vec<&String> = walk.iter().filter(|line| !eval.contains(line)).collect();
+        let extra: Vec<&String> = eval.iter().filter(|line| !walk.contains(line)).collect();
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "{env:?}: the recording: missing {missing:?}, extra {extra:?}"
+        );
+        assert_eq!(index, walk_index, "{env:?}: the incremental index");
+        assert_eq!(output.stdout, walk_output.stdout, "{env:?}: stdout");
+    }
+}
+
 /// snapshot-miss-speed: with the incremental tracker on (a snapshot miss)
 /// a native rule a frozen walk's worker published is merged, the accesses
 /// its worker's run made replayed in its planning frame
@@ -904,25 +1037,8 @@ filegroup(name = "all", srcs = [":everything", ":after_cpu", ":sources", ":via_d
         fs::write(path, text).unwrap();
     }
     let args = ["//:all", "--experimental-builtin-modules=true"];
-    // Every run on a fresh cache (the repository store's trees are
-    // read-only: `Workspace::build`'s removal stops at them).
-    let fresh = || {
-        fn writable(path: &Path) {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(metadata) = fs::symlink_metadata(path)
-                && metadata.is_dir()
-            {
-                let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o755));
-                for entry in fs::read_dir(path).into_iter().flatten().flatten() {
-                    writable(&entry.path());
-                }
-            }
-        }
-        let cache = ws.path().join("cache");
-        writable(&cache);
-        let _ = fs::remove_dir_all(&cache);
-        assert!(!cache.exists());
-    };
+    // Every run on a fresh cache.
+    let fresh = || fresh_cache(&ws);
     let planned = |mode: &str, threads: usize, env: &[(&str, &str)]| {
         let record = ws.path().join("tmp/record.txt");
         let index = ws.path().join("tmp/index.txt");

@@ -2134,6 +2134,40 @@ pub(crate) fn in_frame() -> bool {
     FRAMES.with(|frames| !frames.borrow().is_empty())
 }
 
+/// Run `f` with this thread's open frames set aside: what it observes and
+/// commits goes where it would on a thread with no frame open (the
+/// recorder; frames `f` opens itself work as usual), then the frames are
+/// back as they were (also when `f` panics).
+///
+/// The evaluator's linearization and pass-2 walks (`Coord::linearize`,
+/// `Coord::with_engine`) run on the sequential thread, sometimes inside a
+/// running attempt's frame (a node whose need linearizes first: a
+/// config_setting's planned feature flag). What the walk observes and the
+/// merges of a frozen walk commit belong to the walk, whose results stay
+/// whatever becomes of that attempt: in its frame they would be dropped
+/// with an abandoned attempt (or a node the tape never replays) while the
+/// memos they back (a merged source's path, a loaded package) stay.
+pub(crate) fn outside_frames<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(Vec<Events>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let saved = std::mem::take(&mut self.0);
+            let _ = FRAMES.try_with(|frames| {
+                if let Ok(mut frames) = frames.try_borrow_mut() {
+                    debug_assert!(
+                        frames.is_empty() || std::thread::panicking(),
+                        "a frame opened outside frames was left open"
+                    );
+                    *frames = saved;
+                }
+            });
+        }
+    }
+    let saved = FRAMES.with(|frames| std::mem::take(&mut *frames.borrow_mut()));
+    let _restore = Restore(saved);
+    f()
+}
+
 /// Add `event` to this thread's innermost frame (see [`Recorder::redirected`]).
 fn push_event(event: Event) {
     FRAMES.with(|frames| {
@@ -3974,6 +4008,53 @@ mod tests {
         assert!(window.recorder.snapshot().observations.is_empty());
         replay(kept.as_ref().unwrap());
         assert_eq!(window.recorder.snapshot().observations.len(), 1);
+    }
+
+    /// Outside frames (the evaluator's linearization and walks inside a
+    /// running attempt): what is observed and committed reaches the
+    /// recorder at once, frames opened inside work as usual, and the
+    /// enclosing frames are back afterwards, also after a panic; dropping
+    /// them then loses nothing of it.
+    #[test]
+    fn outside_frames_records_into_the_recorder() {
+        let temp = tempfile::tempdir().unwrap();
+        let window = record_this_thread();
+        let attempt = unit_scope();
+        let (_, captured) = capture(|| {
+            outside_frames(|| {
+                assert!(!in_frame());
+                exists(temp.path().join("walked"));
+                let inner = unit_scope();
+                exists(temp.path().join("merged"));
+                commit(inner.finish());
+                discard(|| exists(temp.path().join("dropped")));
+            })
+        });
+        assert!(captured.is_none(), "nothing went to the enclosing frames");
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            outside_frames(|| {
+                let _open = unit_scope();
+                exists(temp.path().join("before panic"));
+                panic!("a walk's panic");
+            })
+        }));
+        assert!(panicked.is_err());
+        assert!(in_frame());
+        exists(temp.path().join("framed"));
+        // The attempt abandoned: its frame dropped.
+        drop(attempt);
+        assert!(!in_frame());
+        let mut seen: Vec<String> = paths_of(&window.recorder.snapshot())
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
+        seen.sort();
+        let mut expected: Vec<String> = ["merged", "walked"]
+            .iter()
+            .map(|name| temp.path().join(name).display().to_string())
+            .collect();
+        expected.sort();
+        assert_eq!(seen, expected);
     }
 
     /// Two spellings of one path (`Path` equality ignores a trailing

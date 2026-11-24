@@ -435,7 +435,10 @@ impl Coord<'_> {
             return Ok(());
         };
         self.drain();
-        let result = self.linearize_with(&mut lin, shared);
+        // The tape applies outside any attempt this thread runs (a nested
+        // need linearizes first): what it and its walks observe is the
+        // recording's (observed_fs::outside_frames).
+        let result = crate::observed_fs::outside_frames(|| self.linearize_with(&mut lin, shared));
         self.lin = Some(lin);
         result
     }
@@ -973,6 +976,7 @@ impl Coord<'_> {
                 }
             }
             super::pass2::bump(super::pass2::STAT_WALKS, 1);
+            super::super::nodes::bodies::note_walked();
             super::pass2::bump(super::pass2::STAT_WALKED, (end - walked) as u64);
             let last_segment = lin
                 .segments
@@ -1654,7 +1658,10 @@ impl Coord<'_> {
         std::mem::swap(&mut engine.aspects, &mut *aspects);
         let own = std::mem::replace(&mut *engine.source_dir_probes, probes);
         engine.incremental = lin.tracker.take();
-        let result = lin.direct(|lin| f(engine, lin));
+        // Outside the frames of the attempts this thread runs: the walk's
+        // observations and merges are the recording's, whatever becomes of
+        // those attempts (observed_fs::outside_frames).
+        let result = crate::observed_fs::outside_frames(|| lin.direct(|lin| f(engine, lin)));
         lin.tracker = engine.incremental.take();
         let mut probes = std::mem::replace(&mut *engine.source_dir_probes, own);
         {
