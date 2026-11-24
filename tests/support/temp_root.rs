@@ -10,3 +10,19 @@ mod test_temp {
             .expect("the test temporary parent must exist and be accessible")
     }
 }
+
+// GNU timeout(1), which the integration tests wrap the CLI in: `timeout`
+// (or its absolute path) on Linux; on macOS, which has none, Homebrew
+// coreutils' `gtimeout` (the CI's macOS job installs it; docs/MACOS.md).
+#[allow(dead_code)]
+const TIMEOUT: &str = if cfg!(target_os = "linux") {
+    "timeout"
+} else {
+    "/opt/homebrew/bin/gtimeout"
+};
+#[allow(dead_code)]
+const USR_BIN_TIMEOUT: &str = if cfg!(target_os = "linux") {
+    "/usr/bin/timeout"
+} else {
+    "/opt/homebrew/bin/gtimeout"
+};

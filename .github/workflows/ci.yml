@@ -125,6 +125,12 @@ jobs:
         if: success() || failure()
         run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
 
+      - name: GNU timeout for the integration tests
+        # The integration tests wrap the CLI in GNU timeout(1)
+        # (tests/support/temp_root.rs: /opt/homebrew/bin/gtimeout on macOS).
+        if: success() || failure()
+        run: test -x /opt/homebrew/bin/gtimeout || brew install coreutils
+
       - name: Library unit tests
         if: success() || failure()
         run: cargo test --locked --lib

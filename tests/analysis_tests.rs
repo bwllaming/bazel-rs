@@ -62,7 +62,7 @@ impl Fixture {
         let cache = self.0.path().join("cache");
         seed_module_archives(&cache, TOOLCHAIN_CLOSURE_ARCHIVES);
         let cache = format!("--cache-dir={}", cache.display());
-        Command::new("timeout")
+        Command::new(TIMEOUT)
             .args([
                 "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),

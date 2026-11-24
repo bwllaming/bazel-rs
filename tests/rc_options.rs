@@ -52,7 +52,7 @@ impl Fixture {
     /// `environment` on top of PATH/HOME.
     fn run_env(&self, args: &[&str], environment: &[(&str, &str)]) -> Output {
         let cache = format!("--cache-dir={}", self.0.path().join("cache").display());
-        let mut command = Command::new("/usr/bin/timeout");
+        let mut command = Command::new(USR_BIN_TIMEOUT);
         command
             .args(["600s", env!("CARGO_BIN_EXE_bazel-rs"), &cache])
             .args(args)

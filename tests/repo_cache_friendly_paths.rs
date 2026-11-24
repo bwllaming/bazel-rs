@@ -64,7 +64,7 @@ impl Workspace {
 
     /// The query, successful or not: its exit code and stderr.
     fn query_output(&self, cache: &Path, extra: &[&str]) -> (Option<i32>, String) {
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args([
                 "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),

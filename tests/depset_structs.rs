@@ -50,7 +50,7 @@ impl Workspace {
     }
 
     fn run(&self, targets: &[&str]) -> Output {
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args([
                 "--ignore_all_rc_files",
@@ -280,7 +280,7 @@ fn closures_under_evaluator_restarts_and_threads() {
             args.push("//dc:bad_kept_ctx".to_owned());
         }
         args.extend(targets.iter().map(|target| format!("//dc:{target}")));
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(&args)
             .env("BAZEL_RS_ANALYSIS", "eval")

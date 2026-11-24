@@ -118,7 +118,7 @@ impl Fixture {
         self.file("ext.bzl", format!("load(':rules.bzl','maker')\ndef _impl(ctx):\n{indented}files=module_extension(_impl)\n"));
     }
     fn run(&self, args: &[&str]) -> Output {
-        Command::new("/usr/bin/timeout")
+        Command::new(USR_BIN_TIMEOUT)
             .args([
                 "--kill-after=2s",
                 "600s",

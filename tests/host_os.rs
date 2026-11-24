@@ -95,7 +95,7 @@ impl Fixture {
     }
 
     fn run(&self, args: &[&str], environment: &[(&str, &str)]) -> Output {
-        let mut command = Command::new("/usr/bin/timeout");
+        let mut command = Command::new(USR_BIN_TIMEOUT);
         command
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", "--cache-dir=cache"])

@@ -132,7 +132,7 @@ impl Workspace {
 
     /// One successful command (`args` after the startup options).
     fn run(&self, args: &[&str], environment: &[(&str, &str)]) -> Run {
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", "--cache-dir=cache"])
             .args(args)
@@ -667,7 +667,7 @@ fn outputs_of_one_size_keep_their_own_bytes() {
         &format!("load(':defs.bzl', 'many')\nmany(name = 'w', count = {COUNT})\n"),
     );
     let build = |cache: &str| {
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", &format!("--cache-dir={cache}")])
             .args(["build", "//:w"])

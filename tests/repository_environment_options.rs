@@ -38,7 +38,7 @@ fn override_forms_never_echo_values() {
         vec!["build", "--lockfile_mode=invalid"],
     ] {
         for form in &forms {
-            let output = Command::new("timeout")
+            let output = Command::new(TIMEOUT)
                 .args(["--kill-after=5", "15", env!("CARGO_BIN_EXE_bazel-rs")])
                 .arg("--ignore_all_rc_files")
                 .args(&command)
@@ -115,7 +115,7 @@ fn non_utf8_arguments_cannot_bypass_override_redaction_or_panic() {
             "--repo_env".into(),
         ],
     ] {
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args(["--kill-after=5", "15", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(args)
             .current_dir(workspace.path())

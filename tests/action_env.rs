@@ -81,7 +81,7 @@ impl Workspace {
     /// Run the CLI with exactly `client` as its environment (plus a PATH to
     /// find `timeout` unless `client` sets one).
     fn run(&self, client: &[(&str, &str)], args: &[&str]) -> Output {
-        let mut command = Command::new("/usr/bin/timeout");
+        let mut command = Command::new(USR_BIN_TIMEOUT);
         command
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", "--cache-dir=private-cache"])

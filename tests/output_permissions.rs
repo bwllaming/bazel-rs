@@ -21,7 +21,7 @@ fn genrule_outputs_are_executable_on_cold_and_warm_builds() {
     fs::write(root.path().join("input"), "payload\n").unwrap();
     let mut previous: Option<PathBuf> = None;
     for _ in 0..2 {
-        let result = Command::new("timeout")
+        let result = Command::new(TIMEOUT)
             .args([
                 "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),
@@ -94,7 +94,7 @@ def _impl(ctx):
 outputs = rule(implementation=_impl)
 "#).unwrap();
     for _ in 0..2 {
-        let result = Command::new("timeout")
+        let result = Command::new(TIMEOUT)
             .args([
                 "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),

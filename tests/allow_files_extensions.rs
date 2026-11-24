@@ -130,7 +130,7 @@ impl Fixture {
     }
 
     fn build(&self, target: &str) -> Output {
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args([
                 "--kill-after=5s",
                 "600s",

@@ -87,7 +87,7 @@ impl Fixture {
     }
 
     fn run_env(&self, args: &[&str], envs: &[(&str, &str)]) -> Output {
-        let output = Command::new("/usr/bin/timeout")
+        let output = Command::new(USR_BIN_TIMEOUT)
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")
             .arg(format!(

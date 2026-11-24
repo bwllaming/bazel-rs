@@ -217,7 +217,7 @@ impl Workspace {
 
     fn run(&self, arguments: &[&str], env: &[(&str, &str)]) -> Output {
         let home = self.0.path().join("home");
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args(["--kill-after=5s", "180s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")
             .arg(format!("--cache-dir={}", self.cache().display()))

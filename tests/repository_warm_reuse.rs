@@ -68,7 +68,7 @@ impl Fixture {
             .unwrap()
     }
     fn command(&self, cache: &str) -> Command {
-        let mut command = Command::new("timeout");
+        let mut command = Command::new(TIMEOUT);
         command
             .args([
                 "600s",

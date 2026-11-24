@@ -64,7 +64,7 @@ go_sdk = module_extension(_impl, tag_classes={'download': tag_class({'version': 
         fs::write(self.0.path().join(path), contents).unwrap();
     }
     fn run(&self, args: &[&str]) -> Output {
-        Command::new("/usr/bin/timeout")
+        Command::new(USR_BIN_TIMEOUT)
             .args([
                 "--kill-after=2s",
                 "600s",

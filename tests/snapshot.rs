@@ -198,7 +198,7 @@ impl Twin {
         snapshot: bool,
     ) -> Command {
         let home = self.run_root().join("home");
-        let mut command = Command::new("timeout");
+        let mut command = Command::new(TIMEOUT);
         command
             .args(["--kill-after=5s", "180s"])
             .arg(binary)

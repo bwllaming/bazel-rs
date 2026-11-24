@@ -45,7 +45,7 @@ fn fixture() -> tempfile::TempDir {
 }
 
 fn build(ws: &Path, target: &str, extra: &[&str], cache: &str, epoch: Option<&str>) -> Output {
-    let mut command = Command::new("timeout");
+    let mut command = Command::new(TIMEOUT);
     command
         .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
         .args([
@@ -243,7 +243,7 @@ fn a_failing_script_fails_even_without_a_status_consumer() {
     );
     // query does not inherit build options: the flag is unrecognized
     // there (QueryCommand has no inheritsOptionsFrom).
-    let mut command = Command::new("timeout");
+    let mut command = Command::new(TIMEOUT);
     let queried = command
         .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
         .args([

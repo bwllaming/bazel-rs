@@ -53,7 +53,7 @@ impl Workspace {
     }
 
     fn run(&self, args: &[&str]) -> std::process::Output {
-        Command::new("timeout")
+        Command::new(TIMEOUT)
             .arg("600s")
             .arg(env!("CARGO_BIN_EXE_bazel-rs"))
             .arg("--ignore_all_rc_files")
@@ -193,7 +193,7 @@ fn mod_tidy_matches_genuine_bazel() {
     let workspace = fs::canonicalize(directory.path()).unwrap().join("ws");
     copy_tree(&fixture().join("tidy_ws"), &workspace);
     for (index, expected) in receipt["tidy"].as_array().unwrap().iter().enumerate() {
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .arg("1200s")
             .arg(env!("CARGO_BIN_EXE_bazel-rs"))
             .arg("--ignore_all_rc_files")

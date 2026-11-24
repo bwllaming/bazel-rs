@@ -69,7 +69,7 @@ impl Workspace {
 
     fn command_with(&self, command: &str, args: &[&str], env: &[(&str, &str)]) -> Output {
         let registry = builtin_registry_flag();
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", "--cache-dir=cache", command])
             .args(["--experimental-builtin-modules", registry.as_str()])

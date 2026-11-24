@@ -30,7 +30,7 @@ impl Fixture {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        Command::new("/usr/bin/timeout")
+        Command::new(USR_BIN_TIMEOUT)
             .args([
                 "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),

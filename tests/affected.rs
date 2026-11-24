@@ -77,7 +77,7 @@ impl Repo {
     }
 
     fn affected_with(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args(["--kill-after=5s", "240s"])
             .arg(env!("CARGO_BIN_EXE_bazel-rs"))
             .arg("--ignore_all_rc_files")
@@ -556,7 +556,7 @@ filegroup(name = 'uses_old', srcs = [':n'], data = ['//dep:old'])
         }
     }
     // The same analysis outside `affected` prints them.
-    let output = Command::new("timeout")
+    let output = Command::new(TIMEOUT)
         .args(["--kill-after=5s", "240s"])
         .arg(env!("CARGO_BIN_EXE_bazel-rs"))
         .arg("--ignore_all_rc_files")
@@ -597,7 +597,7 @@ filegroup(name = 'uses_old', srcs = [':n'], data = ['//dep:old'])
 impl Repo {
     /// `bazel-rs ARGS` in the working copy, with the snapshot diagnostics.
     fn bazel(&self, args: &[&str]) -> Output {
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args(["--kill-after=5s", "240s"])
             .arg(env!("CARGO_BIN_EXE_bazel-rs"))
             .arg("--ignore_all_rc_files")
@@ -1421,7 +1421,7 @@ fn remote_keys_do_not_depend_on_the_checkout_location() {
             ),
         )
         .unwrap();
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args(["--kill-after=5s", "240s"])
             .arg(env!("CARGO_BIN_EXE_bazel-rs"))
             .arg("--nosystem_rc")

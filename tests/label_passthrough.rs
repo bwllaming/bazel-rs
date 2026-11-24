@@ -43,7 +43,7 @@ impl Fixture {
     fn run(&self, args: &[&str]) -> Output {
         // Cargo supplies the trusted executable; it need not live under the
         // manifest directory (e.g. an external CARGO_TARGET_DIR).
-        let mut command = Command::new("/usr/bin/timeout");
+        let mut command = Command::new(USR_BIN_TIMEOUT);
         command
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", "--cache-dir=cache"])

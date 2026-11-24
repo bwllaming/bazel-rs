@@ -101,7 +101,7 @@ impl Fixture {
             all.push("--lockfile_mode=off");
         }
         all.extend_from_slice(args);
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args([
                 "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),

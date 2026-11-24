@@ -272,7 +272,7 @@ impl Workspace {
         let marker_dir = format!("--action_env=MARKER_DIR={}", self.markers().display());
         let mut command = vec!["test", marker_dir.as_str()];
         command.extend_from_slice(args);
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", "--cache-dir=private-cache"])
             .args(with_explicit_modules(&command))

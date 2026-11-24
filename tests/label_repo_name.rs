@@ -45,7 +45,7 @@ impl Fixture {
         // reference binary or a release binary from another checkout.
         let binary = PathBuf::from(env!("CARGO_BIN_EXE_bazel-rs"));
         assert!(binary.is_file());
-        let output = Command::new("/usr/bin/timeout")
+        let output = Command::new(USR_BIN_TIMEOUT)
             .args(["--kill-after=5s", "600s"])
             .arg(binary)
             .args(["--ignore_all_rc_files", "--cache-dir=cache"])

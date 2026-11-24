@@ -44,7 +44,7 @@ impl Workspace {
     }
 
     fn run_env(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
-        let mut command = Command::new("timeout");
+        let mut command = Command::new(TIMEOUT);
         command
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", "--cache-dir=private-cache"])

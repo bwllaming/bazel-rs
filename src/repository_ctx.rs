@@ -5937,6 +5937,8 @@ mod tests {
         });
     }
 
+    // Linux only: expects the Linux x86_64 host's repository_os values.
+    #[cfg(target_os = "linux")]
     #[test]
     fn frozen_repository_context_retains_its_single_host_value_after_owner_drop() {
         let owner = Module::with_temp_heap(|module| {
@@ -6766,6 +6768,8 @@ R = repository_rule(implementation = _impl)
         write_executable_script(path, text, 0o755);
     }
 
+    // Linux only: expects the Linux x86_64 host's repository_os values.
+    #[cfg(target_os = "linux")]
     #[test]
     fn os_environ_is_a_fresh_sorted_client_environment_without_recorded_dependency() {
         let (fixture, reader) = Fixture::new().with_env(&[
@@ -7143,6 +7147,8 @@ ctx.file("BUILD", "sh_toolchain(path = %r)\n" % sh_path, executable = False)"#;
         assert_eq!(fixture.bytes("BUILD"), b"sh_toolchain(path = None)\n");
     }
 
+    // Linux only: expects the Linux x86_64 host's repository_os values.
+    #[cfg(target_os = "linux")]
     #[test]
     fn multitool_shaped_rule_decodes_a_label_lockfile() {
         let fixture = Fixture::new();

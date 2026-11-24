@@ -33,7 +33,7 @@ fn a_failing_noop_expander_mapping_interrupts_only_an_aquery_printing_it() {
     }
     let cache = root.path().join("cache");
     let run = |args: &[&str]| -> Output {
-        Command::new("timeout")
+        Command::new(TIMEOUT)
             .args(["--kill-after=5s", "300s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")
             .arg(format!("--cache-dir={}", cache.display()))

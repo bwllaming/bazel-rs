@@ -29,7 +29,7 @@ impl Fixture {
     }
     fn command(&self, args: &[&str]) -> Command {
         // A deadlock is a failed scenario, never an accepted cycle diagnostic.
-        let mut command = Command::new("timeout");
+        let mut command = Command::new(TIMEOUT);
         command
             .args([
                 "600s",
@@ -47,7 +47,7 @@ impl Fixture {
     }
     /// Run with an exact client environment (Bazel `--client_env`).
     fn run_env(&self, args: &[&str], environment: &[(&str, String)]) -> Output {
-        let mut command = Command::new("/usr/bin/timeout");
+        let mut command = Command::new(USR_BIN_TIMEOUT);
         command
             .args([
                 "600s",

@@ -240,7 +240,7 @@ impl Workspace {
     fn cold(&self, threads: usize, sequential: bool) -> Run {
         let _ = sealed_trees::remove_tree(self.path().join("cache"));
         let _ = fs::remove_file(self.path().join("MODULE.bazel.lock"));
-        let mut command = Command::new("timeout");
+        let mut command = Command::new(TIMEOUT);
         command
             .args([
                 "600s",

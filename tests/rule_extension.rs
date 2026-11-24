@@ -47,7 +47,7 @@ impl Workspace {
     }
 
     fn build(&self, targets: &[&str]) -> Output {
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")
             .arg(format!(

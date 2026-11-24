@@ -44,7 +44,7 @@ fn depsets_in_build_files_convert_to_list_attributes() {
     copy_dir(&fixture.join("workspace"), &ws);
     let cache = root.path().join("cache");
     let query = |pattern: &str, build: bool| {
-        let mut command = Command::new("timeout");
+        let mut command = Command::new(TIMEOUT);
         command
             .args(["--kill-after=5s", "120s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")

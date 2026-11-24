@@ -46,7 +46,7 @@ impl Fixture {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new("timeout");
+        let mut command = Command::new(TIMEOUT);
         command
             .args([
                 "600s",
@@ -346,7 +346,7 @@ impl GoWorkspace {
 
     fn spawn(&self) -> std::process::Child {
         let base = self.root.parent().unwrap();
-        Command::new("timeout")
+        Command::new(TIMEOUT)
             .args([
                 "300s",
                 env!("CARGO_BIN_EXE_bazel-rs"),

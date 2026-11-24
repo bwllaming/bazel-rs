@@ -1103,6 +1103,8 @@ mod tests {
         );
     }
 
+    // Linux only: uses util-linux setsid(1).
+    #[cfg(target_os = "linux")]
     #[test]
     fn descendants_holding_pipes_cannot_hang_the_invocation() {
         let dir = tempfile::tempdir().unwrap();

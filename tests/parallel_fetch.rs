@@ -161,7 +161,7 @@ impl Workspace {
     }
 
     fn command(&self, threads: usize, jitter: u64, args: &[&str]) -> Command {
-        let mut command = Command::new("timeout");
+        let mut command = Command::new(TIMEOUT);
         command
             .args([
                 "600s",

@@ -41,7 +41,7 @@ impl Fixture {
         fs::write(path, content).unwrap();
     }
     fn run(&self, args: &[&str]) -> Output {
-        Command::new("timeout")
+        Command::new(TIMEOUT)
             .args([
                 "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),
@@ -222,7 +222,7 @@ fn commands_that_end_the_process_write_the_lockfile_first() {
     ];
     for (args, code) in cases {
         let _ = fs::remove_file(f.0.path().join("MODULE.bazel.lock"));
-        let result = Command::new("timeout")
+        let result = Command::new(TIMEOUT)
             .args([
                 "120s",
                 env!("CARGO_BIN_EXE_bazel-rs"),

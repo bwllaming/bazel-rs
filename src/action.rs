@@ -11035,6 +11035,7 @@ mod tests {
         fixture.assert_unpublished();
     }
 
+    #[cfg(target_os = "linux")]
     fn entries(tree: &Path) -> Vec<(String, char, u32)> {
         let mut found = Vec::new();
         let mut pending = vec![PathBuf::new()];
@@ -11063,6 +11064,8 @@ mod tests {
     /// ones; the published tree holds them as store inodes and real
     /// directories (no links), is valid on reuse and is rebuilt when damaged;
     /// a consumer stages exactly that.
+    // Linux only: uses GNU realpath --relative-to.
+    #[cfg(target_os = "linux")]
     #[test]
     fn tree_outputs_follow_symlinks_and_publish_what_they_resolve_to() {
         let fixture = Fixture::new();

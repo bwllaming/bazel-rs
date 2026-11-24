@@ -134,7 +134,7 @@ impl Workspace {
         );
         // Offline: @rules_license (bazel_tools' dependency) is materialized.
         seed_module_archives(&self.0.path().join("cache"), &["rules_license@1.0.0"]);
-        Command::new("/usr/bin/timeout")
+        Command::new(USR_BIN_TIMEOUT)
             .args(["--kill-after=5s", "600s"])
             .arg(env!("CARGO_BIN_EXE_bazel-rs"))
             .args(["--ignore_all_rc_files", "--cache-dir=cache", "build"])
@@ -371,7 +371,7 @@ fn stamped_build_info_translates_the_workspace_status() {
                 .join("tests/fixtures/builtin_modules/registry")
                 .display()
         );
-        Command::new("/usr/bin/timeout")
+        Command::new(USR_BIN_TIMEOUT)
             .args(["--kill-after=5s", "600s"])
             .arg(env!("CARGO_BIN_EXE_bazel-rs"))
             .args(["--ignore_all_rc_files", "--cache-dir=cache", "build"])

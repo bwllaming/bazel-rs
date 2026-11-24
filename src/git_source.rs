@@ -1893,6 +1893,8 @@ mod tests {
         }
     }
 
+    // Linux only: Linux symlink modes (0777; macOS applies the umask), its 40-hop limit (macOS: 32) and non-UTF-8 names.
+    #[cfg(target_os = "linux")]
     #[test]
     #[cfg(unix)]
     fn preserves_distroless_relative_link_and_chain_on_cold_and_offline_warm_hits() {
@@ -2192,9 +2194,11 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     include!("../tests/support/forty_link_read.rs");
 
+    // Linux only: Linux symlink modes (0777; macOS applies the umask), its 40-hop limit (macOS: 32) and non-UTF-8 names.
+    #[cfg(target_os = "linux")]
     #[test]
     #[cfg(unix)]
     fn rejects_multiple_link_cycle_and_excessive_hops_but_preserves_forty_hops() {
@@ -2751,6 +2755,8 @@ mod tests {
         assert_eq!(fs::read(&tree.root).unwrap(), b"keep");
     }
 
+    // Linux only: Linux symlink modes (0777; macOS applies the umask), its 40-hop limit (macOS: 32) and non-UTF-8 names.
+    #[cfg(target_os = "linux")]
     #[test]
     #[cfg(unix)]
     fn snapshot_rejects_hardlinks_dangling_symlinks_non_utf8_metadata_and_size_overflows() {

@@ -894,6 +894,8 @@ if [ "$CASE" = second_fallback ]; then printf '\050\001' >> out/result.jdeps; fi
                         }
                         Err(error) => panic!("{error}"),
                     };
+                    // macOS: an accepted socket inherits O_NONBLOCK.
+                    stream.set_nonblocking(false).unwrap();
                     stream
                         .set_read_timeout(Some(std::time::Duration::from_secs(2)))
                         .unwrap();

@@ -83,7 +83,7 @@ impl Fixture {
         );
         // Offline: execution platform resolution materializes @platforms.
         seed_module_archives(&self.0.path().join("cache"), &["platforms@1.0.0"]);
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args([
                 "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),

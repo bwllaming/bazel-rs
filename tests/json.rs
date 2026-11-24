@@ -49,7 +49,7 @@ impl Workspace {
         let tmp = self.path().join("private-tmp");
         fs::create_dir_all(&home).unwrap();
         fs::create_dir_all(&tmp).unwrap();
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .env_clear()
             .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")

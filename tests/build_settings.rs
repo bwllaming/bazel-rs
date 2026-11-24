@@ -28,7 +28,7 @@ impl Fixture {
         fs::write(self.0.path().join(path), content).unwrap();
     }
     fn run(&self, command: &str, args: &[&str]) -> Output {
-        Command::new("timeout")
+        Command::new(TIMEOUT)
             .args([
                 "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),

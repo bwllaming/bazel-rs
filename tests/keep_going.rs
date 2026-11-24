@@ -373,7 +373,7 @@ impl Workspace {
         if command[0] != "query" {
             command.insert(1, "--show_result=100");
         }
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", "--cache-dir=private-cache"])
             .args(with_explicit_modules(&command))

@@ -32,7 +32,7 @@ fn is_singleton_depset_follows_bazel() {
     let ws = temp.path();
     copy(&fixture().join("workspace"), ws);
     let run = |target: &str| -> Output {
-        Command::new("timeout")
+        Command::new(TIMEOUT)
             .args([
                 "--kill-after=5s",
                 "120s",

@@ -53,7 +53,7 @@ impl Workspace {
     }
 
     fn build_env(&self, env: &[(&str, &str)], args: &[&str]) -> Output {
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args([
                 "--ignore_all_rc_files",

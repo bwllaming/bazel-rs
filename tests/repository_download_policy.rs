@@ -264,7 +264,7 @@ impl Fixture {
     }
 
     fn invoke(&self, args: &[String], cache: &str) -> Output {
-        Command::new("timeout")
+        Command::new(TIMEOUT)
             .env_clear()
             .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
@@ -744,7 +744,7 @@ fn local_git_override_keeps_its_existing_transport_and_admission_with_downloads_
     // Export the genuine pinned archive, then fetch a real local Git commit of it.
     bazel_rs::archive::extract(ARCHIVE, "tar.gz", "", &origin).unwrap();
     let git = |args: &[&str]| {
-        let result = Command::new("timeout")
+        let result = Command::new(TIMEOUT)
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", fixture.temp.path().join("home"))

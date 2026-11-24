@@ -28,7 +28,7 @@ impl Fixture {
         self.file("defs.bzl",&format!("load(':repo.bzl','r')\none=native.existing_rule\nall_rules=native.existing_rules\ndef _impl(ctx):\n{}\next=module_extension(implementation=_impl)\n",body.lines().map(|l|format!("    {l}\n")).collect::<String>()));
     }
     fn run(&self) -> Output {
-        Command::new("timeout")
+        Command::new(TIMEOUT)
             .args([
                 "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),

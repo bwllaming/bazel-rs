@@ -32,7 +32,7 @@ impl Fixture {
     }
 
     fn run_env(&self, env: &[(&str, &str)], args: &[&str]) -> Output {
-        let mut command = Command::new("timeout");
+        let mut command = Command::new(TIMEOUT);
         command
             .args([
                 "600s",

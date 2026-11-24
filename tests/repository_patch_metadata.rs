@@ -120,7 +120,7 @@ impl Fixture {
                 .join("tests/fixtures/builtin_modules/registry")
                 .display()
         );
-        Command::new("/usr/bin/timeout")
+        Command::new(USR_BIN_TIMEOUT)
             .env_clear()
             .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")

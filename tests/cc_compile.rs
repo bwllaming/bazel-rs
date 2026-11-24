@@ -193,7 +193,7 @@ impl Workspace {
         );
         // Offline: @rules_license (bazel_tools' dependency) is materialized.
         seed_module_archives(&self.root.join(cache), &["rules_license@1.0.0"]);
-        let mut command = Command::new("/usr/bin/timeout");
+        let mut command = Command::new(USR_BIN_TIMEOUT);
         command
             .args(["--kill-after=5s", "900s"])
             .arg(env!("CARGO_BIN_EXE_bazel-rs"))

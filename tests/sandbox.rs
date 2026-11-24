@@ -271,7 +271,7 @@ genrule(name = 'tmpwrite', outs = ['tmpwrite.txt'], cmd = 'echo t > /tmp/n59-tmp
     }
 
     fn run(&self, cache: &str, args: &[&str]) -> Output {
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", &format!("--cache-dir={cache}")])
             .args(args)
@@ -1244,7 +1244,7 @@ fn test_source_writes_case(ws: &Path, cache: &Path, args: &[&str]) -> serde_json
         fs::copy(fixture.join(name), path).unwrap();
     }
     let before = source_tree(ws);
-    let output = Command::new("timeout")
+    let output = Command::new(TIMEOUT)
         .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
         .arg("--ignore_all_rc_files")
         .arg(format!("--cache-dir={}", cache.display()))

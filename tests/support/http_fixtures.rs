@@ -35,6 +35,9 @@ impl Server {
                     }
                     Err(e) => panic!("listener: {e}"),
                 };
+                // macOS: an accepted socket inherits the listener's
+                // O_NONBLOCK (Linux's does not).
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(30)))
                     .unwrap();

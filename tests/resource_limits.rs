@@ -41,7 +41,7 @@ impl Workspace {
     /// to the shell that then execs bazel-rs).
     fn run_limited(&self, ulimit_args: &str, args: &[&str]) -> Output {
         let script = format!("ulimit {ulimit_args} && exec \"$0\" \"$@\"");
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args(["--kill-after=5s", "600s", "bash", "-c", &script])
             .arg(env!("CARGO_BIN_EXE_bazel-rs"))
             .args(["--ignore_all_rc_files", "--cache-dir=private-cache"])

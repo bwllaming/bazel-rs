@@ -80,7 +80,7 @@ impl Fixture {
     }
 
     fn command(&self, workspace: &str, args: &[&str], env: &[(&str, &str)]) -> Command {
-        let mut command = Command::new("timeout");
+        let mut command = Command::new(TIMEOUT);
         command
             .args(["--kill-after=5s", "240s"])
             .arg(env!("CARGO_BIN_EXE_bazel-rs"))

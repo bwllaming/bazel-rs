@@ -436,7 +436,7 @@ slow = repository_rule(implementation = _slow_impl, local = True)
     ) -> Run {
         let dump = self.path().join("dump.txt");
         let _ = fs::remove_file(&dump);
-        let mut command = Command::new("timeout");
+        let mut command = Command::new(TIMEOUT);
         command
             .args(["--kill-after=5s", "300s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")

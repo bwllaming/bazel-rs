@@ -81,7 +81,7 @@ fn build_and_cquery_consume_real_repository_namespace_files() {
         env!("CARGO_MANIFEST_DIR")
     );
     let run = |args: &[&str]| {
-        let out = Command::new("timeout")
+        let out = Command::new(TIMEOUT)
             .args([
                 "--kill-after=5s",
                 "120s",

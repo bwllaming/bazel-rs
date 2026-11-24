@@ -52,7 +52,7 @@ impl Fixture {
     }
 
     fn run(&self, command: &str, args: &[&str]) -> Output {
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args([
                 "--kill-after=5s",
                 "600s",

@@ -252,7 +252,7 @@ impl Workspace {
             "--registry=file://{}/tests/fixtures/builtin_modules/registry",
             manifest().display()
         );
-        let mut process = Command::new("timeout");
+        let mut process = Command::new(TIMEOUT);
         process
             .args(["--kill-after=5s", "180s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")

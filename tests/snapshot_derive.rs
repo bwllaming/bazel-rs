@@ -71,7 +71,7 @@ impl Twin {
     fn run_side(&self, side: &str, args: &[&str]) -> Output {
         fs::rename(self.side(side), self.run_root()).unwrap();
         let home = self.run_root().join("home");
-        let mut command = Command::new("timeout");
+        let mut command = Command::new(TIMEOUT);
         command
             .args(["--kill-after=5s", "300s"])
             .arg(env!("CARGO_BIN_EXE_bazel-rs"))

@@ -261,7 +261,7 @@ impl Workspace {
         );
         // Offline: @rules_license (bazel_tools' dependency) is materialized.
         seed_module_archives(&self.cache(name), &["rules_license@1.0.0"]);
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args(["--kill-after=5s", "900s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")
             .arg(format!("--cache-dir={}", self.cache(name).display()))

@@ -51,7 +51,7 @@ impl Workspace {
             line.push(registry.as_str());
         }
         line.extend(args);
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", "--cache-dir=cache"])
             .args(&line)

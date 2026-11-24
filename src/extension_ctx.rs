@@ -2063,6 +2063,8 @@ r(name='sdk', words=[version])
         );
     }
 
+    // Linux only: expects the Linux host's repository_os values and /etc/hostname.
+    #[cfg(target_os = "linux")]
     #[test]
     fn module_ctx_working_directory_file_io_execute_and_watch_restrictions() {
         let fixture = Fixture::new();
@@ -2622,6 +2624,8 @@ ctx.read('cached') == ctx.read('tool') or fail('cached bytes')
         assert!(base.finish().unwrap().host_facilities.contains("download"));
     }
 
+    // Linux only: expects the Linux host's repository_os values and /etc/hostname.
+    #[cfg(target_os = "linux")]
     #[test]
     fn actual_module_context_host_reads_do_not_require_flags_or_capture_environment() {
         use crate::repository_environment::tests::Reader;
@@ -2696,6 +2700,8 @@ ctx.read('cached') == ctx.read('tool') or fail('cached bytes')
         assert!(declared.inputs.watched_env.is_some());
     }
 
+    // Linux only: expects the Linux host's repository_os values and /etc/hostname.
+    #[cfg(target_os = "linux")]
     #[test]
     fn frozen_module_context_retains_single_host_value_and_distinct_context_identity() {
         let owner = Module::with_temp_heap(|module| {

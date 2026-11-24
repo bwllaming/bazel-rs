@@ -181,7 +181,7 @@ impl Workspace {
             .map(|arg| arg.replace("{CAP}", &capture))
             .collect();
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let output = Command::new("timeout")
+        let output = Command::new(TIMEOUT)
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", "--cache-dir=private-cache"])
             .args(with_explicit_modules(&args))
