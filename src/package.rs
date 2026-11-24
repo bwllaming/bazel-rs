@@ -2646,6 +2646,11 @@ pub(crate) struct LoadUnit {
     /// speculative load nobody takes or an attempt aborted for its inline
     /// re-run records none (docs/PROFILE.md "Parity").
     pub(crate) profiled: Option<crate::profile::PendingSpan>,
+    /// A package with errors (Package.containsErrors): the targets its
+    /// BUILD file declared before its evaluation failed, with `result` that
+    /// failure. Only `query` uses them (genuine keeps them for patterns and
+    /// visitations; every other command fails the package as before).
+    pub(crate) partial: Option<Arc<Package>>,
 }
 
 pub fn evaluate_in(
@@ -2686,7 +2691,15 @@ pub(crate) fn evaluate_load_unit(
     let roots = crate::repository::UnitRoots::record();
     // --profile (crate::profile): the package's evaluation on this thread.
     let started = crate::profile::active().then(std::time::Instant::now);
-    let result = evaluate_in_with_prints(repositories, package, &prints);
+    let mut partial = None;
+    let result = evaluate_in_with_prints(repositories, package, &prints, &mut partial);
+    // (Not for an aborted attempt: its inline re-run decides.)
+    let partial = match &result {
+        Err(error) if !crate::repository_demand::is_inline_rerun_sentinel(error) => {
+            partial.map(Arc::new)
+        }
+        _ => None,
+    };
     let profiled = started.and_then(|started| {
         // PackageIdentifier.toString(), as genuine's PackageFunction names
         // the span: a main-repository package by its path alone (`p`, the
@@ -2707,13 +2720,17 @@ pub(crate) fn evaluate_load_unit(
             .map(crate::observed_fs::UnitScope::finish)
             .unwrap_or_default(),
         profiled,
+        partial,
     }
 }
 
+/// `partial`: the package with errors when the BUILD file's evaluation
+/// fails ([`LoadUnit::partial`]).
 fn evaluate_in_with_prints(
     repositories: Arc<RepositorySet>,
     package: &PackageId,
     prints: &crate::loading::LoadPrints,
+    partial: &mut Option<Package>,
 ) -> Result<Package, String> {
     local_label("__package__", package, "package path").map_err(|e| e.to_string())?;
     let root = repositories.root(&package.repository)?;
@@ -2744,6 +2761,7 @@ fn evaluate_in_with_prints(
         source,
         &ignored,
         prints,
+        partial,
     )
 }
 
@@ -2786,6 +2804,7 @@ fn evaluate_at(
     source: String,
     ignored: &crate::ignored::IgnoredSubdirectories,
     prints: &crate::loading::LoadPrints,
+    partial: &mut Option<Package>,
 ) -> Result<Package, String> {
     let dialect = Dialect {
         enable_def: false,
@@ -2886,15 +2905,28 @@ fn evaluate_at(
         evaluator
             .set_max_callstack_size(128)
             .map_err(|e| e.to_string())?;
-        evaluator
+        // A failed evaluation keeps what it declared (a package with
+        // errors, Package.containsErrors): the module freezes all the same,
+        // its rules are finished below, and the failure is the result.
+        let failure = evaluator
             .eval_module(ast, &globals)
-            .map_err(|e| format!("{e:#}\n{NATIVE_LOADING_FOOTER}"))?;
+            .err()
+            .map(|e| format!("{e:#}\n{NATIVE_LOADING_FOOTER}"));
         drop(evaluator);
-        module
-            .freeze_named(starlark::values::FrozenHeapName::User(Box::new(
-                filename.to_owned(),
-            )))
-            .map_err(|e| format!("cannot freeze BUILD module: {e:?}"))
+        let frozen = module.freeze_named(starlark::values::FrozenHeapName::User(Box::new(
+            filename.to_owned(),
+        )));
+        match (failure, frozen) {
+            (None, frozen) => frozen
+                .map(|frozen| (frozen, None))
+                .map_err(|e| format!("cannot freeze BUILD module: {e:?}")),
+            (Some(failure), Ok(frozen))
+                if !crate::repository_demand::is_inline_rerun_sentinel(&failure) =>
+            {
+                Ok((frozen, Some(failure)))
+            }
+            (Some(failure), _) => Err(failure),
+        }
     });
     drop(parse_memo);
     let timing_frozen = std::time::Instant::now();
@@ -2920,130 +2952,144 @@ fn evaluate_at(
     if let Some(error) = declarations.glob_io_error.borrow_mut().take() {
         return Err(format!("no such package '{package_display}': {error}"));
     }
-    let frozen = evaluated?;
-    let deferred = declarations.deferred_errors.take();
-    if !deferred.is_empty() {
-        return Err(deferred.join("\n"));
-    }
-    if let Some(issue) = declarations.glob_symlink_issue.borrow_mut().take() {
-        return Err(crate::glob::symlink_issue_error(&issue, &package_display));
-    }
-    let mut declared_rules = declarations.rules.into_inner();
-    // One registry per package, shared by its Starlark rule targets.
-    let top_level_functions: Arc<[starlark::values::OwnedFrozenValue]> = loaded.functions.into();
-    for pending in declarations.custom.into_inner() {
-        let (implementation, _) = frozen
-            .get_any_visibility(&pending.slot)
-            .map_err(|e| e.to_string())?;
-        declared_rules[pending.index].custom = Some(CustomInvocation {
-            split_dependencies: Default::default(),
-            implementation,
-            parents: pending
-                .parent_slots
-                .iter()
-                .map(|(rule_class, slot)| {
-                    frozen
-                        .get_any_visibility(slot)
-                        .map(|(value, _)| (rule_class.clone(), value))
-                        .map_err(|error| error.to_string())
-                })
-                .collect::<Result<_, _>>()?,
-            subrules: pending
-                .subrule_slots
-                .iter()
-                .map(|slot| {
-                    frozen
-                        .get_any_visibility(slot)
-                        .map(|(value, _)| value)
-                        .map_err(|error| error.to_string())
-                })
-                .collect::<Result<_, _>>()?,
-            top_level_functions: top_level_functions.clone(),
-            transitions: pending
-                .transition_slots
-                .iter()
-                .map(|(key, slot)| {
-                    frozen
-                        .get_any_visibility(slot)
-                        .map(|(value, _)| (key.clone(), value))
-                        .map_err(|error| error.to_string())
-                })
-                .collect::<Result<_, _>>()?,
-            attrs: pending.attrs,
-            schema: pending.schema,
-            build_setting: pending.build_setting,
-            setting_value: None,
-            target_platform: crate::platforms::TargetPlatform::Absent,
-            toolchains: None,
-            exec_groups: None,
-            use_auto_exec_groups: false,
-            action_exec_groups: Default::default(),
-            cpp: Default::default(),
-            surface: Default::default(),
-            declaration: pending.declaration,
-        });
-    }
-    // RuleClass.checkForDuplicateLabels (packages/RuleClass.java:2080, 2107-2129)
-    // reports every rule error; the package is then in error.
-    let duplicates = declared_rules
-        .iter()
-        .flat_map(duplicate_label_errors)
-        .collect::<Vec<_>>();
-    if !duplicates.is_empty() {
-        return Err(duplicates.join("\n"));
-    }
-    let mut rules = validate_rules(declared_rules).map_err(|e| format!("{filename}: {e}"))?;
-    let args = declarations.package_args.into_inner();
-    for rule in rules.values_mut() {
-        rule.unanalyzed.extend(package_default_gaps(rule, &args));
-        rule.package_metadata = effective_package_metadata(rule, &args);
-        // Computed defaults are resolved against the final package arguments.
-        let testonly = rule.is_test_only(&args);
-        let deprecation = rule.deprecation_warning(&args);
-        if let Some(custom) = rule.custom.as_mut() {
-            custom.declaration.builtin.testonly = testonly;
-            custom.declaration.builtin.deprecation = deprecation;
+    let (frozen, failure) = evaluated?;
+    // The rest finishes the package; after a failed evaluation any error
+    // here leaves the evaluation's failure as the result, without targets.
+    let finished = (move || -> Result<Package, String> {
+        let deferred = declarations.deferred_errors.take();
+        if !deferred.is_empty() {
+            return Err(deferred.join("\n"));
         }
-    }
-    let default_visibility = declarations.default_visibility.into_inner();
-    let private_config_settings = declarations
-        .repositories
-        .config_setting_private_default_visibility();
-    for label in declarations.defaulted_rules.into_inner() {
-        if let Some(rule) = rules.get_mut(&label) {
-            // Rule.getDefaultVisibility (packages/Rule.java:694-710): with the
-            // DEFAULT_PUBLIC config_setting visibility policy
-            // (--incompatible_enforce_config_setting_visibility=true and
-            // --incompatible_config_setting_private_default_visibility=false
-            // defaults, pkgcache/PackageOptions.java:117-140), a config_setting
-            // without explicit visibility is public.
-            // --incompatible_config_setting_private_default_visibility
-            // (DEFAULT_STANDARD policy): the package default, like any rule.
-            rule.visibility = if matches!(rule.kind, RuleKind::Native("config_setting"))
-                && !private_config_settings
-            {
-                Visibility::Public
-            } else {
-                default_visibility.clone()
-            };
+        if let Some(issue) = declarations.glob_symlink_issue.borrow_mut().take() {
+            return Err(crate::glob::symlink_issue_error(&issue, &package_display));
         }
+        let mut declared_rules = declarations.rules.into_inner();
+        // One registry per package, shared by its Starlark rule targets.
+        let top_level_functions: Arc<[starlark::values::OwnedFrozenValue]> =
+            loaded.functions.into();
+        for pending in declarations.custom.into_inner() {
+            let (implementation, _) = frozen
+                .get_any_visibility(&pending.slot)
+                .map_err(|e| e.to_string())?;
+            declared_rules[pending.index].custom = Some(CustomInvocation {
+                split_dependencies: Default::default(),
+                implementation,
+                parents: pending
+                    .parent_slots
+                    .iter()
+                    .map(|(rule_class, slot)| {
+                        frozen
+                            .get_any_visibility(slot)
+                            .map(|(value, _)| (rule_class.clone(), value))
+                            .map_err(|error| error.to_string())
+                    })
+                    .collect::<Result<_, _>>()?,
+                subrules: pending
+                    .subrule_slots
+                    .iter()
+                    .map(|slot| {
+                        frozen
+                            .get_any_visibility(slot)
+                            .map(|(value, _)| value)
+                            .map_err(|error| error.to_string())
+                    })
+                    .collect::<Result<_, _>>()?,
+                top_level_functions: top_level_functions.clone(),
+                transitions: pending
+                    .transition_slots
+                    .iter()
+                    .map(|(key, slot)| {
+                        frozen
+                            .get_any_visibility(slot)
+                            .map(|(value, _)| (key.clone(), value))
+                            .map_err(|error| error.to_string())
+                    })
+                    .collect::<Result<_, _>>()?,
+                attrs: pending.attrs,
+                schema: pending.schema,
+                build_setting: pending.build_setting,
+                setting_value: None,
+                target_platform: crate::platforms::TargetPlatform::Absent,
+                toolchains: None,
+                exec_groups: None,
+                use_auto_exec_groups: false,
+                action_exec_groups: Default::default(),
+                cpp: Default::default(),
+                surface: Default::default(),
+                declaration: pending.declaration,
+            });
+        }
+        // RuleClass.checkForDuplicateLabels (packages/RuleClass.java:2080, 2107-2129)
+        // reports every rule error; the package is then in error.
+        let duplicates = declared_rules
+            .iter()
+            .flat_map(duplicate_label_errors)
+            .collect::<Vec<_>>();
+        if !duplicates.is_empty() {
+            return Err(duplicates.join("\n"));
+        }
+        let mut rules = validate_rules(declared_rules).map_err(|e| format!("{filename}: {e}"))?;
+        let args = declarations.package_args.into_inner();
+        for rule in rules.values_mut() {
+            rule.unanalyzed.extend(package_default_gaps(rule, &args));
+            rule.package_metadata = effective_package_metadata(rule, &args);
+            // Computed defaults are resolved against the final package arguments.
+            let testonly = rule.is_test_only(&args);
+            let deprecation = rule.deprecation_warning(&args);
+            if let Some(custom) = rule.custom.as_mut() {
+                custom.declaration.builtin.testonly = testonly;
+                custom.declaration.builtin.deprecation = deprecation;
+            }
+        }
+        let default_visibility = declarations.default_visibility.into_inner();
+        let private_config_settings = declarations
+            .repositories
+            .config_setting_private_default_visibility();
+        for label in declarations.defaulted_rules.into_inner() {
+            if let Some(rule) = rules.get_mut(&label) {
+                // Rule.getDefaultVisibility (packages/Rule.java:694-710): with the
+                // DEFAULT_PUBLIC config_setting visibility policy
+                // (--incompatible_enforce_config_setting_visibility=true and
+                // --incompatible_config_setting_private_default_visibility=false
+                // defaults, pkgcache/PackageOptions.java:117-140), a config_setting
+                // without explicit visibility is public.
+                // --incompatible_config_setting_private_default_visibility
+                // (DEFAULT_STANDARD policy): the package default, like any rule.
+                rule.visibility = if matches!(rule.kind, RuleKind::Native("config_setting"))
+                    && !private_config_settings
+                {
+                    Visibility::Public
+                } else {
+                    default_visibility.clone()
+                };
+            }
+        }
+        let exports = declarations.exports.into_inner();
+        let package = Package {
+            rules: rules
+                .into_iter()
+                .map(|(label, rule)| (label, Arc::new(rule)))
+                .collect(),
+            exports,
+            default_visibility,
+            no_implicit_file_export: declarations.repositories.no_implicit_file_export(),
+            macro_names: declarations.macro_names.into_inner(),
+            macro_inputs: declarations.macro_inputs.into_inner(),
+            args,
+            build_file: PathBuf::from(filename),
+            direct_loads,
+            load_graph,
+        };
+        Ok(package)
+    })();
+    match (failure, finished) {
+        (None, finished) => finished,
+        (Some(failure), Ok(package)) => {
+            *partial = Some(package);
+            Err(failure)
+        }
+        (Some(failure), Err(_)) => Err(failure),
     }
-    let exports = declarations.exports.into_inner();
-    Ok(Package {
-        rules: rules
-            .into_iter()
-            .map(|(label, rule)| (label, Arc::new(rule)))
-            .collect(),
-        exports,
-        default_visibility,
-        no_implicit_file_export: declarations.repositories.no_implicit_file_export(),
-        macro_names: declarations.macro_names.into_inner(),
-        macro_inputs: declarations.macro_inputs.into_inner(),
-        args,
-        build_file: PathBuf::from(filename),
-        direct_loads,
-        load_graph,
-    })
 }
 
 /// RuleClass.checkForDuplicateLabels (packages/RuleClass.java:2107-2129) with
@@ -3282,6 +3328,7 @@ fn evaluate_source(
         source,
         &ignored,
         &prints,
+        &mut None,
     );
     // Test helper: the buffered lines reach stderr in order, as before.
     for event in prints.take() {

@@ -386,6 +386,16 @@ enum Lookup {
     Fatal(String),
 }
 
+/// PackageIdentifier.toString: a main-repository package by its path, an
+/// external one as `@@repo//pkg`.
+fn package_display(id: &PackageId) -> String {
+    if id.repository.is_empty() {
+        id.package.to_string()
+    } else {
+        format!("@@{}//{}", id.repository, id.package)
+    }
+}
+
 fn classify(error: String) -> Lookup {
     if error.starts_with("no such package '") || error.starts_with("no such target '") {
         Lookup::Missing(error)
@@ -445,6 +455,9 @@ struct MissingEdge {
     error: String,
     /// Approximate Skyframe completion order of the failure.
     cost: u8,
+    /// The target exists in a package with errors (visited all the same;
+    /// the transitive preloading does not fail for it).
+    in_error: bool,
 }
 
 /// One dependency edge of a target (LabelVisitationUtils.LabelProcessor).
@@ -613,6 +626,9 @@ impl Engine {
                 2,
             );
         }
+        // Packages with errors load with the targets declared before the
+        // failure (Package.containsErrors), their failures error events.
+        self.keep_packages_in_error = true;
         let mut env = Env {
             engine: self,
             options,
@@ -901,6 +917,24 @@ impl Env<'_> {
         self.events.push(format!("ERROR: {message}"));
     }
 
+    /// The failures of the packages loaded with errors since the last call
+    /// (`Engine::package_error_events`): error events, as the package's
+    /// creation reports them in Bazel.
+    fn drain_package_errors(&mut self) {
+        for error in std::mem::take(&mut self.engine.package_error_events) {
+            self.error_event(error);
+        }
+    }
+
+    /// Whether `label`'s package loaded with errors.
+    fn in_error(&self, label: &Label) -> bool {
+        !self.engine.packages_in_error.is_empty()
+            && self
+                .engine
+                .packages_in_error
+                .contains_key(&label.package_id())
+    }
+
     /// AbstractBlazeQueryEnvironment.evaluateQueryInternal
     /// (query2/common/AbstractBlazeQueryEnvironment.java:150-227).
     fn evaluate_query(&mut self, expr: &Expr) -> Eval<Set> {
@@ -945,7 +979,9 @@ impl Env<'_> {
         // Packages the evaluation demands next load ahead on the
         // prefetch workers (committed at the sequential demand point).
         self.engine.start_query_prefetch(self.visits_all_branches());
-        match self.eval(expr, &mut Vec::new()) {
+        let evaluated = self.eval(expr, &mut Vec::new());
+        self.drain_package_errors();
+        match evaluated {
             Ok(result) => {
                 if self.has_errors && !self.options.keep_going {
                     return Err(Failure::Query(QueryError {
@@ -1000,6 +1036,7 @@ impl Env<'_> {
             return Err(error.clone());
         }
         let result = self.engine.load_package(id);
+        self.drain_package_errors();
         if let Err(error) = &result {
             self.package_errors.insert(id.clone(), error.clone());
         }
@@ -1011,7 +1048,9 @@ impl Env<'_> {
         if let Some(kind) = self.kinds.get(label) {
             return Ok(kind.clone());
         }
-        let kind = match self.compute_kind(label) {
+        let kind = self.compute_kind(label);
+        self.drain_package_errors();
+        let kind = match kind {
             Ok(kind) => Ok(kind),
             Err(Lookup::Missing(error)) => Err(error),
             Err(Lookup::Fatal(error)) => return Err(Failure::Fatal(error)),
@@ -1352,6 +1391,7 @@ impl Env<'_> {
                         to: None,
                         error,
                         cost: 1,
+                        in_error: false,
                     });
                 }
             }
@@ -1359,6 +1399,21 @@ impl Env<'_> {
             for (from, to, attribute) in pending {
                 match self.lookup(&to)? {
                     Ok(_) => {
+                        // A target of a package with errors is visited,
+                        // and its edge reported (TransitiveTraversalFunction:
+                        // NoSuchTargetException of a target in error).
+                        if self.in_error(&to) {
+                            missing.push(MissingEdge {
+                                from: from.clone(),
+                                to: Some(to.clone()),
+                                error: format!(
+                                    "Target '{}' contains an error and its package is in error",
+                                    crate::rule_declarations::canonical_form(&to)
+                                ),
+                                cost: 0,
+                                in_error: true,
+                            });
+                        }
                         self.graph_nodes.insert(to.clone());
                         self.graph_edges
                             .entry(from.clone())
@@ -1386,6 +1441,7 @@ impl Env<'_> {
                             to: Some(to),
                             error,
                             cost,
+                            in_error: false,
                         });
                     }
                 }
@@ -1407,7 +1463,9 @@ impl Env<'_> {
             return Ok(visited);
         }
         const MAX_DEPTH_FULL_SCAN_LIMIT: i32 = 20;
-        if should_visit(depth, MAX_DEPTH_FULL_SCAN_LIMIT) {
+        if should_visit(depth, MAX_DEPTH_FULL_SCAN_LIMIT)
+            && missing.iter().any(|edge| !edge.in_error)
+        {
             if !self.options.keep_going {
                 // QueryTransitivePackagePreloader.maybeThrowQueryExceptionForResultWithError:
                 // the first Skyframe failure, which native approximates by
@@ -1416,6 +1474,7 @@ impl Env<'_> {
                 // visitation order.
                 let first = missing
                     .iter()
+                    .filter(|edge| !edge.in_error)
                     .enumerate()
                     .min_by_key(|(index, edge)| (edge.cost, *index))
                     .map(|(_, edge)| edge.error.clone())
@@ -1426,7 +1485,7 @@ impl Env<'_> {
                 ));
             }
             // TransitiveTargetFunction reports every missing edge too.
-            for edge in &missing {
+            for edge in missing.iter().filter(|edge| !edge.in_error) {
                 self.report_missing(edge);
             }
         }
@@ -1533,6 +1592,7 @@ impl Env<'_> {
             self.engine.pattern_load_errors = Some(Vec::new());
         }
         let expanded = self.engine.expand_pattern(&parsed, false, false);
+        self.drain_package_errors();
         for error in self.engine.pattern_load_errors.take().unwrap_or_default() {
             self.error_event(error);
         }
@@ -1543,6 +1603,27 @@ impl Env<'_> {
                     match self.lookup(&label)? {
                         Ok(_) => targets.push(label),
                         Err(error) => return Ok(Err(error)),
+                    }
+                }
+                // A pattern over the targets of a package with errors
+                // (`:all`, `:*`, `/...`): TargetPatternResolver reports
+                // the package's error, the targets kept.
+                if !matches!(
+                    parsed.kind,
+                    crate::target_pattern::Kind::SingleTarget { .. }
+                ) {
+                    let mut reported = BTreeSet::new();
+                    for label in &targets {
+                        let id = label.package_id();
+                        if let Some(error) = self.engine.packages_in_error.get(&id)
+                            && reported.insert(id.clone())
+                        {
+                            let error = error.clone();
+                            self.error_event(format!(
+                                "package contains errors: {}: {error}",
+                                package_display(&id)
+                            ));
+                        }
                     }
                 }
                 self.pattern_edges(&targets)?;

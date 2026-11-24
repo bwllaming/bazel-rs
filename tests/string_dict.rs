@@ -116,7 +116,22 @@ impl Fixture {
     fn reject(&self, args: &[&str], markers: &[&str]) -> String {
         let output = self.run(args);
         let diagnostic = errors(&output);
-        assert_eq!(output.status.code(), Some(1), "{args:?}: {diagnostic}");
+        // A query whose BUILD file fails part-way (a package with errors)
+        // fails at its end, exit 7 like Bazel (tests/package_errors.rs);
+        // a failing `.bzl` load or repository, or another command, exits 1.
+        let expected = if args[0] == "query"
+            && (diagnostic.contains("ERROR: Evaluation of query")
+                || diagnostic.contains("ERROR: no such target"))
+        {
+            7
+        } else {
+            1
+        };
+        assert_eq!(
+            output.status.code(),
+            Some(expected),
+            "{args:?}: {diagnostic}"
+        );
         assert!(output.stdout.is_empty(), "partial successful build output");
         // A missing constructor must never masquerade as a successful type test.
         assert!(

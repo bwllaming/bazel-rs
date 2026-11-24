@@ -46,6 +46,26 @@ found beneath 'dir'`; ignored directories warn like `build`. A leading `-` is
 the query's `except` operator, never a negative pattern. Label syntax errors
 are N38's typed TargetParsingExceptions; loading failures keep the
 NoSuchPackage/NoSuchTarget classification (skipped under `--keep_going`).
+
+**Packages with errors** (Package.containsErrors). A BUILD file whose
+evaluation fails part-way (a `fail()`, a removed native rule such as
+`objc_library`) loads for `query` with the targets it declared before the
+failure (`LoadUnit::partial`, committed only under
+`Engine::keep_packages_in_error`, which `query` sets): the failure is an
+error event, a `:all`/`:*`/recursive pattern over the package adds
+`package contains errors: PKG: MESSAGE`, an edge to one of its targets is
+reported as `LOC: Target 'T' contains an error and its package is in error
+and referenced by 'R'` (the target is visited and its dependencies too; the
+transitive preloading does not fail for it), and a BUILD file's
+`package_contains_errors` (xml, proto) is true. Without `--keep_going` the
+query then fails (`Evaluation of query "Q" failed`, exit 7); with it the
+partial result prints (exit 3). `build` and `cquery` fail the package as
+before. A package whose `load()` fails keeps no target; a single-package
+pattern naming one still fails native's query (exit 1; Bazel skips it as
+NoSuchPackage, exit 3/7). Genuine capture
+`tests/fixtures/package_errors/reference_receipt.json`, test
+`tests/package_errors.rs` (gRPC's examples/objective-c, OSS corpus B66
+follow-up).
 `query` with no expression (QueryOptionHelper.readQuery: `missing query
 expression`, or both a residue and `--query_file`) exits 2 before any loading
 with nothing on stderr, as genuine Bazel 9.3 does (receipt case

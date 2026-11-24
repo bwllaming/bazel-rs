@@ -1677,7 +1677,13 @@ impl Env<'_> {
                         loads.iter().map(|load| self.print_label(load)),
                     );
                     file.strs(6, "feature", self.package_features(label));
-                    file.boolean(9, "packageContainsErrors", false);
+                    file.boolean(
+                        9,
+                        "packageContainsErrors",
+                        self.engine
+                            .packages_in_error
+                            .contains_key(&label.package_id()),
+                    );
                 }
                 let visibility = self.engine.source_visibility(label);
                 file.strs(
@@ -2011,7 +2017,18 @@ impl Env<'_> {
                     for feature in self.package_features(label) {
                         element.children.push(Xml::new("feature").named(feature));
                     }
-                    element.attr("package_contains_errors", "false");
+                    element.attr(
+                        "package_contains_errors",
+                        if self
+                            .engine
+                            .packages_in_error
+                            .contains_key(&label.package_id())
+                        {
+                            "true"
+                        } else {
+                            "false"
+                        },
+                    );
                 }
                 let visibility = self.engine.source_visibility(label);
                 for group in visibility.group_labels() {

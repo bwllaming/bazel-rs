@@ -3794,6 +3794,14 @@ pub struct Engine {
     /// loading errors of its packages, each skipped (`Some`), instead of
     /// failing the pattern (`None`).
     pattern_load_errors: Option<Vec<String>>,
+    /// `query`: a package whose BUILD file fails part-way loads with the
+    /// targets it declared before the failure (a package with errors,
+    /// Package.containsErrors) instead of failing (crate::engine::query).
+    pub(crate) keep_packages_in_error: bool,
+    /// The packages loaded with errors and their failures.
+    pub(crate) packages_in_error: HashMap<PackageId, String>,
+    /// Their failures not reported yet (the query's error events).
+    pub(crate) package_error_events: Vec<String>,
     /// Dependency tracking for incremental analysis (crate::engine's
     /// `incremental` module), on while the analysis snapshot saves.
     incremental: Option<Box<incremental::Tracker>>,
@@ -3937,6 +3945,9 @@ impl Engine {
             skipped_incompatible: BTreeSet::new(),
             incompatible_errors: BTreeMap::new(),
             pattern_load_errors: None,
+            keep_packages_in_error: false,
+            packages_in_error: HashMap::new(),
+            package_error_events: Vec::new(),
             incremental: None,
             phase2_analyzed: BTreeSet::new(),
             eval_mode: None,
@@ -4462,13 +4473,28 @@ impl Engine {
         let (steps, result) = settle_load_unit(&repositories, package, unit, || {
             load_package_attempt_in(&repositories, package)
         });
+        let mut in_error = None;
         for step in steps {
             match step {
                 LoadStep::Prints(prints) => self.emit_load_prints(prints),
                 LoadStep::Committed(printed) => self.track_package_printed(package, printed),
+                LoadStep::InError(partial) => in_error = Some(partial),
             }
         }
-        self.commit_loaded_package(package, result?)
+        match (result, in_error) {
+            (Ok(rules), _) => self.commit_loaded_package(package, rules),
+            // `query`: a package with errors loads with the targets it
+            // declared before the failure (Package.containsErrors), the
+            // failure an error event of the query (`package_error_events`).
+            (Err(error), Some(partial)) if self.keep_packages_in_error => {
+                self.commit_loaded_package(package, Arc::unwrap_or_clone(partial))?;
+                self.packages_in_error
+                    .insert(package.clone(), error.clone());
+                self.package_error_events.push(error);
+                Ok(())
+            }
+            (Err(error), _) => Err(error),
+        }
     }
 
     /// Load the packages of one `//dir/...` pattern expansion (P2,
@@ -19732,6 +19758,10 @@ pub(crate) enum LoadStep {
     /// The package is committed (`track_package_printed`; `true`: its
     /// BUILD file printed).
     Committed(bool),
+    /// The load failed with a package with errors: the targets declared
+    /// before the failure (`LoadUnit::partial`; only `query` commits them,
+    /// `Engine::keep_packages_in_error`).
+    InError(Arc<Package>),
 }
 
 /// [`Engine::commit_load_unit`] without the engine's writes: the unit's
@@ -19751,6 +19781,7 @@ pub(crate) fn settle_load_unit(
         roots,
         observations,
         profiled,
+        partial,
     } = unit;
     let mut steps = Vec::new();
     // The roots this load obtained on a worker count as materialized
@@ -19806,6 +19837,9 @@ pub(crate) fn settle_load_unit(
                     }
                     Err(error) => {
                         steps.push(LoadStep::Prints(retried.prints));
+                        if let Some(partial) = retried.partial {
+                            steps.push(LoadStep::InError(partial));
+                        }
                         // A wait-cycle abort on the inline re-run is
                         // not spurious: nothing is left to wait for,
                         // so the demand is a genuine cycle (an
@@ -19826,6 +19860,9 @@ pub(crate) fn settle_load_unit(
                 };
             }
             steps.push(LoadStep::Prints(unit_prints));
+            if let Some(partial) = partial {
+                steps.push(LoadStep::InError(partial));
+            }
             return (steps, Err(error));
         }
     };

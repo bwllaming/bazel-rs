@@ -1,0 +1,441 @@
+{
+ "bazel": "9.3.1",
+ "cases": {
+  "build_all_keep_going": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--keep_going",
+    "--nobuild",
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "messages": [
+    "ERROR: error loading package 'loadfail': cannot load '//loadfail:missing.bzl': no such file",
+    "ERROR: Traceback (most recent call last):",
+    "ERROR: package contains errors: broken",
+    "ERROR: package contains errors: broken: Traceback (most recent call last):",
+    "WARNING: Target pattern parsing failed.",
+    "ERROR: <WS>/broken/BUILD: no such target '//broken:after': target 'after' not declared in package 'broken' defined by <WS>/broken/BUILD",
+    "ERROR: <WS>/uses/BUILD:8:8: Target '//broken:data.txt' contains an error and its package is in error and referenced by '//uses:uses_data'",
+    "ERROR: <WS>/uses/BUILD:15:8: no such target '//broken:after': target 'after' not declared in package 'broken' defined by <WS>/broken/BUILD and referenced by '//uses:uses_after'",
+    "ERROR: <WS>/uses/BUILD:1:8: Target '//broken:before' contains an error and its package is in error and referenced by '//uses:uses'",
+    "ERROR: <WS>/broken/BUILD:8:10: Target '//broken:before' contains an error and its package is in error and referenced by '//broken:group'",
+    "WARNING: errors encountered while analyzing target '//broken:group', it will not be built.",
+    "WARNING: errors encountered while analyzing target '//uses:uses', it will not be built.",
+    "WARNING: errors encountered while analyzing target '//broken:before', it will not be built.",
+    "WARNING: errors encountered while analyzing target '//uses:uses_after', it will not be built.",
+    "WARNING: errors encountered while analyzing target '//uses:uses_data', it will not be built.",
+    "ERROR: command succeeded, but there were errors parsing the target pattern",
+    "ERROR: Build did NOT complete successfully"
+   ],
+   "stdout": "",
+   "targets": [
+    "//..."
+   ]
+  },
+  "build_before": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--nobuild",
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "messages": [
+    "ERROR: Traceback (most recent call last):",
+    "WARNING: Target pattern parsing failed.",
+    "ERROR: Skipping '//broken:before': Error evaluating '//broken:before': error loading package 'broken': Package 'broken' contains errors",
+    "ERROR: Error evaluating '//broken:before': error loading package 'broken': Package 'broken' contains errors",
+    "ERROR: Build did NOT complete successfully"
+   ],
+   "stdout": "",
+   "targets": [
+    "//broken:before"
+   ]
+  },
+  "build_before_keep_going": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--keep_going",
+    "--nobuild",
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "messages": [
+    "ERROR: Traceback (most recent call last):",
+    "WARNING: Target pattern parsing failed.",
+    "WARNING: errors encountered while analyzing target '//broken:before', it will not be built.",
+    "ERROR: command succeeded, but there were errors parsing the target pattern",
+    "ERROR: Build did NOT complete successfully"
+   ],
+   "stdout": "",
+   "targets": [
+    "//broken:before"
+   ]
+  },
+  "build_uses_data_keep_going": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--keep_going",
+    "--nobuild",
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "messages": [
+    "ERROR: Traceback (most recent call last):",
+    "ERROR: <WS>/uses/BUILD:8:8: Target '//broken:data.txt' contains an error and its package is in error and referenced by '//uses:uses_data'",
+    "WARNING: errors encountered while analyzing target '//uses:uses_data', it will not be built.",
+    "ERROR: command succeeded, but there were loading phase errors",
+    "ERROR: Build did NOT complete successfully"
+   ],
+   "stdout": "",
+   "targets": [
+    "//uses:uses_data"
+   ]
+  },
+  "build_uses_keep_going": {
+   "command": "build",
+   "exit": 1,
+   "flags": [
+    "--keep_going",
+    "--nobuild",
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "messages": [
+    "ERROR: Traceback (most recent call last):",
+    "ERROR: <WS>/uses/BUILD:1:8: Target '//broken:before' contains an error and its package is in error and referenced by '//uses:uses'",
+    "WARNING: errors encountered while analyzing target '//uses:uses', it will not be built.",
+    "ERROR: command succeeded, but there were loading phase errors",
+    "ERROR: Build did NOT complete successfully"
+   ],
+   "stdout": "",
+   "targets": [
+    "//uses:uses",
+    "//good:good"
+   ]
+  },
+  "cquery_deps_keep_going": {
+   "command": "cquery",
+   "exit": 1,
+   "flags": [
+    "--keep_going",
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "messages": [
+    "ERROR: Traceback (most recent call last):",
+    "ERROR: <WS>/uses/BUILD:1:8: Target '//broken:before' contains an error and its package is in error and referenced by '//uses:uses'",
+    "WARNING: errors encountered while analyzing target '//uses:uses', it will not be built.",
+    "ERROR: command succeeded, but there were loading phase errors",
+    "ERROR: Build did NOT complete successfully"
+   ],
+   "stdout": "",
+   "targets": [
+    "deps(//uses:uses)"
+   ]
+  },
+  "cquery_package_keep_going": {
+   "command": "cquery",
+   "exit": 1,
+   "flags": [
+    "--keep_going",
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "messages": [
+    "ERROR: Traceback (most recent call last):",
+    "ERROR: package contains errors: broken: Traceback (most recent call last):",
+    "WARNING: Target pattern parsing failed.",
+    "ERROR: <WS>/broken/BUILD:8:10: Target '//broken:before' contains an error and its package is in error and referenced by '//broken:group'",
+    "WARNING: errors encountered while analyzing target '//broken:group', it will not be built.",
+    "WARNING: errors encountered while analyzing target '//broken:before', it will not be built.",
+    "ERROR: package contains errors: broken: Traceback (most recent call last):",
+    "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate",
+    "ERROR: command succeeded, but there were errors parsing the target pattern",
+    "ERROR: Build did NOT complete successfully"
+   ],
+   "stdout": "",
+   "targets": [
+    "//broken:all"
+   ]
+  },
+  "query_after_keep_going": {
+   "command": "query",
+   "exit": 3,
+   "flags": [
+    "--keep_going"
+   ],
+   "messages": [
+    "ERROR: Traceback (most recent call last):",
+    "ERROR: Skipping '//broken:after': no such target '//broken:after': target 'after' not declared in package 'broken' defined by <WS>/broken/BUILD",
+    "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
+   ],
+   "stdout": "",
+   "targets": [
+    "//broken:after"
+   ]
+  },
+  "query_all": {
+   "command": "query",
+   "exit": 7,
+   "flags": [],
+   "messages": [
+    "ERROR: error loading package under directory '': error loading package 'loadfail': cannot load '//loadfail:missing.bzl': no such file"
+   ],
+   "stdout": "",
+   "targets": [
+    "//..."
+   ]
+  },
+  "query_all_keep_going": {
+   "command": "query",
+   "exit": 3,
+   "flags": [
+    "--keep_going"
+   ],
+   "messages": [
+    "ERROR: error loading package 'loadfail': cannot load '//loadfail:missing.bzl': no such file",
+    "ERROR: Traceback (most recent call last):",
+    "ERROR: package contains errors: broken",
+    "ERROR: package contains errors: broken: Traceback (most recent call last):",
+    "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
+   ],
+   "stdout": "//:p\n//broken:before\n//broken:group\n//good:good\n//good:helper\n//uses:uses\n//uses:uses_after\n//uses:uses_data\n",
+   "targets": [
+    "//..."
+   ]
+  },
+  "query_before": {
+   "command": "query",
+   "exit": 7,
+   "flags": [],
+   "messages": [
+    "ERROR: Traceback (most recent call last):",
+    "ERROR: Evaluation of query \"//broken:before\" failed"
+   ],
+   "stdout": "",
+   "targets": [
+    "//broken:before"
+   ]
+  },
+  "query_before_keep_going": {
+   "command": "query",
+   "exit": 3,
+   "flags": [
+    "--keep_going"
+   ],
+   "messages": [
+    "ERROR: Traceback (most recent call last):",
+    "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
+   ],
+   "stdout": "//broken:before\n",
+   "targets": [
+    "//broken:before"
+   ]
+  },
+  "query_deps": {
+   "command": "query",
+   "exit": 7,
+   "flags": [],
+   "messages": [
+    "ERROR: Traceback (most recent call last):",
+    "ERROR: <WS>/uses/BUILD:1:8: Target '//broken:before' contains an error and its package is in error and referenced by '//uses:uses'",
+    "ERROR: Evaluation of query \"deps(//uses:uses)\" failed: errors were encountered while computing transitive closure"
+   ],
+   "stdout": "",
+   "targets": [
+    "deps(//uses:uses)"
+   ]
+  },
+  "query_deps_after_keep_going": {
+   "command": "query",
+   "exit": 3,
+   "flags": [
+    "--keep_going"
+   ],
+   "messages": [
+    "ERROR: Traceback (most recent call last):",
+    "ERROR: <WS>/uses/BUILD:15:8: no such target '//broken:after': target 'after' not declared in package 'broken' defined by <WS>/broken/BUILD and referenced by '//uses:uses_after'",
+    "ERROR: <WS>/uses/BUILD:15:8: no such target '//broken:after': target 'after' not declared in package 'broken' defined by <WS>/broken/BUILD and referenced by '//uses:uses_after'",
+    "ERROR: Evaluation of query \"deps(//uses:uses_after)\" failed: errors were encountered while computing transitive closure",
+    "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
+   ],
+   "stdout": "//uses:uses_after\n@bazel_tools//tools/genrule:genrule-setup.sh\n",
+   "targets": [
+    "deps(//uses:uses_after)"
+   ]
+  },
+  "query_deps_keep_going": {
+   "command": "query",
+   "exit": 3,
+   "flags": [
+    "--keep_going"
+   ],
+   "messages": [
+    "ERROR: Traceback (most recent call last):",
+    "ERROR: <WS>/uses/BUILD:1:8: Target '//broken:before' contains an error and its package is in error and referenced by '//uses:uses'",
+    "ERROR: Evaluation of query \"deps(//uses:uses)\" failed: errors were encountered while computing transitive closure",
+    "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
+   ],
+   "stdout": "//broken:before\n//good:good\n//uses:uses\n@bazel_tools//tools/genrule:genrule-setup.sh\n",
+   "targets": [
+    "deps(//uses:uses)"
+   ]
+  },
+  "query_jsonproto_build_file_keep_going": {
+   "command": "query",
+   "exit": 3,
+   "flags": [
+    "--keep_going",
+    "--output=streamed_jsonproto"
+   ],
+   "messages": [
+    "ERROR: Traceback (most recent call last):",
+    "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
+   ],
+   "stdout": "{\"type\":\"SOURCE_FILE\",\"sourceFile\":{\"name\":\"//broken:BUILD\",\"location\":\"/tmp/opencode/w/frozen-followups-pe-scratch/16/ws/broken/BUILD:1:1\",\"visibilityLabel\":[\"//visibility:private\"],\"packageContainsErrors\":true}}\n{\"type\":\"SOURCE_FILE\",\"sourceFile\":{\"name\":\"//good:BUILD\",\"location\":\"/tmp/opencode/w/frozen-followups-pe-scratch/16/ws/good/BUILD:1:1\",\"visibilityLabel\":[\"//visibility:private\"],\"packageContainsErrors\":false}}\n",
+   "targets": [
+    "//broken:BUILD + //good:BUILD"
+   ]
+  },
+  "query_label_kind_keep_going": {
+   "command": "query",
+   "exit": 3,
+   "flags": [
+    "--keep_going",
+    "--output=label_kind"
+   ],
+   "messages": [
+    "ERROR: Traceback (most recent call last):",
+    "ERROR: package contains errors: broken: Traceback (most recent call last):",
+    "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
+   ],
+   "stdout": "genrule rule //broken:before\nfilegroup rule //broken:group\n",
+   "targets": [
+    "//broken:all"
+   ]
+  },
+  "query_loadfail_keep_going": {
+   "command": "query",
+   "exit": 3,
+   "flags": [
+    "--keep_going"
+   ],
+   "messages": [
+    "ERROR: Skipping '//loadfail:all': error loading package 'loadfail': cannot load '//loadfail:missing.bzl': no such file",
+    "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
+   ],
+   "stdout": "",
+   "targets": [
+    "//loadfail:all"
+   ]
+  },
+  "query_package": {
+   "command": "query",
+   "exit": 7,
+   "flags": [],
+   "messages": [
+    "ERROR: Traceback (most recent call last):",
+    "ERROR: package contains errors: broken: Traceback (most recent call last):",
+    "ERROR: Evaluation of query \"//broken:all\" failed"
+   ],
+   "stdout": "",
+   "targets": [
+    "//broken:all"
+   ]
+  },
+  "query_package_files_keep_going": {
+   "command": "query",
+   "exit": 3,
+   "flags": [
+    "--keep_going"
+   ],
+   "messages": [
+    "ERROR: Traceback (most recent call last):",
+    "ERROR: package contains errors: broken: Traceback (most recent call last):",
+    "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
+   ],
+   "stdout": "//broken:BUILD\n//broken:before\n//broken:before.txt\n//broken:data.txt\n//broken:group\n",
+   "targets": [
+    "//broken:*"
+   ]
+  },
+  "query_package_keep_going": {
+   "command": "query",
+   "exit": 3,
+   "flags": [
+    "--keep_going"
+   ],
+   "messages": [
+    "ERROR: Traceback (most recent call last):",
+    "ERROR: package contains errors: broken: Traceback (most recent call last):",
+    "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
+   ],
+   "stdout": "//broken:before\n//broken:group\n",
+   "targets": [
+    "//broken:all"
+   ]
+  },
+  "query_rdeps_keep_going": {
+   "command": "query",
+   "exit": 3,
+   "flags": [
+    "--keep_going"
+   ],
+   "messages": [
+    "ERROR: error loading package 'loadfail': cannot load '//loadfail:missing.bzl': no such file",
+    "ERROR: Traceback (most recent call last):",
+    "ERROR: package contains errors: broken",
+    "ERROR: package contains errors: broken: Traceback (most recent call last):",
+    "ERROR: <WS>/uses/BUILD:1:8: Target '//broken:before' contains an error and its package is in error and referenced by '//uses:uses'",
+    "ERROR: <WS>/uses/BUILD:8:8: Target '//broken:data.txt' contains an error and its package is in error and referenced by '//uses:uses_data'",
+    "ERROR: <WS>/uses/BUILD:15:8: no such target '//broken:after': target 'after' not declared in package 'broken' defined by <WS>/broken/BUILD and referenced by '//uses:uses_after'",
+    "ERROR: <WS>/broken/BUILD:8:10: Target '//broken:before' contains an error and its package is in error and referenced by '//broken:group'",
+    "ERROR: no such target '//broken:after': target 'after' not declared in package 'broken' defined by <WS>/broken/BUILD",
+    "ERROR: Evaluation of query \"rdeps(//..., //broken:before)\" failed: errors were encountered while computing transitive closure",
+    "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
+   ],
+   "stdout": "//broken:before\n//broken:group\n//uses:uses\n",
+   "targets": [
+    "rdeps(//..., //broken:before)"
+   ]
+  },
+  "query_xml_build_file_keep_going": {
+   "command": "query",
+   "exit": 3,
+   "flags": [
+    "--keep_going",
+    "--output=xml"
+   ],
+   "messages": [
+    "ERROR: Traceback (most recent call last):",
+    "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
+   ],
+   "stdout": "<?xml version=\"1.1\" encoding=\"UTF-8\" standalone=\"no\"?>\n<query version=\"2\">\n    <source-file location=\"/tmp/opencode/w/frozen-followups-pe-scratch/15/ws/broken/BUILD:1:1\" name=\"//broken:BUILD\" package_contains_errors=\"true\">\n        <visibility-label name=\"//visibility:private\"/>\n    </source-file>\n    <source-file location=\"/tmp/opencode/w/frozen-followups-pe-scratch/15/ws/good/BUILD:1:1\" name=\"//good:BUILD\" package_contains_errors=\"false\">\n        <visibility-label name=\"//visibility:private\"/>\n    </source-file>\n</query>\n",
+   "targets": [
+    "//broken:BUILD + //good:BUILD"
+   ]
+  },
+  "query_xml_keep_going": {
+   "command": "query",
+   "exit": 3,
+   "flags": [
+    "--keep_going",
+    "--output=xml"
+   ],
+   "messages": [
+    "ERROR: Traceback (most recent call last):",
+    "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
+   ],
+   "stdout": "<?xml version=\"1.1\" encoding=\"UTF-8\" standalone=\"no\"?>\n<query version=\"2\">\n    <rule class=\"filegroup\" location=\"/tmp/opencode/w/frozen-followups-pe-scratch/13/ws/broken/BUILD:8:10\" name=\"//broken:group\">\n        <string name=\"name\" value=\"group\"/>\n        <list name=\"srcs\">\n            <label value=\"//broken:before\"/>\n        </list>\n        <rule-input name=\"//broken:before\"/>\n    </rule>\n</query>\n",
+   "targets": [
+    "//broken:group"
+   ]
+  }
+ },
+ "elf_sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c"
+}

@@ -303,7 +303,9 @@ fn user_written_bracketed_repository_names_are_invalid() {
         "filegroup(name = 'x', srcs = [\"@@[unknown repo 'nope' requested from @@]//:t\"])\n",
     );
     let output = f.run(&["query", "//br:all"]);
-    assert_eq!(output.status.code(), Some(1));
+    // A BUILD file failing part-way is a package with errors: the query
+    // fails at its end, exit 7 like Bazel (tests/package_errors.rs).
+    assert_eq!(output.status.code(), Some(7));
     assert!(
         errors(&output).contains("//br:x: invalid label '@@[unknown repo 'nope' requested from @@]//:t' in element 0 of attribute 'srcs' of 'filegroup': invalid repository name '[unknown repo 'nope' requested from @@]': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'"),
         "{}",

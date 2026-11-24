@@ -570,6 +570,9 @@ impl Engine {
             skipped_incompatible: self.skipped_incompatible.clone(),
             incompatible_errors: self.incompatible_errors.clone(),
             pattern_load_errors: self.pattern_load_errors.clone(),
+            keep_packages_in_error: self.keep_packages_in_error,
+            packages_in_error: self.packages_in_error.clone(),
+            package_error_events: self.package_error_events.clone(),
             // A frozen walk's workers record what the tracker would (their
             // prepares' accesses, replayed at the turn): an empty tracker
             // marks the engine as tracking; nothing writes it.

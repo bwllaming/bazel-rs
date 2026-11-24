@@ -53,10 +53,14 @@ impl Fixture {
         (outputs, stderr)
     }
     fn reject(&self, args: &[&str], expected: &str) {
+        self.reject_with(args, 1, expected);
+    }
+
+    fn reject_with(&self, args: &[&str], code: i32, expected: &str) {
         let result = self.run(args);
         assert_eq!(
             result.status.code(),
-            Some(1),
+            Some(code),
             "{}",
             String::from_utf8_lossy(&result.stderr)
         );
@@ -189,7 +193,9 @@ fn local_repository_failure_is_lazy_and_never_published() {
 fn local_repository_version_does_not_inject_native_into_top_level_files() {
     let f = Fixture::new();
     f.file("BUILD.bazel", "observed=native.bazel_version\n");
-    f.reject(&["query", "//:all"], "native");
+    // A BUILD file failing part-way is a package with errors: the query
+    // fails at its end, exit 7 like Bazel (tests/package_errors.rs).
+    f.reject_with(&["query", "//:all"], 7, "native");
     f.file("BUILD.bazel", "");
     f.file(
         "MODULE.bazel",

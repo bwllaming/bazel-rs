@@ -416,7 +416,8 @@ fn load_errors_carry_bazel_messages_and_the_native_footer() {
         fs::write(ws.path().join("bad/BUILD.bazel"), build).unwrap();
         let query = ws.run(&["query", "//bad:all"]);
         rejected(&query, diagnostic);
-        assert!(errors(&query).ends_with(
+        // (The query's own failure follows: a package with errors.)
+        assert!(errors(&query).contains(
             "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
         ));
     }

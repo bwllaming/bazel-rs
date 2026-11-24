@@ -163,7 +163,9 @@ impl Fixture {
         self.file("probe.bzl", format!("{preamble}\ndef probe():\n    print('BEFORE_BAD_CALL')\n    value={expression}\n    print('AFTER_BAD_CALL')\n    native.filegroup(name='probe')\n"));
         self.file("BUILD.bazel", "load(':probe.bzl','probe')\nprobe()\n");
         let output = self.run(&["query", "//:probe"]);
-        assert_eq!(output.status.code(), Some(1));
+        // A BUILD file failing part-way is a package with errors: the query
+        // fails at its end, exit 7 like Bazel (tests/package_errors.rs).
+        assert_eq!(output.status.code(), Some(7));
         assert!(output.stdout.is_empty());
         let text = errors(&output);
         let lines: Vec<_> = text.lines().collect();
@@ -389,7 +391,9 @@ fn unknown_apparent_repository_yields_invalid_label_like_bazel() {
     g.file("probe.bzl", "def probe():\n    copied=Label(Label('@not_visible//:missing'))\n    print(copied.workspace_name)\n    native.filegroup(name='probe')\n");
     g.file("BUILD.bazel", "load(':probe.bzl','probe')\nprobe()\n");
     let output = g.run(&["query", "//:probe"]);
-    assert_eq!(output.status.code(), Some(1));
+    // A BUILD file failing part-way is a package with errors: the query
+    // fails at its end, exit 7 like Bazel (tests/package_errors.rs).
+    assert_eq!(output.status.code(), Some(7));
     assert!(output.stdout.is_empty());
     let text = errors(&output);
     assert!(

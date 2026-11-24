@@ -145,7 +145,15 @@ fn success(output: &Output) {
 }
 
 fn rejected(output: &Output, diagnostic: &str) {
-    assert_eq!(output.status.code(), Some(1), "{}", stderr(output));
+    // A query whose BUILD file fails part-way (a package with errors)
+    // fails at its end, exit 7 like Bazel (tests/package_errors.rs);
+    // a failing `.bzl` load or another command exits 1.
+    let code = if stderr(output).contains("ERROR: no such target '//:check'") {
+        7
+    } else {
+        1
+    };
+    assert_eq!(output.status.code(), Some(code), "{}", stderr(output));
     assert!(output.stdout.is_empty(), "partial stdout on failure");
     assert!(
         stderr(output).contains(diagnostic),
@@ -626,7 +634,11 @@ fn constructor_is_absent_from_build_and_root_module_globals() {
             },
         );
         let output = ws.run(&["query", ":check"]);
-        assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+        // A BUILD file failing part-way is a package with errors: the query
+        // fails at its end, exit 7 like Bazel (tests/package_errors.rs); a
+        // root module failure stays fatal.
+        let code = if file == "BUILD.bazel" { 7 } else { 1 };
+        assert_eq!(output.status.code(), Some(code), "{}", stderr(&output));
         assert!(
             stderr(&output).contains("name 'subrule' is not defined"),
             "{}",

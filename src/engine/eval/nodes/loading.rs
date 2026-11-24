@@ -567,6 +567,8 @@ pub(crate) fn package_body(
                 }
             }
             LoadStep::Committed(printed) => cx.emit(Event::PkgCommit(id.clone(), printed)),
+            // (A build fails the package with errors.)
+            LoadStep::InError(_) => {}
         }
     }
     let value = result.and_then(|package| {
