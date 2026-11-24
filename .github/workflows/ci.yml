@@ -117,6 +117,27 @@ jobs:
       - name: Smoke test (version, query, genrule builds; built-in profile)
         run: python3 scripts/smoke.py target/debug/bazel-rs --network
 
+      - name: Genuine Bazel 9.3.1 (darwin-arm64, official release, sha256 checked)
+        id: genuine
+        run: echo "path=$(python3 scripts/host_parity.py fetch-genuine --dest "$RUNNER_TEMP/genuine")" >> "$GITHUB_OUTPUT"
+
+      - name: Host parity with genuine Bazel (macOS mini corpus)
+        # docs/MACOS.md: genuine 9.3.1 and bazel-rs side by side on the
+        # fixtures of scripts/host_parity.py; any difference not listed as
+        # known (with its reason) fails the step.
+        run: >
+          python3 scripts/host_parity.py run --strict
+          --genuine "${{ steps.genuine.outputs.path }}" --bazel-rs target/debug/bazel-rs
+          --work "$RUNNER_TEMP/host-parity" --report "$RUNNER_TEMP/host-parity-report.json"
+
+      - name: Host parity report
+        if: (success() || failure()) && steps.genuine.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-parity-macos
+          path: ${{ runner.temp }}/host-parity-report.json
+          if-no-files-found: ignore
+
       - name: A temporary directory without symlinks for the tests
         # macOS's TMPDIR (/var/folders/...) is below the root symlink /var;
         # the tests build caches in it, whose no-symlink checks would refuse

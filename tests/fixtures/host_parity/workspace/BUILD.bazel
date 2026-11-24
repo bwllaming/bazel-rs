@@ -1,0 +1,135 @@
+# Host-dependent behaviour compared live between genuine Bazel 9.3.1 and
+# bazel-rs on the same machine (scripts/host_parity.py, docs/MACOS.md): Make
+# variables, the action environment, configuration-dependent selects, an exec
+# tool with runfiles, a test's environment and runfiles, the configuration
+# fragments and the Xcode configuration Starlark rules see.
+
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_library.bzl", "sh_library")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load(":probe.bzl", "exec_probe", "probe")
+
+package(default_visibility = ["//visibility:public"])
+
+config_setting(
+    name = "os_macos",
+    constraint_values = ["@platforms//os:macos"],
+)
+
+config_setting(
+    name = "os_linux",
+    constraint_values = ["@platforms//os:linux"],
+)
+
+config_setting(
+    name = "cpu_arm64",
+    constraint_values = ["@platforms//cpu:arm64"],
+)
+
+config_setting(
+    name = "cpu_x86_64",
+    constraint_values = ["@platforms//cpu:x86_64"],
+)
+
+config_setting(
+    name = "cpu_flag_darwin_arm64",
+    values = {"cpu": "darwin_arm64"},
+)
+
+config_setting(
+    name = "cpu_flag_k8",
+    values = {"cpu": "k8"},
+)
+
+config_setting(
+    name = "host_cpu_flag_darwin_arm64",
+    values = {"host_cpu": "darwin_arm64"},
+)
+
+genrule(
+    name = "make_vars",
+    outs = ["make_vars.txt"],
+    cmd = "\n".join([
+        "{",
+        "echo TARGET_CPU=$(TARGET_CPU)",
+        "echo COMPILATION_MODE=$(COMPILATION_MODE)",
+        "echo BINDIR=$(BINDIR)",
+        "echo GENDIR=$(GENDIR)",
+        "echo RULEDIR=$(RULEDIR)",
+        "echo AT_D=$(@D)",
+        "echo OUTS=$(OUTS)",
+        "} > $@",
+    ]),
+)
+
+genrule(
+    name = "action_env",
+    outs = ["action_env.txt"],
+    cmd = "env | LC_ALL=C sort > $@",
+)
+
+genrule(
+    name = "host_info",
+    outs = ["host_info.txt"],
+    cmd = "{ uname -sm; pwd; echo shell=$$0; echo umask=$$(umask); echo nofile=$$(ulimit -n); ls -a; } > $@",
+)
+
+genrule(
+    name = "selects",
+    outs = ["selects.txt"],
+    cmd = "echo " + select({
+        ":os_macos": "os=macos",
+        ":os_linux": "os=linux",
+        "//conditions:default": "os=other",
+    }) + " " + select({
+        ":cpu_arm64": "cpu=arm64",
+        ":cpu_x86_64": "cpu=x86_64",
+        "//conditions:default": "cpu=other",
+    }) + " " + select({
+        ":cpu_flag_darwin_arm64": "cpuflag=darwin_arm64",
+        ":cpu_flag_k8": "cpuflag=k8",
+        "//conditions:default": "cpuflag=other",
+    }) + " " + select({
+        ":host_cpu_flag_darwin_arm64": "hostcpuflag=darwin_arm64",
+        "//conditions:default": "hostcpuflag=other",
+    }) + " " + select({
+        "@bazel_tools//src/conditions:darwin_arm64": "conditions=darwin_arm64",
+        "@bazel_tools//src/conditions:darwin": "conditions=darwin",
+        "@bazel_tools//src/conditions:linux_x86_64": "conditions=linux_x86_64",
+        "//conditions:default": "conditions=other",
+    }) + " > $@",
+)
+
+sh_library(
+    name = "lib",
+    srcs = ["lib.sh"],
+    data = ["lib_data.txt"],
+)
+
+sh_binary(
+    name = "tool",
+    srcs = ["tool.sh"],
+    data = ["data.txt"],
+    deps = [":lib"],
+)
+
+genrule(
+    name = "use_tool",
+    outs = ["use_tool.txt"],
+    cmd = "$(location :tool) > $@ && echo location=$(location :tool) execpath=$(execpath :tool) rootpath=$(rootpath :tool) >> $@",
+    tools = [":tool"],
+)
+
+sh_test(
+    name = "env_test",
+    srcs = ["env_test.sh"],
+    data = ["data.txt"],
+    deps = [":lib"],
+)
+
+probe(name = "probe")
+
+exec_probe(
+    name = "exec_probe",
+    dep = ":probe",
+)

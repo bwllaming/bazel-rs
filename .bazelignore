@@ -105,6 +105,7 @@ tests/fixtures/genrule_executable/workspace
 tests/fixtures/genrule_tool_runfiles/workspace
 tests/fixtures/genrule_toolchains/workspace
 tests/fixtures/go_transitions/workspace
+tests/fixtures/host_parity/workspace
 tests/fixtures/implicit_outputs/workspace
 tests/fixtures/instrumented_files/workspace
 tests/fixtures/java_action_parity/ws
