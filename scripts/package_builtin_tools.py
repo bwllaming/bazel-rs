@@ -55,6 +55,22 @@ PLATFORMS = {
         "file_count": 420,
         "total_size": 71904827,
     },
+    "darwin-arm64": {
+        "bazel_version": "9.3.1",
+        "platform": "darwin-arm64",
+        "source_revision": "fee2bf2d1c14bc2096068a4d46f1842472092044",
+        "distribution_url": (
+            "https://releases.bazel.build/9.3.1/release/bazel-9.3.1-darwin-arm64"
+        ),
+        "distribution_sha256": (
+            "19c4958626e0e3a564a61c2e85eeaab97b550a30632b82341191aa61ed0ccc1b"
+        ),
+        "module_sha256": (
+            "a0fab7d7a9314cfba6d73f33c50643ba26dac9be28700ff35e88306dbd69fecd"
+        ),
+        "file_count": 420,
+        "total_size": 63717317,
+    },
 }
 DEFAULT_PLATFORM = "linux-x86_64"
 PINNED = PLATFORMS[DEFAULT_PLATFORM]

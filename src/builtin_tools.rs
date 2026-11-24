@@ -82,16 +82,26 @@ const PINNED: Option<Pinned> = Some(pinned!(
     420,
     71_904_827
 ));
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const PINNED: Option<Pinned> = Some(pinned!(
+    "darwin-arm64",
+    "19c4958626e0e3a564a61c2e85eeaab97b550a30632b82341191aa61ed0ccc1b",
+    420,
+    63_717_317
+));
 /// Other compile targets have no bundle: the built-in @bazel_tools
 /// repository is unavailable there (materialize fails).
-#[cfg(not(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64")
+#[cfg(not(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(target_os = "macos", target_arch = "aarch64")
 )))]
 const PINNED: Option<Pinned> = None;
 
 const UNSUPPORTED: &str =
-    "embedded bazel_tools 9.3.1 supports only linux-x86_64 and linux-arm64 hosts";
+    "embedded bazel_tools 9.3.1 supports only linux-x86_64, linux-arm64 and darwin-arm64 hosts";
 const ARCHIVE: &[u8] = match &PINNED {
     Some(pinned) => pinned.archive,
     None => &[],
@@ -630,12 +640,12 @@ mod tests {
         );
     }
 
-    /// Both bundled platforms' manifests (whichever one this binary embeds):
+    /// Every bundled platform's manifest (whichever one this binary embeds):
     /// same release, same platform-independent Starlark/MODULE files; only
     /// the compiled helpers and the JDK differ.
     #[test]
     fn every_bundled_platform_manifest_matches_its_pins() {
-        let manifests: [(&str, &str, usize, u64, &[u8]); 2] = [
+        let manifests: [(&str, &str, usize, u64, &[u8]); 3] = [
             (
                 "linux-x86_64",
                 "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
@@ -649,6 +659,13 @@ mod tests {
                 420,
                 71_904_827,
                 include_bytes!("../resources/bazel_tools/linux-arm64/manifest.json"),
+            ),
+            (
+                "darwin-arm64",
+                "19c4958626e0e3a564a61c2e85eeaab97b550a30632b82341191aa61ed0ccc1b",
+                420,
+                63_717_317,
+                include_bytes!("../resources/bazel_tools/darwin-arm64/manifest.json"),
             ),
         ];
         let parsed: Vec<Manifest> = manifests
@@ -674,25 +691,34 @@ mod tests {
                 .map(|entry| (entry.path.clone(), entry.sha256.clone()))
                 .collect()
         };
-        let (x86, arm) = (digests(&parsed[0]), digests(&parsed[1]));
-        let mut differing: Vec<&str> = x86
-            .iter()
-            .filter(|(path, sha256)| arm.get(*path) != Some(*sha256))
-            .map(|(path, _)| path.as_str())
-            .filter(|path| !path.starts_with("jdk/"))
-            .collect();
-        differing.sort_unstable();
-        assert_eq!(
-            differing,
-            [
-                "tools/cpp/modules_tools/aggregate-ddi",
-                "tools/cpp/modules_tools/generate-modmap",
-                "tools/zip/zipper/zipper",
-            ]
-        );
-        assert!(arm.keys().all(|path| x86.contains_key(path)));
+        let x86 = digests(&parsed[0]);
+        for other in &parsed[1..] {
+            let other = digests(other);
+            let mut differing: Vec<&str> = x86
+                .iter()
+                .filter(|(path, sha256)| other.get(*path) != Some(*sha256))
+                .map(|(path, _)| path.as_str())
+                .filter(|path| !path.starts_with("jdk/"))
+                .collect();
+            differing.sort_unstable();
+            assert_eq!(
+                differing,
+                [
+                    "tools/cpp/modules_tools/aggregate-ddi",
+                    "tools/cpp/modules_tools/generate-modmap",
+                    "tools/zip/zipper/zipper",
+                ]
+            );
+            // Only JDK files are platform-specific additions (the darwin
+            // JDK's .dylib libraries).
+            assert!(
+                other
+                    .keys()
+                    .all(|path| x86.contains_key(path) || path.starts_with("jdk/"))
+            );
+            assert_eq!(other["MODULE.bazel"], MODULE_SHA256);
+        }
         assert_eq!(x86["MODULE.bazel"], MODULE_SHA256);
-        assert_eq!(arm["MODULE.bazel"], MODULE_SHA256);
     }
 
     #[test]
@@ -754,9 +780,12 @@ mod tests {
         );
     }
 
-    #[cfg(all(
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64")
+    #[cfg(any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "macos", target_arch = "aarch64")
     ))]
     #[test]
     fn genuine_bundle_cold_warm_and_corruption_repair() {
@@ -836,9 +865,12 @@ mod tests {
         );
     }
 
-    #[cfg(all(
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64")
+    #[cfg(any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "macos", target_arch = "aarch64")
     ))]
     #[test]
     fn concurrent_publishers_share_one_verified_tree() {
@@ -857,9 +889,12 @@ mod tests {
         assert_eq!(fs::read_dir(cache.join("trees")).unwrap().count(), 2);
     }
 
-    #[cfg(all(
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64")
+    #[cfg(any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "macos", target_arch = "aarch64")
     ))]
     #[test]
     fn synthetic_tree_exactness_and_failed_stages_are_cleaned() {
@@ -919,9 +954,12 @@ mod tests {
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
     }
 
-    #[cfg(all(
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64")
+    #[cfg(any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "macos", target_arch = "aarch64")
     ))]
     #[test]
     fn hostile_cache_symlinks_never_mutate_external_targets() {

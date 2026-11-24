@@ -189,7 +189,8 @@ class PackagingTests(unittest.TestCase):
         self.assertFalse(output.exists())
 
     def test_platform_pins_and_per_platform_defaults(self):
-        self.assertEqual(sorted(packaging.PLATFORMS), ["linux-arm64", "linux-x86_64"])
+        self.assertEqual(sorted(packaging.PLATFORMS),
+                         ["darwin-arm64", "linux-arm64", "linux-x86_64"])
         for platform, pinned in packaging.PLATFORMS.items():
             self.assertEqual(pinned["platform"], platform)
             self.assertTrue(pinned["distribution_url"].endswith(f"/bazel-9.3.1-{platform}"))
