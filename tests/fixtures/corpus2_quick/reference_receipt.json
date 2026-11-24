@@ -935,6 +935,40 @@
     "//to:check2"
    ],
    "workspace": "workspace"
+  },
+  "transition_host_cpu_platform_suffix": {
+   "command": "build",
+   "env": {},
+   "exit": 0,
+   "flags": [],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
+   "outputs": {
+    "bazel_env-opt/bin/flip/mid.txt": "bazel-out/bazel_env-opt/bin\n",
+    "k8-fastbuild/bin/flip/top.txt": "bazel-out/k8-fastbuild/bin\n",
+    "k8-opt-ST-f7ead6e6535a/bin/flip/leaf.txt": "bazel-out/k8-opt-ST-f7ead6e6535a/bin\n"
+   },
+   "patterns": [
+    "IN .*fastbuild",
+    "IN .*bazel_env"
+   ],
+   "rc": false,
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/flip/defs.bzl:3:10: IN {\"//command_line_option:compilation_mode\": fastbuild, \"//command_line_option:cpu\": \"k8\", \"//command_line_option:extra_execution_platforms\": [], \"//command_line_option:host_cpu\": \"k8\", \"//command_line_option:host_platform\": Label(\"@@bazel_tools//tools:host_platform\"), \"//command_line_option:platform_suffix\": None}",
+     "pattern": "IN .*fastbuild"
+    },
+    {
+     "line": "DEBUG: <WS>/flip/defs.bzl:3:10: IN {\"//command_line_option:compilation_mode\": opt, \"//command_line_option:cpu\": \"bazel_env\", \"//command_line_option:extra_execution_platforms\": [], \"//command_line_option:host_cpu\": \"k8\", \"//command_line_option:host_platform\": Label(\"@@bazel_tools//tools:host_platform\"), \"//command_line_option:platform_suffix\": \"\"}",
+     "pattern": "IN .*bazel_env"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//flip:top"
+   ],
+   "workspace": "workspace"
   }
  },
  "elf_sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c"

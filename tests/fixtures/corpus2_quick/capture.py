@@ -105,6 +105,11 @@ CASES = {
     # B76: glob exclusions are never validated (one with an empty, `.` or
     # `..` segment matches nothing).
     'glob_exclusions_unvalidated': case('query', [], ['labels(srcs, //gx:all)']),
+    # B77: Starlark transitions on --host_cpu and --platform_suffix
+    # (bazel_env.bzl's _flip_output_dir).
+    'transition_host_cpu_platform_suffix': case(
+        'build', [], ['//flip:top'], patterns=[r'IN .*fastbuild', r'IN .*bazel_env'],
+        outputs=['top.txt', 'mid.txt', 'leaf.txt']),
     # B63: include() in the root MODULE.bazel; the lockfile's extension
     # entry (usages digest) is compared too.
     'include_segments': case(

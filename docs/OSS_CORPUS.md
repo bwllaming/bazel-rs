@@ -413,24 +413,24 @@ exits at startup (B59) and on grpc it hits the 20-minute cap (B66).
 | rules_buf-bzlmod | **OK** | 27.8 / 23.5 | 3.5 / 0.2 / 0.2 | 47.5 / 47.6 | 1245 / 418 | 460, 0, 0, 0 | PASSED:1 / same | |
 | rules_js-e2e-bzlmod | **OK** | 18.5 / 11.9 | 3.7 / 0.3 / 0.2 | 9.7 / 8.0 | 1149 / 467 | 14220, 0, 0, 0 | PASSED:9 / same | |
 | rules_oci-smoke | **OK** | 18.2 / 11.5 | 3.0 / 0.2 / 0.1 | 4.2 / 0.7 | 765 / 297 | 60, 0, 0, 0 | PASSED:6 / same | |
+| rules_ts-examples | **OK**² | 18.1 / 120.8 | 3.9 / 0.3 / 2.6 | 62.4 / 56.4 | 1432 / 542 | 54123, 0, 0, 0 | PASSED:188 / same | |
 | cel-cpp | BOTH-FAIL | 27.0† / 23.6† | 4.1† / 0.3† / 5.3† | 218.7† / 215.8† | 1703 / 737 | 4599, 0, 0, 0 | PASSED:244 TIMEOUT:1 / same | |
 | examples-bzlmod-03 | BOTH-FAIL | 8.9† / 3.2† | 2.5† / 0.1† / 0.1† | 2.3† / 0.1† | 309 / 86 | 2, 0, 0, 0 | — | |
 | bazel-remote | DIFF | 28.2† / 27.9† | 4.9† / 0.4† / 2.8† | 38.1† / 35.7† | 1606 / 844 | 973, 0, 0, 1 | PASSED:13 / same | stamp |
+| grpc | DIFF² | 39.5 / 43.4 | 5.2 / 0.3 / 0.2 | 362.4 / 384.5 | 1704 / 1149 | 9360, 0, 0, 0 | — | query B66 |
+| rules_foreign_cc-examples | DIFF² | 25.7 / 14.0 | 5.9 / 0.2 / 0.2 | 24.5 / 19.1 | 1446 / 724 | 345, 0, 0, 17 | PASSED:23 / same | C4 |
+| rules_lint-python | DIFF² | 29.0 / 49.1 | 4.2 / 0.3 / 0.2 | 25.1† / 22.9† | 1585 / 779 | 311, 1, 0, 20 | FAILED:2 FAILED TO BUILD:1 PASSED:41 / same | B62, C4, C5 |
 | rules_lint-shell | DIFF | 31.8 / 28.1 | 4.0 / 0.4 / 0.2 | 25.3 / 22.1 | 1340 / 452 | 65, 0, 0, 3 | PASSED:8 / same | B62 |
 | rules_nodejs-smoke | DIFF | 14.2 / 9.6 | 3.8 / 0.4 / 0.2 | 4.2 / 1.9 | 1300 / 592 | 54, 0, 0, 1 | PASSED:10 / same | C4 |
-| rules_pkg | DIFF | 17.9 / 16.8 | 3.7 / 0.2 / 0.1 | 60.3† / 58.2† | 1282 / 573 | 955, 1, 0, 2 | FAILED:1 PASSED:104 SKIPPED:19 / FAILED:2 PASSED:103 SKIPPED:19 | B34, B71, C5 |
+| rules_pkg | DIFF² | 19.6 / 17.8 | 3.6 / 0.2 / 0.2 | 57.0† / 53.9† | 1222 / 577 | 955, 1, 0, 2 | FAILED:1 PASSED:104 SKIPPED:19 / FAILED:2 PASSED:103 SKIPPED:19 | B34, C5 |
 | rules_rust-all_crate_deps | DIFF | 66.8 / 53.6 | 3.7 / 0.3 / 0.2 | 32.8 / 31.4 | 1748 / 580 | 368, 0, 0, 1 | PASSED:3 / same | B62 |
 | rules_rust-sys | DIFF | 25.1 / 20.3 | 9.0 / 0.2 / 7.8 | 36.6 / 35.2 | 1441 / 386 | 815, 0, 0, 3 | PASSED:1 / same | C4 |
 | rules_scala-scala3 | DIFF | 22.6 / 18.5 | 3.1 / 0.1 / 0.2 | 11.7† / 11.6† | 1057 / 326 | 10, 2, 0, 0 | — | C5 |
 | aspect-bazel-examples | RS-FAIL | 151.6 / 0.1† | 6.5 / 0.7 / 0.1† | 87.3 / 0.1† | 2573 / — | 0, 159086, 0, 0 | FAILED:2 PASSED:32 / 0 | B59 (then B63) |
-| bb-storage | RS-FAIL | 143.4 / 3.7† | 6.0 / 0.3 / 0.1† | 60.1 / 0.1† | 2177 / 64 | 0, 4521, 0, 0 | PASSED:36 / 0 | B59 (then B69) |
-| grpc | RS-FAIL | 41.8 / 0.1† | 5.6 / 0.5 / 0.1† | 302.2 / 0.1† | 1765 / — | 0, 9360, 0, 0 | — | B59 (then B68); query B66 |
-| rules_foreign_cc-examples | RS-FAIL | 17.4 / 14.2† | 4.7 / 0.3 / 2.0† | 19.3 / 2.4† | 1329 / 725 | 17, 328, 0, 0 | PASSED:23 / 0 | B64 |
-| rules_java | RS-FAIL | 31.1 / 32.4† | 5.8 / 0.5 / 4.3† | 8.7 / 8.8† | 1769 / 1067 | 898, 137, 0, 0 | PASSED:321 / PASSED:280 | B67, B61, B70 |
-| rules_lint-python | RS-FAIL | 29.1 / 7.3† | 4.2 / 0.3 / 0.6† | 25.6† / 0.6† | 1561 / 435 | 7, 305, 0, 0 | FAILED:2 FAILED TO BUILD:1 PASSED:41 / 0 | B60 |
-| rules_py | RS-FAIL | 44.2 / 0.1† | 10.3 / 1.2 / 0.1† | 117.9 / 0.1† | 4233 / — | 0, 4004, 0, 0 | FAILED:2 PASSED:413 / 0 | B59 (then B60) |
+| bb-storage | RS-FAIL² | 159.0 / 162.6† | 7.4 / 0.3 / 6.1† | 60.9 / 62.0† | 2168 / 1269 | 4153, 368, 0, 0 | PASSED:36 / PASSED:9 | B69 |
+| rules_java | RS-FAIL² | 29.3 / 31.0† | 4.6 / 0.3 / 4.3† | 8.2 / 8.7† | 1923 / 1057 | 901, 134, 0, 0 | PASSED:321 / PASSED:281 | B67, B61 |
+| rules_py | RS-FAIL² | 38.5 / 0.1† | 7.8 / 0.9 / 0.1† | 118.7 / 0.1† | 3923 / — | 0, 4004, 0, 0 | FAILED:2 PASSED:413 / 0 | B33 (`strip` at startup) |
 | rules_rust-proto | RS-FAIL | 71.1 / 73.1† | 4.1 / 0.5 / 2.2† | 64.8 / 43.9† | 1633 / 714 | 2, 400, 0, 0 | PASSED:3 / 0 | B61 |
-| rules_ts-examples | RS-FAIL | 18.1 / 15.2 | 3.9 / 0.4 / 2.8 | 56.4 / 60.8† | 1432 / 550 | 54105, 18, 0, 0 | PASSED:188 / FAILED TO BUILD:5 PASSED:180 | B65 |
 
 Notes:
 

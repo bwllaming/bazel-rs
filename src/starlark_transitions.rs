@@ -57,6 +57,11 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "extra_toolchains",
     "extra_execution_platforms",
     "cpu",
+    // CoreOptions.hostCpu (AutoCpuConverter like `cpu`) and platformSuffix
+    // (a nullable String, explicit in the output path, never in the ST- hash;
+    // bazel_env.bzl's `_flip_output_dir`, OSS corpus aspect-bazel-examples).
+    "host_cpu",
+    "platform_suffix",
     "collect_code_coverage",
     // CoreOptions.instrumentationFilter: per configuration natively too
     // (NativeOptions::instrumentation); written, not read (B32/B33:
@@ -1170,6 +1175,16 @@ pub(crate) fn native_input<'v>(
                 .as_deref()
                 .unwrap_or(crate::configuration::host_cpu()),
         ),
+        "host_cpu" => heap.alloc(
+            native
+                .host_cpu
+                .as_deref()
+                .unwrap_or(crate::configuration::host_cpu()),
+        ),
+        "platform_suffix" => match native.platform_suffix {
+            Some(suffix) => heap.alloc(suffix),
+            None => Value::new_none(),
+        },
         // JavaOptions String fields (JavaOptions.java:373-403), read as
         // Starlark strings.
         "java_runtime_version" => heap.alloc(native.java.java_runtime_version.as_str()),
@@ -2060,6 +2075,20 @@ fn convert_setting(ty: SettingType, raw: &Raw, what: &str) -> Result<SettingValu
     })
 }
 
+/// One leaked copy per distinct string (NativeOptions keeps `&'static str`
+/// platform suffixes): transitions apply many times.
+fn intern(text: &str) -> &'static str {
+    static STRINGS: std::sync::Mutex<std::collections::BTreeSet<&'static str>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let mut strings = STRINGS.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(known) = strings.get(text) {
+        return known;
+    }
+    let leaked: &'static str = Box::leak(text.to_owned().into_boxed_str());
+    strings.insert(leaked);
+    leaked
+}
+
 /// The native option conversion of FunctionTransitionUtil.applyTransition
 /// (:640-760) for the modelled options; errors are its ValidationException
 /// texts (OptionsParsingException messages wrapped as `OptionsParsingError
@@ -2454,6 +2483,20 @@ fn convert_native(
                 native.cpu =
                     (text.as_str() != crate::configuration::host_cpu()).then(|| text.clone());
             }
+            _ => return Err(invalid()),
+        },
+        "host_cpu" => match &raw.kind {
+            RawKind::String(text) => {
+                native.host_cpu =
+                    (text.as_str() != crate::configuration::host_cpu()).then(|| text.clone());
+            }
+            _ => return Err(invalid()),
+        },
+        // A String option: a string is stored as is (`""` too, which adds
+        // nothing to the output directory), None is null.
+        "platform_suffix" => match &raw.kind {
+            RawKind::String(text) => native.platform_suffix = Some(intern(text)),
+            RawKind::None => native.platform_suffix = None,
             _ => return Err(invalid()),
         },
         // CppOptions.minimumOsVersion: a String field; a string value is

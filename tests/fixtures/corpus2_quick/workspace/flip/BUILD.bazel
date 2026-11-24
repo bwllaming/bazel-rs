@@ -1,0 +1,4 @@
+load(":defs.bzl", "w")
+w(name = "leaf")
+w(name = "mid", dep = [":leaf"])
+w(name = "top", dep = [":mid"])
