@@ -148,6 +148,7 @@ tests/fixtures/pre_platforms_flags/workspace
 tests/fixtures/print_locations/workspace
 tests/fixtures/progress_lines/workspace
 tests/fixtures/provider_payload_files/workspace
+tests/fixtures/py_go_hello/workspace
 tests/fixtures/py_internal_ctx/workspace
 tests/fixtures/py_label_runfiles_path/workspace
 tests/fixtures/py_regex_match/workspace

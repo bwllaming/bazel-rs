@@ -192,6 +192,17 @@ CASES = [
         ],
     },
     {
+        "name": "py_go_hello",
+        "workspace": "py_go_hello/workspace",
+        "steps": [
+            {"args": ["build", "//..."], "stderr": [r"^INFO: \d+ processes?: "]},
+            {"args": ["run", "//:py_hello"]},
+            {"args": ["run", "//:go_hello"]},
+            {"args": ["test", "//..."], "stderr": [r"^//:\S+ +(PASSED|FAILED|NO STATUS)"]},
+            {"args": ["aquery", "mnemonic('GoCompilePkg|GoLink', //:go_hello)"], "aquery": True},
+        ],
+    },
+    {
         "name": "aquery_genrules",
         "workspace": "aquery/genrules/ws",
         "steps": [
