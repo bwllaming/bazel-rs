@@ -1042,6 +1042,8 @@ mod tests {
         Label::parse_canonical(text).unwrap()
     }
 
+    // Linux only: expects the Linux x86_64 host's --cpu k8 and k8-* output roots.
+    #[cfg(target_os = "linux")]
     #[test]
     fn top_level_mnemonics_are_bazels_roots() {
         for (args, root) in [
@@ -1072,6 +1074,8 @@ mod tests {
         );
     }
 
+    // Linux only: expects the Linux x86_64 host's --cpu k8 and k8-* output roots.
+    #[cfg(target_os = "linux")]
     #[test]
     fn derived_configurations_add_the_suffix_and_a_diff_hash() {
         let top = parsed(&["--host_platform=//p:h"]);
@@ -1193,6 +1197,8 @@ mod tests {
     /// against the top-level configuration (target configurations) or the
     /// exec baseline with their own platform (exec configurations), and the
     /// memoized exec baseline only depends on the top-level flags.
+    // Linux only: expects the Linux x86_64 host's --cpu k8 and k8-* output roots.
+    #[cfg(target_os = "linux")]
     #[test]
     fn starlark_transition_results_use_bazel_baselines() {
         let top = parsed(&["--host_platform=//p:h"]);
@@ -1321,6 +1327,8 @@ mod tests {
     /// CPU names target roots and exec roots of default-named platforms
     /// (paired captures cpu_arm_set, exec_cpu_arm, exec_host_cpu_ppc and
     /// cpu_flag_slash in tests/fixtures/pre_platforms_flags).
+    // Linux only: expects the Linux x86_64 host's --cpu k8 and k8-* output roots.
+    #[cfg(target_os = "linux")]
     #[test]
     fn exec_transition_takes_the_host_cpu_and_resets_crosstool_top() {
         let none = BTreeSet::new();
@@ -1382,6 +1390,8 @@ mod tests {
     /// stays `k8-opt-exec` (the exec baseline has them too); defaults keep
     /// the exec identity of the defaults (paired captures proto_exec,
     /// coverage_transition, apple_defaults in tests/fixtures/value_options).
+    // Linux only: expects the Linux x86_64 host's --cpu k8 and k8-* output roots.
+    #[cfg(target_os = "linux")]
     #[test]
     fn exec_transition_applies_the_value_option_rules() {
         let none = BTreeSet::new();
@@ -1440,6 +1450,8 @@ mod tests {
     /// N28b: `_java_options` (builtin_exec_platforms.bzl:350-385): the exec
     /// configuration's java_* are the parent's tool_java_*, which propagate.
     /// At the defaults the exec identity is the pre-N28b one.
+    // Linux only: expects the Linux x86_64 host's --cpu k8 and k8-* output roots.
+    #[cfg(target_os = "linux")]
     #[test]
     fn exec_transition_maps_java_versions_from_the_tool_versions() {
         let none = BTreeSet::new();
@@ -1541,6 +1553,8 @@ mod tests {
     /// top-level baseline (computeNameFragmentWithDiff), and the exec
     /// transition takes the CoreOptions default (builtin_exec_platforms.bzl:231-275
     /// does not propagate it).
+    // Linux only: expects the Linux x86_64 host's --cpu k8 and k8-* output roots.
+    #[cfg(target_os = "linux")]
     #[test]
     fn collect_code_coverage_enters_the_st_hash_and_not_the_exec_configuration() {
         let top = parsed(&["--host_platform=//p:h"]);
@@ -1569,6 +1583,8 @@ mod tests {
     /// tests/fixtures/extra_execution_platforms, default_host: Bazel's
     /// k8-fastbuild-ST-f7ead6e6535a): `extra_execution_platforms` enters the
     /// ST- hash as its Java list form, and the exec transition propagates it.
+    // Linux only: expects the Linux x86_64 host's --cpu k8 and k8-* output roots.
+    #[cfg(target_os = "linux")]
     #[test]
     fn extra_execution_platforms_enter_the_st_hash_and_propagate_to_exec() {
         let top = Configuration::default();
@@ -1591,6 +1607,8 @@ mod tests {
     /// N47 (paired capture S2 gobin_race): a raw list equal to the
     /// baseline's converted command-line list is still a difference, hashed
     /// with its Starlark repr (Bazel's ST-91a4ed8818d5).
+    // Linux only: expects the Linux x86_64 host's --cpu k8 and k8-* output roots.
+    #[cfg(target_os = "linux")]
     #[test]
     fn raw_lists_differ_from_the_converted_baseline_list() {
         let tags = label("//go/config:tags");

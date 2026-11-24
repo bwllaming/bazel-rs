@@ -589,6 +589,8 @@ mod tests {
         );
     }
 
+    // Linux only: the exact environment of dash as /bin/sh (macOS's sh adds PWD and SHLVL).
+    #[cfg(target_os = "linux")]
     #[test]
     fn closed_stdin_and_exact_environment_allowlist() {
         let temp = Temp::new();

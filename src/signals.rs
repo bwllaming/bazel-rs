@@ -159,7 +159,7 @@ fn held() -> u64 {
 
 /// Whether `signal` is ignored by this process: held ([`hold_ignored`]) or
 /// still SIG_IGN.
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 fn ignored(signal: libc::c_int) -> bool {
     held() >> (signal - 1) & 1 == 1 || ignored_now(signal)
 }
@@ -311,7 +311,8 @@ pub fn exit_on_interrupt() {
     }
 }
 
-#[cfg(test)]
+// Linux only: the tests read signal masks from /proc.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 

@@ -3534,6 +3534,8 @@ mod tests {
         ));
     }
 
+    // Linux only: expects the Linux x86_64 host's --cpu k8 and k8-* output roots.
+    #[cfg(target_os = "linux")]
     #[test]
     fn command_line_forms_and_normalization() {
         let configuration = parsed(&[
@@ -3717,6 +3719,8 @@ mod tests {
         }
     }
 
+    // Linux only: expects the Linux x86_64 host's --cpu k8 and k8-* output roots.
+    #[cfg(target_os = "linux")]
     #[test]
     fn config_id_is_stable_and_value_sensitive() {
         let default = Configuration::default();
@@ -4113,6 +4117,8 @@ mod tests {
     /// explicitly keep the default identity; other values are part of it;
     /// `query` accepts only the CoreOptions (paired captures query_cpu,
     /// query_crosstool_top in tests/fixtures/pre_platforms_flags).
+    // Linux only: expects the Linux x86_64 host's --cpu k8 and k8-* output roots.
+    #[cfg(target_os = "linux")]
     #[test]
     fn pre_platforms_flags_parse_and_enter_the_identity_when_set() {
         let default = Configuration::default();

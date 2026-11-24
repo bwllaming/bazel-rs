@@ -425,6 +425,7 @@ pub(crate) fn echo(stdout: &[u8], stderr: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use std::io::Write;
 
     /// `execute(quiet=False)`'s echo keeps the console's order: while this
@@ -496,6 +497,8 @@ mod tests {
         assert_eq!(waits, [50, 100, 200, 400, 800, 1600, 3200, 5000, 5000]);
     }
 
+    // Linux only: ETXTBSY (macOS executes files open for writing).
+    #[cfg(target_os = "linux")]
     #[test]
     fn leaked_write_descriptors_make_exec_busy_but_never_for_written_scripts() {
         use std::os::unix::fs::PermissionsExt;
@@ -633,6 +636,8 @@ mod tests {
         );
     }
 
+    // Linux only: ETXTBSY (macOS executes files open for writing).
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_hard_exec_error_stops_the_search_with_its_own_errno() {
         // glibc __execvpe: ETXTBSY is not a "continue" errno, so the search

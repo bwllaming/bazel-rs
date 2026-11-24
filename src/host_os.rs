@@ -412,6 +412,8 @@ mod tests {
         })
     }
 
+    // Linux only: the reference metadata is the Linux host's.
+    #[cfg(target_os = "linux")]
     #[test]
     fn reference_linux_metadata_and_structural_surface() {
         let arch = compile_target_arch().unwrap();

@@ -7048,6 +7048,8 @@ ctx.execute(["ln", "-s", str(ctx.path("in")), "absolute-link"])"#
         );
     }
 
+    // Linux only: expects the Linux x86_64 host's cpu k8.
+    #[cfg(target_os = "linux")]
     #[test]
     fn cc_configure_shaped_rule_uses_environ_which_execute_template_label_and_symlink() {
         let bin = tempfile::tempdir_in(crate::test_temp::root()).unwrap();

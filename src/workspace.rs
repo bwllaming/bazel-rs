@@ -714,6 +714,8 @@ mod tests {
     }
 
     #[cfg(unix)]
+    // Linux only: non-UTF-8 file names (APFS refuses them).
+    #[cfg(target_os = "linux")]
     #[test]
     fn non_utf8_directories_are_no_packages() {
         use std::os::unix::ffi::OsStrExt;

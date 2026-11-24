@@ -18881,6 +18881,8 @@ m = macro(implementation=emit)
         (f, engine)
     }
 
+    // Linux only: expects the Linux x86_64 host's --cpu k8 and k8-* output roots.
+    #[cfg(target_os = "linux")]
     #[test]
     fn one_engine_analyzes_a_target_in_two_configurations() {
         let (_f, mut engine) = two_configuration_engine(

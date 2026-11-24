@@ -1796,6 +1796,7 @@ pub(crate) mod tests {
     /// port 0) while it lives, and a SYN to it finds no listener (RST, i.e.
     /// ECONNREFUSED). The peer listener must stay open too, or it would reset
     /// the connection and release the port.
+    #[cfg(target_os = "linux")]
     fn refused_port() -> ((std::net::TcpListener, std::net::TcpStream), u16) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let stream = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
@@ -1809,6 +1810,8 @@ pub(crate) mod tests {
         ((listener, stream), port)
     }
 
+    // Linux only: Linux's refusal to bind a port held by a connected socket.
+    #[cfg(target_os = "linux")]
     #[test]
     fn bazel_failure_classes_and_messages_for_status_and_connection_errors() {
         let server = Server::new(

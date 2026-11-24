@@ -547,6 +547,8 @@ pub(crate) mod tests {
         }
     }
 
+    // Linux only: uses GNU timeout(1).
+    #[cfg(target_os = "linux")]
     #[test]
     fn shutdown_cancels_even_an_unlimited_credential_helper() {
         use std::os::unix::fs::PermissionsExt;
@@ -783,6 +785,8 @@ pub(crate) mod tests {
         // still owns its stage when the test process exits.
     }
 
+    // Linux only: uses GNU timeout(1).
+    #[cfg(target_os = "linux")]
     #[test]
     fn failed_invocation_cleans_active_warm_stage() {
         let root = tempfile::tempdir().unwrap();

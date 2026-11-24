@@ -9435,6 +9435,20 @@ mod tests {
 
     include!("../tests/support/executable_script.rs");
 
+    /// A test action's `stat` command line for the host's stat(1): GNU
+    /// `stat -c` as written on Linux, BSD `stat -f` (`%Lp` for `%a`) on
+    /// macOS.
+    fn stat_command(command: &str) -> String {
+        if cfg!(target_os = "linux") {
+            command.to_owned()
+        } else {
+            command
+                .replace("stat -c", "stat -f")
+                .replace("stat -L -c", "stat -L -f")
+                .replace("%a", "%Lp")
+        }
+    }
+
     /// sweep_work: a work directory whose owner file is not locked goes,
     /// even while another process has the pid (reused); one without an
     /// owner file (an older binary's) only once no process has the pid; this
@@ -9487,6 +9501,8 @@ mod tests {
     /// whole: another directory at the path) is checked by path after the
     /// process, not through the directory staging opened: a changed file
     /// there is a modified input.
+    // Linux only: fd-relative lstat staging needs O_PATH.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_republished_tree_directory_is_checked_by_path() {
         let fixture = Fixture::new();
@@ -9531,6 +9547,8 @@ mod tests {
     /// exactly its own inputs — not the previous action's inputs, outputs,
     /// parameter files or what its process left (a file, a directory, an
     /// input's link replaced by another file) — with the same inodes.
+    /// (Execution-root reuse needs the umask from /proc: Linux only.)
+    #[cfg(target_os = "linux")]
     #[test]
     fn reused_execution_roots_hold_exactly_each_actions_inputs() {
         let fixture = Fixture::new();
@@ -12694,8 +12712,9 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         action
             .inputs
             .push((action.inputs[0].0.clone(), "other/path.h".into()));
-        action.command =
-            "stat -c '%i %a' src/input other/path.h > out/result; test ! -w src/input || test \"$(id -u)\" = 0".into();
+        action.command = stat_command(
+            "stat -c '%i %a' src/input other/path.h > out/result; test ! -w src/input || test \"$(id -u)\" = 0",
+        );
         let first = execute(&fixture.cache(), &action).unwrap();
         let store = blob(&fixture, b"hello\n", 0o444);
         let expected = format!("{0} 444\n{0} 444\n", ino(&store));
@@ -12709,7 +12728,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         assert_eq!(mode(&action.inputs[0].0), 0o644);
         // Executable bits select another blob.
         fs::set_permissions(&action.inputs[0].0, fs::Permissions::from_mode(0o755)).unwrap();
-        action.command = "stat -c '%a' src/input > out/result".into();
+        action.command = stat_command("stat -c '%a' src/input > out/result");
         let executable = execute(&fixture.cache(), &action).unwrap();
         assert_eq!(fs::read_to_string(&executable.outputs[0]).unwrap(), "555\n");
         assert!(blob(&fixture, b"hello\n", 0o555).is_file());
@@ -12771,7 +12790,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         let mut consumer = fixture.action();
         consumer.id = "consumer".into();
         consumer.inputs = vec![(a.outputs[0].clone().into(), "generated".into())];
-        consumer.command = "stat -c %i generated > out/result".into();
+        consumer.command = stat_command("stat -c %i generated > out/result");
         let consumed = execute(&fixture.cache(), &consumer).unwrap();
         assert_eq!(
             fs::read_to_string(&consumed.outputs[0]).unwrap(),
@@ -12807,7 +12826,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
             (second.into(), "b".into()),
             (third.into(), "c".into()),
         ];
-        action.command = "stat -L -c %i a again/a b c > out/result".into();
+        action.command = stat_command("stat -L -c %i a again/a b c > out/result");
         let result = execute(&fixture.cache(), &action).unwrap();
         let text = fs::read_to_string(&result.outputs[0]).unwrap();
         let inodes: Vec<&str> = text.lines().collect();
@@ -12863,7 +12882,8 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
     fn failed_hardlinks_fall_back_to_copies() {
         let fixture = Fixture::new();
         let mut action = fixture.action();
-        action.command = "stat -c %i src/input > out/result; cat src/input >> out/result".into();
+        action.command =
+            stat_command("stat -c %i src/input > out/result; cat src/input >> out/result");
         FORCE_LINK_ERRNO.with(|force| force.set(18));
         LINK_COUNTS.with(|counts| counts.set((0, 0)));
         let result = execute(&fixture.cache(), &action);
@@ -12924,7 +12944,9 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
             ),
             (chained.outputs[0].clone().into(), "pkg/again.h".into()),
         ];
-        consumer.command = "stat -L -c %i pkg/hdr.h pkg/_virtual_includes/hdr.h pkg/again.h | sort -u | wc -l > out/result".into();
+        consumer.command = stat_command(
+            "stat -L -c %i pkg/hdr.h pkg/_virtual_includes/hdr.h pkg/again.h | sort -u | wc -l > out/result",
+        );
         let compiled = execute(&fixture.cache(), &consumer).unwrap();
         assert_eq!(
             fs::read_to_string(&compiled.outputs[0]).unwrap().trim(),
@@ -13359,7 +13381,8 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         consumer.id = "tree-consumer".into();
         consumer.inputs = vec![(linked.outputs[0].clone().into(), "t".into())];
         consumer.extra.tree_inputs = BTreeSet::from([PathBuf::from("t")]);
-        consumer.command = "cat t/a t/sub/b > out/result; stat -c %i t/a >> out/result".into();
+        consumer.command =
+            stat_command("cat t/a t/sub/b > out/result; stat -c %i t/a >> out/result");
         let consumed = execute(&fixture.cache(), &consumer).unwrap();
         assert_eq!(
             fs::read_to_string(&consumed.outputs[0]).unwrap(),
@@ -13679,7 +13702,8 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         // EMLINK: the blob reached the filesystem's link-count limit.
         let fixture = Fixture::new();
         let mut action = fixture.action();
-        action.command = "stat -c %i src/input > out/result; cat src/input >> out/result".into();
+        action.command =
+            stat_command("stat -c %i src/input > out/result; cat src/input >> out/result");
         FORCE_LINK_ERRNO.with(|force| force.set(31));
         LINK_COUNTS.with(|counts| counts.set((0, 0)));
         let result = execute(&fixture.cache(), &action);
@@ -13698,7 +13722,8 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
     fn a_blob_removed_before_linking_is_ensured_again() {
         let fixture = Fixture::new();
         let mut action = fixture.action();
-        action.command = "stat -c %i src/input > out/result; cat src/input >> out/result".into();
+        action.command =
+            stat_command("stat -c %i src/input > out/result; cat src/input >> out/result");
         REMOVE_BLOB_BEFORE_LINK.with(|hook| hook.set(true));
         let result = execute(&fixture.cache(), &action);
         REMOVE_BLOB_BEFORE_LINK.with(|hook| hook.set(false));

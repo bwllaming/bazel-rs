@@ -211,7 +211,8 @@ mod tests {
             })
         });
         inside.recv().unwrap();
-        let mut child = spawn(&mut Command::new("/bin/true")).unwrap();
+        // (macOS has no /bin/true.)
+        let mut child = spawn(&mut Command::new("/usr/bin/true")).unwrap();
         let started = Instant::now();
         let closed = writer.join().unwrap();
         assert!(child.wait().unwrap().success());

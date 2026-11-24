@@ -1836,6 +1836,8 @@ mod tests {
     }
 
     #[cfg(unix)]
+    // Linux only: Linux errno numbers and non-UTF-8 names (APFS refuses them).
+    #[cfg(target_os = "linux")]
     #[test]
     fn boundary_lookup_errors_are_no_legacy_globber_errors() {
         use std::os::unix::fs::{PermissionsExt, symlink};
@@ -1976,6 +1978,8 @@ mod tests {
     }
 
     #[cfg(unix)]
+    // Linux only: Linux errno numbers and non-UTF-8 names (APFS refuses them).
+    #[cfg(target_os = "linux")]
     #[test]
     fn unsupported_file_types_and_non_utf8_names_error() {
         use std::os::unix::ffi::OsStringExt;
