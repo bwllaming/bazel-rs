@@ -731,7 +731,9 @@ impl PlanReads for MissReads<'_> {
         self.reads.validation(key)
     }
     fn repositories(&self, key: &ConfiguredTargetKey) -> Option<Arc<BTreeSet<String>>> {
-        self.note(key);
+        // Not noted: a source file has no results (its own repository),
+        // and an application reads the repositories of a rule only after
+        // its view or providers (each noted when unpublished: B62).
         self.reads.repositories(key)
     }
 }
