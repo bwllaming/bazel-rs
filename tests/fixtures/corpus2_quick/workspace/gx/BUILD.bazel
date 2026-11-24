@@ -1,0 +1,3 @@
+filegroup(name = "a", srcs = glob(["src/**/*"], exclude = ["dist/"]))
+filegroup(name = "b", srcs = glob(["src/**/*"], exclude = ["./src/a.txt", "/abs", "", "src//a.txt", "src/../src/a.txt"]))
+filegroup(name = "c", srcs = glob(["src/**/*"], exclude = ["src/b.txt"]))

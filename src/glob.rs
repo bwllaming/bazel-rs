@@ -377,6 +377,14 @@ pub(crate) fn excluded_entry(excludes: &[String], relative: &str, name: &std::ff
         .any(|text| Pattern::parse(text).is_ok_and(|pattern| pattern.matches(&path)))
 }
 
+/// An exclusion whose split segments include an empty, `.` or `..` one: no
+/// path below a package has such a segment, so UnixGlob's exclusion match
+/// never succeeds.
+fn never_matching_exclusion(text: &str) -> bool {
+    text.split('/')
+        .any(|segment| matches!(segment, "" | "." | ".."))
+}
+
 /// Whether the glob walker uses the entry `name` of the directory at
 /// `relative` (below the package) for the include `pattern` — the snapshot
 /// projection of its listings (crate::observed_fs::Projection::Glob): an
@@ -442,8 +450,13 @@ pub fn glob(
         .iter()
         .map(|text| Pattern::parse(text))
         .collect::<Result<Vec<_>, _>>()?;
+    // Exclusions are never validated by UnixGlob.checkPatternForError
+    // (UnixGlob.removeExcludes, :889-905, matches split segments): a pattern
+    // with an empty, `.` or `..` segment (or an absolute one) matches no path
+    // and is dropped (aspect's bazel-examples `exclude = ["dist/"]`, B76).
     let exclusions = excludes
         .iter()
+        .filter(|text| !never_matching_exclusion(text))
         .map(|text| Pattern::parse(text))
         .collect::<Result<Vec<_>, _>>()?;
     // Also validates package paths and regular BUILD files.
@@ -1250,6 +1263,8 @@ mod tests {
     #[test]
     fn invalid_and_unsupported_patterns_are_errors_even_in_excludes() {
         let temp = Temp::new();
+        temp.file("a");
+        let everything = temp.run(&["*"], &[], true, true).unwrap();
         for pattern in [
             "", "/x", "a/", "a//b", ".", "..", "a/../b", "./a", "a/./b", "a**", "***", "**x/a",
             "a?", "[ab]", "{a,b}", "a\\b", "C:/x", "a\0b", "a\nb",
@@ -1258,10 +1273,16 @@ mod tests {
                 temp.run(&[pattern], &[], true, true).is_err(),
                 "{pattern:?}"
             );
-            assert!(
-                temp.run(&["*"], &[pattern], true, true).is_err(),
-                "{pattern:?}"
-            );
+            // UnixGlob.removeExcludes never validates an exclusion: one with
+            // an empty, `.` or `..` segment matches nothing (B76); the
+            // unsupported dialects stay explicit errors.
+            let never = pattern.split('/').any(|s| matches!(s, "" | "." | ".."));
+            let excluded = temp.run(&["*"], &[pattern], true, true);
+            if never {
+                assert_eq!(excluded.unwrap(), everything, "{pattern:?}");
+            } else {
+                assert!(excluded.is_err(), "{pattern:?}");
+            }
         }
     }
 

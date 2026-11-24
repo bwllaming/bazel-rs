@@ -194,7 +194,11 @@ pub fn build(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<DirectCatal
     let mut catalog = DirectCatalog::default();
     let mut prefixes = BTreeSet::new();
     let mut has_isolated = false;
-    let mut budget = crate::repository_budget::HostBudget::default();
+    // Every direct repository's complete mapping is charged (O(repositories
+    // x mapping)), with no byte or node ceiling: Bazel bounds neither, and a
+    // large workspace's catalog exceeds the former 100,000-node profile
+    // (aspect's bazel-examples, OSS corpus B72). Depth and overflow still fail.
+    let mut budget = crate::repository_budget::HostBudget::unbounded();
 
     for owner in &owners {
         let (module, base_mapping) = owner_data(graph, owner)?;
@@ -859,18 +863,16 @@ fn owner_order(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<Vec<Strin
 mod tests {
     use super::*;
 
+    /// The catalog has no host-budget ceiling (B72): repeated long-prefix
+    /// imports, once rejected by the 64 MiB weighted-byte profile, build.
     #[test]
-    fn repeated_long_prefix_imports_respect_catalog_host_budget() {
+    fn repeated_long_prefix_imports_have_no_catalog_ceiling() {
         let symbol = "e".repeat(65_536);
         let imports = (0..256).map(|i| format!(", 'r{i}'")).collect::<String>();
         let graph = graph(&format!(
             "module(name='main')\ne=use_extension('//:ext.bzl','{symbol}')\nuse_repo(e{imports})\n"
         ));
-        let error = match build(&graph, false) {
-            Err(error) => error,
-            Ok(_) => panic!("catalog must enforce a cumulative host budget"),
-        };
-        assert!(error.contains("host") && error.contains("limit"), "{error}");
+        build(&graph, false).unwrap();
     }
     use crate::bzlmod::{self, EvaluationContext, ModuleRole};
     use crate::module_graph::{ModuleSource, ResolvedModule};

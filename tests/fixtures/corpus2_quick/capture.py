@@ -102,6 +102,9 @@ CASES = {
     # B75: list-typed attributes take any iterable (dict keys, set elements).
     'list_attributes_from_iterables': case(
         'build', BUILD, ['//it:d', '//it:s', '//it:e'], outputs=['d.txt', 's.txt', 'e.txt']),
+    # B76: glob exclusions are never validated (one with an empty, `.` or
+    # `..` segment matches nothing).
+    'glob_exclusions_unvalidated': case('query', [], ['labels(srcs, //gx:all)']),
     # B63: include() in the root MODULE.bazel; the lockfile's extension
     # entry (usages digest) is compared too.
     'include_segments': case(

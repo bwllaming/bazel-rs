@@ -463,6 +463,24 @@
    ],
    "workspace": "bigws"
   },
+  "glob_exclusions_unvalidated": {
+   "command": "query",
+   "env": {},
+   "exit": 0,
+   "flags": [],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
+   "outputs": {},
+   "patterns": [],
+   "rc": false,
+   "stderr": [],
+   "stdout": "//gx:src/a.txt\n//gx:src/b.txt\n",
+   "targets": [
+    "labels(srcs, //gx:all)"
+   ],
+   "workspace": "workspace"
+  },
   "host_macos_minimum_os": {
    "command": "build",
    "env": {},
