@@ -381,6 +381,70 @@
    ],
    "workspace": "workspace"
   },
+  "declare_file_normalized": {
+   "command": "build",
+   "env": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
+   "outputs": {
+    "k8-fastbuild/bin/df/a/b.txt": "x",
+    "k8-fastbuild/bin/df/c.txt": "x",
+    "k8-fastbuild/bin/df/e.txt": "x",
+    "k8-fastbuild/bin/df/g": "x"
+   },
+   "patterns": [],
+   "rc": false,
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//df:a",
+    "//df:b",
+    "//df:c",
+    "//df:f"
+   ],
+   "workspace": "workspace"
+  },
+  "declare_file_outside_package": {
+   "command": "build",
+   "env": {},
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--keep_going"
+   ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
+   "outputs": {},
+   "patterns": [
+    "the output artifact 'x.txt' is not under",
+    "the output artifact '/abs.txt' is not under"
+   ],
+   "rc": false,
+   "stderr": [
+    {
+     "line": "Error in declare_file: the output artifact 'x.txt' is not under package directory 'df' for target '//df:d'",
+     "pattern": "the output artifact 'x.txt' is not under"
+    },
+    {
+     "line": "Error in declare_file: the output artifact '/abs.txt' is not under package directory 'df' for target '//df:e'",
+     "pattern": "the output artifact '/abs.txt' is not under"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//df:d",
+    "//df:e"
+   ],
+   "workspace": "workspace"
+  },
   "extension_repository_large_attribute": {
    "command": "build",
    "env": {},

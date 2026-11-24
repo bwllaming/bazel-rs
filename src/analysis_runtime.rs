@@ -1668,7 +1668,34 @@ pub(crate) fn tool_runfiles_tree(
 
 fn declared_name(context: &Context, filename: &str, sibling: Value<'_>) -> anyhow::Result<String> {
     if sibling.is_none() {
-        return Ok(filename.to_owned());
+        // StarlarkActionFactory.declareFile (:146-148): the package
+        // directory's getRelative(PathFragment.create(filename)), so empty
+        // and `.` segments vanish and `..` resolves (rules_foreign_cc's
+        // `lib///introspect.json`, OSS corpus B74); it must stay below the
+        // package directory (:157-161).
+        let plain = !filename.starts_with('/')
+            && filename
+                .split('/')
+                .all(|segment| !matches!(segment, "" | "." | ".."));
+        if plain {
+            return Ok(filename.to_owned());
+        }
+        let package = context.label.package_exec_path();
+        let fragment = crate::ignored::normalize_path_fragment(&if filename.starts_with('/') {
+            filename.to_owned()
+        } else {
+            package.join(filename).to_string_lossy().into_owned()
+        });
+        let relative = std::path::Path::new(&fragment)
+            .strip_prefix(&package)
+            .map_err(|_| {
+                anyhow!(
+                    "the output artifact '{fragment}' is not under package directory '{}' for target '{}'",
+                    package.display(),
+                    context.label
+                )
+            })?;
+        return Ok(relative.to_string_lossy().into_owned());
     }
     let sibling = unpack_file(sibling)?;
     // StarlarkActionFactory.declareFile (:142-163): the sibling's

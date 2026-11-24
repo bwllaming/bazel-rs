@@ -1,0 +1,7 @@
+load(":defs.bzl", "r")
+r(name = "a", name_ = "a///b.txt")
+r(name = "b", name_ = "./c.txt")
+r(name = "c", name_ = "d/../e.txt")
+r(name = "d", name_ = "../x.txt")
+r(name = "e", name_ = "/abs.txt")
+r(name = "f", name_ = "g/")

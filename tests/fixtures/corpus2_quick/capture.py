@@ -93,6 +93,12 @@ CASES = {
     # B72: an extension-generated repository with a large attribute (no
     # native host budget on extension results).
     'extension_repository_large_attribute': case('build', [], ['//:t'], workspace='bigws'),
+    # B74: declare_file normalizes its path like PathFragment.create.
+    'declare_file_normalized': case(
+        'build', BUILD, ['//df:a', '//df:b', '//df:c', '//df:f'], outputs=['b.txt', 'c.txt', 'e.txt', 'g']),
+    'declare_file_outside_package': case(
+        'build', BUILD + ['--keep_going'], ['//df:d', '//df:e'],
+        patterns=[r"the output artifact 'x.txt' is not under", r"the output artifact '/abs.txt' is not under"]),
     # B63: include() in the root MODULE.bazel; the lockfile's extension
     # entry (usages digest) is compared too.
     'include_segments': case(
