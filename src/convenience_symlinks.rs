@@ -365,26 +365,55 @@ fn create_link(
 
 /// FileSystemUtils.ensureSymbolicLink: an existing link to `target` stays,
 /// another symlink is replaced, anything else fails (`… is not a
-/// symlink`); missing parents of the link are created.
+/// symlink`); missing parents of the link are created. The replacement is
+/// a new link renamed over the old one, so a concurrent reader (a copy
+/// script, another build) never finds the link missing.
 fn ensure_symbolic_link(link: &Path, target: &Path) -> Result<(), String> {
     // snapshot-unrecorded: the convenience links are written after
     // planning; never an input of analysis (globs skip them).
     match std::fs::read_link(link) {
-        Ok(existing) if existing == target => return Ok(()),
+        Ok(existing) if existing == target => Ok(()),
         Ok(_) => {
-            std::fs::remove_file(link).map_err(|error| java_message(link, &error))?;
+            let name = link
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let temporary =
+                link.with_file_name(format!(".{name}.bazel-rs-{}.tmp", std::process::id()));
+            let _ = std::fs::remove_file(&temporary);
+            std::os::unix::fs::symlink(target, &temporary)
+                .and_then(|()| std::fs::rename(&temporary, link))
+                .map_err(|error| {
+                    let _ = std::fs::remove_file(&temporary);
+                    java_message(link, &error)
+                })
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             if let Some(parent) = link.parent() {
                 std::fs::create_dir_all(parent).map_err(|error| java_message(parent, &error))?;
             }
+            match std::os::unix::fs::symlink(target, link) {
+                // A concurrent command created it first.
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::AlreadyExists
+                        && points_at(link, target) =>
+                {
+                    Ok(())
+                }
+                result => result.map_err(|error| java_message(link, &error)),
+            }
         }
         Err(error) if error.raw_os_error() == Some(libc::EINVAL) => {
-            return Err(format!("{} is not a symlink", link.display()));
+            Err(format!("{} is not a symlink", link.display()))
         }
-        Err(error) => return Err(java_message(link, &error)),
+        Err(error) => Err(java_message(link, &error)),
     }
-    std::os::unix::fs::symlink(target, link).map_err(|error| java_message(link, &error))
+}
+
+/// Whether the symlink `link` points at `target`.
+fn points_at(link: &Path, target: &Path) -> bool {
+    // snapshot-unrecorded: the convenience links are written after planning.
+    std::fs::read_link(link).is_ok_and(|existing| existing == target)
 }
 
 /// The text of a Java IOException for `path` (`PATH (Reason)`).
