@@ -82,6 +82,7 @@ jobs:
           python3 -m unittest discover -s tests -p test_release.py
           python3 -m unittest discover -s tests -p test_ci.py
           python3 -m unittest discover -s tests -p test_self_build.py
+          python3 -m unittest discover -s tests -p test_host_parity.py
 
   macos:
     name: macOS arm64 build, unit and hermetic integration tests, smoke
