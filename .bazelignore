@@ -123,6 +123,7 @@ tests/fixtures/mod_command/sources
 tests/fixtures/mod_command/tidy_ws
 tests/fixtures/mod_command/ws
 tests/fixtures/module_extension_io
+tests/fixtures/module_failure_exit_codes/cases
 tests/fixtures/module_flag_alias
 tests/fixtures/module_overrides/archive
 tests/fixtures/module_overrides/git

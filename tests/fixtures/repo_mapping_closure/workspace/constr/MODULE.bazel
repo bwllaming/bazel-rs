@@ -1,0 +1,4 @@
+module(name = "constr")
+
+bazel_dep(name = "ext")
+bazel_dep(name = "setting")

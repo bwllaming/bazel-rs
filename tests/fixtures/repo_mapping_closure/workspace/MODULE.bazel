@@ -11,3 +11,9 @@ local_path_override(module_name = "cond", path = "cond")
 
 bazel_dep(name = "maker")
 local_path_override(module_name = "maker", path = "maker")
+
+bazel_dep(name = "constr")
+local_path_override(module_name = "constr", path = "constr")
+
+bazel_dep(name = "setting")
+local_path_override(module_name = "setting", path = "setting")

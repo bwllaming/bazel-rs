@@ -1,0 +1,5 @@
+constraint_value(
+    name = "v",
+    constraint_setting = "@setting//:s",
+    visibility = ["//visibility:public"],
+)

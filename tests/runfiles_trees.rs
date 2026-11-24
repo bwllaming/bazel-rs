@@ -1500,7 +1500,9 @@ fn copy_fixture(from: &Path, to: &Path) {
 fn repo_mapping_manifests_include_generating_rules_and_select_keys() {
     // B6 (docs/OSS_CORPUS.md): RepoMappingManifestAction's transitive
     // packages include an output file's generating rule's (here its exec
-    // tool in @maker) and every select() key's (@cond's config_setting).
+    // tool in @maker) and every select() key's (@cond's config_setting),
+    // with a config_setting's constraint_values and their constraint_setting
+    // (@constr, @setting; B62).
     // Expected bytes: genuine 9.3.1's, tests/fixtures/repo_mapping_closure.
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/repo_mapping_closure");
     let receipt: serde_json::Value =
@@ -1520,10 +1522,11 @@ fn repo_mapping_manifests_include_generating_rules_and_select_keys() {
         "//:from_output",
         "//:from_select",
         "//:plain",
+        "//:from_constraint",
     ]);
     success(&output);
     let expected = receipt["repo_mapping"].as_object().unwrap();
-    assert_eq!(expected.len(), 3);
+    assert_eq!(expected.len(), 4);
     for (name, content) in expected {
         let exec = name.replace("bazel-bin/", "bazel-out/k8-fastbuild/bin/");
         let path = single(&ws, &exec);

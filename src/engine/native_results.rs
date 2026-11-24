@@ -103,7 +103,91 @@ impl Engine {
             let Ok(label) = self.resolve_rule_src(rule, &text) else {
                 continue;
             };
-            transitive.extend(self.dependency_repositories_in(reads, label, Some(config)));
+            self.prerequisite_repositories_in(reads, label, Some(config), transitive, 0);
+        }
+    }
+
+    /// The transitive repositories of a configuration or platform
+    /// prerequisite `label` (a `select()` key, a config_setting's
+    /// `constraint_values` and `flag_values` keys, a constraint_value's
+    /// `constraint_setting`, a platform's constraints and parents, an
+    /// alias's `actual`), added to `transitive`. A `select()` key is looked
+    /// up before its dependent is configured, and those prerequisites are
+    /// not dependency edges of their native rules, so their packages
+    /// (loaded by the configuration's matching) are walked here: Bazel's
+    /// TransitiveDependencyState collects them all (ConfigConditionsProducer,
+    /// ConfiguredTargetAndDataProducer; the repo mapping manifest's
+    /// repositories, B6 and B62 of docs/OSS_CORPUS.md). A key without a
+    /// loaded rule contributes its planned repositories, else its own.
+    pub(super) fn prerequisite_repositories_in(
+        &self,
+        reads: &dyn PlanReads,
+        label: Label,
+        config: Option<ConfigId>,
+        transitive: &mut BTreeSet<String>,
+        depth: usize,
+    ) {
+        let rule = self
+            .packages
+            .get(&label.package_id())
+            .and_then(|package| package.get(&label));
+        let prerequisites: Vec<(String, bool)> = match rule.map(|rule| (&rule.kind, rule)) {
+            Some((RuleKind::Native("config_setting"), rule)) if depth < 32 => {
+                let native = rule.native.as_ref();
+                let mut labels: Vec<(String, bool)> = native
+                    .map(|native| native.labels("constraint_values"))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|label| (label, false))
+                    .collect();
+                if let Some(crate::custom_rule::AttrValue::LabelKeyedStringDict(entries)) =
+                    native.and_then(|native| native.attrs.get("flag_values"))
+                {
+                    labels.extend(entries.iter().map(|(label, _)| (label.clone(), true)));
+                }
+                labels
+            }
+            Some((RuleKind::Native("alias"), rule))
+                if depth < 32
+                    && rule
+                        .native
+                        .as_ref()
+                        .is_some_and(|native| !native.configurable.contains_key("actual")) =>
+            {
+                match rule
+                    .native
+                    .as_ref()
+                    .and_then(|native| native.attrs.get("actual"))
+                {
+                    Some(crate::custom_rule::AttrValue::Label(Some(actual))) => {
+                        vec![(actual.clone(), true)]
+                    }
+                    _ => Vec::new(),
+                }
+            }
+            Some((
+                RuleKind::Native("constraint_setting" | "constraint_value" | "platform"),
+                rule,
+            )) if depth < 32 => platform_prerequisite_attributes(rule)
+                .into_iter()
+                .flat_map(|attribute| attribute.labels)
+                .map(|label| (label, false))
+                .collect(),
+            _ => {
+                transitive.extend(self.dependency_repositories_in(reads, label, config));
+                return;
+            }
+        };
+        transitive.insert(label.repository.to_string());
+        let Some(rule) = rule else { return };
+        for (text, configured) in prerequisites {
+            let Ok(prerequisite) = self.resolve_rule_src(rule, &text) else {
+                continue;
+            };
+            // Constraints and platforms live in no configuration; flag
+            // values and an alias's actual in the dependent's.
+            let config = if configured { config } else { None };
+            self.prerequisite_repositories_in(reads, prerequisite, config, transitive, depth + 1);
         }
     }
 
@@ -138,6 +222,22 @@ impl Engine {
                 }
             };
             transitive.extend(self.dependency_repositories_in(reads, label, edge_config));
+        }
+        // Their prerequisites are not dependency edges (platform and
+        // configuration rules).
+        if matches!(
+            rule.kind,
+            RuleKind::Native(
+                "config_setting" | "constraint_setting" | "constraint_value" | "platform"
+            )
+        ) {
+            self.prerequisite_repositories_in(
+                reads,
+                rule.label.clone(),
+                Some(key.config),
+                transitive,
+                0,
+            );
         }
         self.config_condition_transitive_in(reads, rule, key.config, transitive);
     }

@@ -28,3 +28,20 @@ my_bin(
 
 # The target and host platform (no @platforms / @bazel_tools needed).
 platform(name = "p")
+
+# A select() key's config_setting depends on its constraint_values (@constr)
+# and each constraint_value on its constraint_setting (@setting): their
+# packages are transitive packages too (B62).
+config_setting(
+    name = "constrained",
+    constraint_values = ["@constr//:v"],
+)
+
+my_bin(
+    name = "from_constraint",
+    data = ["@ext//:e.txt"],
+    flag = select({
+        ":constrained": "constrained",
+        "//conditions:default": "other",
+    }),
+)

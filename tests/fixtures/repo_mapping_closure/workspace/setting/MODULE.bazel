@@ -1,0 +1,3 @@
+module(name = "setting")
+
+bazel_dep(name = "ext")

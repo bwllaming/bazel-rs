@@ -1,0 +1,4 @@
+constraint_setting(
+    name = "s",
+    visibility = ["//visibility:public"],
+)
