@@ -400,7 +400,9 @@ Screened out (genuine 9.3.1 fails, or the host lacks a toolchain):
 Columns as in the first table († a non-zero exit; "—" for bazel-rs's RSS
 where it exited at startup). `query //...` labels match on the 24 projects
 where both tools answer; on aspect-bazel-examples and rules_py bazel-rs
-exits at startup (B59) and on grpc it hits the 20-minute cap (B66).
+exited at startup (B59) and on grpc it hits the 20-minute cap (B66). In the
+corpus2-quick rerun aspect-bazel-examples' labels match too (6,834); rules_py
+still stops at startup (`strip`).
 
 | project | verdict | cold nobuild g / rs (s) | warm nobuild g-batch / g-server / rs (s) | build g / rs (s) | peak RSS cold g / rs (MB) | outputs (common, only g, only rs, hash diff) | tests g / rs | open differences |
 |---|---|---|---|---|---|---|---|---|
@@ -426,7 +428,7 @@ exits at startup (B59) and on grpc it hits the 20-minute cap (B66).
 | rules_rust-all_crate_deps | DIFF | 66.8 / 53.6 | 3.7 / 0.3 / 0.2 | 32.8 / 31.4 | 1748 / 580 | 368, 0, 0, 1 | PASSED:3 / same | B62 |
 | rules_rust-sys | DIFF | 25.1 / 20.3 | 9.0 / 0.2 / 7.8 | 36.6 / 35.2 | 1441 / 386 | 815, 0, 0, 3 | PASSED:1 / same | C4 |
 | rules_scala-scala3 | DIFF | 22.6 / 18.5 | 3.1 / 0.1 / 0.2 | 11.7† / 11.6† | 1057 / 326 | 10, 2, 0, 0 | — | C5 |
-| aspect-bazel-examples | RS-FAIL | 151.6 / 0.1† | 6.5 / 0.7 / 0.1† | 87.3 / 0.1† | 2573 / — | 0, 159086, 0, 0 | FAILED:2 PASSED:32 / 0 | B59 (then B63) |
+| aspect-bazel-examples | RS-FAIL² | 163.5 / 109.8† | 6.3 / 0.9 / 7.9† | 81.7 / 158.7† | 2550 / 2059 | 156499, 2587, 3, 1 | FAILED:3 PASSED:31 / FAILED:1 FAILED TO BUILD:5 PASSED:25 | B78, B79 |
 | bb-storage | RS-FAIL² | 159.0 / 162.6† | 7.4 / 0.3 / 6.1† | 60.9 / 62.0† | 2168 / 1269 | 4153, 368, 0, 0 | PASSED:36 / PASSED:9 | B69 |
 | rules_java | RS-FAIL² | 29.3 / 31.0† | 4.6 / 0.3 / 4.3† | 8.2 / 8.7† | 1923 / 1057 | 901, 134, 0, 0 | PASSED:321 / PASSED:281 | B67, B61 |
 | rules_py | RS-FAIL² | 38.5 / 0.1† | 7.8 / 0.9 / 0.1† | 118.7 / 0.1† | 3923 / — | 0, 4004, 0, 0 | FAILED:2 PASSED:413 / 0 | B33 (`strip` at startup) |
@@ -467,7 +469,7 @@ Notes:
   `expect_failure` (B70), 1 a native genrule's `Target.actions` (B32's gap).
 - rules_foreign_cc-examples: B64 (every native-tool toolchain).
 - rules_lint-python: B60 (aspect_rules_py's interpreter toolchain).
-- rules_py, aspect-bazel-examples, grpc, bb-storage: B59 at startup. With
+- (corpus-expand, before the rerun) rules_py, aspect-bazel-examples, grpc, bb-storage: B59 at startup. With
   the rc line commented out the next blocker is rules_py: B59 again
   (`--experimental_output_paths=strip`), then B60; aspect-bazel-examples:
   B63; grpc: B68 (`build --nobuild //:all`), and `query //...` hangs (B66);
@@ -482,6 +484,79 @@ rules_rust-all_crate_deps: B62; rules_pkg: B34, B71), and 9 fail on bazel-rs
 only (aspect-bazel-examples, bb-storage, grpc, rules_py: B59;
 rules_foreign_cc-examples: B64; rules_java: B67, B61, B70; rules_lint-python:
 B60; rules_rust-proto: B61; rules_ts-examples: B65). 13 new bugs, B59–B71.
+
+### Rerun on corpus2-quick (2026-11-24)
+
+Rows marked ² are from a rerun on branch corpus2-quick (thin-LTO release
+builds of the branch; the last fixes, B72/B74–B77, in a second and
+third binary), the same pinned commits and phases, one project at a time.
+The DNS resolver of the host timed out intermittently during the first
+reruns (genuine's registry and npm downloads failed with `Unknown host`,
+Go's with `i/o timeout`): those projects ran again, and for rules_ts-examples,
+whose genuine `nobuild_cold` still hit it, the genuine cold time and RSS are
+corpus-expand's (genuine is unchanged). The rerun projects' blockers now:
+
+- rules_ts-examples: **identical** (B65 fixed: all 54,123 outputs and 188
+  tests).
+- grpc: `build //:all` identical (9,360 outputs) since B59/B68; only `query
+  //...` still hits the cap (B66).
+- rules_foreign_cc-examples: tests identical (23); B64 and B74 fixed; the 17
+  hash differences are CMake/Make/Ninja logs and meson outputs holding each
+  tool's absolute paths (C4).
+- rules_lint-python: tests identical (B60 fixed); outputs differ by the
+  `.repo_mapping` files (B62), bandit's report (C4) and a failed action's
+  output (C5).
+- rules_pkg: B71 fixed; `pkg_tar_test` still fails on B34.
+- rules_java: 281 of 321 tests (B70 fixed); the rest are B67 (37), B61 (2)
+  and B32's native-genrule gap (1).
+- bb-storage: past B59; its blocker is B69 (27 of 36 tests do not build).
+- rules_py: still `--experimental_output_paths=strip` at startup (B33, the
+  explicit path-mapping gap). With that rc line commented out in a private
+  copy, B60 and B75 are fixed and 3,717 targets analyze; left: two
+  `platform(flags = ...)` platforms (not modelled), py_pex_binary's
+  "could not resolve the binary's interpreter version from its venv
+  toolchain" (behind those platforms) and `cannot create REPO.bazel: File
+  exists` once (not investigated).
+- aspect-bazel-examples: past B59, B63, B72, B76 and B77: `query //...`
+  identical (6,834 labels), 246 of 247 targets analyze and 156,499 outputs
+  match. Left: B78 (toolchains_llvm's `cc_wrapper.sh` finds clang through
+  the `realpath` of its own path, so every cgo GoStdlib action fails `could
+  not find clang`: 2,587 Go outputs and 5 tests do not build) and B79
+  (`//tools:bazel_env`: its `_extract_toolchain_info` aspect on a
+  `_toolchain` target reports `attribute target: dependency
+  //tools:bazel_env.genrule_or_toolchain.jdk was not resolved`). Tests also
+  differ where genuine fails (the two Angular tests, rails' cache controller
+  test: environment) and on `//oci_python_image/hello_world:test_container`
+  (not investigated).
+
+New bugs of the rerun (repros as above; genuine fixture
+tests/fixtures/corpus2_quick):
+
+- **B72**: an extension whose implementation creates `r(name = "r", items =
+  ["i%d" % i for i in range(150000)])` (an `attr.string_list`): bazel-rs
+  `repository @@+ext+r: host preparation node limit exceeded (100000 nodes)`.
+- **B73**: any MODULE.bazel error (e.g. `bazel_dep(name = "BAD", version =
+  "1")`): genuine exits 48, bazel-rs 1 (open).
+- **B74**: `ctx.actions.declare_file("a///b.txt")` (genuine `a/b.txt`;
+  `../x` and `/abs` keep genuine's `not under package directory` error).
+- **B75**: `r(name = "t", deps = {":a": "x"})` for an `attr.label_list`
+  (genuine: the dict's keys); `attr.string_list(default = {...})` keeps the
+  @Param `want 'sequence'` error.
+- **B76**: `glob(["src/**/*"], exclude = ["dist/"])`.
+- **B77**: a transition with inputs/outputs `//command_line_option:host_cpu`
+  and `//command_line_option:platform_suffix`.
+- **B78**: a repository rule writing a script that resolves
+  `$(realpath "$0")`, goes up two directories and enters a sibling
+  repository by its canonical name (toolchains_llvm's cc wrapper).
+- **B79**: aspect-bazel-examples `build //tools:bazel_env` (not reduced).
+
+**Summary (rerun).** Of the 9 projects that failed on bazel-rs only,
+rules_ts-examples is now identical, grpc, rules_foreign_cc-examples and
+rules_lint-python differ only by B66 (query), C4/C5 and B62, rules_pkg by
+B34; aspect-bazel-examples (B78, B79), bb-storage (B69), rules_java (B67,
+B61) and rules_py (`strip`, B33) still fail. Fixed: B59 (except `strip`),
+B60, B63, B64, B65, B68, B70, B71 and the rerun's B72, B74–B77; new open:
+B73, B78, B79.
 
 ### New bugs (second batch), with minimal repros
 
@@ -616,10 +691,14 @@ rows lead the table.
 
 | id | status (corpus-rerun) | summary |
 |---|---|---|
-| B72 | fixed (corpus2-quick); 1 (aspect-bazel-examples) | an extension-generated repository whose recorded attributes exceed the native host budget (100,000 nodes) failed (`repository @@…: host preparation node limit exceeded`), and with it every load needing the repository mapping; bound like the extension's recording now: unbounded (Bazel bounds no extension result) |
+| B72 | fixed (corpus2-quick); 1 (aspect-bazel-examples) | native host budgets (100,000 nodes / 64 MiB weighted bytes) on module metadata Bazel bounds nowhere: the direct repository catalog (every direct repository's complete mapping is charged; a large root module exceeded it, and every load needing a repository mapping failed with `host preparation node limit exceeded`) and an extension-generated repository's recorded attributes (`repository @@…: host preparation node limit exceeded`). Both are unbounded now (depth and overflow still fail); the innate `use_repo_rule` group keeps its deliberate per-group profile |
 | B73 | open (corpus2-quick); every project with a broken MODULE.bazel; exit code only | a MODULE.bazel evaluation failure exits 1 natively; Bazel exits 48 (ExitCode.EXTERNAL_DEPS_ERROR, BAD_MODULE) |
 | B74 | fixed (corpus2-quick); 1 (rules_foreign_cc-examples, meson) | `ctx.actions.declare_file("lib///introspect.json")` failed as an invalid target name; Bazel normalizes the path (PathFragment.create: empty and `.` segments, `..`) |
 | B75 | fixed (corpus2-quick); 1 (rules_py, behind B59's `strip`) | a list-typed attribute rejected a dict (bazel_env.bzl's `toolchain_targets = {}`); Type.ListType.convert takes any Iterable (a dict's keys, a set's elements) |
+| B76 | fixed (corpus2-quick); 1 (aspect-bazel-examples) | a glob exclusion with an empty segment (`exclude = ["dist/"]`) failed as an invalid pattern; Bazel never validates exclusions (UnixGlob.removeExcludes), such a pattern matches nothing |
+| B77 | fixed (corpus2-quick); 1 (aspect-bazel-examples `//tools:bazel_env`) | Starlark transitions on `--host_cpu` and `--platform_suffix` (bazel_env.bzl's `_flip_output_dir`) were not modelled |
+| B78 | open (corpus2-quick); 1 (aspect-bazel-examples, 2,587 outputs, 5 tests) | a repository script that finds a sibling repository through its own `realpath` (toolchains_llvm's `cc_wrapper.sh`: `dirname` twice, then the sibling's name) lands in the native repository store, whose directories are content digests, not canonical names; genuine's realpath is `<output_base>/external/<repo>` |
+| B79 | open (corpus2-quick); 1 (aspect-bazel-examples `//tools:bazel_env`) | bazel_env.bzl's `_extract_toolchain_info` aspect, propagated over `toolchain_targets` (a `_flip_output_dir` transition) to a `_toolchain` target: `attribute target: dependency //tools:bazel_env.genrule_or_toolchain.jdk was not resolved` (not investigated) |
 | B59 | fixed (corpus2-quick) except `strip`; 4 (aspect-bazel-examples, bb-storage, grpc, rules_py) | rc options rejected at startup. `--client_env` (crate::client_env: rc values under the process environment, command-line values over it), `--macos_minimum_os`/`--host_macos_minimum_os`, `--protocopt` and `--noincompatible_enable_proto_toolchain_resolution` are modelled (docs/RC_OPTIONS.md; tests/fixtures/corpus2_quick). `--experimental_output_paths=strip` stays the explicit path-mapping gap (B33, corpus-last), so rules_py still stops at startup |
 | B60 | fixed (corpus2-quick); 2 (rules_py, rules_lint-python) | `config.string(allow_multiple = True)`: repeated values accumulate into a list, `[default]` by default, config_setting matches an element, transitions must set a list and always stay in the configuration (genuine compares with the default wrapped twice) (docs/BUILD_SETTINGS.md) |
 | B61 | open (corpus-expand), 2 (rules_rust-proto, rules_java 2 tests) | `Target.actions` read by an aspect outside analysis tests (rules_rust `rust_analyzer_aspect`, rules_java `artifact_closure`): the "not kept" marker |

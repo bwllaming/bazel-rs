@@ -157,6 +157,7 @@ replayed by `tests/value_options.rs`; `enable_runfiles` also by
 | `grte_top`, `host_grte_top` | LibcTopLabelConverter (`default` is null, `Not a label` unless `//`, the package's `everything`; a Label a transition writes is stored as is), `null` (`libc_top` configuration field, `ctx.fragments.cpp.grte_top()`; B32) | yes | `grte_top` set to `--host_grte_top`, which propagates | `CppOptions.java:77-100, 669-689`, `builtin_exec_platforms.bzl:300, 336` |
 | `experimental_cpp_modules` | Bool, `false` (`ctx.fragments.cpp.experimental_cpp_modules()`; B32; like every `--experimental_*` option a `transition()` may not declare it) | yes | propagated | `CppOptions.java:981-996`, `builtin_exec_platforms.bzl:304` |
 | `apple_generate_dsym` | Bool, `false` (`ctx.fragments.cpp.apple_generate_dsym`, which rules_cc's `configure_features` turns into the `generate_dsym_file` or `no_generate_debug_symbols` feature; Starlark transitions read and write it; rules_zig's dsym tests, B56, tests/fixtures/corpus_zig) | yes | default | `CppOptions.java:850-856`, `CppConfiguration.java:305, 809-812` |
+| `compiler`, `host_compiler` | nullable String, `null` (CppOptions; no Bazel 9.3.1 code reads them but `config_setting(values)` and transitions, which read and write them; grpc's opencensus, B68, tests/fixtures/corpus2_quick) | yes | `compiler` = `host_compiler`, which propagates | `CppOptions.java:113-127`, `builtin_exec_platforms.bzl:297, 338` |
 | `apple_platform_type` | PlatformTypeConverter (ASCII lower case), `macos` | no (Apple rule transitions and `ctx.fragments.apple` are not modelled for other platform types) | set to `macos` | `rules/apple/AppleCommandLineOptions.java:194-203, 394-406`, `:185, 190` |
 
 They unblock protobuf 33.4's `bazel/private:native_bool_flag` settings
@@ -1563,3 +1564,13 @@ restrictions (an `.scl` file evaluates with the `.bzl` globals), project
 files of external-repository targets, and genuine's error choice when
 several project files fail at once (native reports the first in request
 order).
+
+## Transitions on `--host_cpu` and `--platform_suffix` (corpus2-quick)
+
+Starlark transitions read and write `--host_cpu` like `--cpu` (AutoCpu: the
+host CPU is the unset value) and `--platform_suffix` (a nullable String: a
+string is stored as is, `None` is null; `""` adds nothing to the output
+directory, and the option is explicit in the output path, never in the ST-
+hash), as bazel_env.bzl's `_flip_output_dir` needs (`bazel_env-opt`, OSS
+corpus B77; genuine fixture tests/fixtures/corpus2_quick
+`transition_host_cpu_platform_suffix`).
