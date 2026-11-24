@@ -1,0 +1,531 @@
+### build //:a
+rc=0
+Target //:a up-to-date:
+  bazel-bin/a.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### build //:a //pkg:p
+rc=0
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### @pkg build //:a
+rc=0
+Target //:a up-to-date:
+  ../bazel-bin/a.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### build //:tree
+rc=0
+Target //:tree up-to-date:
+  bazel-bin/tree_dir
+  bazel-bin/tree_link.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### build //:a --symlink_prefix=foo-
+rc=0
+Target //:a up-to-date:
+  foo-bin/a.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+  ./foo-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./foo-out -> <OB>/execroot/_main/bazel-out
+  ./foo-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./foo-ws -> <OB>/execroot/_main
+### build //:a --symlink_prefix=out/x-
+rc=0
+Target //:a up-to-date:
+  out/x-bin/a.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+  ./foo-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./foo-out -> <OB>/execroot/_main/bazel-out
+  ./foo-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./foo-ws -> <OB>/execroot/_main
+  ./out/ (dir)
+  ./out/x-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./out/x-out -> <OB>/execroot/_main/bazel-out
+  ./out/x-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./out/x-ws -> <OB>/execroot/_main
+### build //:a --symlink_prefix=/
+rc=0
+Target //:a up-to-date:
+  <OB>/execroot/_main/bazel-out/k8-fastbuild/bin/a.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+  ./foo-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./foo-out -> <OB>/execroot/_main/bazel-out
+  ./foo-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./foo-ws -> <OB>/execroot/_main
+  ./out/ (dir)
+  ./out/x-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./out/x-out -> <OB>/execroot/_main/bazel-out
+  ./out/x-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./out/x-ws -> <OB>/execroot/_main
+### !rm -rf foo-* out
+### build //:a --experimental_convenience_symlinks=log_only
+rc=0
+Target //:a up-to-date:
+  bazel-bin/a.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### build //:a --experimental_convenience_symlinks=ignore
+rc=0
+Target //:a up-to-date:
+  <OB>/execroot/_main/bazel-out/k8-fastbuild/bin/a.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### build //:a --experimental_convenience_symlinks=clean
+rc=0
+Target //:a up-to-date:
+  <OB>/execroot/_main/bazel-out/k8-fastbuild/bin/a.txt
+links:
+### build //:a --experimental_convenience_symlinks=log_only
+rc=0
+Target //:a up-to-date:
+  bazel-bin/a.txt
+links:
+### build //:a --noexperimental_convenience_symlinks
+rc=0
+Target //:a up-to-date:
+  <OB>/execroot/_main/bazel-out/k8-fastbuild/bin/a.txt
+links:
+### build //:a --experimental_convenience_symlinks
+rc=0
+Target //:a up-to-date:
+  bazel-bin/a.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### !ln -sfn /tmp/elsewhere-bin bazel-bin && ln -sfn ../relative bazel-testlogs
+### build //:a
+rc=0
+Target //:a up-to-date:
+  bazel-bin/a.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### !rm bazel-bin && mkdir bazel-bin && echo keep > bazel-bin/file && rm bazel-out && echo keep > bazel-out
+### build //:a
+rc=0
+WARNING: failed to create one or more convenience symlinks for prefix 'bazel-':
+  cannot create symbolic link bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin:  <WS>/bazel-bin is not a symlink
+  cannot create symbolic link bazel-out -> <OB>/execroot/_main/bazel-out:  <WS>/bazel-out is not a symlink
+Target //:a up-to-date:
+  bazel-ws/bazel-out/k8-fastbuild/bin/a.txt
+links:
+  ./bazel-bin/ (dir)
+  ./bazel-out (file)
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### !rm -rf bazel-bin bazel-out
+### build //:a --noincompatible_skip_genfiles_symlink
+rc=0
+Target //:a up-to-date:
+  bazel-bin/a.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-genfiles -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### build //:a
+rc=0
+Target //:a up-to-date:
+  bazel-bin/a.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### build //:opt
+rc=0
+Target //:opt up-to-date:
+  bazel-bin/opt.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-opt/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-opt/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### build //:opt //:a
+rc=0
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### build //:opt //:dbg
+rc=0
+WARNING: cleared convenience symlink(s) bazel-bin, bazel-testlogs because they wouldn't contain requested targets' outputs. Those targets self-transition to multiple distinct configurations
+links:
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-ws -> <OB>/execroot/_main
+### build //:a
+rc=0
+Target //:a up-to-date:
+  bazel-bin/a.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### build //:fail
+rc=1
+Target //:fail failed to build
+ERROR: Build did NOT complete successfully
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### build //:opt
+rc=0
+Target //:opt up-to-date:
+  bazel-bin/opt.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-opt/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-opt/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### build //:fail --keep_going
+rc=1
+Target //:fail failed to build
+ERROR: Build did NOT complete successfully
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### !rm -f bazel-*
+### build //:nonexistent
+rc=1
+WARNING: Target pattern parsing failed.
+ERROR: Build did NOT complete successfully
+links:
+### build //:bad
+rc=1
+ERROR: Analysis of target '//:bad' failed; build aborted
+ERROR: Build did NOT complete successfully
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### build //:opt //:bad --keep_going
+rc=1
+WARNING: errors encountered while analyzing target '//:bad', it will not be built.
+Target //:opt up-to-date:
+  bazel-bin/opt.txt
+ERROR: Build did NOT complete successfully
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-opt/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-opt/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### build --nobuild //:opt
+rc=0
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-opt/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-opt/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### !rm -f bazel-*
+### build --nobuild //:a
+rc=0
+links:
+### cquery //:a
+rc=0
+links:
+### aquery //:a
+rc=0
+links:
+### query //:a
+rc=0
+links:
+### fetch //:a
+rc=0
+links:
+### info bazel-bin
+rc=0
+links:
+### test //:t
+rc=0
+Target //:t up-to-date:
+  bazel-bin/t
+//:t                                                                     PASSED in 0.0s
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### test //:t --print_relative_test_log_paths
+rc=0
+Target //:t up-to-date:
+  bazel-bin/t
+//:t                                                            (cached) PASSED in 0.0s
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### test //:t_fail
+rc=3
+FAIL: //:t_fail (Exit 1) (see <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs/t_fail/test.log)
+Target //:t_fail up-to-date:
+  bazel-bin/t_fail
+//:t_fail                                                                FAILED in 0.0s
+  <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs/t_fail/test.log
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### test //:t_fail --print_relative_test_log_paths
+rc=3
+FAIL: //:t_fail (Exit 1) (see bazel-out/k8-fastbuild/testlogs/t_fail/test.log)
+Target //:t_fail up-to-date:
+  bazel-bin/t_fail
+//:t_fail                                                                FAILED in 0.0s
+  bazel-testlogs/t_fail/test.log
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### @pkg test //:t_fail --print_relative_test_log_paths
+rc=3
+FAIL: //:t_fail (Exit 1) (see bazel-out/k8-fastbuild/testlogs/t_fail/test.log)
+Target //:t_fail up-to-date:
+  ../bazel-bin/t_fail
+//:t_fail                                                                FAILED in 0.0s
+  ../bazel-testlogs/t_fail/test.log
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### run //:tool
+rc=0
+Target //:tool up-to-date:
+  bazel-bin/tool
+INFO: Running command line: bazel-bin/tool
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### build //:opt
+rc=0
+Target //:opt up-to-date:
+  bazel-bin/opt.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-opt/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-opt/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### coverage //:t
+rc=0
+WARNING: There was no coverage found.
+WARNING: There was no coverage found.
+Target //:t up-to-date:
+  bazel-bin/t
+//:t                                                                     PASSED in 0.0s
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### build //:a --build_event_json_file=bep.json
+rc=0
+Target //:a up-to-date:
+  bazel-bin/a.txt
+  BEP {"convenienceSymlinks": [{"action": "CREATE", "path": "bazel-bin", "target": "execroot/_main/bazel-out/k8-fastbuild/bin"}, {"action": "CREATE", "path": "bazel-testlogs", "target": "execroot/_main/bazel-out/k8-fastbuild/testlogs"}, {"action": "DELETE", "path": "bazel-genfiles"}, {"action": "CREATE", "path": "bazel-out", "target": "execroot/_main/bazel-out"}, {"action": "CREATE", "path": "bazel-ws", "target": "execroot/_main"}]}
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### build //:a --build_event_json_file=bep.json --symlink_prefix=foo-
+rc=0
+Target //:a up-to-date:
+  foo-bin/a.txt
+  BEP {"convenienceSymlinks": [{"action": "CREATE", "path": "foo-bin", "target": "execroot/_main/bazel-out/k8-fastbuild/bin"}, {"action": "CREATE", "path": "foo-testlogs", "target": "execroot/_main/bazel-out/k8-fastbuild/testlogs"}, {"action": "DELETE", "path": "foo-genfiles"}, {"action": "CREATE", "path": "foo-out", "target": "execroot/_main/bazel-out"}, {"action": "CREATE", "path": "foo-ws", "target": "execroot/_main"}]}
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+  ./foo-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./foo-out -> <OB>/execroot/_main/bazel-out
+  ./foo-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./foo-ws -> <OB>/execroot/_main
+### build //:a --build_event_json_file=bep.json --experimental_convenience_symlinks=clean
+rc=0
+Target //:a up-to-date:
+  <OB>/execroot/_main/bazel-out/k8-fastbuild/bin/a.txt
+  BEP {"convenienceSymlinks": [{"action": "DELETE", "path": "bazel-bin"}, {"action": "DELETE", "path": "bazel-testlogs"}, {"action": "DELETE", "path": "bazel-genfiles"}, {"action": "DELETE", "path": "bazel-out"}, {"action": "DELETE", "path": "bazel-ws"}]}
+links:
+  ./foo-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./foo-out -> <OB>/execroot/_main/bazel-out
+  ./foo-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./foo-ws -> <OB>/execroot/_main
+### build //:a --build_event_json_file=bep.json --experimental_convenience_symlinks=log_only
+rc=0
+Target //:a up-to-date:
+  bazel-bin/a.txt
+  BEP {"convenienceSymlinks": [{"action": "CREATE", "path": "bazel-bin", "target": "execroot/_main/bazel-out/k8-fastbuild/bin"}, {"action": "CREATE", "path": "bazel-testlogs", "target": "execroot/_main/bazel-out/k8-fastbuild/testlogs"}, {"action": "DELETE", "path": "bazel-genfiles"}, {"action": "CREATE", "path": "bazel-out", "target": "execroot/_main/bazel-out"}, {"action": "CREATE", "path": "bazel-ws", "target": "execroot/_main"}]}
+links:
+  ./foo-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./foo-out -> <OB>/execroot/_main/bazel-out
+  ./foo-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./foo-ws -> <OB>/execroot/_main
+### build //:a --build_event_json_file=bep.json --experimental_convenience_symlinks=ignore
+rc=0
+Target //:a up-to-date:
+  <OB>/execroot/_main/bazel-out/k8-fastbuild/bin/a.txt
+  BEP {}
+links:
+  ./foo-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./foo-out -> <OB>/execroot/_main/bazel-out
+  ./foo-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./foo-ws -> <OB>/execroot/_main
+### build //:opt //:dbg --build_event_json_file=bep.json
+rc=0
+WARNING: cleared convenience symlink(s) bazel-bin, bazel-testlogs because they wouldn't contain requested targets' outputs. Those targets self-transition to multiple distinct configurations
+  BEP {"convenienceSymlinks": [{"action": "DELETE", "path": "bazel-bin"}, {"action": "DELETE", "path": "bazel-testlogs"}, {"action": "DELETE", "path": "bazel-genfiles"}, {"action": "CREATE", "path": "bazel-out", "target": "execroot/_main/bazel-out"}, {"action": "CREATE", "path": "bazel-ws", "target": "execroot/_main"}]}
+links:
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-ws -> <OB>/execroot/_main
+  ./foo-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./foo-out -> <OB>/execroot/_main/bazel-out
+  ./foo-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./foo-ws -> <OB>/execroot/_main
+### build //:a --build_event_json_file=bep.json --noexperimental_convenience_symlinks_bep_event
+rc=0
+Target //:a up-to-date:
+  bazel-bin/a.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+  ./foo-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./foo-out -> <OB>/execroot/_main/bazel-out
+  ./foo-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./foo-ws -> <OB>/execroot/_main
+### build //:a --build_event_json_file=bep.json --symlink_prefix=/
+rc=0
+Target //:a up-to-date:
+  <OB>/execroot/_main/bazel-out/k8-fastbuild/bin/a.txt
+  BEP {}
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+  ./foo-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./foo-out -> <OB>/execroot/_main/bazel-out
+  ./foo-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./foo-ws -> <OB>/execroot/_main
+### build //:a
+rc=0
+Target //:a up-to-date:
+  bazel-bin/a.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+  ./foo-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./foo-out -> <OB>/execroot/_main/bazel-out
+  ./foo-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./foo-ws -> <OB>/execroot/_main
+### build //:a --symlink_prefix=foo-
+rc=0
+Target //:a up-to-date:
+  foo-bin/a.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+  ./foo-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./foo-out -> <OB>/execroot/_main/bazel-out
+  ./foo-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./foo-ws -> <OB>/execroot/_main
+### clean --symlink_prefix=foo-
+rc=0
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### build //:a --symlink_prefix=out/x-
+rc=0
+Target //:a up-to-date:
+  out/x-bin/a.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+  ./out/ (dir)
+  ./out/x-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./out/x-out -> <OB>/execroot/_main/bazel-out
+  ./out/x-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./out/x-ws -> <OB>/execroot/_main
+### clean --symlink_prefix=out/x-
+rc=0
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### !rm -rf out; mkdir bazel-genfiles
+### clean
+rc=0
+links:
+  ./bazel-genfiles/ (dir)
+### !rmdir bazel-genfiles
+### build //:a
+rc=0
+Target //:a up-to-date:
+  bazel-bin/a.txt
+links:
+  ./bazel-bin -> <OB>/execroot/_main/bazel-out/k8-fastbuild/bin
+  ./bazel-out -> <OB>/execroot/_main/bazel-out
+  ./bazel-testlogs -> <OB>/execroot/_main/bazel-out/k8-fastbuild/testlogs
+  ./bazel-ws -> <OB>/execroot/_main
+### clean --expunge
+rc=0
+links:

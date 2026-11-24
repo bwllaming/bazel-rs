@@ -1,0 +1,11 @@
+load(":defs.bzl", "bad", "exe", "exe_test", "mode_gen", "tree")
+
+genrule(name = "a", outs = ["a.txt"], cmd = "echo a > $@")
+genrule(name = "fail", outs = ["fail.txt"], cmd = "exit 1")
+exe(name = "tool")
+exe_test(name = "t")
+exe_test(name = "t_fail", code = 1)
+mode_gen(name = "opt", mode = "opt")
+mode_gen(name = "dbg", mode = "dbg")
+tree(name = "tree", src = "src.txt")
+bad(name = "bad")

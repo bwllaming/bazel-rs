@@ -2364,6 +2364,7 @@ mod tests {
                     completion_tags: vec!["small".into(), "unit".into()],
                     test: Some(("SMALL".into(), 60)),
                     configuration: 0,
+                    output_mnemonic: Some("k8-fastbuild".into()),
                     groups: vec![("default".into(), vec![0])],
                 }],
             },

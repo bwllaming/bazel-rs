@@ -263,17 +263,28 @@ fn accepted_scheduling_and_symlink_options() {
         let output = workspace.build(&all);
         assert!(output.status.success(), "{args:?}: {}", stderr(&output));
     }
-    // `clean` deletes the prefix's symlinks, and only symlinks.
+    // The builds created the convenience symlinks (crate::convenience_symlinks).
+    assert!(
+        fs::symlink_metadata(workspace.path().join("bazel-bin"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    // `=clean` deletes the prefix's symlinks, and only symlinks.
+    fs::remove_file(workspace.path().join("bazel-bin")).unwrap();
+    fs::remove_file(workspace.path().join("bazel-out")).unwrap();
     std::os::unix::fs::symlink("/nonexistent", workspace.path().join("bazel-bin")).unwrap();
     fs::write(workspace.path().join("bazel-out"), "not a link").unwrap();
     let clean = workspace.build(&["--experimental_convenience_symlinks=clean", "//:g"]);
     assert!(clean.status.success(), "{}", stderr(&clean));
     assert!(fs::symlink_metadata(workspace.path().join("bazel-bin")).is_err());
     assert!(workspace.path().join("bazel-out").is_file());
-    // What would create symlinks, a non-default unmodelled value: explicit.
+    // A prefix with a directory creates it.
+    let prefixed = workspace.build(&["--symlink_prefix=.b/", "//:g"]);
+    assert!(prefixed.status.success(), "{}", stderr(&prefixed));
+    assert!(workspace.path().join(".b/bin").is_dir());
+    // A non-default unmodelled value: explicit.
     for args in [
-        vec!["--symlink_prefix=.b/"],
-        vec!["--experimental_convenience_symlinks=normal"],
         vec!["--experimental_remote_mark_tool_inputs"],
         vec!["--local_resources=cpu=lots"],
     ] {

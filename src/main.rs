@@ -669,6 +669,11 @@ fn run() -> Result<(), String> {
         cwd.join(cache)
     };
     bazel_rs::worktree::install(&root);
+    // Globs skip the workspace's convenience links (and Bazel's).
+    bazel_rs::convenience_symlinks::install_detection(
+        &root,
+        &bazel_rs::worktree::output_base_for(&cache, &root),
+    );
     if !explicit_cache && let Some(note) = layout.legacy_cache_note(&cache) {
         bazel_rs::note!("{note}");
     }
@@ -794,14 +799,20 @@ fn run() -> Result<(), String> {
         execution_options.modify_execution_info.clone(),
         execution_options.modify_execution_info_additive,
     );
+    // The convenience symlinks (crate::convenience_symlinks): updated by
+    // build, test, run and coverage with an execution phase once planning
+    // configured the top-level targets.
+    bazel_rs::convenience_symlinks::install(bazel_rs::convenience_symlinks::Settings {
+        workspace: root.clone(),
+        relative_directory: relative_directory(&root, &cwd).unwrap_or_default(),
+        prefix: execution_options.symlink_prefix().to_owned(),
+        mode: execution_options.convenience_symlinks.unwrap_or_default(),
+        bep_event: execution_options.convenience_symlinks_bep_event,
+        skip_genfiles: execution_options.skip_genfiles_symlink,
+        output_base: bazel_rs::worktree::output_base_for(&cache, &root),
+        enabled: builds(&command) && !no_build,
+    });
     if builds(&command) {
-        match execution_options.check_convenience_symlinks() {
-            Ok(Some(prefix)) => {
-                bazel_rs::execution_options::clean_convenience_symlinks(&root, &prefix)
-            }
-            Ok(None) => {}
-            Err(error) => return Err(error),
-        }
         // Local actions need 1 CPU and 250 MB each (ResourceManager);
         // remote executions are not bounded by local resources.
         if let Some(cap) = execution_options.local_action_cap()
@@ -2147,6 +2158,7 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
                 .map(|(label, _)| label.package.as_str()),
         );
     }
+    update_convenience_symlinks(&planned);
     // Planning succeeded: a failure below is execution's, and the analysis
     // is saved anyway (crate::snapshot::Scope::execution_failed).
     let planned_ok = planned.request.is_ok();
@@ -2358,6 +2370,29 @@ struct Planned {
     diagnostics: bazel_rs::request::Diagnostics,
     status: bazel_rs::request::StatusSource,
     failed_skipped: Vec<bazel_rs::label::Label>,
+    /// A failed planning's top-level configuration (its mnemonic): the
+    /// convenience symlinks point into it (BuildTool's finally block).
+    failed_top: Option<String>,
+}
+
+/// Update the convenience symlinks once planning configured the top-level
+/// targets, before execution (crate::convenience_symlinks): the requested
+/// targets' configurations, or a failed analysis's top-level one.
+fn update_convenience_symlinks(planned: &Planned) {
+    match (&planned.request, &planned.failed_top) {
+        (Ok(request), _) if request.execute => {
+            bazel_rs::convenience_symlinks::update(&request.bep.top_level_configs());
+        }
+        (Err(_), Some(top)) => {
+            bazel_rs::convenience_symlinks::update(
+                &bazel_rs::convenience_symlinks::TopLevelConfigs {
+                    top: top.clone(),
+                    targets: Vec::new(),
+                },
+            );
+        }
+        _ => {}
+    }
 }
 
 /// The full-analysis path of `build`, `test` and `run` (L2-W4, PLAN-L2
@@ -2388,6 +2423,7 @@ fn plan_request(
         warnings: engine.take_warnings(),
         errors: engine.take_errors(),
     });
+    let failed_top = request.is_err().then(|| engine.top_mnemonic());
     let failed_skipped = if request.is_err() {
         let (skipped, plan) = engine.failed_compatibility_results();
         bazel_rs::bep::failed_compatibility(plan);
@@ -2424,6 +2460,7 @@ fn plan_request(
         diagnostics,
         status,
         failed_skipped,
+        failed_top,
     }
 }
 
@@ -3073,6 +3110,7 @@ fn incremental_finish(
         status: bazel_rs::request::StatusSource::Planned(status),
         request: Ok(request),
         failed_skipped: Vec::new(),
+        failed_top: None,
     })
 }
 
@@ -3174,6 +3212,7 @@ fn planned_hit(
     snapshot.hit = Some(hit.session);
     Planned {
         failed_skipped: Vec::new(),
+        failed_top: None,
         diagnostics: printed_warnings(request.take_diagnostics()),
         status: bazel_rs::request::StatusSource::Planned(hit.status),
         request: Ok(request),
@@ -3690,6 +3729,7 @@ fn run_tail(
         snapshot,
     } = tail;
     report_keep_going_errors(&planned.request);
+    update_convenience_symlinks(&planned);
     let planned_ok = planned.request.is_ok();
     let result = planned.request.and_then(|request| {
         bazel_rs::request::execute(
@@ -4145,6 +4185,7 @@ fn test_tail(
         _ => None,
     };
     report_keep_going_errors(&planned.request);
+    update_convenience_symlinks(&planned);
     let planned_ok = planned.request.is_ok();
     let result = planned.request.and_then(|request| {
         bazel_rs::request::execute_with_tests(
@@ -6802,6 +6843,9 @@ fn clean_command(
     if let Err(error) = result {
         fail_with(error.exit_code, &error.message);
     }
+    // The convenience symlinks of the prefix (CleanCommand.actuallyClean:
+    // removeOutputDirectoryLinks, after the output tree).
+    bazel_rs::convenience_symlinks::remove(&root, native.execution.symlink_prefix());
     Ok(())
 }
 

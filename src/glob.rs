@@ -781,6 +781,18 @@ impl Walker<'_> {
                 {
                     continue;
                 }
+                // The convenience symlinks (`bazel-bin`, `bazel-out`, …
+                // into an output base's execroot) are neither results nor
+                // traversed; the Glob projection already left them out of
+                // the listing (crate::convenience_symlinks).
+                if kind.is_symlink()
+                    && crate::convenience_symlinks::is_convenience_link(
+                        &current.logical,
+                        std::ffi::OsStr::new(&name),
+                    )
+                {
+                    continue;
+                }
                 let logical = current.logical.join(&name);
                 let (is_directory, is_file, real, anchor, host) = if kind.is_symlink() {
                     // UnixGlob.processSymlink: statIfFound(FOLLOW) on the

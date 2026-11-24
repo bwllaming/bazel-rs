@@ -365,7 +365,7 @@ fn check(path: &Path, observation: &Observation) -> Result<Checked, String> {
                 let entry = entry.map_err(|error| format!("READDIR {}: {error}", shown()))?;
                 let name = entry.file_name();
                 let kind = entry.file_type().ok().map(FileKind::of);
-                if projection.digests(&name, kind) {
+                if projection.digests(path, &name, kind) {
                     entries.push((name, kind.map_or(b'e', FileKind::letter)));
                 }
             }
@@ -1532,7 +1532,7 @@ fn excuse_listing(
         let entry = entry.map_err(|error| error.to_string())?;
         let name = entry.file_name();
         let kind = entry.file_type().ok().map(FileKind::of);
-        if projection.digests(&name, kind) {
+        if projection.digests(directory, &name, kind) {
             now.push((name, kind.map_or(b'e', FileKind::letter)));
         }
     }

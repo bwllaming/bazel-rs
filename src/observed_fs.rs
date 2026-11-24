@@ -349,19 +349,28 @@ pub enum Projection {
 }
 
 impl Projection {
-    /// Whether the projection keeps an entry; `kind` is the entry's
-    /// unfollowed type when known (an entry whose type cannot be read is kept
-    /// so the caller sees the error).
-    pub fn keeps(&self, name: &OsStr, kind: Option<FileKind>) -> bool {
+    /// Whether the projection keeps the entry `name` of `directory`; `kind`
+    /// is the entry's unfollowed type when known (an entry whose type cannot
+    /// be read is kept so the caller sees the error). A glob's listings
+    /// leave out the convenience symlinks (globs never traverse them,
+    /// crate::convenience_symlinks::is_convenience_link): a build creating
+    /// or retargeting them changes no glob's listing.
+    pub fn keeps(&self, directory: &Path, name: &OsStr, kind: Option<FileKind>) -> bool {
         match self {
             Self::All => true,
             Self::Directories => kind.is_none_or(|kind| kind == FileKind::Dir),
-            Self::Glob { pattern, relative } => crate::glob::listing_keeps(pattern, relative, name),
+            Self::Glob { pattern, relative } => {
+                crate::glob::listing_keeps(pattern, relative, name)
+                    && !convenience_link(directory, name, kind)
+            }
             Self::Excluding {
                 pattern, relative, ..
-            } => pattern
-                .as_ref()
-                .is_none_or(|pattern| crate::glob::listing_keeps(pattern, relative, name)),
+            } => {
+                pattern
+                    .as_ref()
+                    .is_none_or(|pattern| crate::glob::listing_keeps(pattern, relative, name))
+                    && !convenience_link(directory, name, kind)
+            }
         }
     }
 
@@ -370,8 +379,8 @@ impl Projection {
     /// regular files of [`Projection::Excluding`] — the caller still sees
     /// them (a `glob()`'s `allow_empty` check of each include counts them;
     /// a listing whose digest they would change keeps every result).
-    pub fn digests(&self, name: &OsStr, kind: Option<FileKind>) -> bool {
-        self.keeps(name, kind)
+    pub fn digests(&self, directory: &Path, name: &OsStr, kind: Option<FileKind>) -> bool {
+        self.keeps(directory, name, kind)
             && match self {
                 Self::Excluding {
                     relative, excludes, ..
@@ -382,6 +391,13 @@ impl Projection {
                 _ => true,
             }
     }
+}
+
+/// A symlink entry that is a convenience symlink
+/// (crate::convenience_symlinks::is_convenience_link).
+fn convenience_link(directory: &Path, name: &OsStr, kind: Option<FileKind>) -> bool {
+    kind == Some(FileKind::Symlink)
+        && crate::convenience_symlinks::is_convenience_link(directory, name)
 }
 
 impl fmt::Display for Projection {
@@ -1237,8 +1253,8 @@ impl Recorder {
                 Ok(entry) => {
                     let name = entry.file_name();
                     let kind = entry.file_type().ok().map(FileKind::of);
-                    if projection.keeps(&name, kind) {
-                        if projection.digests(&name, kind) {
+                    if projection.keeps(directory, &name, kind) {
+                        if projection.digests(directory, &name, kind) {
                             digested.push((name, kind.map_or(b'e', FileKind::letter)));
                         }
                         kept.push(Ok(entry));

@@ -23,11 +23,10 @@
 //!   `--experimental_action_cache_store_output_metadata`): accepted (the
 //!   native action cache always stores its outputs; it only lets genuine's
 //!   cache serve remote-only outputs, no result changes).
-//! * `--symlink_prefix` / `--experimental_convenience_symlinks`: bazel-rs
-//!   creates no convenience symlinks, which is genuine's behaviour with
-//!   `--symlink_prefix=/` or `=ignore`; those are accepted, `=clean` deletes
-//!   the existing `<prefix>{bin,testlogs,out,<workspace>}` symlinks, and a
-//!   combination that would create symlinks fails explicitly.
+//! * `--symlink_prefix`, `--experimental_convenience_symlinks`,
+//!   `--experimental_convenience_symlinks_bep_event` and
+//!   `--incompatible_skip_genfiles_symlink`: the convenience symlinks
+//!   (crate::convenience_symlinks).
 //! * `--toolchain_resolution_debug` (PlatformOptions, a RegexFilter):
 //!   crate::toolchains' debug messages.
 //! * The output filters (crate::output_filter).
@@ -54,6 +53,10 @@ pub struct ExecutionOptions {
     pub symlink_prefix: Option<String>,
     /// `--experimental_convenience_symlinks` (`None`: not given, `normal`).
     pub convenience_symlinks: Option<ConvenienceSymlinks>,
+    /// `--experimental_convenience_symlinks_bep_event` (default true).
+    pub convenience_symlinks_bep_event: bool,
+    /// `--incompatible_skip_genfiles_symlink` (default true).
+    pub skip_genfiles_symlink: bool,
     /// `--modify_execution_info` values in order, each converted.
     pub modify_execution_info: Vec<Vec<Modifier>>,
     pub modify_execution_info_additive: bool,
@@ -175,6 +178,8 @@ impl Default for ExecutionOptions {
             progress_report_interval: 0,
             symlink_prefix: None,
             convenience_symlinks: None,
+            convenience_symlinks_bep_event: true,
+            skip_genfiles_symlink: true,
             modify_execution_info: Vec::new(),
             modify_execution_info_additive: true,
             local_resources: Vec::new(),
@@ -388,6 +393,23 @@ impl ExecutionOptions {
             }
             _ => {}
         }
+        for (name, slot) in [
+            (
+                "experimental_convenience_symlinks_bep_event",
+                &mut self.convenience_symlinks_bep_event,
+            ),
+            (
+                "incompatible_skip_genfiles_symlink",
+                &mut self.skip_genfiles_symlink,
+            ),
+        ] {
+            if let Some(value) = boolean_option(arg, name) {
+                return Some(value.map(|value| {
+                    *slot = value;
+                    false
+                }));
+            }
+        }
         if let Some(value) = arg.strip_prefix("--experimental_convenience_symlinks=") {
             self.convenience_symlinks = Some(match value.to_ascii_lowercase().as_str() {
                 "normal" | "true" | "1" | "yes" | "t" | "y" => ConvenienceSymlinks::Normal,
@@ -422,29 +444,10 @@ impl ExecutionOptions {
         None
     }
 
-    /// The convenience symlink mode the native profile can honor: no
-    /// symlinks are ever created, so a combination that would create them
-    /// fails explicitly; `clean` removes `prefix`-named symlinks.
-    pub fn check_convenience_symlinks(&self) -> Result<Option<String>, String> {
-        let prefix = self.symlink_prefix.as_deref().unwrap_or("bazel-");
-        if prefix == "/" {
-            return Ok(None);
-        }
-        match self.convenience_symlinks {
-            Some(ConvenienceSymlinks::Ignore) => Ok(None),
-            Some(ConvenienceSymlinks::Clean) => Ok(Some(prefix.to_owned())),
-            // The default (neither option given): the native profile's own
-            // documented behaviour (no symlinks).
-            None if self.symlink_prefix.is_none() => Ok(None),
-            mode => Err(format!(
-                "unsupported option --symlink_prefix={prefix} with --experimental_convenience_symlinks={}: bazel-rs creates no convenience symlinks (only --symlink_prefix=/ and --experimental_convenience_symlinks=ignore|clean are modelled, docs/RC_OPTIONS.md); options are never silently ignored",
-                if mode == Some(ConvenienceSymlinks::LogOnly) {
-                    "log_only"
-                } else {
-                    "normal"
-                }
-            )),
-        }
+    /// `--symlink_prefix` (BuildRequestOptions.getSymlinkPrefix: `bazel-`
+    /// by default).
+    pub fn symlink_prefix(&self) -> &str {
+        self.symlink_prefix.as_deref().unwrap_or("bazel-")
     }
 
     /// The local resources' cap on concurrently running local actions
@@ -527,26 +530,6 @@ pub fn apply_execution_info_modifiers(nodes: &mut [crate::scheduler::PlannedActi
             &mut action.extra.execution_info,
             &mut action.execution_info,
         );
-    }
-}
-
-/// `--experimental_convenience_symlinks=clean`
-/// (OutputDirectoryLinksUtils.removeOutputDirectoryLinks): delete the
-/// workspace's `PREFIX{bin,testlogs,out,genfiles,<workspace name>}`
-/// symlinks; anything that is not a symlink is left alone.
-pub fn clean_convenience_symlinks(workspace: &std::path::Path, prefix: &str) {
-    let name = workspace
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    for suffix in ["bin", "testlogs", "out", "genfiles", name.as_str()] {
-        let link = workspace.join(format!("{prefix}{suffix}"));
-        // snapshot-unrecorded: a workspace cleanup the command performs
-        // before planning, never an input of analysis or planning.
-        if std::fs::symlink_metadata(&link).is_ok_and(|metadata| metadata.file_type().is_symlink())
-        {
-            let _ = std::fs::remove_file(&link);
-        }
     }
 }
 
@@ -649,28 +632,32 @@ mod tests {
     }
 
     #[test]
-    fn convenience_symlinks_accept_only_what_the_native_profile_does() {
-        let check = |args: &[&str]| {
+    fn convenience_symlink_options() {
+        let parsed = |args: &[&str]| {
             let mut options = ExecutionOptions::default();
             for arg in args {
                 options.parse(true, arg, None).unwrap().unwrap();
             }
-            options.check_convenience_symlinks()
+            options
         };
-        assert_eq!(check(&[]), Ok(None));
-        assert_eq!(check(&["--symlink_prefix=/"]), Ok(None));
+        let default = parsed(&[]);
+        assert_eq!(default.symlink_prefix(), "bazel-");
+        assert_eq!(default.convenience_symlinks, None);
+        assert!(default.convenience_symlinks_bep_event && default.skip_genfiles_symlink);
+        assert_eq!(parsed(&["--symlink_prefix=foo/"]).symlink_prefix(), "foo/");
         assert_eq!(
-            check(&["--experimental_convenience_symlinks=ignore"]),
-            Ok(None)
+            parsed(&["--noexperimental_convenience_symlinks"]).convenience_symlinks,
+            Some(ConvenienceSymlinks::Ignore)
         );
-        assert_eq!(check(&["--noexperimental_convenience_symlinks"]), Ok(None));
         assert_eq!(
-            check(&["--experimental_convenience_symlinks=clean"]),
-            Ok(Some("bazel-".to_owned()))
+            parsed(&["--experimental_convenience_symlinks=log_only"]).convenience_symlinks,
+            Some(ConvenienceSymlinks::LogOnly)
         );
-        assert!(check(&["--symlink_prefix=.b/"]).is_err());
-        assert!(check(&["--experimental_convenience_symlinks=log_only"]).is_err());
-        assert!(check(&["--experimental_convenience_symlinks=normal"]).is_err());
+        let off = parsed(&[
+            "--noexperimental_convenience_symlinks_bep_event",
+            "--noincompatible_skip_genfiles_symlink",
+        ]);
+        assert!(!off.convenience_symlinks_bep_event && !off.skip_genfiles_symlink);
         assert!(
             ExecutionOptions::default()
                 .parse(true, "--experimental_convenience_symlinks=x", None)

@@ -16,9 +16,11 @@
 //!   past it nothing prints. When the targets and aspects outnumber N, the
 //!   `(nothing to build)` lines are left out.
 //! * The paths are the artifacts' paths in the output tree
-//!   (crate::output_tree, `$(bazel-rs info execution_root)/bazel-out/…`):
-//!   what Bazel prints without convenience symlinks (`--symlink_prefix=/`;
-//!   bazel-rs creates none, so no `bazel-bin/…` relative form).
+//!   (crate::output_tree, `$(bazel-rs info execution_root)/bazel-out/…`),
+//!   printed through the convenience symlinks the command created
+//!   (crate::convenience_symlinks::pretty, PathPrettyPrinter:
+//!   `bazel-bin/pkg/out.txt`, `../bazel-bin/…` from a subdirectory); the
+//!   absolute path without one (`--symlink_prefix=/`, `ignore`, `clean`).
 //! * Only after an execution phase (not under `--nobuild`).
 //!
 //! `BAZEL_RS_RESULT_LINES=1` (for scripts and the test suite) also prints
@@ -94,6 +96,8 @@ pub fn print(summary: &BuildSummary, native: NativeLines) -> Result<(), String> 
 
 fn push_paths(text: &mut Vec<u8>, paths: &[PathBuf]) {
     for path in paths {
+        // Through the convenience symlinks (PathPrettyPrinter).
+        let path = crate::convenience_symlinks::pretty(path);
         text.extend_from_slice(b"  ");
         text.extend_from_slice(path.as_os_str().as_bytes());
         text.push(b'\n');

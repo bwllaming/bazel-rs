@@ -1856,10 +1856,27 @@ fn post_execution(state: &mut State, exit_code: i32) {
     let mut rest: Vec<(usize, Event)> = failed_events.into_iter().collect();
     rest.sort_by_key(|(index, _)| *index);
     events.extend(rest.into_iter().map(|(_, event)| event));
-    if planned.execute {
+    // ExecutionTool.handleConvenienceSymlinks (crate::convenience_symlinks;
+    // not with --noexperimental_convenience_symlinks_bep_event).
+    if planned.execute
+        && let Some(identified) = crate::convenience_symlinks::identified()
+    {
+        let symlinks = identified.into_iter().map(|entry| {
+            let message = Msg::new().str(1, "path", entry.path);
+            match entry.target {
+                Some(target) => message
+                    .enumeration(2, "action", (1, "CREATE"))
+                    .str(3, "target", target),
+                None => message.enumeration(2, "action", (2, "DELETE")),
+            }
+        });
         events.push(Event::new(
             id::convenience_symlinks_identified(),
-            (27, "convenience_symlinks_identified", Msg::new()),
+            (
+                27,
+                "convenience_symlinks_identified",
+                Msg::new().msgs(1, "convenience_symlinks", symlinks),
+            ),
         ));
     }
     // Every set's files at once: their digests are read in parallel.

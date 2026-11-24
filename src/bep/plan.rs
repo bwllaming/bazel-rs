@@ -47,9 +47,37 @@ pub struct BepTarget {
     pub test: Option<(String, u64)>,
     /// Index into [`BepPlan::configurations`].
     pub configuration: usize,
+    /// The output directory mnemonic of the configuration the target was
+    /// analyzed in, after its rule transition (an output file: its
+    /// generating rule's; `None` for a source file): what the convenience
+    /// symlinks point into (crate::convenience_symlinks::TopLevelConfigs).
+    pub output_mnemonic: Option<String>,
     /// The reported output groups in request order: name and the indices
     /// of their files in the planned request's `requested` artifacts.
     pub groups: Vec<(String, Vec<usize>)>,
+}
+
+impl BepPlan {
+    /// The top-level configuration and the requested targets'
+    /// configurations, for the convenience symlinks.
+    pub fn top_level_configs(&self) -> crate::convenience_symlinks::TopLevelConfigs {
+        let mut targets: Vec<String> = Vec::new();
+        for target in &self.targets {
+            if let Some(mnemonic) = &target.output_mnemonic
+                && !targets.contains(mnemonic)
+            {
+                targets.push(mnemonic.clone());
+            }
+        }
+        crate::convenience_symlinks::TopLevelConfigs {
+            top: self
+                .configurations
+                .first()
+                .map(|configuration| configuration.mnemonic.clone())
+                .unwrap_or_default(),
+            targets,
+        }
+    }
 }
 
 /// The BEP part of a planned request.

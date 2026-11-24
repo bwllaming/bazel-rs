@@ -7160,6 +7160,16 @@ impl Engine {
             let position = match index.get(&label) {
                 Some(position) => *position,
                 None => {
+                    // The configuration it was analyzed in, after a rule
+                    // transition (ConfiguredTarget.getConfigurationKey; a
+                    // source file has none).
+                    let output_mnemonic = match self.target(&label) {
+                        Ok(Target::Rule(_) | Target::Output(..)) => self
+                            .output_group_key(&label, top)
+                            .ok()
+                            .map(|key| self.configurations.mnemonic(key.config).to_owned()),
+                        _ => None,
+                    };
                     let (kind, tags, completion_tags, test) = match self.target(&label) {
                         Ok(Target::Rule(rule)) => {
                             let kind = format!("{} rule", rule.rule_class_name());
@@ -7206,6 +7216,7 @@ impl Engine {
                         completion_tags,
                         test,
                         configuration: configuration_index,
+                        output_mnemonic,
                         groups: Vec::new(),
                     });
                     index.insert(label.clone(), targets.len() - 1);
@@ -7230,6 +7241,14 @@ impl Engine {
     /// planning is its loading) before its window closes.
     pub fn record_link_anchors(&self) {
         self.repositories.record_link_anchors();
+    }
+
+    /// The top-level configuration's output directory mnemonic
+    /// (`k8-fastbuild`).
+    pub fn top_mnemonic(&self) -> String {
+        self.configurations
+            .mnemonic(self.configurations.top())
+            .to_owned()
     }
 
     /// The workspace status the last planned request computed, taken: its
