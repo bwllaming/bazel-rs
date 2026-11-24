@@ -219,6 +219,11 @@ fn user_name() -> String {
 /// (/etc/hostname of the UTS namespace), which differs from the host's
 /// /proc/sys/kernel/hostname in a container.
 fn short_host_name() -> String {
+    // macOS: no /etc/hostname; the JVM starts from gethostname.
+    #[cfg(not(target_os = "linux"))]
+    if let Some(host) = crate::platform::host_name() {
+        return host;
+    }
     for source in ["/etc/hostname", "/proc/sys/kernel/hostname"] {
         if let Ok(host) = std::fs::read_to_string(source)
             && let host = host.trim()

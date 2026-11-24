@@ -9,15 +9,24 @@
 //! (`O_DIRECTORY | O_NOFOLLOW`), so no path component is resolved again
 //! between a check and a change: a directory replaced by a link meanwhile
 //! is never followed.
+//!
+//! macOS has no `O_PATH`, but its `fchmodat(AT_SYMLINK_NOFOLLOW)` works
+//! (Linux's does not): an entry is `fstatat`ed without following a link and
+//! its mode changed by name with `AT_SYMLINK_NOFOLLOW`, after checking that
+//! the name still shows the same inode — a link swapped in meanwhile has its
+//! own mode changed at most, never its target's.
 
 use rustix::fs::{self as rfs, CWD, FileType, Mode, OFlags};
 use std::ffi::CStr;
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
 /// An entry opened without following a link at its last component.
 pub(crate) struct Entry {
+    #[cfg(target_os = "linux")]
     fd: OwnedFd,
     /// The permission bits (`& 0o7777`).
     pub(crate) mode: u32,
@@ -44,8 +53,67 @@ impl At<'_> {
     }
 }
 
+impl At<'_> {
+    /// `fstatat` without following a link at the last component.
+    #[cfg(not(target_os = "linux"))]
+    fn stat(&self) -> io::Result<rfs::Stat> {
+        let flags = rfs::AtFlags::SYMLINK_NOFOLLOW;
+        match *self {
+            At::Dir(dir, name) => rfs::statat(dir, name, flags),
+            At::Path(path) => rfs::statat(CWD, path, flags),
+        }
+        .map_err(io::Error::from)
+    }
+
+    /// `fchmodat(AT_SYMLINK_NOFOLLOW)` (macOS).
+    #[cfg(not(target_os = "linux"))]
+    fn chmod_nofollow(&self, mode: Mode) -> io::Result<()> {
+        let flags = rfs::AtFlags::SYMLINK_NOFOLLOW;
+        match *self {
+            At::Dir(dir, name) => rfs::chmodat(dir, name, mode, flags),
+            At::Path(path) => rfs::chmodat(CWD, path, mode, flags),
+        }
+        .map_err(io::Error::from)
+    }
+}
+
+/// `at` stated without following a link: `None` for a link or a missing
+/// entry (macOS: no `O_PATH` descriptor is kept).
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn open(at: At<'_>) -> io::Result<Option<Entry>> {
+    let stat = match at.stat() {
+        Ok(stat) => stat,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let kind = FileType::from_raw_mode(stat.st_mode);
+    if kind == FileType::Symlink {
+        return Ok(None);
+    }
+    Ok(Some(Entry {
+        mode: crate::platform::stat_mode(&stat) & 0o7777,
+        directory: kind == FileType::Directory,
+        dev: crate::platform::stat_dev(&stat),
+        ino: stat.st_ino,
+    }))
+}
+
+/// Set the mode of the inode `entry` (stated at `at`) to `mode` (macOS):
+/// by name without following a link, once the name still shows the inode.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn chmod(at: At<'_>, entry: &Entry, mode: u32) -> io::Result<()> {
+    let stat = at.stat()?;
+    if (crate::platform::stat_dev(&stat), stat.st_ino) != (entry.dev, entry.ino) {
+        return Err(io::Error::other(
+            "the entry was replaced while its mode changed",
+        ));
+    }
+    at.chmod_nofollow(Mode::from_raw_mode(mode as rustix::fs::RawMode))
+}
+
 /// `at` opened `O_PATH | O_NOFOLLOW`: `None` for a link (never opened
 /// through) or a missing entry.
+#[cfg(target_os = "linux")]
 pub(crate) fn open(at: At<'_>) -> io::Result<Option<Entry>> {
     let fd = match at.open(OFlags::PATH) {
         Ok(fd) => fd,
@@ -67,6 +135,7 @@ pub(crate) fn open(at: At<'_>) -> io::Result<Option<Entry>> {
 }
 
 /// Set the mode of the inode `entry` (opened at `at`) to `mode`.
+#[cfg(target_os = "linux")]
 pub(crate) fn chmod(at: At<'_>, entry: &Entry, mode: u32) -> io::Result<()> {
     let mode = Mode::from_raw_mode(mode);
     let proc = format!("/proc/self/fd/{}", entry.fd.as_raw_fd());
@@ -145,7 +214,7 @@ pub(crate) fn walk(
                 }
                 let sub = at.open(OFlags::RDONLY | OFlags::DIRECTORY)?;
                 let stat = rfs::fstat(&sub)?;
-                if (stat.st_dev, stat.st_ino) != (entry.dev, entry.ino) {
+                if (crate::platform::stat_dev(&stat), stat.st_ino) != (entry.dev, entry.ino) {
                     return Err(io::Error::other("a directory was replaced during a walk"));
                 }
                 below(&sub, descend, visit)?;

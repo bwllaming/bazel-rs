@@ -2086,9 +2086,17 @@ impl JavaVersions {
     }
 }
 
-/// AutoCpuConverter.convert("") on Linux (analysis/config/AutoCpuConverter.java:30-62):
-/// the default `--cpu` of this host.
+/// AutoCpuConverter.convert("") (analysis/config/AutoCpuConverter.java:30-62):
+/// the default `--cpu` of this host (`darwin_arm64` / `darwin_x86_64` on
+/// macOS).
 pub fn host_cpu() -> &'static str {
+    if cfg!(target_os = "macos") {
+        return match std::env::consts::ARCH {
+            "x86_64" => "darwin_x86_64",
+            "aarch64" => "darwin_arm64",
+            _ => "unknown",
+        };
+    }
     match std::env::consts::ARCH {
         "x86" => "piii",
         "x86_64" => "k8",

@@ -65,8 +65,11 @@ use rustix::process::{Pid, Signal, WaitId, WaitIdOptions};
 /// The hidden argv[1] that dispatches main to [`main`].
 pub const ARG: &str = "__process-wrapper";
 
-/// The executor's own binary, re-executed as the supervisor.
-const SELF_EXE: &str = "/proc/self/exe";
+/// The executor's own binary, re-executed as the supervisor
+/// (/proc/self/exe on Linux, crate::platform).
+fn self_exe() -> &'static Path {
+    crate::platform::self_exe()
+}
 
 /// The errno reported for a start error that carries none (std's start
 /// errors all carry one; a malformed command line would already have failed
@@ -183,7 +186,7 @@ impl Launch {
         args: impl IntoIterator<Item = S>,
     ) -> Self {
         if enabled() {
-            let mut command = Command::new(SELF_EXE);
+            let mut command = Command::new(self_exe());
             command.arg(ARG);
             if let Some(arg0) = arg0 {
                 command.arg("--arg0").arg(arg0);
@@ -209,7 +212,7 @@ impl Launch {
     /// The sandbox worker with its argv (crate::sandbox::wrap): a supervisor
     /// itself.
     pub fn sandbox_worker(argv: Vec<String>) -> Self {
-        let mut command = Command::new(SELF_EXE);
+        let mut command = Command::new(self_exe());
         command.args(argv);
         Self {
             command,
@@ -221,7 +224,7 @@ impl Launch {
     /// glibc execvp's search over `candidates` for `argv`
     /// (crate::repository_process::search). Only with [`enabled`].
     pub(crate) fn execvp(candidates: &[PathBuf], argv: &[Vec<u8>]) -> Self {
-        let mut command = Command::new(SELF_EXE);
+        let mut command = Command::new(self_exe());
         command.arg(ARG).arg("--execvp");
         for candidate in candidates {
             command.arg("--candidate").arg(candidate);
@@ -495,8 +498,30 @@ fn send(control: &mut Option<Control>, report: &Report) {
 /// orphaned descendants of the command are reparented here
 /// (process-wrapper-legacy.cc:53-62; EINVAL — no such prctl — only loses the
 /// cleanup of escaped descendants, as there).
+#[cfg(target_os = "linux")]
 fn become_subreaper() -> bool {
     rustix::process::set_child_subreaper(Some(rustix::process::getpid())).is_ok()
+}
+
+/// macOS has no child subreaper (genuine's process-wrapper enables it on
+/// Linux only, process-wrapper-legacy.cc:53-62): the command's process group
+/// is killed once the command has exited; a descendant that left the group
+/// (a `setsid` daemon) is not reached (docs/MACOS.md).
+#[cfg(not(target_os = "linux"))]
+fn become_subreaper() -> bool {
+    false
+}
+
+/// A descriptor readable once `pid` has exited (a pidfd, Linux 5.3+); None
+/// elsewhere: the exit is polled.
+#[cfg(target_os = "linux")]
+fn exit_descriptor(pid: Pid) -> Option<OwnedFd> {
+    rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()).ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn exit_descriptor(_pid: Pid) -> Option<OwnedFd> {
+    None
 }
 
 /// Starts the command the supervisor runs: an empty stdin and its own session
@@ -637,9 +662,9 @@ fn supervise(
     status: &mut dyn FnMut(i32) -> i32,
 ) -> i32 {
     let pid = Pid::from_child(&child);
-    // Readable once the child has exited; without pidfds (Linux < 5.3) the
-    // exit is polled.
-    let pidfd = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()).ok();
+    // Readable once the child has exited; without pidfds (Linux < 5.3,
+    // macOS) the exit is polled.
+    let pidfd = exit_descriptor(pid);
     // Reparented descendants are reaped as they exit while the child runs.
     let reaper = subreaper
         .then(|| {
@@ -841,6 +866,8 @@ fn kill_remaining_children() {
 
 /// This process's children, from every thread's /proc children list (a
 /// reparented orphan becomes the child of one live thread of the subreaper).
+/// Only a subreaper asks ([`become_subreaper`]: Linux only).
+#[cfg(target_os = "linux")]
 fn children() -> Vec<i32> {
     let mut children = Vec::new();
     // snapshot-unrecorded: the supervisor process's own /proc entry, read
@@ -858,6 +885,11 @@ fn children() -> Vec<i32> {
         }
     }
     children
+}
+
+#[cfg(not(target_os = "linux"))]
+fn children() -> Vec<i32> {
+    Vec::new()
 }
 
 #[cfg(test)]
@@ -957,12 +989,16 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
+        #[cfg(target_os = "linux")]
         let gone = || match std::fs::read_to_string(format!("/proc/{grandchild}/stat")) {
             Err(_) => true,
             Ok(stat) => stat
                 .rsplit_once(')')
                 .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z')),
         };
+        // (launchd reaps the orphan at once.)
+        #[cfg(not(target_os = "linux"))]
+        let gone = || !crate::platform::test_process_alive(grandchild as u32);
         let deadline = Instant::now() + Duration::from_secs(10);
         while !gone() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));

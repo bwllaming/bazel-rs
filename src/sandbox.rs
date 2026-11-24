@@ -36,6 +36,13 @@
 //! An explicitly requested `processwrapper-sandbox` isolates nothing, like
 //! genuine's; an explicit `linux-sandbox` is unregistered — a startup error —
 //! where the namespaces cannot be created, exactly like genuine's.
+//!
+//! On macOS (docs/MACOS.md) neither Linux backend exists: `sandboxed` is
+//! [`Backend::NoIsolation`], genuine's processwrapper-sandbox (the spawn's
+//! own sandbox execroot, no isolation; runner name
+//! `processwrapper-sandbox`). Genuine would pick its darwin-sandbox
+//! (`sandbox-exec`) there; an explicit `darwin-sandbox` fails with a
+//! not-implemented error until it is ported.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -45,6 +52,7 @@ use std::process::Command;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+#[cfg(target_os = "linux")]
 use landlock::{
     AccessFs, AccessNet, BitFlags, Compatible, PathBeneath, PathFd, PathFdError, Ruleset,
     RulesetAttr, RulesetCreated, RulesetCreatedAttr, RulesetError,
@@ -57,8 +65,19 @@ pub const SANDBOX_DEBUG_SUGGESTION: &str = "\n\nUse --sandbox_debug to see verbo
 /// The hidden argv[1] that dispatches main to [`worker_main`].
 pub const WORKER_ARG: &str = "__sandbox-worker";
 
+#[cfg(target_os = "linux")]
 mod namespaces;
+#[cfg(target_os = "linux")]
 pub use namespaces::KNOB as NAMESPACES_KNOB;
+/// The namespace sandbox's test knob (namespaces.rs on Linux; read nowhere
+/// else).
+#[cfg(not(target_os = "linux"))]
+pub const NAMESPACES_KNOB: &str = "BAZEL_RS_SANDBOX_NAMESPACES";
+
+/// genuine's macOS sandbox strategy (DarwinSandboxedSpawnRunner), not
+/// ported yet: requesting it fails explicitly on macOS.
+#[cfg(target_os = "macos")]
+const IDENTIFIER_DARWIN_SANDBOX: &str = "darwin-sandbox";
 
 /// The strategies this engine registers, in the identifier spellings Bazel
 /// 9.3 registers them: "standalone" and "local" (StandaloneModule.java:98),
@@ -292,6 +311,13 @@ pub fn mount_pair(input: &str) -> Result<(String, String), String> {
 /// when the identifier is requested, or for the error's list).
 pub fn validate(options: &SpawnOptions) -> Result<(), String> {
     let check = |identifier: &str, request: &str| -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        if identifier == IDENTIFIER_DARWIN_SANDBOX {
+            return Err(format!(
+                "{} (requested for {request})",
+                crate::platform::not_implemented("the darwin-sandbox strategy")
+            ));
+        }
         let known = if identifier == "linux-sandbox" {
             linux_sandbox_registered(options)
         } else {
@@ -344,6 +370,7 @@ pub fn remote_executor() -> bool {
 /// HardRequirement, so a kernel lacking any of them (TRUNCATE is ABI 3, TCP
 /// rules ABI 4) fails the setup loudly instead of silently enforcing
 /// nothing.
+#[cfg(target_os = "linux")]
 const ABI: landlock::ABI = landlock::ABI::V3;
 
 /// The implementation behind the `sandboxed` strategy on this host.
@@ -357,6 +384,10 @@ pub enum Backend {
     /// Neither: `sandboxed` cannot execute anything (a kernel without
     /// Landlock and namespaces; the library's in-process unit tests).
     Unavailable,
+    /// macOS: genuine's processwrapper-sandbox — the spawn runs in its own
+    /// sandbox execroot under the sandbox worker, which restricts nothing
+    /// (docs/MACOS.md; darwin-sandbox is not ported yet).
+    NoIsolation,
 }
 
 /// The `sandboxed` backend, probed once per process: the namespace sandbox
@@ -375,6 +406,15 @@ pub fn backend() -> Backend {
 /// [`backend`], probing with `options` when it has not run yet (option
 /// validation runs before [`install`]; reading the installed options here
 /// must not initialize them).
+#[cfg(not(target_os = "linux"))]
+fn backend_for(_options: Option<&SpawnOptions>) -> Backend {
+    if cfg!(test) {
+        return Backend::Unavailable;
+    }
+    Backend::NoIsolation
+}
+
+#[cfg(target_os = "linux")]
 fn backend_for(options: Option<&SpawnOptions>) -> Backend {
     static BACKEND: OnceLock<Backend> = OnceLock::new();
     if cfg!(test) {
@@ -406,6 +446,7 @@ fn backend_for(options: Option<&SpawnOptions>) -> Backend {
 }
 
 /// [`namespaces::KNOB`] `bind-proc` (test-only).
+#[cfg(target_os = "linux")]
 fn proc_fallback() -> bool {
     std::env::var(namespaces::KNOB).is_ok_and(|value| value == "bind-proc")
 }
@@ -592,6 +633,7 @@ pub fn all_sandboxed() -> bool {
 struct WorkerConfig {
     /// The namespace sandbox's plan (`--namespaces` and linux-sandbox's
     /// options); None for the Landlock sandbox.
+    #[cfg(target_os = "linux")]
     namespaces: Option<namespaces::Plan>,
     /// Landlock: writable paths: the action's execroot and TMPDIR,
     /// TEST_TMPDIR, /tmp and /dev/shm
@@ -626,6 +668,7 @@ struct WorkerConfig {
 impl WorkerConfig {
     fn empty() -> Self {
         WorkerConfig {
+            #[cfg(target_os = "linux")]
             namespaces: None,
             writable: Vec::new(),
             blocked: Vec::new(),
@@ -642,6 +685,7 @@ impl WorkerConfig {
     /// only the configuration travels as arguments.
     fn argv(&self, arguments: &[String]) -> Vec<String> {
         let mut argv = vec![WORKER_ARG.to_owned()];
+        #[cfg(target_os = "linux")]
         if let Some(plan) = &self.namespaces {
             argv.push("--namespaces".into());
             plan.push_args(&mut argv);
@@ -683,6 +727,7 @@ impl WorkerConfig {
         let mut config = Self::empty();
         let mut index = 0;
         while index < args.len() {
+            #[cfg(target_os = "linux")]
             if let Some(plan) = config.namespaces.as_mut()
                 && plan.parse_arg(args, &mut index)?
             {
@@ -690,6 +735,7 @@ impl WorkerConfig {
                 continue;
             }
             match args[index].as_str() {
+                #[cfg(target_os = "linux")]
                 "--namespaces" => config.namespaces = Some(namespaces::Plan::default()),
                 "--writable" => {
                     index += 1;
@@ -730,6 +776,7 @@ fn display(path: &Path) -> String {
     path.display().to_string()
 }
 
+#[cfg(target_os = "linux")]
 fn absolute(path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
@@ -762,6 +809,14 @@ pub fn wrap(
 ) -> Result<Vec<String>, String> {
     let options = options();
     let deny_network = denies_network(execution_info);
+    #[cfg(not(target_os = "linux"))]
+    let mut config = {
+        // processwrapper-sandbox: nothing to restrict (genuine's ignores the
+        // writable, blocked and network settings as well).
+        let _ = (execroot, tmp, environment, deny_network);
+        WorkerConfig::empty()
+    };
+    #[cfg(target_os = "linux")]
     let mut config = if backend() == Backend::Namespaces {
         let netns = match (deny_network, options.sandbox_enable_loopback_device) {
             (false, _) => namespaces::Netns::None,
@@ -815,6 +870,7 @@ pub fn wrap(
 
 /// The Landlock sandbox's configuration: the paths Bazel's linux-sandbox
 /// keeps writable for the spawn.
+#[cfg(target_os = "linux")]
 fn landlock_config(
     execroot: &Path,
     tmp: &Path,
@@ -895,7 +951,13 @@ pub fn wrap_worker(
     arguments: &[String],
     debug_root: &Path,
 ) -> Vec<String> {
+    #[cfg(target_os = "linux")]
     let mut config = landlock_config(execroot, tmp, environment, false);
+    #[cfg(not(target_os = "linux"))]
+    let mut config = {
+        let _ = (execroot, tmp, environment);
+        WorkerConfig::empty()
+    };
     config.debug_path = options()
         .sandbox_debug
         .then(|| debug_root.join("sandbox-debug.log"));
@@ -966,6 +1028,7 @@ fn worker(args: &[String]) -> Result<i32, String> {
             let _ = writeln!(file, "{}.{:09}: {line}", now.as_secs(), now.subsec_nanos());
         }
     };
+    #[cfg(target_os = "linux")]
     if let Some(plan) = &config.namespaces {
         debug(&format!("linux-sandbox (namespaces) worker: {plan:?}"));
         namespaces::enter(plan, &debug)?;
@@ -1023,6 +1086,7 @@ fn path(argument: &Option<&String>) -> Result<PathBuf, String> {
 }
 
 /// Formats one Landlock ruleset error with the sandbox role it failed in.
+#[cfg(target_os = "linux")]
 fn ruleset_error(error: RulesetError) -> String {
     format!("cannot set up the sandbox: {error}")
 }
@@ -1049,6 +1113,14 @@ pub fn setup_failure_occurred() -> bool {
     SETUP_FAILURE.load(Ordering::Relaxed)
 }
 
+/// macOS: genuine's processwrapper-sandbox restricts nothing.
+#[cfg(not(target_os = "linux"))]
+fn restrict(_config: &WorkerConfig, debug: &dyn Fn(&str)) -> Result<(), String> {
+    debug("processwrapper-sandbox: no isolation on this host");
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
 fn restrict(config: &WorkerConfig, debug: &dyn Fn(&str)) -> Result<(), String> {
     // Every handled access is a HardRequirement: a kernel lacking any of
     // them (the write set includes ABI 3's TRUNCATE; the network rules are
@@ -1127,6 +1199,7 @@ fn restrict(config: &WorkerConfig, debug: &dyn Fn(&str)) -> Result<(), String> {
 /// ENOENT, ESTALE and ENODEV; a dangling symlink among a directory's entries
 /// is the ENOENT case here). A missing writable path still fails, like
 /// linux-sandbox's mount(2) would.
+#[cfg(target_os = "linux")]
 fn add_path_rule(
     created: RulesetCreated,
     path: &Path,
@@ -1163,6 +1236,7 @@ fn add_path_rule(
 /// inaccessible: every top-level path except the blocked ones' first segment,
 /// plus — along each blocked path — the siblings of every component, so
 /// exactly the blocked subtrees (and nothing else) lose read access.
+#[cfg(target_os = "linux")]
 fn read_grants(blocked: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
     let mut grants = Vec::new();
     let roots: Vec<PathBuf> = fs::read_dir("/")
@@ -1185,6 +1259,7 @@ fn read_grants(blocked: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
 }
 
 /// The first segment of an absolute `path` (its top-level directory).
+#[cfg(target_os = "linux")]
 fn first_segment(path: &Path) -> Option<PathBuf> {
     path.components().nth(1).map(|component| {
         let mut first = PathBuf::from("/");
@@ -1197,6 +1272,7 @@ fn first_segment(path: &Path) -> Option<PathBuf> {
 /// `blocked` from `root` down to `blocked` itself, each sibling of that
 /// component stays readable. `blocked` equal to `root` grants nothing below
 /// it.
+#[cfg(target_os = "linux")]
 fn sibling_grants(root: &Path, blocked: &Path) -> Result<Vec<PathBuf>, String> {
     let rest = blocked
         .strip_prefix(root)
@@ -1305,11 +1381,17 @@ mod tests {
         assert_eq!(parsed.writable, config.writable);
         assert_eq!(parsed.blocked, config.blocked);
         assert!(parsed.deny_network);
+        #[cfg(target_os = "linux")]
         assert!(parsed.namespaces.is_none());
         assert_eq!(parsed.debug_path, config.debug_path);
         assert_eq!(parsed.setup_error, config.setup_error);
         assert_eq!(arguments, strings(&["/bin/true", "x"]).as_slice());
-        // The namespace sandbox's plan travels after --namespaces.
+    }
+
+    /// The namespace sandbox's plan travels after --namespaces.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn worker_argv_round_trips_the_namespace_plan() {
         let config = WorkerConfig {
             namespaces: Some(namespaces::Plan {
                 working_dir: PathBuf::from("/x"),
@@ -1327,6 +1409,7 @@ mod tests {
         assert_eq!(arguments, strings(&["/bin/true"]).as_slice());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn first_segment_is_the_top_level_directory() {
         assert_eq!(
@@ -1340,6 +1423,7 @@ mod tests {
         assert_eq!(first_segment(Path::new("/")), None);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn sibling_grants_cover_everything_but_the_blocked_branch() {
         let root = crate::test_temp::root().join(format!("n59-grants-{}", std::process::id()));

@@ -430,7 +430,7 @@ fn install_base() -> PathBuf {
 /// base's MD5): the first 16 bytes of its BLAKE3 digest, the identity of
 /// crate::snapshot::exe_id.
 fn install_md5() -> Result<String, String> {
-    let bytes = std::fs::read("/proc/self/exe")
+    let bytes = std::fs::read(crate::platform::self_exe())
         .map_err(|error| format!("cannot read the bazel-rs binary: {error}"))?;
     let digest = blake3::hash(&bytes);
     Ok(digest.as_bytes()[..16]

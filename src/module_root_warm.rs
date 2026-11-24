@@ -636,7 +636,7 @@ pub(crate) mod tests {
         finished.recv_timeout(Duration::from_secs(1)).unwrap();
         assert!(start.elapsed() < Duration::from_secs(2));
         assert!(
-            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            !crate::platform::process_exists(pid),
             "helper survived shutdown"
         );
     }

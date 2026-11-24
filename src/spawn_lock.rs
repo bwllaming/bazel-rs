@@ -88,8 +88,8 @@ fn start(command: &mut Command) -> io::Result<Child> {
     if crate::memory_limit::watchdog_armed() {
         let pid = child.id();
         // The caller asked for a private group iff the child is its own
-        // group leader. /proc/<pid>/stat field 5 (pgrp) decides without
-        // retaining caller state.
+        // group leader. Its process group (/proc/<pid>/stat field 5 on
+        // Linux) decides without retaining caller state.
         if process_group_of(pid) == Some(pid) {
             crate::memory_limit::register_live_group(pid);
         }
@@ -113,14 +113,10 @@ pub fn spawn_supervisor(command: &mut Command) -> io::Result<Child> {
     command.spawn()
 }
 
-/// The process-group id of `pid` from /proc/<pid>/stat (field 5; the
-/// comm field may contain spaces/parens, so parse after the last ')').
-/// None off Linux or when the process is already gone.
+/// The process-group id of `pid` (/proc/<pid>/stat on Linux, getpgid on
+/// macOS: crate::platform); None when the process is already gone.
 fn process_group_of(pid: u32) -> Option<u32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let after_comm = stat.rsplit_once(')')?.1;
-    // Remaining fields: state ppid pgrp ...
-    after_comm.split_whitespace().nth(2)?.parse().ok()
+    crate::platform::process_group_of(pid)
 }
 
 /// `command.output()` with the start through [`spawn`]: stdout and stderr

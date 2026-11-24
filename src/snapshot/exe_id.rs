@@ -37,8 +37,11 @@ const FILE_NAME: &str = "exe.id";
 const BODY: usize = 88;
 const LENGTH: usize = BODY + 16;
 /// What the identity is read from: the running binary, also when its path
-/// was replaced or deleted since it started.
-const EXE: &str = "/proc/self/exe";
+/// was replaced or deleted since it started (/proc/self/exe; on macOS its
+/// path, crate::platform::self_exe).
+fn exe() -> &'static Path {
+    crate::platform::self_exe()
+}
 
 fn now_ns() -> i64 {
     std::time::SystemTime::now()
@@ -107,7 +110,7 @@ fn hash(file: &mut File) -> io::Result<[u8; 32]> {
 /// (`<state>/snapshots`, crate::snapshot::store::root; created when an
 /// entry is written).
 pub fn binary_id(directory: &Path) -> io::Result<[u8; 32]> {
-    let key = StatKey::of(&fs::metadata(EXE)?);
+    let key = StatKey::of(&fs::metadata(exe())?);
     let cache = directory.join(FILE_NAME);
     if let Ok(bytes) = fs::read(&cache)
         && let Some(id) = decode(&bytes, &key)
@@ -115,7 +118,7 @@ pub fn binary_id(directory: &Path) -> io::Result<[u8; 32]> {
         return Ok(id);
     }
     let start = now_ns();
-    let mut file = File::open(EXE)?;
+    let mut file = File::open(exe())?;
     let id = hash(&mut file)?;
     let after = StatKey::of(&file.metadata()?);
     if after == key && !key.racy(start) {
@@ -166,11 +169,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         // The test binary is older than the racy margin unless it was just
         // linked: then nothing is cached yet.
-        let key = StatKey::of(&fs::metadata(EXE).unwrap());
+        let key = StatKey::of(&fs::metadata(exe()).unwrap());
         let settled = !key.racy(now_ns());
         let id = binary_id(directory.path()).unwrap();
         assert_eq!(binary_id(directory.path()).unwrap(), id);
-        let expected = *blake3::hash(&fs::read(EXE).unwrap()).as_bytes();
+        let expected = *blake3::hash(&fs::read(exe()).unwrap()).as_bytes();
         assert_eq!(id, expected);
         let cached = fs::read(directory.path().join(FILE_NAME)).ok();
         if settled {

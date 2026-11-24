@@ -3134,7 +3134,7 @@ fn reexec(mode: &str) -> ! {
     let _ = std::io::stderr().flush();
     let mut args = std::env::args_os();
     let argv0 = args.next().unwrap_or_default();
-    let mut command = std::process::Command::new("/proc/self/exe");
+    let mut command = std::process::Command::new(bazel_rs::platform::self_exe());
     {
         use std::os::unix::process::CommandExt as _;
         command.arg0(argv0);
@@ -7080,7 +7080,7 @@ fn retry_after_lost_inputs() {
     let mut args = std::env::args_os();
     let program = args.next().unwrap_or_default();
     use std::os::unix::process::CommandExt as _;
-    let mut process = std::process::Command::new("/proc/self/exe");
+    let mut process = std::process::Command::new(bazel_rs::platform::self_exe());
     process
         .arg0(program)
         .args(args)

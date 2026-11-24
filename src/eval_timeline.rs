@@ -52,7 +52,16 @@ fn state() -> std::sync::MutexGuard<'static, State> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// The process's CPU time (user + system) in µs (macOS: getrusage).
+#[cfg(not(target_os = "linux"))]
+fn cpu_us() -> u64 {
+    crate::platform::self_cpu_times().map_or(0, |(user, system)| {
+        u64::try_from((user + system).as_micros()).unwrap_or(u64::MAX)
+    })
+}
+
 /// The process's CPU time (user + system) in µs.
+#[cfg(target_os = "linux")]
 fn cpu_us() -> u64 {
     // snapshot-unrecorded: diagnostics; the process's own CPU counters.
     let Ok(stat) = std::fs::read_to_string("/proc/self/stat") else {

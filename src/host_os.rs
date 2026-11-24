@@ -1,7 +1,8 @@
-//! Immutable compile-target metadata: Linux x86_64 and Linux aarch64 have a
-//! reference-backed mapping (the JVM's `os.name`/`os.arch` lower-cased, as
-//! StarlarkOS.java:61-82 reports them); this is not runtime detection or a
-//! general cross-platform profile.
+//! Immutable compile-target metadata: Linux x86_64, Linux aarch64 and macOS
+//! aarch64 have a reference-backed mapping (the JVM's `os.name`/`os.arch`
+//! lower-cased, as StarlarkOS.java:61-82 reports them; the extension factor
+//! is OS.java's canonical name, `linux` or `osx`); this is not runtime
+//! detection or a general cross-platform profile.
 use allocative::Allocative;
 use anyhow::{anyhow, bail};
 use starlark::collections::StarlarkHasher;
@@ -39,8 +40,11 @@ impl HostMetadata {
 
     fn current() -> Result<Self, String> {
         match compile_target_arch() {
+            // OS.java:22 DARWIN("osx", "Mac OS X"): the JVM's os.name is
+            // "Mac OS X", lower-cased by StarlarkOS.getName.
+            Some(arch) if cfg!(target_os = "macos") => Self::bounded("mac os x", arch, "osx"),
             Some(arch) => Self::bounded("linux", arch, "linux"),
-            None => Err("repository host metadata is unsupported for this compile target (requires Linux x86_64 or aarch64)".to_owned()),
+            None => Err("repository host metadata is unsupported for this compile target (requires Linux x86_64 or aarch64, or macOS aarch64)".to_owned()),
         }
     }
 
@@ -75,14 +79,18 @@ impl HostMetadata {
     }
 }
 
-/// The JVM's `os.arch` on this Linux compile target: OpenJDK reports `amd64`
-/// on x86_64 and `aarch64` on arm64 (`ctx.os.arch`; the module extension
-/// `arch:` factor, RegularRunnableExtension.getEvalFactors; DigestWriter's
-/// host key). `None` for unsupported targets.
+/// The JVM's `os.arch` on this compile target: OpenJDK reports `amd64`
+/// on Linux x86_64 and `aarch64` on arm64 (Linux and macOS alike;
+/// `ctx.os.arch`; the module extension `arch:` factor,
+/// RegularRunnableExtension.getEvalFactors; DigestWriter's host key).
+/// `None` for unsupported targets.
 fn compile_target_arch() -> Option<&'static str> {
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         Some("amd64")
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+    } else if cfg!(all(
+        any(target_os = "linux", target_os = "macos"),
+        target_arch = "aarch64"
+    )) {
         Some("aarch64")
     } else {
         None

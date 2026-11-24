@@ -381,6 +381,7 @@ fn stat_matches(stat: Option<&rustix::fs::Stat>, state: &InodeState) -> bool {
 }
 
 /// The state [`inode_state`] gives for `stat`.
+#[cfg_attr(not(target_os = "linux"), allow(clippy::useless_conversion))]
 fn stat_state(stat: &rustix::fs::Stat) -> InodeState {
     InodeState {
         inode: stat.st_ino,
@@ -389,7 +390,7 @@ fn stat_state(stat: &rustix::fs::Stat) -> InodeState {
             stat.st_mtime,
             i64::try_from(stat.st_mtime_nsec).unwrap_or(i64::MAX),
         ),
-        mode: stat.st_mode & 0o7777,
+        mode: crate::platform::stat_mode(stat) & 0o7777,
     }
 }
 
@@ -446,7 +447,7 @@ fn reconcile_directory(
             (FileType::Directory, _, _) if context.needed.contains(&path) => {
                 if stat
                     .as_ref()
-                    .is_some_and(|stat| stat.st_mode & 0o7777 == context.mode)
+                    .is_some_and(|stat| crate::platform::stat_mode(stat) & 0o7777 == context.mode)
                 {
                     let child = open_directory_at(Some(directory), Path::new(&name))?;
                     reconcile_directory(

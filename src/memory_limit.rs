@@ -17,7 +17,9 @@
 //! reserve far more virtual space than they touch). The watchdog caps
 //! bazel-rs itself, not child actions; children keep the host's limits.
 //!
-//! A watchdog thread polls `/proc/self/statm` every 250 ms. RSS over
+//! A watchdog thread polls `/proc/self/statm` every 250 ms (macOS, which
+//! has no safe current-RSS source: the peak RSS getrusage reports, so the
+//! cap trips once RSS has ever exceeded it, docs/MACOS.md). RSS over
 //! 75% of the cap warns ONCE; RSS over the cap sets the stop flag,
 //! SIGKILLs every live child process group registered through
 //! `crate::spawn_lock::spawn` or, for a supervised spawn, the command's
@@ -151,8 +153,16 @@ pub fn validate_cap_mb(cap_mb: u64) -> Result<u64, String> {
     Ok(cap_mb)
 }
 
-/// Total machine memory in MB from /proc/meminfo (MemTotal). None off
-/// Linux or when unparsable.
+/// Total machine memory in MB from /proc/meminfo (MemTotal; macOS:
+/// `hw.memsize`). None when unparsable.
+#[cfg(not(target_os = "linux"))]
+pub fn mem_total_mb() -> Option<u64> {
+    crate::platform::mem_total_bytes().map(|bytes| bytes / (1024 * 1024))
+}
+
+/// Total machine memory in MB from /proc/meminfo (MemTotal). None when
+/// unparsable.
+#[cfg(target_os = "linux")]
 pub fn mem_total_mb() -> Option<u64> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
     for line in meminfo.lines() {
@@ -284,7 +294,27 @@ pub fn install_ceiling(cap_mb: u64) {
     start_watchdog(cap_mb);
 }
 
+/// Peak RSS in bytes (macOS: getrusage's ru_maxrss), for reporting.
+#[cfg(not(target_os = "linux"))]
+pub fn peak_rss_bytes() -> Option<u64> {
+    crate::platform::peak_rss_bytes()
+}
+
+/// The RSS the watchdog compares with the cap: the current RSS, or where
+/// none is available (macOS) the peak — which exceeds the cap exactly when
+/// the RSS ever did.
+fn watchdog_rss_bytes() -> Option<u64> {
+    rss_bytes().or_else(|| {
+        if cfg!(target_os = "linux") {
+            None
+        } else {
+            peak_rss_bytes()
+        }
+    })
+}
+
 /// Peak RSS (VmHWM) in bytes from /proc/self/status, for reporting.
+#[cfg(target_os = "linux")]
 pub fn peak_rss_bytes() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     for line in status.lines() {
@@ -337,8 +367,8 @@ fn start_watchdog(cap_mb: u64) {
             let mut warned = false;
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(250));
-                let Some(rss) = rss_bytes() else {
-                    continue; // no /proc (non-Linux): no watchdog enforcement
+                let Some(rss) = watchdog_rss_bytes() else {
+                    continue; // no RSS source: no watchdog enforcement
                 };
                 // The watchdog's lines are diagnostics: never part of what
                 // an analysis snapshot captures of planning's stderr

@@ -723,7 +723,7 @@ impl Worker {
                 .parent()
                 .unwrap_or(&self.execroot)
                 .to_path_buf();
-            let mut command = Command::new("/proc/self/exe");
+            let mut command = Command::new(crate::platform::self_exe());
             command.args(crate::sandbox::wrap_worker(
                 &self.execroot,
                 &tmp,

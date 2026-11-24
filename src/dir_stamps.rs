@@ -82,11 +82,14 @@ thread_local! {
 }
 
 /// `path` (relative to `parent` when given) opened as a directory for
-/// lookups and `fstat` only (`O_PATH`), never through a symlink at its last
-/// component.
+/// lookups and `fstat` only (`O_PATH`; macOS, which has none: for reading),
+/// never through a symlink at its last component.
 pub fn open_directory(parent: Option<&fs::File>, path: &Path) -> std::io::Result<fs::File> {
     use rustix::fs::{CWD, Mode, OFlags, openat};
+    #[cfg(target_os = "linux")]
     let flags = OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    #[cfg(not(target_os = "linux"))]
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     let fd = match parent {
         Some(parent) => openat(parent, path, flags, Mode::empty()),
         None => openat(CWD, path, flags, Mode::empty()),
@@ -99,6 +102,7 @@ pub fn open_directory(parent: Option<&fs::File>, path: &Path) -> std::io::Result
 /// (`None` for anything else). The same fields as [`DirectoryStamp::of`]
 /// takes from the metadata std builds from `statx` (its device number by
 /// glibc's `makedev`, like rustix's).
+#[cfg(target_os = "linux")]
 fn stat_directory(parent: &fs::File, name: &Path) -> Option<DirectoryStamp> {
     use rustix::fs::{AtFlags, FileType, StatxFlags, makedev, statx};
     let stat = statx(
@@ -115,6 +119,22 @@ fn stat_directory(parent: &fs::File, name: &Path) -> Option<DirectoryStamp> {
         mode,
         mtime: (stat.stx_mtime.tv_sec, i64::from(stat.stx_mtime.tv_nsec)),
         ctime: (stat.stx_ctime.tv_sec, i64::from(stat.stx_ctime.tv_nsec)),
+    })
+}
+
+/// [`stat_directory`] without `statx` (macOS): `fstatat` without following
+/// a link at `name`, the fields std's metadata takes from `lstat`.
+#[cfg(not(target_os = "linux"))]
+fn stat_directory(parent: &fs::File, name: &Path) -> Option<DirectoryStamp> {
+    use rustix::fs::{AtFlags, FileType, statat};
+    let stat = statat(parent, name, AtFlags::SYMLINK_NOFOLLOW).ok()?;
+    let mode = crate::platform::stat_mode(&stat);
+    (FileType::from_raw_mode(stat.st_mode) == FileType::Directory).then(|| DirectoryStamp {
+        device: crate::platform::stat_dev(&stat),
+        inode: stat.st_ino,
+        mode,
+        mtime: (stat.st_mtime, stat.st_mtime_nsec),
+        ctime: (stat.st_ctime, stat.st_ctime_nsec),
     })
 }
 

@@ -156,6 +156,7 @@ dependencies = [
  "libc",
  "lzma-rust2",
  "memchr",
+ "nix 0.31.3",
  "num-bigint",
  "postcard",
  "rayon-core",

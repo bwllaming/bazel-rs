@@ -546,7 +546,17 @@ fn critical_path_spans() -> Vec<(Duration, Duration, String)> {
 }
 
 /// This process's user and system CPU time, its finished children's
+/// included (macOS: getrusage of RUSAGE_SELF and RUSAGE_CHILDREN).
+#[cfg(not(target_os = "linux"))]
+pub fn cpu_times() -> (Duration, Duration) {
+    let own = crate::platform::self_cpu_times().unwrap_or_default();
+    let children = crate::platform::children_cpu_times().unwrap_or_default();
+    (own.0 + children.0, own.1 + children.1)
+}
+
+/// This process's user and system CPU time, its finished children's
 /// included (/proc/self/stat utime, stime, cutime, cstime).
+#[cfg(target_os = "linux")]
 pub fn cpu_times() -> (Duration, Duration) {
     // snapshot-unrecorded: this process's CPU times for the build metrics.
     let Ok(stat) = std::fs::read_to_string("/proc/self/stat") else {

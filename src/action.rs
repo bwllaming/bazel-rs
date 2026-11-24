@@ -4513,15 +4513,9 @@ fn tree_file_metadata(path: &Path) -> io::Result<(fs::Metadata, Option<Arc<TreeD
                 directories
                     .entry(parent.to_path_buf())
                     .or_insert_with(|| {
-                        use rustix::fs::{CWD, Mode, OFlags, openat};
                         let permit = crate::fd_budget::try_directory()?;
-                        let fd = openat(
-                            CWD,
-                            parent,
-                            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-                            Mode::empty(),
-                        )
-                        .ok()?;
+                        let fd =
+                            crate::platform::open_lstat_directory(rustix::fs::CWD, parent).ok()?;
                         Some(Arc::new(TreeDirectory {
                             fd,
                             path: parent.to_path_buf(),
@@ -4581,13 +4575,7 @@ fn metadata_at(directory: &TreeDirectory, path: &Path) -> io::Result<fs::Metadat
 /// opened as a path (`O_PATH | O_NOFOLLOW`, a symlink as itself), then
 /// `fstat` (std's metadata, birth time included).
 fn fd_metadata_at(directory: &std::os::fd::OwnedFd, name: &OsStr) -> io::Result<fs::Metadata> {
-    use rustix::fs::{Mode, OFlags, openat};
-    let fd = openat(
-        directory,
-        name,
-        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
+    let fd = crate::platform::open_entry_nofollow(directory, name)?;
     fs::File::from(fd).metadata()
 }
 
@@ -4611,15 +4599,9 @@ fn store_metadata(path: &Path) -> io::Result<fs::Metadata> {
         match store.as_ref() {
             Some((known, fd)) if known == parent => Some(Arc::clone(fd)),
             _ if parent.file_name() == Some(OsStr::new("cas")) => {
-                use rustix::fs::{CWD, Mode, OFlags, openat};
-                let fd = openat(
-                    CWD,
-                    parent,
-                    OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-                    Mode::empty(),
-                )
-                .ok()
-                .map(Arc::new);
+                let fd = crate::platform::open_lstat_directory(rustix::fs::CWD, parent)
+                    .ok()
+                    .map(Arc::new);
                 if let Some(fd) = &fd {
                     *store = Some((parent.to_path_buf(), Arc::clone(fd)));
                 }
@@ -5819,16 +5801,7 @@ fn check_staged_untimed(staged: &[StagedFile], execroot: &Path) -> Result<(), St
     // as through the whole path (the directories resolved alike, the last
     // component not followed) without walking the cache's directories,
     // which every job shares, for every input.
-    let root = {
-        use rustix::fs::{CWD, Mode, OFlags, openat};
-        openat(
-            CWD,
-            execroot,
-            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .ok()
-    };
+    let root = crate::platform::open_lstat_directory(rustix::fs::CWD, execroot).ok();
     // (The inputs are staged in path order: one directory after another.)
     let mut last: Option<(PathBuf, Option<std::os::fd::OwnedFd>)> = None;
     // Whether each tree directory opened at staging (by address) is still
@@ -5841,14 +5814,7 @@ fn check_staged_untimed(staged: &[StagedFile], execroot: &Path) -> Result<(), St
                     let opened = if parent.as_os_str().is_empty() {
                         rustix::io::dup(root).ok()
                     } else {
-                        use rustix::fs::{Mode, OFlags, openat};
-                        openat(
-                            root,
-                            parent,
-                            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-                            Mode::empty(),
-                        )
-                        .ok()
+                        crate::platform::open_lstat_directory(root, parent).ok()
                     };
                     last = Some((parent.to_path_buf(), opened));
                 }
@@ -7092,7 +7058,7 @@ fn sweep_work(work: &Path) {
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                if !Path::new(&format!("/proc/{pid}")).exists() {
+                if !crate::platform::process_exists(pid) {
                     for path in &paths {
                         let _ = remove_directory(path);
                     }
@@ -10767,8 +10733,10 @@ mod tests {
     }
 
     /// A separate process holding `path` open for writing until dropped.
+    #[cfg(target_os = "linux")]
     struct WriterProcess(std::process::Child);
 
+    #[cfg(target_os = "linux")]
     impl WriterProcess {
         fn open(path: &Path) -> Self {
             use std::io::BufRead;
@@ -10790,6 +10758,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     impl Drop for WriterProcess {
         fn drop(&mut self) {
             // Its descriptors are closed once it can be reaped.
@@ -13668,6 +13637,9 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
     /// after they were hashed and published.
     #[test]
     fn processes_an_action_leaves_behind_are_killed() {
+        #[cfg(not(target_os = "linux"))]
+        let alive = |pid: &str| crate::platform::test_process_alive(pid.parse().unwrap());
+        #[cfg(target_os = "linux")]
         let alive = |pid: &str| {
             fs::read_to_string(format!("/proc/{pid}/stat"))
                 .ok()

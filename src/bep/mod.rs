@@ -608,6 +608,12 @@ fn millis(time: SystemTime) -> i64 {
         .unwrap_or_default()
 }
 
+#[cfg(not(target_os = "linux"))]
+fn host_name() -> String {
+    crate::platform::host_name().unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
 fn host_name() -> String {
     // snapshot-unrecorded: the host name of BuildStarted.
     std::fs::read_to_string("/proc/sys/kernel/hostname")

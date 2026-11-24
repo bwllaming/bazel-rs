@@ -427,8 +427,16 @@ fn thread_cpu() -> Option<Duration> {
     Some(Duration::from_nanos(nanos))
 }
 
+/// CPU time of this process's waited-for children (macOS: getrusage of
+/// RUSAGE_CHILDREN).
+#[cfg(not(target_os = "linux"))]
+fn children_cpu() -> Option<Duration> {
+    crate::platform::children_cpu_times().map(|(user, system)| user + system)
+}
+
 /// CPU time of this process's waited-for children (/proc/self/stat cutime
 /// and cstime, in USER_HZ = 100 ticks per second on Linux).
+#[cfg(target_os = "linux")]
 fn children_cpu() -> Option<Duration> {
     let text = std::fs::read_to_string("/proc/self/stat").ok()?;
     // Fields after the parenthesized command name: state is field 3.

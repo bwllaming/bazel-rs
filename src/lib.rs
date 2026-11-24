@@ -137,6 +137,7 @@ pub mod patch_inputs;
 pub mod patching;
 mod path_key;
 pub mod plan_timings;
+pub mod platform;
 mod platform_providers;
 pub mod platforms;
 mod prefetch;

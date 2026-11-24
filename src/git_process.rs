@@ -1,4 +1,4 @@
-//! Linux-only supervision of trusted `/usr/bin/git`; no shell or Bazel fallback.
+//! Unix (Linux, macOS) supervision of trusted `/usr/bin/git`; no shell or Bazel fallback.
 //!
 //! This is NOT a sandbox. The caller owns the existing private root and cwd,
 //! trusts their contents/ancestors, and prevents concurrent hostile mutation.
@@ -17,8 +17,8 @@
 
 #![deny(unsafe_code)]
 
-#[cfg(not(target_os = "linux"))]
-compile_error!("git_process supports Linux only (process groups and kill(2) required)");
+#[cfg(not(unix))]
+compile_error!("git_process supports Unix only (process groups and kill(2) required)");
 
 use std::ffi::OsString;
 use std::fs;
@@ -495,6 +495,11 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "linux"))]
+    fn not_live(pid: &str) -> bool {
+        !crate::platform::test_process_alive(pid.parse().unwrap())
+    }
+    #[cfg(target_os = "linux")]
     fn not_live(pid: &str) -> bool {
         match fs::read_to_string(format!("/proc/{pid}/stat")) {
             Ok(stat) => matches!(
