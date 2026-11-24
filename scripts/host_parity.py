@@ -119,10 +119,12 @@ def sha256_file(path: Path) -> str:
 # `--sandbox_debug` keeps: genuine's `<output base>/sandbox/*/*/sandbox.sb`,
 # bazel-rs's `<cache>/work/*/sandbox.sb`; their indented lines sorted per
 # block, genuine writes the writable directories from a hash set).
-# `{WORKSPACE}` and `{HOME}` in arguments become the tool's paths. A case's
+# `{WORKSPACE}`, `{EXECROOT}` and `{HOME}` in arguments become the tool's
+# paths. A case's
 # "hosts" limits it to those hosts (host_platform_name()).
 HP = "host_parity/workspace"
 SANDBOX_PROBES = ["default", "block_network", "requires_network", "no_sandbox", "local"]
+SANDBOX_PROBE_ENV = ["--action_env=PROBE_WS={WORKSPACE}", "--action_env=PROBE_EXECROOT={EXECROOT}"]
 
 CASES = [
     {
@@ -151,7 +153,7 @@ CASES = [
              "stderr": [r"^INFO: \d+ processes?: "],
              "files": ["bazel-bin/make_vars.txt", "bazel-bin/action_env.txt", "bazel-bin/host_info.txt",
                        "bazel-bin/selects.txt", "bazel-bin/use_tool.txt", "bazel-bin/probe.txt",
-                       "bazel-bin/exec_probe.txt"],
+                       "bazel-bin/exec_probe.txt", "bazel-bin/repo_env.txt"],
              "trees": ["bazel-bin/tool.runfiles", "bazel-bin/env_test.runfiles"]},
             {"args": ["test", "//:env_test"],
              "stderr": [r"^INFO: \d+ processes?: ", r"^//:env_test "],
@@ -164,15 +166,16 @@ CASES = [
         "hosts": ["darwin-arm64"],
         "workspace": "darwin_sandbox/workspace",
         "steps": [
-            {"args": ["build", "//...", "--sandbox_debug"],
+            {"args": ["build", "//...", "--sandbox_debug", *SANDBOX_PROBE_ENV],
              "stderr": [r"^INFO: \d+ processes?: "],
              "files": [f"bazel-bin/{n}.txt" for n in SANDBOX_PROBES],
              "sandbox_profiles": True},
-            {"args": ["build", "//...", "--sandbox_default_allow_network=false", "--action_env=PROBE_RUN=2"],
+            {"args": ["build", "//...", "--sandbox_default_allow_network=false", "--action_env=PROBE_RUN=2",
+                      *SANDBOX_PROBE_ENV],
              "stderr": [r"^INFO: \d+ processes?: "],
              "files": [f"bazel-bin/{n}.txt" for n in SANDBOX_PROBES]},
             {"args": ["build", "//...", "--keep_going", "--sandbox_writable_path=/Users/Shared",
-                      "--sandbox_block_path=/usr/share/zoneinfo", "--action_env=PROBE_RUN=3"],
+                      "--sandbox_block_path=/usr/share/zoneinfo", "--action_env=PROBE_RUN=3", *SANDBOX_PROBE_ENV],
              "stderr": [r"^INFO: \d+ processes?: "],
              "files": [f"bazel-bin/{n}.txt" for n in SANDBOX_PROBES]},
         ],
@@ -216,19 +219,27 @@ CASES = [
 
 # Known differences, also on Linux (not host-specific): the diff lines
 # (`+`/`-`) of an item matching `lines` are dropped; an item whose remaining
-# diff is empty counts as known. `step` is the step's command prefix.
+# diff is empty counts as known. `step` is the step's command prefix, `item`
+# a regular expression of the item's name.
 KNOWN = [
     {
         "case": "host_parity", "step": "cquery deps(", "item": "stdout",
         "lines": [r"^-@\S+//\S*:(toolchain_type|default_test_toolchain_type) \(C\)$"],
         "reason": "bazel-rs's cquery deps() omits the toolchain_type targets of toolchain resolution",
     },
+    {
+        "case": "darwin_sandbox", "step": "build", "item": r"bazel-bin/\w+\.txt",
+        "lines": [r"^[-+](source|generated)_input_symlink=(yes|no)$"],
+        "reason": "bazel-rs stages a spawn's inputs as hardlinks of its content-addressed store where genuine's "
+                  "sandboxes and execroot link them (docs/HARDLINK_STAGING.md)",
+    },
 ]
 
 
 def known_reason(case: str, args: list[str], item: str, diff: str) -> str | None:
     command = " ".join(args)
-    rules = [k for k in KNOWN if k["case"] == case and command.startswith(k["step"]) and k["item"] == item]
+    rules = [k for k in KNOWN
+             if k["case"] == case and command.startswith(k["step"]) and re.fullmatch(k["item"], item)]
     if not rules:
         return None
     patterns = [re.compile(p) for rule in rules for p in rule["lines"]]
@@ -475,7 +486,9 @@ def run(args: argparse.Namespace) -> int:
             ])
             steps = []
             for step in case["steps"]:
-                argv = [a.replace("{WORKSPACE}", str(ws)).replace("{HOME}", env["HOME"]) for a in step["args"]]
+                argv = [a.replace("{WORKSPACE}", str(ws)).replace("{HOME}", env["HOME"])
+                        .replace("{EXECROOT}", paths.get("execution_root", "/nonexistent"))
+                        for a in step["args"]]
                 result = run_step(tool, ws, env, argv, args.timeout)
                 items = collect(tool, ws, step, result, norm, Path(paths.get("output_base", "/nonexistent")))
                 steps.append({"result": result, "items": items})

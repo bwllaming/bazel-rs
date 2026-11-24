@@ -71,26 +71,33 @@ fn self_exe() -> &'static Path {
     crate::platform::self_exe()
 }
 
-/// macOS: CoreFoundation, which this binary links (the system certificate
-/// store), sets `__CF_USER_TEXT_ENCODING` in every process that loads it
-/// when the variable is missing — also in a re-executed supervisor whose
-/// environment is the spawn's own. The executor carries the spawn's own
-/// value (or its absence) in [`CF_CARRIER`]; the supervisor restores exactly
-/// that before it starts the command ([`restore_cf_encoding`]).
+/// macOS: genuine's spawns always carry `__CF_USER_TEXT_ENCODING` — the
+/// action's own value, else the Bazel server's, which CoreFoundation set in
+/// the JVM (captured on a macOS runner: scripts/host_parity.py, the
+/// darwin_sandbox and host_parity cases; local, darwin-sandbox and test
+/// spawns alike). This binary links CoreFoundation too (the system
+/// certificate store), which sets the variable in every process that loads
+/// it when it is missing — the client's value matches the JVM's — and also
+/// in a re-executed supervisor, whose environment must be the spawn's. The
+/// executor carries the spawn's value (its own, else the client's) in
+/// [`CF_CARRIER`]; the supervisor sets exactly that before it starts the
+/// command ([`restore_cf_encoding`]).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) const CF_ENCODING: &str = "__CF_USER_TEXT_ENCODING";
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) const CF_CARRIER: &str = "BAZEL_RS_SPAWN_CF_USER_TEXT_ENCODING";
 
 /// Executor side of [`CF_ENCODING`]'s round trip: the spawn's explicit value
-/// travels in the carrier (a spawn environment is always explicit: the
-/// callers clear the inherited one).
+/// (a spawn environment is always explicit: the callers clear the inherited
+/// one), else this process's, travels in the carrier.
 #[cfg(target_os = "macos")]
 pub(crate) fn carry_cf_encoding(command: &mut Command) {
     let value = command
         .get_envs()
         .find(|(name, _)| *name == CF_ENCODING)
-        .and_then(|(_, value)| value.map(OsStr::to_os_string));
+        .and_then(|(_, value)| value.map(OsStr::to_os_string))
+        // snapshot-unrecorded: CoreFoundation's value in this process (the JVM's in genuine).
+        .or_else(|| std::env::var_os(CF_ENCODING));
     match value {
         Some(value) => command.env(CF_CARRIER, value),
         None => command.env_remove(CF_CARRIER),
@@ -99,6 +106,21 @@ pub(crate) fn carry_cf_encoding(command: &mut Command) {
 
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn carry_cf_encoding(_command: &mut Command) {}
+
+/// A process started directly (no supervisor in between: a persistent
+/// worker outside the sandbox) gets [`CF_ENCODING`] like genuine's spawns:
+/// its explicit value, else this process's (a no-op off macOS).
+#[cfg(target_os = "macos")]
+pub(crate) fn add_cf_encoding(command: &mut Command) {
+    let explicit = command.get_envs().any(|(name, _)| name == CF_ENCODING);
+    // snapshot-unrecorded: CoreFoundation's value in this process (the JVM's in genuine).
+    if !explicit && let Some(value) = std::env::var_os(CF_ENCODING) {
+        command.env(CF_ENCODING, value);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn add_cf_encoding(_command: &mut Command) {}
 
 /// Supervisor side of [`CF_ENCODING`]'s round trip (a no-op off macOS).
 #[cfg(target_os = "macos")]
