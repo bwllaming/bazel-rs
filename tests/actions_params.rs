@@ -97,8 +97,9 @@ fn read(outputs: &[(String, PathBuf)], name: &str) -> String {
         .find(|(relative, _)| relative == name)
         .unwrap_or_else(|| panic!("no output {name} in {outputs:?}"))
         .1;
-    // The expectations name Linux x86_64's k8 (support/host_cpu.rs).
-    as_k8(&fs::read_to_string(path).unwrap())
+    // The expectations name Linux x86_64's k8 and its spawn environment
+    // (support/host_cpu.rs).
+    without_macos_spawn_variables(&as_k8(&fs::read_to_string(path).unwrap()))
 }
 
 fn mode(outputs: &[(String, PathBuf)], name: &str) -> u32 {

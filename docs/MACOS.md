@@ -8,8 +8,10 @@ former Linux code unchanged; `src/platform/macos.rs`), so Linux builds behave
 exactly as before. Intel Macs (`x86_64-apple-darwin`) are not built.
 
 Status: phase 1 (compile, run, CI) and phase 2 (release archive) are done;
-phase 3 (genuine-captured parity on a Mac, the Xcode C++ toolchain,
-darwin-sandbox) is open — see the end.
+phase 3: genuine Bazel 9.3.1 darwin-arm64 runs beside bazel-rs in the macOS
+CI job on a mini corpus (see "Genuine parity on macOS"), darwin-sandbox is
+the `sandboxed` backend, the integration tests with Linux output paths are
+host-aware; what remains is at the end.
 
 ## What is ported
 
@@ -18,8 +20,8 @@ darwin-sandbox) is open — see the end.
 | Embedded `@bazel_tools` | `linux-x86_64` / `linux-arm64` bundle | the `darwin-arm64` bundle of the official `bazel-9.3.1-darwin-arm64` (`resources/bazel_tools/darwin-arm64/`, 420 files; same Starlark/BUILD files, darwin JDK and helpers) |
 | Host metadata | `repository_ctx.os.name` `linux`, `arch` `amd64`/`aarch64`, extension factor `os:linux` | `mac os x` (the JVM's `os.name`, lower-cased), `aarch64`, factor `os:osx` (OS.java's canonical name); `@platforms//host` resolves to `@platforms//os:osx` + `@platforms//cpu:aarch64` through the platforms module like genuine |
 | Default `--cpu`, output roots | `k8`, `bazel-out/k8-fastbuild` | `darwin_arm64`, `bazel-out/darwin_arm64-fastbuild` (AutoCpuConverter) |
-| `sandboxed` strategy | linux-sandbox (namespaces) or the Landlock-restricted processwrapper-sandbox | genuine's **processwrapper-sandbox**: each spawn in its own sandbox execroot, no isolation (`Backend::NoIsolation`; runner name `processwrapper-sandbox`) |
-| Spawn supervision | process-wrapper: child subreaper, pidfd, kill the group and every reparented descendant | process-wrapper without subreaper (like genuine's on macOS): the command runs in its own session/process group, which is SIGKILLed once the command exits; the exit is polled (10 ms) |
+| `sandboxed` strategy | linux-sandbox (namespaces) or the Landlock-restricted processwrapper-sandbox | genuine's **darwin-sandbox** (`src/sandbox/darwin.rs`): each spawn in its own sandbox execroot under `/usr/bin/sandbox-exec -f sandbox.sb`, genuine's profile (below); processwrapper-sandbox where `sandbox-exec` does not work (like genuine) |
+| Spawn supervision | process-wrapper: child subreaper, pidfd, kill the group and every reparented descendant | process-wrapper without subreaper (like genuine's on macOS): the command runs in its own session/process group, which is SIGKILLed once the command exits and then waited for until it is empty (WaitForProcessGroupToTerminate; signal-0 probes, killed again every millisecond, at most 10 s); the exit is polled (10 ms) |
 | Re-executing itself | `/proc/self/exe` | `std::env::current_exe()` (canonicalized once) |
 | Process liveness, group | `/proc/<pid>`, `/proc/<pid>/stat` | `kill(pid, 0)`, `getpgid` |
 | Resource limits | soft = hard (`GetExplicitSystemLimit` unimplemented) | soft = min(hard, `kern.maxfilesperproc` / `kern.maxprocperuid`), blaze_util_darwin.cc's rule |
@@ -34,7 +36,8 @@ darwin-sandbox) is open — see the end.
 | `--cache-dir` | as given | canonicalized (the symlinks /tmp, /var → /private/...), like genuine's output base |
 | Digest memo settledness | birth time for owned files | change time only (macOS moves the birth time back with the mtime) |
 | Lock files | `O_NOFOLLOW \| O_NONBLOCK` (Linux values) | the same flags with macOS's values |
-| Spawn environment | exactly the action's | the same: CoreFoundation (linked for the system certificate store) adds `__CF_USER_TEXT_ENCODING` to every process that loads it, so the executor carries the spawn's own value (or its absence) to the re-executed supervisor, which restores it before starting the command |
+| Spawn environment | exactly the action's | the action's plus `__CF_USER_TEXT_ENCODING` when the action does not set it: genuine's spawns (local, darwin-sandbox, tests, repository `execute`) all carry the server's CoreFoundation value; bazel-rs passes its own (it links CoreFoundation for the system certificate store, which sets the variable in every process that loads it — also in the re-executed supervisor, so the executor carries the spawn's value to it explicitly) |
+| Client environment | the process environment | plus `DARWIN_USER_TEMP_DIR` and `DARWIN_USER_CACHE_DIR` after it, as genuine's client adds them (GetProcessedEnv, confstr; read with `/usr/bin/getconf` once per process) |
 | jemalloc | arena binding | the same (tikv-jemalloc works on macOS) |
 
 `unsafe` is used for nothing new: the macOS code uses rustix and nix safe
@@ -42,10 +45,35 @@ wrappers (`nix` 0.31.3 is the version `zip` already builds on macOS; rustix's
 `system` feature for `uname` on macOS only). Landlock is a Linux-only
 dependency.
 
+## darwin-sandbox
+
+`sandboxed` (and `darwin-sandbox`, registered like genuine's when
+`sandbox-exec -p "(version 1) (allow default)" /usr/bin/true` succeeds) runs
+each spawn in its own sandbox execroot under `/usr/bin/sandbox-exec -f
+<sandbox dir>/sandbox.sb`; the sandbox worker supervises sandbox-exec,
+which applies the profile and executes the command in place (an argv[0] of
+its own, test spawns, goes through the hidden `__exec-arg0` helper). The
+profile is DarwinSandboxedSpawnRunner.writeConfig's text: `(allow default)`,
+`/bin/ps` executable outside the sandbox, `(deny file-write*)` except below
+the always-writable directories (`/dev`, `/private/tmp`, `/private/var/tmp`,
+the client's `DARWIN_USER_TEMP_DIR` / `DARWIN_USER_CACHE_DIR`, the user
+database home's `Library/{Caches,Logs,Developer}`, each when it exists,
+resolved), the sandbox execroot, TEST_TMPDIR, TMPDIR, every
+`--sandbox_writable_path` (and its resolved target) and the statistics file
+literal; `(deny file-read*)` below each `--sandbox_block_path` (resolved);
+for `block-network` or `--nosandbox_default_allow_network` without
+`requires-network`, the network denied except localhost and unix sockets.
+genuine writes the writable directories from a hash set, bazel-rs sorted.
+`--sandbox_debug` keeps the profile in the spawn's sandbox directory
+(`<cache>/work/<key>-<pid>-<n>/sandbox.sb`). `BAZEL_RS_DARWIN_SANDBOX=off`
+falls back to processwrapper-sandbox. The captured behaviour (host_parity's
+darwin_sandbox case: what a spawn may read, write and reach per execution
+requirement and flag, and the profiles) matches genuine's on the runner.
+Spawn inputs are hardlinks of bazel-rs's content-addressed store where
+genuine's sandbox links them (docs/HARDLINK_STAGING.md), as on Linux.
+
 ## What fails explicitly
 
-- `--spawn_strategy=darwin-sandbox` (and `--strategy=M=darwin-sandbox`):
-  "the darwin-sandbox strategy is not implemented on macOS (requested for …)".
 - `linux-sandbox` is not a registered strategy (like genuine on macOS): the
   registry's "no strategy with that identifier was registered" error.
 - The namespace sandbox's worker option `--namespaces` is unknown.
@@ -53,13 +81,14 @@ dependency.
 ## What is weaker than on Linux (documented, not silent)
 
 - No child subreaper: a descendant that leaves the spawn's process group
-  (`setsid` daemons, double forks into another group) survives the spawn
-  (genuine's macOS process-wrapper has the same limit).
-- `sandboxed` isolates nothing (genuine's processwrapper-sandbox); genuine on
-  macOS would use darwin-sandbox, so the summary says
-  `processwrapper-sandbox` where genuine says `darwin-sandbox`.
-  `--sandbox_block_path`, `--sandbox_writable_path` and `block-network`
-  are ignored like processwrapper-sandbox does.
+  (`setsid` daemons, double forks into another group) survives the spawn.
+  Genuine's macOS process-wrapper has the same limit
+  (process-wrapper-legacy.cc:114-127: it waits for the child, kills its
+  process group and waits for the group to empty; nothing tracks processes
+  that left it), so this is parity; a tracker would need `proc_listchildpids`
+  (FFI, outside the unsafe policy) and would go beyond genuine.
+- Where `sandbox-exec` does not work (nested sandboxes), `sandboxed` is
+  processwrapper-sandbox and isolates nothing, like genuine's fallback.
 - The memory watchdog compares the peak RSS with the cap (no safe API for
   the current RSS).
 - Performance-only paths that are off: execution-root reuse (it reads the
@@ -108,7 +137,11 @@ directories from the host's default `--cpu` (`tests/support/host_cpu.rs`:
 output into the capture's spelling, leaving a fixture's literal `k8` alone):
 actions_params, args_map_each, artifact_identity, cache_gc,
 directory_expander, filegroup_output_group, native, parallel_cli,
-py_label_runfiles_path, py_repo_mapping, py_shared_library, runfiles.
+py_label_runfiles_path, py_repo_mapping, py_shared_library, runfiles; the
+environment listings of action_env and actions_params leave out the
+`__CF_USER_TEXT_ENCODING` genuine's macOS spawns carry. py_shared_library
+stays Linux-only in CI: its fixture holds `libfoo.so` and `libfoo.SO`,
+one file on APFS's default case-insensitive volumes.
 Linux-only tests carry `#[cfg(target_os = "linux")]` with the reason:
 expectations of the Linux x86_64 host (`k8`), GNU `stat`/`timeout`, `/proc`,
 ETXTBSY (macOS executes files open for writing), non-UTF-8 file names (APFS
@@ -136,15 +169,42 @@ CoreFoundation frameworks; `Signature=adhoc`), smoke-tested (query, two
 builds, the built-in profile build) and packaged the archive, whose extracted
 binary passed `codesign --verify` and ran `--version`.
 
-## Phase 3
+## Genuine parity on macOS
 
-- Genuine-captured fixtures on a Mac runner (bazelisk / `bazel-9.3.1-darwin-arm64`)
-  and a corpus subset on macOS.
-- The C/C++ toolchain: genuine's `cc_configure` on macOS (Xcode /
-  apple_support's `local_config_apple_cc`, `xcode_locator`, wrapped_clang);
-  today the repository rules run as written, unmodelled native parts fail.
-- darwin-sandbox (`sandbox-exec` profiles, DarwinSandboxedSpawnRunner) as the
-  default `sandboxed` backend.
-- A descendant tracker for the process-wrapper (kqueue `EVFILT_PROC` /
-  `NOTE_TRACK` is gone on modern macOS; `proc_listchildpids` needs FFI).
+The macOS CI job downloads the official `bazel-9.3.1-darwin-arm64` release
+(`scripts/host_parity.py fetch-genuine`: releases.bazel.build, the published
+`.sha256` checked against the pin in the script) and runs
+`scripts/host_parity.py run --strict`: genuine (`--batch`, its own output
+user root) and bazel-rs (its own cache directory) side by side on copies of
+the same fixtures, each with its own HOME and TMPDIR under `env -i`. Per
+step it compares the exit code, stdout, selected stderr lines (the
+`INFO: N processes` strategies), output files, runfiles trees, test logs
+and the darwin-sandbox profiles, after normalizing the tools' own paths
+(output base, execution root, cache, workspace, spawn sandboxes),
+configuration checksums and label spelling (bazel-rs's are its own by
+design, docs/CQUERY.md) and times. A difference fails the step unless it is
+listed in the script's KNOWN table with its reason; the JSON report is the
+job's `host-parity-macos` artifact. The same script runs on Linux against
+the Linux genuine binary (the darwin-only case skipped).
+
+| Case | What it covers | Result on macos-15 |
+|---|---|---|
+| host_parity (tests/fixtures/host_parity) | `info` paths, query/cquery/aquery, Make variables (`TARGET_CPU`, `BINDIR`, ...), the genrule action environment and shell, selects on `@platforms//os:macos`, `--cpu=darwin_arm64`, `--host_cpu`, `@bazel_tools//src/conditions:darwin_arm64`; an exec tool's runfiles; `sh_test`'s environment, runfiles, `test.xml`; `run`; what rules see (`ctx.var`, `ctx.fragments.apple` / `cpp` / `platform`, the sh toolchain path, the Xcode configuration of `@local_config_xcode` through `xcode_config_label`, `apple_common.apple_host_system_env` / `target_apple_env`); a repository rule's `os` and environment | equal (cquery `deps()` omits toolchain_type targets: known, also on Linux) |
+| darwin_sandbox (tests/fixtures/darwin_sandbox) | reads, writes (workspace, execroot, /tmp, TMPDIR, home, `~/Library/Caches`, /Users/Shared), network, `/bin/ps` per `block-network` / `requires-network` / `no-sandbox` / `local`, `--sandbox_default_allow_network`, `--sandbox_writable_path`, `--sandbox_block_path` on a symlink; the profiles | equal (input kind: hardlinks, known) |
+| cc_hello | `cc_library` / `cc_binary` / `cc_test` with rules_cc's auto-configured Xcode clang toolchain: cquery, the CppCompile/CppArchive/CppLink command lines, build, run, test | equal |
+| py_go_hello | rules_python's hermetic interpreter and rules_go's downloaded SDK: build, run, test, the Go actions | see the report |
+| aquery_genrules, runfiles_symlinks, test_args | platform-neutral fixtures of the Linux suite | equal |
+
+Fixed on the way: `apple_common.apple_host_system_env` and
+`target_apple_env` (now the verbatim `@_builtins` functions), the default
+`sandboxed` strategy (darwin-sandbox), the client environment's
+`DARWIN_USER_*` directories, `__CF_USER_TEXT_ENCODING` in spawns.
+
+## Phase 3: what remains
+
+- apple_support's `local_config_apple_cc` (wrapped_clang, `apple_cc_toolchain`,
+  `objc_library`) is not exercised: rules_cc's own `cc_configure` (Xcode's
+  clang through `cc_wrapper.sh`) is what a workspace without apple_support
+  gets, and that matches genuine.
+- A descendant tracker beyond genuine's (see above): not pursued.
 - Execution-root reuse and fd-relative staging on macOS.
