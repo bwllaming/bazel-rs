@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 include!("support/snapshot_off.rs");
 include!("support/explicit_modules.rs");
 include!("support/sealed_trees.rs");
+include!("support/host_cpu.rs");
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -225,9 +226,13 @@ fn parallel_preflight_rejects_every_invalid_graph_before_cache_creation() {
         "genrule(name='make',outs=['x'],cmd='printf x > $@')\nfilegroup(name='bad',srcs=[':make','bazel-out/k8-fastbuild/bin/x'])",
     ] {
         let ws = Workspace::new(&format!(
-            "genrule(name='aaa',outs=['first'],cmd='printf ran > $@')\n{invalid}\n"
+            "genrule(name='aaa',outs=['first'],cmd='printf ran > $@')\n{}\n",
+            host_out(invalid)
         ));
-        ws.file("bazel-out/k8-fastbuild/bin/x", "source collision");
+        ws.file(
+            &host_out("bazel-out/k8-fastbuild/bin/x"),
+            "source collision",
+        );
         // Before cache creation: the analysis snapshot (on by default) sets
         // up its store in the cache directory before the analysis.
         let result = ws.run_with(&["build", "--jobs=8", ":aaa", ":bad"], &[SNAPSHOT_OFF]);

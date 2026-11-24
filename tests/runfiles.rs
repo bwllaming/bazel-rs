@@ -9,6 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 include!("support/explicit_modules.rs");
+include!("support/host_cpu.rs");
 
 struct Workspace(tempfile::TempDir);
 
@@ -1020,7 +1021,7 @@ check = rule(implementation = _check, attrs = {
     }
     assert_eq!(built.len(), 1);
     assert_eq!(
-        fs::read_to_string(&built[0].1).unwrap(),
+        as_k8(&fs::read_to_string(&built[0].1).unwrap()),
         "bazel-out/k8-opt-exec/bin/tool\n"
     );
 }

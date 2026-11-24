@@ -22,6 +22,7 @@ use base64::Engine as _;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 include!("support/explicit_modules.rs");
+include!("support/host_cpu.rs");
 
 fn manifest() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -122,7 +123,8 @@ impl Workspace {
         for path in paths {
             stderr = stderr.replace(&path, "<WS>");
         }
-        stderr
+        // The capture's host is Linux x86_64 (support/host_cpu.rs).
+        as_k8(&stderr)
     }
 }
 
@@ -182,8 +184,11 @@ fn outputs(stdout: &str) -> BTreeMap<String, Value> {
             let relative = path.split_once("/outputs/").map_or(path, |(_, rest)| rest);
             let mode = fs::metadata(path).unwrap().permissions().mode() & 0o777;
             (
-                relative.to_owned(),
-                serde_json::json!([format!("0o{mode:o}"), fs::read_to_string(path).unwrap()]),
+                as_k8(relative),
+                serde_json::json!([
+                    format!("0o{mode:o}"),
+                    as_k8(&fs::read_to_string(path).unwrap())
+                ]),
             )
         })
         .collect()

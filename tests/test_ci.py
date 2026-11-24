@@ -59,7 +59,19 @@ class CiTest(unittest.TestCase):
             self.assertIn(needle, workflow)
         # GitHub-hosted runners only (the repository is public).
         self.assertNotIn("self-hosted", workflow)
-        self.assertNotIn("--genuine", workflow)
+        self_build = workflow[workflow.index("\n  self-build:"):]
+        self.assertNotIn("--genuine", self_build)
+
+    def test_macos_job_compares_with_genuine_bazel(self):
+        # docs/MACOS.md: the host parity mini corpus on the macOS runner.
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        macos = workflow[workflow.index("\n  macos:"):workflow.index("\n  self-build:")]
+        for needle in (
+            "python3 scripts/host_parity.py fetch-genuine",
+            "python3 scripts/host_parity.py run --strict",
+            "--bazel-rs target/debug/bazel-rs",
+        ):
+            self.assertIn(needle, macos)
 
 
 if __name__ == "__main__":

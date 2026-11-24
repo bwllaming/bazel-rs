@@ -17,6 +17,8 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 include!("support/explicit_modules.rs");
+// The expectations name Linux x86_64's k8 output directories.
+include!("support/host_cpu.rs");
 
 struct Workspace(tempfile::TempDir);
 
@@ -79,7 +81,9 @@ impl Workspace {
 }
 
 fn stderr(output: &Output) -> String {
-    without_print_locations(&String::from_utf8_lossy(&output.stderr))
+    as_k8(&without_print_locations(&String::from_utf8_lossy(
+        &output.stderr,
+    )))
 }
 
 /// The reported outputs of a successful build: (label, root-relative path,
@@ -94,7 +98,7 @@ fn outputs(output: &Output) -> Vec<(String, String, String)> {
                 .split_once("/outputs/")
                 .map_or(path, |(_, relative)| relative);
             let contents = fs::read_to_string(path).unwrap_or_default();
-            (label.to_owned(), relative.to_owned(), contents)
+            (label.to_owned(), as_k8(relative), as_k8(&contents))
         })
         .collect()
 }
@@ -242,7 +246,7 @@ fn planned(ws: &Workspace, args: &[&str]) -> String {
     all.extend_from_slice(args);
     let output = ws.build(&all);
     assert!(output.status.success(), "{args:?}: {}", stderr(&output));
-    String::from_utf8_lossy(&output.stdout).into_owned()
+    as_k8(&String::from_utf8_lossy(&output.stdout))
 }
 
 // A workspace status file reached only through runfiles, an output group or
@@ -414,7 +418,7 @@ fn status_files_of_a_dependency_are_the_consumers_own() {
     assert!(planned.status.success(), "{}", stderr(&planned));
     assert_eq!(printed_status_report(&planned), status_report());
     assert_eq!(
-        String::from_utf8_lossy(&planned.stdout),
+        as_k8(&String::from_utf8_lossy(&planned.stdout)),
         "//pkg:status_report\tbazel-out/k8-fastbuild/bin/pkg/status_report.txt\n"
     );
     let built = ws.build_env(&[("BAZEL_RS_DUMP_ACTIONS", "1")], &["//pkg:status_report"]);

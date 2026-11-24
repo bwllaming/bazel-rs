@@ -10,6 +10,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 include!("support/explicit_modules.rs");
+include!("support/host_cpu.rs");
 
 struct Workspace(tempfile::TempDir);
 
@@ -71,7 +72,8 @@ impl Workspace {
 
     fn rejected(&self, target: &str, diagnostic: &str) {
         let output = self.run(&["build", target]);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        // The expectations name Linux x86_64's k8 (support/host_cpu.rs).
+        let stderr = as_k8(&String::from_utf8_lossy(&output.stderr));
         assert!(!output.status.success(), "unexpected success: {target}");
         assert!(stderr.contains(diagnostic), "{target}: {stderr}");
         assert!(!stderr.contains("panicked"), "{stderr}");
@@ -95,7 +97,8 @@ fn read(outputs: &[(String, PathBuf)], name: &str) -> String {
         .find(|(relative, _)| relative == name)
         .unwrap_or_else(|| panic!("no output {name} in {outputs:?}"))
         .1;
-    fs::read_to_string(path).unwrap()
+    // The expectations name Linux x86_64's k8 (support/host_cpu.rs).
+    as_k8(&fs::read_to_string(path).unwrap())
 }
 
 fn mode(outputs: &[(String, PathBuf)], name: &str) -> u32 {
