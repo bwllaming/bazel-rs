@@ -18,6 +18,7 @@ cquery_aspect_edges
 cquery_proto_format
 cquery_proto_streaming
 custom_rules
+darwin_sandbox
 definition_bzl_cache
 depset_identity_keys
 directory_expander

@@ -1,0 +1,66 @@
+{
+ "bazel": "9.3.1 (bazel-9.3.1-darwin-arm64, official release)",
+ "captured": "GitHub Actions macos-15 (arm64) runner: https://github.com/bwllaming/bazel-rs/actions/runs/45481431341",
+ "invocation": "scripts/host_parity.py run (case darwin_sandbox): `bazel --batch --ignore_all_rc_files --output_user_root=<private>` under `env -i PATH HOME TMPDIR LANG USER`",
+ "steps": [
+  {
+   "args": [
+    "build",
+    "//...",
+    "--sandbox_debug",
+    "--action_env=PROBE_WS={WORKSPACE}",
+    "--action_env=PROBE_EXECROOT={EXECROOT}"
+   ],
+   "exit": 0,
+   "probes": {
+    "block_network": "read_workspace=allowed\nread_zoneinfo=allowed\nwrite_workspace=denied\nwrite_execroot=denied\nwrite_spawn_root=allowed\nwrite_tmp=allowed\nwrite_private_var_tmp=allowed\nwrite_TMPDIR=allowed\nwrite_home=denied\nwrite_home_library_caches=allowed\nmkdir_users_shared=denied\nnetwork_remote=denied\nexec_ps=allowed\ncf_user_text_encoding=set\nsource_input_symlink=yes\ngenerated_input_symlink=yes\ndarwin_user_temp_dir=\n",
+    "default": "read_workspace=allowed\nread_zoneinfo=allowed\nwrite_workspace=denied\nwrite_execroot=denied\nwrite_spawn_root=allowed\nwrite_tmp=allowed\nwrite_private_var_tmp=allowed\nwrite_TMPDIR=allowed\nwrite_home=denied\nwrite_home_library_caches=allowed\nmkdir_users_shared=denied\nnetwork_remote=allowed\nexec_ps=allowed\ncf_user_text_encoding=set\nsource_input_symlink=yes\ngenerated_input_symlink=yes\ndarwin_user_temp_dir=\n",
+    "local": "read_workspace=allowed\nread_zoneinfo=allowed\nwrite_workspace=allowed\nwrite_execroot=allowed\nwrite_spawn_root=allowed\nwrite_tmp=allowed\nwrite_private_var_tmp=allowed\nwrite_TMPDIR=allowed\nwrite_home=allowed\nwrite_home_library_caches=allowed\nmkdir_users_shared=allowed\nnetwork_remote=allowed\nexec_ps=allowed\ncf_user_text_encoding=set\nsource_input_symlink=yes\ngenerated_input_symlink=no\ndarwin_user_temp_dir=\n",
+    "no_sandbox": "read_workspace=allowed\nread_zoneinfo=allowed\nwrite_workspace=allowed\nwrite_execroot=allowed\nwrite_spawn_root=allowed\nwrite_tmp=allowed\nwrite_private_var_tmp=allowed\nwrite_TMPDIR=allowed\nwrite_home=allowed\nwrite_home_library_caches=allowed\nmkdir_users_shared=allowed\nnetwork_remote=allowed\nexec_ps=allowed\ncf_user_text_encoding=set\nsource_input_symlink=yes\ngenerated_input_symlink=no\ndarwin_user_temp_dir=\n",
+    "requires_network": "read_workspace=allowed\nread_zoneinfo=allowed\nwrite_workspace=denied\nwrite_execroot=denied\nwrite_spawn_root=allowed\nwrite_tmp=allowed\nwrite_private_var_tmp=allowed\nwrite_TMPDIR=allowed\nwrite_home=denied\nwrite_home_library_caches=allowed\nmkdir_users_shared=denied\nnetwork_remote=allowed\nexec_ps=allowed\ncf_user_text_encoding=set\nsource_input_symlink=yes\ngenerated_input_symlink=yes\ndarwin_user_temp_dir=\n"
+   },
+   "processes": "INFO: processes: 4 darwin-sandbox, 2 local\n",
+   "profiles": "## profile 0\n(version 1)\n(debug deny)\n(allow default)\n(allow process-exec (with no-sandbox) (literal \"/bin/ps\"))\n(deny file-write*)\n(allow file-write*\n    (literal \"<SPAWN_DIR>/stats.out\")\n    (subpath \"<USER_HOME>/Library/Caches\")\n    (subpath \"<USER_HOME>/Library/Developer\")\n    (subpath \"<USER_HOME>/Library/Logs\")\n    (subpath \"/dev\")\n    (subpath \"/private/tmp\")\n    (subpath \"<DARWIN_USER_CACHE_DIR>\")\n    (subpath \"<DARWIN_USER_TEMP_DIR>\")\n    (subpath \"/private/var/tmp\")\n    (subpath \"<SPAWN_ROOT>\")\n    (subpath \"<TMP>\")\n)\n## profile 1\n(version 1)\n(debug deny)\n(allow default)\n(allow process-exec (with no-sandbox) (literal \"/bin/ps\"))\n(deny file-write*)\n(allow file-write*\n    (literal \"<SPAWN_DIR>/stats.out\")\n    (subpath \"<USER_HOME>/Library/Caches\")\n    (subpath \"<USER_HOME>/Library/Developer\")\n    (subpath \"<USER_HOME>/Library/Logs\")\n    (subpath \"/dev\")\n    (subpath \"/private/tmp\")\n    (subpath \"<DARWIN_USER_CACHE_DIR>\")\n    (subpath \"<DARWIN_USER_TEMP_DIR>\")\n    (subpath \"/private/var/tmp\")\n    (subpath \"<SPAWN_ROOT>\")\n    (subpath \"<TMP>\")\n)\n## profile 2\n(version 1)\n(debug deny)\n(allow default)\n(allow process-exec (with no-sandbox) (literal \"/bin/ps\"))\n(deny file-write*)\n(allow file-write*\n    (literal \"<SPAWN_DIR>/stats.out\")\n    (subpath \"<USER_HOME>/Library/Caches\")\n    (subpath \"<USER_HOME>/Library/Developer\")\n    (subpath \"<USER_HOME>/Library/Logs\")\n    (subpath \"/dev\")\n    (subpath \"/private/tmp\")\n    (subpath \"<DARWIN_USER_CACHE_DIR>\")\n    (subpath \"<DARWIN_USER_TEMP_DIR>\")\n    (subpath \"/private/var/tmp\")\n    (subpath \"<SPAWN_ROOT>\")\n    (subpath \"<TMP>\")\n)\n## profile 3\n(version 1)\n(debug deny)\n(allow default)\n(allow process-exec (with no-sandbox) (literal \"/bin/ps\"))\n(deny network*)\n(allow network-inbound (local ip \"localhost:*\"))\n(allow network* (remote ip \"localhost:*\"))\n(allow network* (remote unix-socket))\n(deny file-write*)\n(allow file-write*\n    (literal \"<SPAWN_DIR>/stats.out\")\n    (subpath \"<USER_HOME>/Library/Caches\")\n    (subpath \"<USER_HOME>/Library/Developer\")\n    (subpath \"<USER_HOME>/Library/Logs\")\n    (subpath \"/dev\")\n    (subpath \"/private/tmp\")\n    (subpath \"<DARWIN_USER_CACHE_DIR>\")\n    (subpath \"<DARWIN_USER_TEMP_DIR>\")\n    (subpath \"/private/var/tmp\")\n    (subpath \"<SPAWN_ROOT>\")\n    (subpath \"<TMP>\")\n)\n"
+  },
+  {
+   "args": [
+    "build",
+    "//...",
+    "--sandbox_default_allow_network=false",
+    "--action_env=PROBE_RUN=2",
+    "--action_env=PROBE_WS={WORKSPACE}",
+    "--action_env=PROBE_EXECROOT={EXECROOT}"
+   ],
+   "exit": 0,
+   "probes": {
+    "block_network": "read_workspace=allowed\nread_zoneinfo=allowed\nwrite_workspace=denied\nwrite_execroot=denied\nwrite_spawn_root=allowed\nwrite_tmp=allowed\nwrite_private_var_tmp=allowed\nwrite_TMPDIR=allowed\nwrite_home=denied\nwrite_home_library_caches=allowed\nmkdir_users_shared=denied\nnetwork_remote=denied\nexec_ps=allowed\ncf_user_text_encoding=set\nsource_input_symlink=yes\ngenerated_input_symlink=yes\ndarwin_user_temp_dir=\n",
+    "default": "read_workspace=allowed\nread_zoneinfo=allowed\nwrite_workspace=denied\nwrite_execroot=denied\nwrite_spawn_root=allowed\nwrite_tmp=allowed\nwrite_private_var_tmp=allowed\nwrite_TMPDIR=allowed\nwrite_home=denied\nwrite_home_library_caches=allowed\nmkdir_users_shared=denied\nnetwork_remote=denied\nexec_ps=allowed\ncf_user_text_encoding=set\nsource_input_symlink=yes\ngenerated_input_symlink=yes\ndarwin_user_temp_dir=\n",
+    "local": "read_workspace=allowed\nread_zoneinfo=allowed\nwrite_workspace=allowed\nwrite_execroot=allowed\nwrite_spawn_root=allowed\nwrite_tmp=allowed\nwrite_private_var_tmp=allowed\nwrite_TMPDIR=allowed\nwrite_home=allowed\nwrite_home_library_caches=allowed\nmkdir_users_shared=allowed\nnetwork_remote=allowed\nexec_ps=allowed\ncf_user_text_encoding=set\nsource_input_symlink=yes\ngenerated_input_symlink=no\ndarwin_user_temp_dir=\n",
+    "no_sandbox": "read_workspace=allowed\nread_zoneinfo=allowed\nwrite_workspace=allowed\nwrite_execroot=allowed\nwrite_spawn_root=allowed\nwrite_tmp=allowed\nwrite_private_var_tmp=allowed\nwrite_TMPDIR=allowed\nwrite_home=allowed\nwrite_home_library_caches=allowed\nmkdir_users_shared=allowed\nnetwork_remote=allowed\nexec_ps=allowed\ncf_user_text_encoding=set\nsource_input_symlink=yes\ngenerated_input_symlink=no\ndarwin_user_temp_dir=\n",
+    "requires_network": "read_workspace=allowed\nread_zoneinfo=allowed\nwrite_workspace=denied\nwrite_execroot=denied\nwrite_spawn_root=allowed\nwrite_tmp=allowed\nwrite_private_var_tmp=allowed\nwrite_TMPDIR=allowed\nwrite_home=denied\nwrite_home_library_caches=allowed\nmkdir_users_shared=denied\nnetwork_remote=allowed\nexec_ps=allowed\ncf_user_text_encoding=set\nsource_input_symlink=yes\ngenerated_input_symlink=yes\ndarwin_user_temp_dir=\n"
+   },
+   "processes": "INFO: processes: 4 darwin-sandbox, 2 local\n"
+  },
+  {
+   "args": [
+    "build",
+    "//...",
+    "--keep_going",
+    "--sandbox_writable_path=/Users/Shared",
+    "--sandbox_block_path=/usr/share/zoneinfo",
+    "--action_env=PROBE_RUN=3",
+    "--action_env=PROBE_WS={WORKSPACE}",
+    "--action_env=PROBE_EXECROOT={EXECROOT}"
+   ],
+   "exit": 0,
+   "probes": {
+    "block_network": "read_workspace=allowed\nread_zoneinfo=denied\nwrite_workspace=denied\nwrite_execroot=denied\nwrite_spawn_root=allowed\nwrite_tmp=allowed\nwrite_private_var_tmp=allowed\nwrite_TMPDIR=allowed\nwrite_home=denied\nwrite_home_library_caches=allowed\nmkdir_users_shared=allowed\nnetwork_remote=denied\nexec_ps=allowed\ncf_user_text_encoding=set\nsource_input_symlink=yes\ngenerated_input_symlink=yes\ndarwin_user_temp_dir=\n",
+    "default": "read_workspace=allowed\nread_zoneinfo=denied\nwrite_workspace=denied\nwrite_execroot=denied\nwrite_spawn_root=allowed\nwrite_tmp=allowed\nwrite_private_var_tmp=allowed\nwrite_TMPDIR=allowed\nwrite_home=denied\nwrite_home_library_caches=allowed\nmkdir_users_shared=allowed\nnetwork_remote=allowed\nexec_ps=allowed\ncf_user_text_encoding=set\nsource_input_symlink=yes\ngenerated_input_symlink=yes\ndarwin_user_temp_dir=\n",
+    "local": "read_workspace=allowed\nread_zoneinfo=allowed\nwrite_workspace=allowed\nwrite_execroot=allowed\nwrite_spawn_root=allowed\nwrite_tmp=allowed\nwrite_private_var_tmp=allowed\nwrite_TMPDIR=allowed\nwrite_home=allowed\nwrite_home_library_caches=allowed\nmkdir_users_shared=allowed\nnetwork_remote=allowed\nexec_ps=allowed\ncf_user_text_encoding=set\nsource_input_symlink=yes\ngenerated_input_symlink=no\ndarwin_user_temp_dir=\n",
+    "no_sandbox": "read_workspace=allowed\nread_zoneinfo=allowed\nwrite_workspace=allowed\nwrite_execroot=allowed\nwrite_spawn_root=allowed\nwrite_tmp=allowed\nwrite_private_var_tmp=allowed\nwrite_TMPDIR=allowed\nwrite_home=allowed\nwrite_home_library_caches=allowed\nmkdir_users_shared=allowed\nnetwork_remote=allowed\nexec_ps=allowed\ncf_user_text_encoding=set\nsource_input_symlink=yes\ngenerated_input_symlink=no\ndarwin_user_temp_dir=\n",
+    "requires_network": "read_workspace=allowed\nread_zoneinfo=denied\nwrite_workspace=denied\nwrite_execroot=denied\nwrite_spawn_root=allowed\nwrite_tmp=allowed\nwrite_private_var_tmp=allowed\nwrite_TMPDIR=allowed\nwrite_home=denied\nwrite_home_library_caches=allowed\nmkdir_users_shared=allowed\nnetwork_remote=allowed\nexec_ps=allowed\ncf_user_text_encoding=set\nsource_input_symlink=yes\ngenerated_input_symlink=yes\ndarwin_user_temp_dir=\n"
+   },
+   "processes": "INFO: processes: 4 darwin-sandbox, 2 local\n"
+  }
+ ]
+}
