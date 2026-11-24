@@ -1321,6 +1321,66 @@ fn explicit_java_test_deps<'v>(surface: &CtxSurface, _heap: Heap<'v>) -> anyhow:
     ))
 }
 
+/// A configured boolean JavaOption (crate::configuration::VALUE_OPTIONS).
+fn java_flag(surface: &CtxSurface, name: &str) -> bool {
+    surface.option_value(name) == crate::configuration::OptionValue::Bool(true)
+}
+
+/// JavaConfiguration.useHeaderCompilation (`--java_header_compilation`).
+fn use_header_compilation<'v>(surface: &CtxSurface, _heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    Ok(Value::new_bool(java_flag(
+        surface,
+        "java_header_compilation",
+    )))
+}
+
+/// JavaConfiguration.getUseIjars (`--use_ijars`).
+fn use_ijars<'v>(surface: &CtxSurface, _heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    Ok(Value::new_bool(java_flag(surface, "use_ijars")))
+}
+
+/// JavaConfiguration.getGenerateJavaDeps (`--java_deps`).
+fn generate_java_deps<'v>(surface: &CtxSurface, _heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    Ok(Value::new_bool(java_flag(surface, "java_deps")))
+}
+
+/// JavaConfiguration.disallowJavaImportExports
+/// (`--incompatible_disallow_java_import_exports`).
+fn disallow_java_import_exports<'v>(
+    surface: &CtxSurface,
+    _heap: Heap<'v>,
+) -> anyhow::Result<Value<'v>> {
+    Ok(Value::new_bool(java_flag(
+        surface,
+        "incompatible_disallow_java_import_exports",
+    )))
+}
+
+/// JavaConfiguration.starlarkOneVersionEnforcementLevel (:373-375): the
+/// `--experimental_one_version_enforcement` constant's name.
+fn one_version_enforcement_level<'v>(
+    surface: &CtxSurface,
+    heap: Heap<'v>,
+) -> anyhow::Result<Value<'v>> {
+    Ok(heap.alloc(
+        surface
+            .option_value("experimental_one_version_enforcement")
+            .to_string(),
+    ))
+}
+
+/// JavaConfiguration.enforceOneVersionOnJavaTests
+/// (`--one_version_enforcement_on_java_tests`).
+fn one_version_enforcement_on_java_tests<'v>(
+    surface: &CtxSurface,
+    _heap: Heap<'v>,
+) -> anyhow::Result<Value<'v>> {
+    Ok(Value::new_bool(java_flag(
+        surface,
+        "one_version_enforcement_on_java_tests",
+    )))
+}
+
 fn java_plugins<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
     Ok(heap.alloc(
         surface
@@ -1458,7 +1518,7 @@ fn members(kind: Kind) -> &'static [(&'static str, Member)] {
                 "disallow_java_import_exports",
                 Method {
                     private: true,
-                    value: V::Bool(false),
+                    value: V::Dyn(disallow_java_import_exports),
                 },
             ),
             (
@@ -1473,14 +1533,17 @@ fn members(kind: Kind) -> &'static [(&'static str, Member)] {
                 "generate_java_deps",
                 Method {
                     private: true,
-                    value: V::Bool(true),
+                    value: V::Dyn(generate_java_deps),
                 },
             ),
             ("multi_release_deploy_jars", Field(V::Bool(true))),
-            ("one_version_enforcement_level", Field(V::Str("OFF"))),
+            (
+                "one_version_enforcement_level",
+                Field(V::Dyn(one_version_enforcement_level)),
+            ),
             (
                 "one_version_enforcement_on_java_tests",
-                Field(V::Bool(true)),
+                Field(V::Dyn(one_version_enforcement_on_java_tests)),
             ),
             ("plugins", Field(V::Dyn(java_plugins))),
             (
@@ -1497,7 +1560,7 @@ fn members(kind: Kind) -> &'static [(&'static str, Member)] {
                 "use_header_compilation",
                 Method {
                     private: true,
-                    value: V::Bool(true),
+                    value: V::Dyn(use_header_compilation),
                 },
             ),
             (
@@ -1511,7 +1574,7 @@ fn members(kind: Kind) -> &'static [(&'static str, Member)] {
                 "use_ijars",
                 Method {
                     private: true,
-                    value: V::Bool(true),
+                    value: V::Dyn(use_ijars),
                 },
             ),
         ],

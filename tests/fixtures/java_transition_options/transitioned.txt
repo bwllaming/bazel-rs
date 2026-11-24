@@ -1,0 +1,13 @@
+bin=bazel-out/k8-fastbuild-ST-84524cf15679/bin
+one_version=OFF
+on_tests=False
+strict=default
+launcher=@@//:launcher
+flags=no_header,no_ijars,no_deps,no_tests,launcher_set
+tool=bazel-out/p-opt-exec-ST-e2969516220c/bin/exec_probe.txt
+tool.bin=bazel-out/p-opt-exec-ST-e2969516220c/bin
+tool.one_version=OFF
+tool.on_tests=False
+tool.strict=default
+tool.launcher=@@//:host_launcher
+tool.flags=no_header,no_ijars,no_deps,no_tests

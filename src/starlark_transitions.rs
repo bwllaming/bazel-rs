@@ -144,6 +144,16 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     // config_setting and transitions read (B68).
     "compiler",
     "host_compiler",
+    // The JavaOptions rules_java's analysis tests transition on (B67).
+    "experimental_strict_java_deps",
+    "java_header_compilation",
+    "use_ijars",
+    "java_deps",
+    "experimental_one_version_enforcement",
+    "one_version_enforcement_on_java_tests",
+    "incompatible_disallow_java_import_exports",
+    "java_launcher",
+    "host_java_launcher",
 ];
 
 /// Table-driven options (crate::configuration::VALUE_OPTIONS) read and
@@ -219,6 +229,33 @@ const GENERIC_VALUE_OPTIONS: &[(&str, &str)] = &[
     (
         "apple_generate_dsym",
         "rules.cpp.CppOptions.appleGenerateDsym",
+    ),
+    (
+        "experimental_strict_java_deps",
+        "rules.java.JavaOptions.strictJavaDeps",
+    ),
+    (
+        "java_header_compilation",
+        "rules.java.JavaOptions.headerCompilation",
+    ),
+    ("use_ijars", "rules.java.JavaOptions.useIjars"),
+    ("java_deps", "rules.java.JavaOptions.javaDeps"),
+    (
+        "experimental_one_version_enforcement",
+        "rules.java.JavaOptions.enforceOneVersion",
+    ),
+    (
+        "one_version_enforcement_on_java_tests",
+        "rules.java.JavaOptions.enforceOneVersionOnJavaTests",
+    ),
+    (
+        "incompatible_disallow_java_import_exports",
+        "rules.java.JavaOptions.disallowJavaImportExports",
+    ),
+    ("java_launcher", "rules.java.JavaOptions.javaLauncher"),
+    (
+        "host_java_launcher",
+        "rules.java.JavaOptions.hostJavaLauncher",
     ),
 ];
 

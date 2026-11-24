@@ -1,0 +1,6 @@
+bin=bazel-out/k8-fastbuild-ST-c2d5fc73b4ff/bin
+one_version=WARNING
+on_tests=False
+strict=warn
+launcher=None
+flags=one_version_warning,no_tests,no_exports,warn

@@ -29,6 +29,8 @@ tests/fixtures/aspect_rule_parameters/workspace
 tests/fixtures/aspect_subrules/workspace
 tests/fixtures/aspect_toolchains/workspace
 tests/fixtures/aspect_toolchains_aspects/workspace
+tests/fixtures/aspect_transition_attribute/rule_transition
+tests/fixtures/aspect_transition_attribute/workspace
 tests/fixtures/aspects/workspace
 tests/fixtures/basic
 tests/fixtures/bazel_tools_external/workspace

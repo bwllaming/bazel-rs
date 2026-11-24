@@ -1,0 +1,6 @@
+bin=bazel-out/k8-fastbuild/bin
+one_version=OFF
+on_tests=True
+strict=default
+launcher=None
+flags=

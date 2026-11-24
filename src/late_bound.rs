@@ -87,7 +87,8 @@ pub(crate) fn resolve(
         // attribute's static (query-time) default, not the analysis value.
         ("apple", "xcode_config_label") => Some("@@bazel_tools//tools/cpp:host_xcodes".to_owned()),
         // JavaConfiguration (rules/java/JavaConfiguration.java):
-        //   launcher :236-243 (--java_launcher, JavaOptions.java:212-213 default "null"),
+        //   launcher :236-243 (--java_launcher, JavaOptions.java:212-213 default "null";
+        //   a configuration option, crate::configuration::VALUE_OPTIONS),
         //   proguard_top :246-253 (--proguard_top, JavaOptions.java:224-225 default "null"),
         //   java_toolchain_bytecode_optimizer :318-329 and
         //   local_java_optimization_configuration :332-340 are null unless
@@ -95,10 +96,10 @@ pub(crate) fn resolve(
         //   bytecode_optimizer :304-311 is the label of the single
         //   --bytecode_optimizers entry, default "Proguard" without a label
         //   (:133-147; JavaOptions.java:239-246).
+        ("java", "launcher") => label("java_launcher"),
         (
             "java",
-            "launcher"
-            | "proguard_top"
+            "proguard_top"
             | "bytecode_optimizer"
             | "java_toolchain_bytecode_optimizer"
             | "local_java_optimization_configuration",

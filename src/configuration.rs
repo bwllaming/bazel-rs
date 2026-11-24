@@ -489,6 +489,8 @@ pub struct ValueOption {
 /// StrictDepsConverter (:324-329) is an EnumConverter matching it
 /// case-insensitively; config_setting diffs print it upper-case.
 const STRICT_DEPS_MODES: &[&str] = &["OFF", "WARN", "ERROR", "STRICT", "DEFAULT"];
+/// JavaConfiguration.OneVersionEnforcementLevel (rules/java/JavaConfiguration.java:60-73).
+const ONE_VERSION_ENFORCEMENT_LEVELS: &[&str] = &["OFF", "WARNING", "ERROR"];
 
 /// The table-driven options (docs/CONFIGURATION.md "Value options"). Each
 /// row was checked against genuine Bazel 9.3.0 (paired capture
@@ -609,6 +611,155 @@ pub const VALUE_OPTIONS: &[ValueOption] = &[
         command_line: true,
         exec: ExecValue::Propagate,
         exec_source: "builtin_exec_platforms.bzl:369",
+    },
+    // The JavaOptions rules_java reads through `ctx.fragments.java`
+    // (JavaConfiguration, rules/java/JavaConfiguration.java) and its analysis
+    // tests transition on (B67): JavaOptions.headerCompilation
+    // (`use_header_compilation()`), useIjars (`use_ijars()`), javaDeps
+    // (`generate_java_deps()`), enforceOneVersion
+    // (`one_version_enforcement_level`), enforceOneVersionOnJavaTests and
+    // disallowJavaImportExports (`disallow_java_import_exports()`), all
+    // propagated to exec configurations (builtin_exec_platforms.bzl:362-392).
+    ValueOption {
+        option: OptionDef {
+            name: "java_header_compilation",
+            old_name: Some("experimental_java_header_compilation"),
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "true",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/java/JavaOptions.java:104-112",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:365",
+    },
+    ValueOption {
+        option: OptionDef {
+            name: "use_ijars",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "true",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/java/JavaOptions.java:93-103",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:364",
+    },
+    ValueOption {
+        option: OptionDef {
+            name: "java_deps",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "true",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/java/JavaOptions.java:113-120",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:366",
+    },
+    ValueOption {
+        option: OptionDef {
+            name: "experimental_one_version_enforcement",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Enum {
+                type_name: "Enforcement level for Java One Version violations",
+                values: ONE_VERSION_ENFORCEMENT_LEVELS,
+            },
+            default: "OFF",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/java/JavaOptions.java:307-317",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:371",
+    },
+    ValueOption {
+        option: OptionDef {
+            name: "one_version_enforcement_on_java_tests",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "true",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/java/JavaOptions.java:319-327",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:372",
+    },
+    ValueOption {
+        option: OptionDef {
+            name: "incompatible_disallow_java_import_exports",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "false",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/java/JavaOptions.java:414-421",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:388",
+    },
+    // JavaOptions.javaLauncher/hostJavaLauncher (`--java_launcher`,
+    // `--host_java_launcher`, EmptyToNullLabelConverter): the java_binary
+    // rules' late-bound `_java_launcher` (configuration_field("java",
+    // "launcher"), JavaConfiguration.getJavaLauncherLabel :236-243). The exec
+    // transition sets `--java_launcher` to `--host_java_launcher`
+    // (builtin_exec_platforms.bzl:357, NativeOptions::exec_values).
+    ValueOption {
+        option: OptionDef {
+            name: "java_launcher",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::NullableLabel {
+                empty_is_null: true,
+            },
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/java/JavaOptions.java:211-222",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:357 (host_java_launcher)",
+    },
+    ValueOption {
+        option: OptionDef {
+            name: "host_java_launcher",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::NullableLabel {
+                empty_is_null: true,
+            },
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/java/JavaOptions.java:202-209",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:383",
     },
     // CoreOptions.enableRunfiles (`--enable_runfiles`, a TriState, default
     // auto): config_setting matches the configured value, which stays AUTO
@@ -2507,7 +2658,12 @@ impl NativeOptions {
         }
         // CppOptions' exec `func` (builtin_exec_platforms.bzl:336-338):
         // `--grte_top` = `--host_grte_top`, `--compiler` = `--host_compiler`.
-        for (target, host) in [("grte_top", "host_grte_top"), ("compiler", "host_compiler")] {
+        // JavaOptions' (:357): `--java_launcher` = `--host_java_launcher`.
+        for (target, host) in [
+            ("grte_top", "host_grte_top"),
+            ("compiler", "host_compiler"),
+            ("java_launcher", "host_java_launcher"),
+        ] {
             if let (Some(target), Some(host)) = (value_option(target), self.values.get(host)) {
                 exec.set_value(target, host.clone());
             }
@@ -4347,6 +4503,14 @@ mod tests {
                 "strict_proto_deps",
                 "strict_public_imports",
                 "experimental_strict_java_deps",
+                "java_header_compilation",
+                "use_ijars",
+                "java_deps",
+                "experimental_one_version_enforcement",
+                "one_version_enforcement_on_java_tests",
+                "incompatible_disallow_java_import_exports",
+                "java_launcher",
+                "host_java_launcher",
                 "enable_runfiles",
                 "incompatible_python_disallow_native_rules",
                 "incompatible_default_to_explicit_init_py",
