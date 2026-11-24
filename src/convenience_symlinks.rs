@@ -242,6 +242,25 @@ pub fn update(configs: &TopLevelConfigs) {
     *outcome = Some(result);
 }
 
+/// [`update`] after a failed analysis (BuildTool's finally block: the
+/// top-level configuration, no analyzed target), when the output base
+/// exists: a first command whose analysis fails creates no output base
+/// (natively nothing is written before execution; Bazel's output base
+/// always exists).
+pub fn update_after_failed_analysis(top: &str) {
+    let Some(settings) = SETTINGS.get() else {
+        return;
+    };
+    // snapshot-unrecorded: after planning; never an input of analysis.
+    if !std::fs::metadata(&settings.output_base).is_ok_and(|metadata| metadata.is_dir()) {
+        return;
+    }
+    update(&TopLevelConfigs {
+        top: top.to_owned(),
+        targets: Vec::new(),
+    });
+}
+
 /// OutputDirectoryLinksUtils.createOutputDirectoryLinks.
 fn create_links(settings: &Settings, configs: &TopLevelConfigs) -> Outcome {
     let execution_root = crate::output_tree::execution_root_below(&settings.output_base);

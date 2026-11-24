@@ -169,8 +169,7 @@ fn the_status_area_shows_on_a_terminal_and_nowhere_else() {
         expected
             .windows(2)
             .any(|lines| lines[0] == "Target //:top up-to-date:"
-                && lines[1].starts_with("  <cache>/worktrees/")
-                && lines[1].ends_with("/execroot/_main/bazel-out/k8-fastbuild/bin/top.txt")),
+                && lines[1] == "  bazel-bin/top.txt"),
         "{expected:#?}"
     );
     assert!(

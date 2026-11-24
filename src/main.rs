@@ -2384,12 +2384,7 @@ fn update_convenience_symlinks(planned: &Planned) {
             bazel_rs::convenience_symlinks::update(&request.bep.top_level_configs());
         }
         (Err(_), Some(top)) => {
-            bazel_rs::convenience_symlinks::update(
-                &bazel_rs::convenience_symlinks::TopLevelConfigs {
-                    top: top.clone(),
-                    targets: Vec::new(),
-                },
-            );
+            bazel_rs::convenience_symlinks::update_after_failed_analysis(top);
         }
         _ => {}
     }

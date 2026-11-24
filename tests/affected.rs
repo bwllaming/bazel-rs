@@ -127,7 +127,7 @@ genrule(name = 'c', srcs = ['c.txt'], outs = ['c.out'], cmd = 'cat $< > $@')
 fn affected_targets_between_two_commits() {
     let repo = Repo::new();
     let first = repo.commit(&[
-        (".gitignore", "bazel-rs-out\nMODULE.bazel.lock\n"),
+        (".gitignore", "bazel-rs-out\nMODULE.bazel.lock\n/bazel-*\n"),
         ("MODULE.bazel", "module(name = 'main')\n"),
         ("BUILD.bazel", BUILD),
         ("a.txt", "a\n"),
@@ -177,7 +177,7 @@ fn a_test_property_affects_its_test() {
         )
     };
     let first = repo.commit(&[
-        (".gitignore", "bazel-rs-out\nMODULE.bazel.lock\n"),
+        (".gitignore", "bazel-rs-out\nMODULE.bazel.lock\n/bazel-*\n"),
         ("MODULE.bazel", "module(name = 'main')\n"),
         ("defs.bzl", DEFS),
         ("BUILD.bazel", &test("small")),
@@ -209,7 +209,7 @@ impl Repo {
 }
 
 const PACKAGES: &[(&str, &str)] = &[
-    (".gitignore", "bazel-rs-out\nMODULE.bazel.lock\n"),
+    (".gitignore", "bazel-rs-out\nMODULE.bazel.lock\n/bazel-*\n"),
     ("MODULE.bazel", "module(name = 'main')\n"),
     (".bazelrc", "build --run_under=//tools:runner\n"),
     (
@@ -535,7 +535,7 @@ noisy(name = 'n', src = 'a.txt')
 filegroup(name = 'uses_old', srcs = [':n'], data = ['//dep:old'])
 ";
     let first = repo.commit(&[
-        (".gitignore", "bazel-rs-out\nMODULE.bazel.lock\n"),
+        (".gitignore", "bazel-rs-out\nMODULE.bazel.lock\n/bazel-*\n"),
         ("MODULE.bazel", "module(name = 'main')\n"),
         ("defs.bzl", defs),
         ("BUILD.bazel", build),

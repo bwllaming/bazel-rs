@@ -160,7 +160,7 @@ fn expected(name: &str) -> (i32, &'static str, &'static str) {
         "run" => (
             0,
             "bin-stdout\n",
-            "//:bin\t<WS>/cache/actions/<H>/outputs/bazel-out/k8-fastbuild/bin/bin.sh\nTarget //:bin up-to-date:\n  <WS>/cache/worktrees/<W>/execroot/_main/bazel-out/k8-fastbuild/bin/bin.sh\nbin-stderr\n",
+            "//:bin\t<WS>/cache/actions/<H>/outputs/bazel-out/k8-fastbuild/bin/bin.sh\nTarget //:bin up-to-date:\n  bazel-bin/bin.sh\nbin-stderr\n",
         ),
         "query" => (
             0,
@@ -170,7 +170,7 @@ fn expected(name: &str) -> (i32, &'static str, &'static str) {
         "fetch" => (
             0,
             "//:fetched_copy\t<WS>/cache/actions/<H>/outputs/bazel-out/k8-fastbuild/bin/fetched_copy.txt\n",
-            "repo-execute-stdout\nrepo-execute-stderr\nTarget //:fetched_copy up-to-date:\n  <WS>/cache/worktrees/<W>/execroot/_main/bazel-out/k8-fastbuild/bin/fetched_copy.txt\n",
+            "repo-execute-stdout\nrepo-execute-stderr\nTarget //:fetched_copy up-to-date:\n  bazel-bin/fetched_copy.txt\n",
         ),
         "info" => (0, "<WS>\n", ""),
         other => panic!("unknown scenario {other}"),

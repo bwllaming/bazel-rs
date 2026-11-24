@@ -33,7 +33,12 @@ fn copy_tree(from: &Path, to: &Path) {
     for entry in fs::read_dir(from).unwrap() {
         let entry = entry.unwrap();
         let target = to.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
+        let kind = entry.file_type().unwrap();
+        if kind.is_symlink() && entry.file_name().to_string_lossy().starts_with("bazel-") {
+            // A built workspace's convenience symlinks: not copied.
+            continue;
+        }
+        if kind.is_dir() {
             copy_tree(&entry.path(), &target);
         } else {
             fs::copy(entry.path(), target).unwrap();

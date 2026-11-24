@@ -45,7 +45,7 @@ impl Repo {
         repo.write(
             &repo.main(),
             ".gitignore",
-            "bazel-rs-out\nMODULE.bazel.lock\n",
+            "bazel-rs-out\nMODULE.bazel.lock\n/bazel-*\n",
         );
         for (path, content) in files {
             repo.write(&repo.main(), path, content);

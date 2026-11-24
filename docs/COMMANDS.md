@@ -155,10 +155,12 @@ worktree's links name its own output tree.
   contain requested targets' outputs. Those targets self-transition to
   multiple distinct configurations`.
 * When: once the analysis configured the top-level targets, before
-  execution — also when an action or the analysis fails; not under
-  `--nobuild` (so not for `fetch TARGET...`), not when the target patterns
-  fail to load. `query`, `cquery`, `aquery`, `info` and `fetch` leave them
-  alone.
+  execution — also when an action fails or the analysis fails (then into the
+  top-level configuration, and only when the output base exists: natively a
+  first command whose analysis fails writes nothing, where Bazel's output
+  base always exists); not under `--nobuild` (so not for `fetch
+  TARGET...`), not when the target patterns fail to load. `query`,
+  `cquery`, `aquery`, `info` and `fetch` leave them alone.
 * A link already pointing at its target is left alone, any other symlink
   (genuine Bazel's, a stale one) is replaced; a real file or directory of
   that name is never touched: `WARNING: failed to create one or more
