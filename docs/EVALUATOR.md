@@ -256,7 +256,14 @@ lock is held across a body, a fetch or Starlark.
   `wanted` become `Deferred` instead of running. `boost(key, p)` wants a
   node and (transitively) what it waits for, un-defers them, and pushes
   it on the boost heap that every job pops (lowest `p`) before its own
-  nodes; a wanted node's dependencies inherit `wanted` when it parks.
+  nodes; a wanted node's dependencies inherit `wanted` when it parks,
+  when it helps them (`help_first`: a fresh dependency it runs in place)
+  and when it hints them — otherwise its attempt set each fresh
+  dependency aside and restarted once per dependency it needs one after
+  another (a filegroup's sources: ~/code's fail-fast exit after a package
+  error took 300-1200 s instead of ~15 s; `tests/eval_fail_fast.rs`, the
+  hidden hook `BAZEL_RS_EVAL_TEST_MAX_ATTEMPTS=<n>` reports a node's `n`th
+  pool attempt).
   The inline driver ignores the mode (it is the DFS itself).
 - **Panics** in a body propagate out of `evaluate` (no hang: the job's
   outstanding count is released by a drop guard).

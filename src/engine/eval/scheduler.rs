@@ -1560,6 +1560,12 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         }
         let key = self.graph.key(id);
         let attempt_number = entry.attempts.fetch_add(1, Ordering::Relaxed);
+        if max_attempts().is_some_and(|max| attempt_number + 1 == max) {
+            eprintln!(
+                "bazel-rs: BAZEL_RS_EVAL_TEST_MAX_ATTEMPTS: {key:?} started pool attempt {}",
+                attempt_number + 1
+            );
+        }
         self.jitter(id, attempt_number);
         let attempt_seq = self.repo_seq.load(Ordering::Acquire);
         assert_no_locks("a node body");
@@ -1821,6 +1827,20 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
     }
 }
 
+/// `BAZEL_RS_EVAL_TEST_MAX_ATTEMPTS=<n>` (a hidden test hook): a node's
+/// `n`th pool attempt is reported on stderr (once per node), so a test can
+/// assert that no node restarts once per dependency (frontier-only mode's
+/// help: [`PoolCx::help`]).
+fn max_attempts() -> Option<u32> {
+    static MAX: std::sync::LazyLock<Option<u32>> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a test hook reporting attempts; it changes nothing the analysis computes.
+        std::env::var("BAZEL_RS_EVAL_TEST_MAX_ATTEMPTS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+    });
+    *MAX
+}
+
 /// How long the coordinator waits for pool work before it does its idle
 /// work ([`Bodies::idle`]).
 const IDLE_MILLIS: u64 = 2;
@@ -2001,6 +2021,15 @@ struct PoolCx<'r, 's, 'b, B: Bodies> {
 }
 
 impl<'s, B: Bodies> PoolCx<'_, 's, '_, B> {
+    /// Whether this attempt's node is wanted (frontier-only mode).
+    fn wanted(&self) -> bool {
+        self.evaluator
+            .graph
+            .entry(self.id)
+            .wanted
+            .load(Ordering::SeqCst)
+    }
+
     /// Claim `id` if nobody runs it and run it here (help first).
     fn help(&self, id: NodeId) {
         let evaluator = self.evaluator;
@@ -2009,6 +2038,13 @@ impl<'s, B: Bodies> PoolCx<'_, 's, '_, B> {
             return;
         }
         let entry = evaluator.graph.entry(id);
+        // Frontier-only mode: what a wanted node needs is wanted (as when
+        // it parks on it), before the claim, so the attempt runs it here
+        // instead of setting it aside (`run_one`) and restarting once per
+        // dependency it needs one after another (a filegroup's sources).
+        if evaluator.frontier.load(Ordering::SeqCst) && self.wanted() {
+            evaluator.want(Some(self.scope), id);
+        }
         let claimed = entry.transition(State::Fresh, State::Queued)
             || entry.state() == State::Queued
             || (entry.state() == State::Deferred && {
@@ -2068,12 +2104,18 @@ impl<B: Bodies> Cx for PoolCx<'_, '_, '_, B> {
 
     fn hint(&mut self, keys: &[NodeKey]) {
         let evaluator = self.evaluator;
+        // Frontier-only mode: a wanted node's hints are wanted (it needs
+        // them soon); otherwise they would only be set aside.
+        let wanted = evaluator.frontier.load(Ordering::SeqCst) && self.wanted();
         let fresh: Vec<NodeId> = keys
             .iter()
             .map(|key| evaluator.graph.intern(key))
             .filter(|&id| {
                 if id != self.id {
                     evaluator.inherit(self.id, id);
+                    if wanted {
+                        evaluator.want(Some(self.scope), id);
+                    }
                 }
                 id != self.id
                     && evaluator

@@ -641,6 +641,46 @@ fn the_first_error_without_keep_going_turns_frontier_only() {
     }
 }
 
+/// Frontier-only mode with `help_first` (phase 1's pool): a wanted node
+/// that needs its dependencies one after another (a filegroup's sources,
+/// one `Src` per `need`) runs each fresh one in place, wanted, instead of
+/// setting it aside and restarting once per dependency (~/code under a low
+/// open-file limit: a 10k-file filegroup restarted ~10k times after the
+/// first error, 500-1200 s before the fail-fast exit).
+#[test]
+fn a_wanted_node_helps_its_fresh_dependencies_in_frontier_only_mode() {
+    const CHILDREN: usize = 200;
+    for threads in [2, 8, 32] {
+        let mut toy = Toy::default();
+        toy.spec(tgt(1)).fails = true;
+        toy.spec(tgt(100)).batches = (0..CHILDREN).map(|i| vec![tgt(101 + i)]).collect();
+        let config = EvalConfig {
+            keep_going: false,
+            help_first: true,
+            ..config(threads)
+        };
+        let evaluator = Evaluator::new(&toy, config);
+        let mut cycles = DfsCycles::default();
+        let outcome = evaluator.evaluate(&[tgt(1)], &mut NoRepositories, &mut cycles);
+        assert!(outcome.complete, "{outcome:?}");
+        assert!(evaluator.frontier_only());
+        // The linearizer wants the node: its dependencies inherit it.
+        evaluator.boost(&tgt(100), 0);
+        let outcome = evaluator.evaluate(&[tgt(100)], &mut NoRepositories, &mut cycles);
+        assert!(outcome.complete, "{outcome:?}");
+        assert_eq!(
+            read(evaluator.value(&tgt(100)).unwrap()),
+            Ok(1 + CHILDREN as u64)
+        );
+        assert!(
+            toy.runs(&tgt(100)) <= 2,
+            "{threads} threads: the wanted node restarted {} times for {CHILDREN} dependencies",
+            toy.runs(&tgt(100))
+        );
+        assert!(outcome.deferred.is_empty(), "{outcome:?}");
+    }
+}
+
 #[test]
 fn boosted_nodes_run_first() {
     let mut toy = Toy::default();
