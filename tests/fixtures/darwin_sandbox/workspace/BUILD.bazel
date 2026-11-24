@@ -1,0 +1,27 @@
+# darwin-sandbox behaviour (scripts/host_parity.py case darwin_sandbox, macOS
+# only): what a spawn may read, write and reach under the default sandboxed
+# strategy, per execution requirement.
+
+genrule(
+    name = "gen",
+    outs = ["gen.txt"],
+    cmd = "echo gen > $@",
+)
+
+[genrule(
+    name = name,
+    srcs = [
+        "MODULE.bazel",
+        ":gen",
+    ],
+    outs = [name + ".txt"],
+    cmd = "$(location probe.sh) $@ $(location MODULE.bazel) $(location :gen)",
+    tags = tags,
+    tools = ["probe.sh"],
+) for name, tags in [
+    ("default", []),
+    ("block_network", ["block-network"]),
+    ("requires_network", ["requires-network"]),
+    ("no_sandbox", ["no-sandbox"]),
+    ("local", ["local"]),
+]]
