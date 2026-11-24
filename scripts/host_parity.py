@@ -516,7 +516,8 @@ def run(args: argparse.Namespace) -> int:
                 gv = g["items"].get(key, "<absent>\n")
                 rv = r["items"].get(key, "<absent>\n")
                 if gv == rv:
-                    entry["items"][key] = {"equal": True}
+                    # The genuine value is kept (fixture captures read it).
+                    entry["items"][key] = {"equal": True, "genuine": gv}
                     continue
                 diff = "".join(difflib.unified_diff(
                     gv.splitlines(True), rv.splitlines(True), "genuine", "bazel-rs", n=2))
