@@ -419,7 +419,7 @@ still stops at startup (`strip`).
 | cel-cpp | BOTH-FAIL | 27.0† / 23.6† | 4.1† / 0.3† / 5.3† | 218.7† / 215.8† | 1703 / 737 | 4599, 0, 0, 0 | PASSED:244 TIMEOUT:1 / same | |
 | examples-bzlmod-03 | BOTH-FAIL | 8.9† / 3.2† | 2.5† / 0.1† / 0.1† | 2.3† / 0.1† | 309 / 86 | 2, 0, 0, 0 | — | |
 | bazel-remote | DIFF | 28.2† / 27.9† | 4.9† / 0.4† / 2.8† | 38.1† / 35.7† | 1606 / 844 | 973, 0, 0, 1 | PASSED:13 / same | stamp |
-| grpc | DIFF² | 39.5 / 43.4 | 5.2 / 0.3 / 0.2 | 362.4 / 384.5 | 1704 / 1149 | 9360, 0, 0, 0 | — | query B66 |
+| grpc | DIFF² | 39.5 / 43.4 | 5.2 / 0.3 / 0.2 | 362.4 / 384.5 | 1704 / 1149 | 9360, 0, 0, 0 | — | query B66 (fixed on main since) |
 | rules_foreign_cc-examples | DIFF² | 25.7 / 14.0 | 5.9 / 0.2 / 0.2 | 24.5 / 19.1 | 1446 / 724 | 345, 0, 0, 17 | PASSED:23 / same | C4 |
 | rules_lint-python | DIFF² | 29.0 / 49.1 | 4.2 / 0.3 / 0.2 | 25.1† / 22.9† | 1585 / 779 | 311, 1, 0, 20 | FAILED:2 FAILED TO BUILD:1 PASSED:41 / same | B62, C4, C5 |
 | rules_lint-shell | DIFF | 31.8 / 28.1 | 4.0 / 0.4 / 0.2 | 25.3 / 22.1 | 1340 / 452 | 65, 0, 0, 3 | PASSED:8 / same | B62 |
@@ -499,7 +499,8 @@ corpus-expand's (genuine is unchanged). The rerun projects' blockers now:
 - rules_ts-examples: **identical** (B65 fixed: all 54,123 outputs and 188
   tests).
 - grpc: `build //:all` identical (9,360 outputs) since B59/B68; only `query
-  //...` still hits the cap (B66).
+  //...` still hit the cap (B66; fixed on main by frozen-assert after this
+  rerun's binaries were built).
 - rules_foreign_cc-examples: tests identical (23); B64 and B74 fixed; the 17
   hash differences are CMake/Make/Ninja logs and meson outputs holding each
   tool's absolute paths (C4).
@@ -552,7 +553,7 @@ tests/fixtures/corpus2_quick):
 
 **Summary (rerun).** Of the 9 projects that failed on bazel-rs only,
 rules_ts-examples is now identical, grpc, rules_foreign_cc-examples and
-rules_lint-python differ only by B66 (query), C4/C5 and B62, rules_pkg by
+rules_lint-python differ only by B66 (query; fixed since on main), C4/C5 and B62, rules_pkg by
 B34; aspect-bazel-examples (B78, B79), bb-storage (B69), rules_java (B67,
 B61) and rules_py (`strip`, B33) still fail. Fixed: B59 (except `strip`),
 B60, B63, B64, B65, B68, B70, B71 and the rerun's B72, B74–B77; new open:
