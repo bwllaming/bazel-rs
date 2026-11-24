@@ -133,3 +133,10 @@ exec_probe(
     name = "exec_probe",
     dep = ":probe",
 )
+
+genrule(
+    name = "repo_env",
+    srcs = ["@env_probe//:env.txt"],
+    outs = ["repo_env.txt"],
+    cmd = "cp $< $@",
+)
