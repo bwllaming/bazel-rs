@@ -1,0 +1,5 @@
+print("in a")
+ext = use_extension("//:ext.bzl", "ext")
+ext.tag(v = "from-a")
+use_repo(ext, "r")
+include("//sub:b.MODULE.bazel")

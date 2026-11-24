@@ -10,6 +10,9 @@
     "--host_platform=//:p",
     "--//am:f=d"
    ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
    "outputs": {
     "k8-fastbuild-ST-d75e1a5d4e76/bin/am/s.txt": "[[\"d\"], \"list\", \"d\"]\n",
     "k8-fastbuild/bin/am/s.txt": "[[\"d\"], \"list\", \"d\"]\n"
@@ -33,6 +36,9 @@
     "--host_platform=//:p",
     "--//am:f=a,b"
    ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
    "outputs": {
     "k8-fastbuild/bin/am/s.txt": "[[\"a,b\"], \"list\", \"comma\"]\n"
    },
@@ -53,6 +59,9 @@
     "--platforms=//:p",
     "--host_platform=//:p"
    ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
    "outputs": {
     "k8-fastbuild-ST-490ddc5358c5/bin/am/s.txt": "[[\"d\", \"t\"], \"list\", \"d\"]\n",
     "k8-fastbuild-ST-490ddc5358c5/bin/am/s2.txt": "[[\"d\", \"t\"], \"list\", \"t\"]\n",
@@ -88,6 +97,9 @@
     "--//am:f=a",
     "--//am:f=b"
    ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
    "outputs": {
     "k8-fastbuild-ST-5277f620f07d/bin/am/s.txt": "[[\"a\", \"b\", \"t\"], \"list\", \"a\"]\n",
     "k8-fastbuild-ST-5277f620f07d/bin/am/s2.txt": "[[\"a\", \"b\", \"t\"], \"list\", \"t\"]\n",
@@ -121,6 +133,9 @@
     "--platforms=//:p",
     "--host_platform=//:p"
    ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
    "outputs": {},
    "patterns": [
     "allows multiple values"
@@ -149,6 +164,9 @@
     "--protocopt=--fatal_warnings",
     "--protocopt=-a"
    ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
    "outputs": {
     "k8-fastbuild-ST-d193f37ffb31/bin/opts/f.txt": "[10.15, [\"--fatal_warnings\", \"-a\", \"--x\"], \"list\"] exec=[None, [\"--fatal_warnings\", \"-a\", \"--x\"], \"list\"]\n",
     "k8-fastbuild/bin/opts/f.txt": "[10.15, [\"--fatal_warnings\", \"-a\"], \"list\"] exec=[None, [\"--fatal_warnings\", \"-a\"], \"list\"]\n",
@@ -175,6 +193,9 @@
     "--client_env=BAR=cli",
     "--client_env=FOO=cli"
    ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
    "outputs": {
     "k8-fastbuild/bin/e.txt": "CC=clang FOO=cli BAR=cli\n"
    },
@@ -194,6 +215,9 @@
    "flags": [
     "--client_env=CC"
    ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
    "outputs": {},
    "patterns": [
     "client_env"
@@ -218,6 +242,9 @@
    },
    "exit": 0,
    "flags": [],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
    "outputs": {
     "k8-fastbuild/bin/e.txt": "CC=clang FOO=real BAR=rc\n"
    },
@@ -239,6 +266,9 @@
     "--host_platform=//:p",
     "--host_macos_minimum_os=12.1"
    ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
    "outputs": {
     "k8-fastbuild/bin/opts/f.txt": "[None, [], \"list\"] exec=[12.1, [], \"list\"]\n"
    },
@@ -251,6 +281,199 @@
    ],
    "workspace": "workspace"
   },
+  "include_bad_label": {
+   "command": "build",
+   "env": {},
+   "exit": 48,
+   "flags": [],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": "module(name = \"incws\")\ninclude(\"sub:a.MODULE.bazel\")\n",
+   "outputs": {},
+   "patterns": [
+    "bad include label"
+   ],
+   "rc": false,
+   "stderr": [
+    {
+     "line": "ERROR: Error computing the main repository mapping: bad include label 'sub:a.MODULE.bazel' at <WS>/MODULE.bazel:2:1: include() must be called with repo-relative labels (starting with double slashes)",
+     "pattern": "bad include label"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:t"
+   ],
+   "workspace": "incws"
+  },
+  "include_ignore_dev_dependency": {
+   "command": "build",
+   "env": {},
+   "exit": 0,
+   "flags": [
+    "--ignore_dev_dependency"
+   ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
+   "outputs": {},
+   "patterns": [
+    "in a$",
+    "TAG incws from-a"
+   ],
+   "rc": false,
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/sub/a.MODULE.bazel:1:6: in a",
+     "pattern": "in a$"
+    },
+    {
+     "line": "DEBUG: <WS>/ext.bzl:7:18: TAG incws from-a",
+     "pattern": "TAG incws from-a"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:t",
+    "@r//:x"
+   ],
+   "workspace": "incws"
+  },
+  "include_misused": {
+   "command": "build",
+   "env": {},
+   "exit": 48,
+   "flags": [],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": "module(name = \"incws\")\nx = include\n",
+   "outputs": {},
+   "patterns": [
+    "MUST be called directly at the top-level"
+   ],
+   "rc": false,
+   "stderr": [
+    {
+     "line": "ERROR: <WS>/MODULE.bazel:2:5: the `include` directive MUST be called directly at the top-level",
+     "pattern": "MUST be called directly at the top-level"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:t"
+   ],
+   "workspace": "incws"
+  },
+  "include_no_package": {
+   "command": "build",
+   "env": {},
+   "exit": 48,
+   "flags": [],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": "module(name = \"incws\")\ninclude(\"//nob:x.MODULE.bazel\")\n",
+   "outputs": {},
+   "patterns": [
+    "unable to load package"
+   ],
+   "rc": false,
+   "stderr": [
+    {
+     "line": "ERROR: Error computing the main repository mapping: unable to load package for '//nob:x.MODULE.bazel' included at <WS>/MODULE.bazel:2:1: BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.",
+     "pattern": "unable to load package"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:t"
+   ],
+   "workspace": "incws"
+  },
+  "include_not_a_file": {
+   "command": "build",
+   "env": {},
+   "exit": 48,
+   "flags": [],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": "module(name = \"incws\")\ninclude(\"//sub:none.MODULE.bazel\")\n",
+   "outputs": {},
+   "patterns": [
+    "error reading"
+   ],
+   "rc": false,
+   "stderr": [
+    {
+     "line": "ERROR: Error computing the main repository mapping: error reading '//sub:none.MODULE.bazel' included at <WS>/MODULE.bazel:2:1: not a regular file",
+     "pattern": "error reading"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:t"
+   ],
+   "workspace": "incws"
+  },
+  "include_segments": {
+   "command": "build",
+   "env": {},
+   "exit": 0,
+   "flags": [],
+   "lockfile": true,
+   "module_extensions": {
+    "//:ext.bzl%ext": {
+     "general": {
+      "bzlTransitiveDigest": "qKBk5fNTbXn/Wp7Elq9SyGZPW1O37+xAKojd+0FVDIs=",
+      "generatedRepoSpecs": {
+       "r": {
+        "attributes": {},
+        "repoRuleId": "@@//:ext.bzl%r"
+       }
+      },
+      "recordedInputs": [],
+      "usagesDigest": "8DFBKI61N83igOFY95xS3F6oVBor6kkuJEhwUmtHGuk="
+     }
+    }
+   },
+   "module_file": null,
+   "outputs": {},
+   "patterns": [
+    "in a$",
+    "in b$",
+    "in dev$",
+    "TAG incws from-a",
+    "TAG incws from-root"
+   ],
+   "rc": false,
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/sub/a.MODULE.bazel:1:6: in a",
+     "pattern": "in a$"
+    },
+    {
+     "line": "DEBUG: <WS>/sub/b.MODULE.bazel:1:6: in b",
+     "pattern": "in b$"
+    },
+    {
+     "line": "DEBUG: <WS>/sub/dev.MODULE.bazel:1:6: in dev",
+     "pattern": "in dev$"
+    },
+    {
+     "line": "DEBUG: <WS>/ext.bzl:7:18: TAG incws from-a",
+     "pattern": "TAG incws from-a"
+    },
+    {
+     "line": "DEBUG: <WS>/ext.bzl:7:18: TAG incws from-root",
+     "pattern": "TAG incws from-root"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:t",
+    "@r//:x"
+   ],
+   "workspace": "incws"
+  },
   "proto_toolchain_resolution_default": {
    "command": "build",
    "env": {},
@@ -260,6 +483,9 @@
     "--host_platform=//:p",
     "--nobuild"
    ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
    "outputs": {},
    "patterns": [
     "PROTO"
@@ -287,6 +513,9 @@
     "--nobuild",
     "--noincompatible_enable_proto_toolchain_resolution"
    ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
    "outputs": {},
    "patterns": [
     "PROTO"

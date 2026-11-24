@@ -50,6 +50,7 @@ tests/fixtures/config_setting_features/workspace
 tests/fixtures/console_action_output/workspace
 tests/fixtures/console_text/workspace
 tests/fixtures/convenience_symlinks/workspace
+tests/fixtures/corpus2_quick/incws
 tests/fixtures/corpus2_quick/rcws
 tests/fixtures/corpus2_quick/workspace
 tests/fixtures/corpus_last/workspace

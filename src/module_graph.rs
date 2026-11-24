@@ -424,7 +424,7 @@ pub(crate) fn read_root_module(
             };
         }
     };
-    let module = bzlmod::evaluate_source_with_builtins(
+    let module = bzlmod::evaluate_source_with_includes(
         &path.to_string_lossy(),
         source,
         EvaluationContext {
@@ -434,6 +434,7 @@ pub(crate) fn read_root_module(
             print_is_noop: false,
         },
         options.builtin_profile.injection(&Key::Root),
+        bzlmod::IncludeScope::Root(root_path.clone()),
     )?;
     reject_unused_isolated_usages(&module, options.ignore_dev_dependencies)?;
     Ok(RootModuleSnapshot {
@@ -1158,7 +1159,7 @@ impl Discovery<'_> {
                         let source = String::from_utf8(bytes.to_vec()).map_err(|error| {
                             format!("Git MODULE file {path} is not UTF-8: {error}")
                         })?;
-                        let module = bzlmod::evaluate_source_with_builtins(
+                        let module = bzlmod::evaluate_source_with_includes(
                             &non_registry_module_file(name),
                             source,
                             EvaluationContext {
@@ -1168,6 +1169,7 @@ impl Discovery<'_> {
                                 print_is_noop: false,
                             },
                             injection,
+                            bzlmod::IncludeScope::Root(root.to_path_buf()),
                         )?;
                         validate_declared_module(&module, name, None, &path)?;
                         Ok(module)
@@ -1220,7 +1222,7 @@ impl Discovery<'_> {
                         let path = root.join("MODULE.bazel").display().to_string();
                         let source = String::from_utf8(bytes.to_vec())
                             .map_err(|error| format!("MODULE file {path} is not UTF-8: {error}"))?;
-                        let module = bzlmod::evaluate_source_with_builtins(
+                        let module = bzlmod::evaluate_source_with_includes(
                             &non_registry_module_file(name),
                             source,
                             EvaluationContext {
@@ -1230,6 +1232,7 @@ impl Discovery<'_> {
                                 print_is_noop: false,
                             },
                             injection,
+                            bzlmod::IncludeScope::Root(root.to_path_buf()),
                         )?;
                         validate_declared_module(&module, name, None, &path)?;
                         Ok(module)
@@ -1270,7 +1273,7 @@ impl Discovery<'_> {
             }
             let source = crate::observed_fs::read_to_string(&file)
                 .map_err(|e| format!("cannot read MODULE file {}: {e}", file.display()))?;
-            let module = bzlmod::evaluate_source_with_builtins(
+            let module = bzlmod::evaluate_source_with_includes(
                 &non_registry_module_file(name),
                 source,
                 EvaluationContext {
@@ -1280,6 +1283,7 @@ impl Discovery<'_> {
                     print_is_noop: false,
                 },
                 injection,
+                bzlmod::IncludeScope::Root(path.clone()),
             )?;
             validate_declared_module(&module, name, None, &path.display().to_string())?;
             return Ok((module, ModuleSource::LocalPath(path)));
@@ -1338,7 +1342,7 @@ impl Discovery<'_> {
             let evaluated_module_file = local_patches.apply_module(&module_file)?;
             let source = String::from_utf8(evaluated_module_file.clone())
                 .map_err(|error| format!("patched MODULE file {path} is not UTF-8: {error}"))?;
-            let module = bzlmod::evaluate_source_with_builtins(
+            let module = bzlmod::evaluate_source_with_includes(
                 &path,
                 source,
                 EvaluationContext {
@@ -1349,6 +1353,7 @@ impl Discovery<'_> {
                     print_is_noop: true,
                 },
                 injection,
+                bzlmod::IncludeScope::Registry,
             )?;
             validate_declared_module(&module, name, Some(version), &path)?;
             return Ok((

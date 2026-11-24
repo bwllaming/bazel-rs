@@ -2260,7 +2260,9 @@ impl RepositorySet {
             // A root-module failure without an event reaches query/build as
             // RepositoryMappingResolutionException
             // (skyframe/RepositoryMappingValue.java:158-171).
-            if error.starts_with(crate::module_graph::UNUSED_ISOLATED_USAGE) {
+            if error.starts_with(crate::module_graph::UNUSED_ISOLATED_USAGE)
+                || crate::bzlmod::is_include_failure(&error)
+            {
                 format!("Error computing the main repository mapping: {error}")
             } else {
                 error
@@ -3183,6 +3185,17 @@ impl RepositorySet {
         &self,
         proxy_name: &dyn Fn(&str) -> String,
     ) -> Result<RootFixups, String> {
+        // BazelModTidyFunction fixes each proxy in the module file segment
+        // that contains it and formats every segment; the native fixups
+        // name MODULE.bazel only.
+        if let Some(module) = self.root_module()?.module_file()
+            && !module.included_files.is_empty()
+        {
+            return Err(
+                "mod tidy of a root module with include() segments is not implemented by the native profile (the use_repo fixups and formatting of the included files)"
+                    .to_owned(),
+            );
+        }
         self.state.eval_only.store(true, Ordering::Relaxed);
         let runtime = self.direct_runtime()?;
         let mut fixups = Vec::new();

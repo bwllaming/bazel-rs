@@ -1,0 +1,5 @@
+module(name = "incws")
+include("//sub:a.MODULE.bazel")
+include("//sub:dev.MODULE.bazel", dev_dependency = True)
+ext = use_extension("//:ext.bzl", "ext")
+ext.tag(v = "from-root")

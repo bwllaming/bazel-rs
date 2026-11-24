@@ -3,7 +3,9 @@
 //! No extension is loaded, repository fetched, patch command run, or toolchain
 //! resolved here. Labels remain apparent labels until the resolver supplies a
 //! repository mapping. Direct repository-rule calls are recorded as innate
-//! extension usages; loading/executing their rules and includes are unsupported.
+//! extension usages; loading/executing their rules is unsupported. `include()`
+//! segments of the root module and of modules with non-registry overrides are
+//! read and evaluated like Bazel's ModuleFileFunction ([`IncludeScope`]).
 use allocative::Allocative;
 use anyhow::{anyhow, bail};
 use serde_json::Value as Json;
@@ -21,7 +23,7 @@ use starlark::values::{FrozenValue, Heap, Value, ValueLike};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use crate::repository_budget::HostBudget;
@@ -43,6 +45,9 @@ pub struct ModuleFile {
     /// Captured before evaluation, but enforced only when executing a direct
     /// repository declaration. Metadata-only evaluation remains unchanged.
     pub source_profile_error: Option<String>,
+    /// The `include()`d segments read for this module file (their labels as
+    /// written, in Bazel's breadth-first reading order).
+    pub included_files: Vec<String>,
 }
 
 impl ModuleFile {
@@ -304,6 +309,8 @@ struct State {
     repo_names: BTreeMap<String, (&'static str, String)>,
     next_isolation: usize,
     next_declaration: usize,
+    /// Module-wide order of retained tags ([`ExtensionTag::ordinal`]).
+    next_tag_ordinal: usize,
     pending_attributes: Vec<PendingAttributes>,
 }
 
@@ -328,6 +335,10 @@ mod values {
     pub(super) struct Collector {
         pub state: RefCell<State>,
         pub evaluation_context: EvaluationContext,
+        /// The MODULE globals, for the `include()`d segments.
+        pub globals: Option<Globals>,
+        /// The read `include()` segments and the include stack.
+        pub includes: RefCell<Includes>,
         /// The caller location [`super::module_print`] records for the
         /// standard `print` it delegates to (this collector is its handler).
         pub print_location: RefCell<Option<String>>,
@@ -452,7 +463,7 @@ mod values {
                 let attributes = Kwargs::new(args)?.0;
                 let collector = context(eval)?;
                 let mut state = collector.state.borrow_mut();
-                let ordinal = state.pending_attributes.len();
+                let ordinal = state.next_tag_ordinal;
                 let usage = &mut state.file.extension_usages[self.proxy.usage];
                 // Ignored proxies have detached usages in Bazel. Keep declaration
                 // metadata for our recorded profile, but do not retain or convert
@@ -465,6 +476,8 @@ mod values {
                     return Ok(());
                 }
                 let tag = usage.tags.len();
+                state.next_tag_ordinal += 1;
+                let usage = &mut state.file.extension_usages[self.proxy.usage];
                 usage.tags.push(ExtensionTag {
                     name: self.name.clone(),
                     ordinal,
@@ -489,7 +502,8 @@ fn context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a Collector>
         .ok_or_else(|| anyhow!("MODULE directive requires a MODULE.bazel evaluation context"))
 }
 
-/// Read only the specified file. No include, load, or repository access occurs.
+/// Read the specified file and the segments it `include()`s (from its
+/// directory). No load or repository access occurs.
 pub fn evaluate(path: &Path) -> Result<ModuleFile, String> {
     evaluate_with_context(path, EvaluationContext::default())
 }
@@ -525,7 +539,11 @@ pub(crate) fn evaluate_with_builtins(
 ) -> Result<ModuleFile, String> {
     let source = crate::observed_fs::read_to_string(path)
         .map_err(|e| format!("cannot read MODULE file {}: {e}", path.display()))?;
-    evaluate_source_with_builtins(&path.to_string_lossy(), source, context, injection)
+    let scope = match path.parent() {
+        Some(root) => IncludeScope::Root(root.to_path_buf()),
+        None => IncludeScope::Unavailable,
+    };
+    evaluate_source_with_includes(&path.to_string_lossy(), source, context, injection, scope)
 }
 
 pub fn evaluate_source(filename: &str, source: String) -> Result<ModuleFile, String> {
@@ -570,20 +588,88 @@ pub(crate) fn evaluate_source_with_builtins(
     evaluation_context: EvaluationContext,
     injection: BuiltinInjection,
 ) -> Result<ModuleFile, String> {
-    let dialect = Dialect {
+    evaluate_source_with_includes(
+        filename,
+        source,
+        evaluation_context,
+        injection,
+        IncludeScope::Unavailable,
+    )
+}
+
+/// Where a module file's `include()` statements read their segments
+/// (ModuleFileFunction.java:216-250, 396-543).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum IncludeScope {
+    /// The root module or a module with a non-registry override: segments
+    /// are read below its repository's root directory.
+    Root(PathBuf),
+    /// A module from a registry: a non-dev `include()` is an error.
+    Registry,
+    /// No repository directory is known to this caller (library and unit
+    /// uses): an evaluated `include()` fails explicitly.
+    Unavailable,
+}
+
+/// The MODULE dialect: no `def`, `lambda`, `load` or top-level control flow.
+fn module_dialect() -> Dialect {
+    Dialect {
         enable_def: false,
         enable_lambda: false,
         enable_load: false,
         enable_top_level_stmt: false,
         ..Dialect::Standard
-    };
-    let ast = AstModule::parse(filename, source, &dialect).map_err(|e| e.to_string())?;
+    }
+}
+
+/// Parse and check one module file or `include()`d segment
+/// (CompiledModuleFile.parseAndCompile): its AST, its `include()`
+/// statements and its source-profile restriction.
+fn compile_module_file(
+    filename: &str,
+    source: String,
+) -> Result<(AstModule, Vec<IncludeStatement>, Option<String>), String> {
+    let ast = AstModule::parse(filename, source, &module_dialect()).map_err(|e| e.to_string())?;
     validate_module_syntax(&ast)?;
+    let includes = include_statements(&ast)?;
     // MODULE.bazel lexer errors fail every command (Bazel exit 48), not only
     // a later demanded repository.
     crate::repository_text::validate_source(&ast)?;
     crate::guarded_globals::check_universe(&ast)?;
     let source_profile_error = crate::repository_text::validate_execution_source(&ast).err();
+    Ok((ast, includes, source_profile_error))
+}
+
+pub(crate) fn evaluate_source_with_includes(
+    filename: &str,
+    source: String,
+    evaluation_context: EvaluationContext,
+    injection: BuiltinInjection,
+    scope: IncludeScope,
+) -> Result<ModuleFile, String> {
+    let (ast, include_statements, source_profile_error) = compile_module_file(filename, source)?;
+    let ignore_dev = evaluation_context.effective_ignore_dev_dependencies();
+    let includes = match &scope {
+        IncludeScope::Root(root) => read_includes(root, &include_statements, ignore_dev)?,
+        IncludeScope::Registry => {
+            // ModuleFileFunction.java:221-234: a registry module's non-dev
+            // include (dev ones are ignored: its dev dependencies always are).
+            if let Some(include) = include_statements.iter().find(|i| !i.dev_dependency) {
+                return Err(format!(
+                    "include() directive found at {}, but it can only be used in the root module or in modules with non-registry overrides",
+                    include.location
+                ));
+            }
+            Includes::default()
+        }
+        IncludeScope::Unavailable => Includes {
+            unavailable: true,
+            ..Includes::default()
+        },
+    };
+    let included_files = includes.order.clone();
+    let source_profile_error =
+        source_profile_error.or_else(|| includes.source_profile_error.clone());
     // `print` is [`module_print`]: the standard one (Bazel's debugPrint
     // texts) behind ModuleFileFunction's per-module print handler.
     let mut globals = GlobalsBuilder::extended_by(&[LibraryExtension::SetType]).with(module_print);
@@ -611,6 +697,8 @@ pub(crate) fn evaluate_source_with_builtins(
     let globals = globals.build();
     let collector = Collector {
         evaluation_context,
+        globals: Some(globals.clone()),
+        includes: RefCell::new(includes),
         ..Default::default()
     };
     Module::with_temp_heap(|module| {
@@ -647,7 +735,342 @@ pub(crate) fn evaluate_source_with_builtins(
     }
     let mut file = state.file;
     file.source_profile_error = source_profile_error;
+    file.included_files = included_files;
     Ok(file)
+}
+
+/// One top-level `include()` call (CompiledModuleFile.IncludeStatement).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct IncludeStatement {
+    /// The label as written.
+    label: String,
+    dev_dependency: bool,
+    /// The call's start (`file:line:col`).
+    location: String,
+}
+
+/// The `include()` segments of one module file evaluation.
+#[derive(Default)]
+pub(super) struct Includes {
+    /// Label as written -> (segment file name, compiled AST).
+    files: BTreeMap<String, (String, AstModule)>,
+    /// The labels in reading order ([`ModuleFile::included_files`]).
+    order: Vec<String>,
+    /// The labels of the segments being evaluated (ModuleThreadContext.includeStack).
+    stack: Vec<String>,
+    /// [`IncludeScope::Unavailable`].
+    unavailable: bool,
+    /// The first segment's [`ModuleFile::source_profile_error`].
+    source_profile_error: Option<String>,
+}
+
+/// A failure to read the `include()`d segments, which Bazel reports
+/// without an event (a BAD_MODULE ExternalDepsException of
+/// ModuleFileFunction.advanceHorizon, :420-530).
+pub(crate) fn is_include_failure(error: &str) -> bool {
+    [
+        "bad include label '",
+        "unable to load package for '",
+        "error reading '",
+    ]
+    .iter()
+    .any(|prefix| error.starts_with(prefix))
+}
+
+/// The file suffix an included segment must have (ModuleFileFunction.INCLUDE_FILENAME_SUFFIX).
+const INCLUDE_FILENAME_SUFFIX: &str = ".MODULE.bazel";
+
+/// CompiledModuleFile.SyntaxChecker (:99-177): the top-level `include()`
+/// statements, each called with one positional string literal and at most
+/// a literal `dev_dependency = True|False`; any other use of the name
+/// `include` fails, until a statement assigns to it.
+fn include_statements(ast: &AstModule) -> Result<Vec<IncludeStatement>, String> {
+    const NAME: &str = "include";
+    let location = |span| {
+        let span = ast.file_span(span);
+        let begin = span.resolve_span().begin;
+        format!(
+            "{}:{}:{}",
+            span.filename(),
+            begin.line + 1,
+            begin.column + 1
+        )
+    };
+    let misuse = |span, message: &str| format!("{}: {message}", location(span));
+    // Any identifier `include` in `expr` (keyword names and attribute
+    // fields are no identifiers).
+    fn find_identifier(expr: &AstExpr, found: &mut Option<starlark::codemap::Span>) {
+        if found.is_some() {
+            return;
+        }
+        if let Expr::Identifier(identifier) = &expr.node
+            && identifier.node.ident == "include"
+        {
+            *found = Some(expr.span);
+            return;
+        }
+        expr.node.visit_expr(|child| find_identifier(child, found));
+    }
+    fn statements(statement: &AstStmt) -> Vec<&AstStmt> {
+        match &statement.node {
+            Stmt::Statements(list) => list.iter().flat_map(statements).collect(),
+            _ => vec![statement],
+        }
+    }
+    let mut assigned = false;
+    let mut result = Vec::new();
+    for statement in statements(ast.statement()) {
+        if assigned {
+            break;
+        }
+        match &statement.node {
+            Stmt::Expression(expr) => {
+                if let Expr::Call(function, call) = &expr.node
+                    && matches!(&function.node, Expr::Identifier(id) if id.node.ident == NAME)
+                {
+                    let args = &call.args;
+                    let label = match args.first().map(|arg| &arg.node) {
+                        Some(Argument::Positional(value)) => match &value.node {
+                            Expr::Literal(starlark::syntax::ast::AstLiteral::String(text)) => {
+                                Some(text.node.clone())
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    let dev_dependency = match args.get(1).map(|arg| &arg.node) {
+                        None => Some(false),
+                        Some(Argument::Named(name, value)) if name.node == "dev_dependency" => {
+                            match &value.node {
+                                Expr::Identifier(id) if id.node.ident == "True" => Some(true),
+                                Expr::Identifier(id) if id.node.ident == "False" => Some(false),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    match (label, dev_dependency, args.len() <= 2) {
+                        (Some(label), Some(dev_dependency), true) => {
+                            result.push(IncludeStatement {
+                                label,
+                                dev_dependency,
+                                location: location(expr.span),
+                            });
+                            continue;
+                        }
+                        _ => {
+                            return Err(misuse(
+                                statement.span,
+                                "the `include` directive MUST be called with one positional string literal argument and, optionally, `dev_dependency` as a boolean literal",
+                            ));
+                        }
+                    }
+                }
+                let mut found = None;
+                find_identifier(expr, &mut found);
+                if let Some(span) = found {
+                    return Err(misuse(
+                        span,
+                        "the `include` directive MUST be called directly at the top-level",
+                    ));
+                }
+            }
+            Stmt::Assign(assign) => {
+                let mut found = None;
+                find_identifier(&assign.rhs, &mut found);
+                if let Some(span) = found {
+                    return Err(misuse(
+                        span,
+                        "the `include` directive MUST be called directly at the top-level",
+                    ));
+                }
+                if matches!(&assign.lhs.node,
+                    starlark::syntax::ast::AssignTargetP::Identifier(id) if id.node.ident == NAME)
+                {
+                    assigned = true;
+                }
+            }
+            _ => {
+                let mut found = None;
+                statement
+                    .node
+                    .visit_expr(|expr| find_identifier(expr, &mut found));
+                if let Some(span) = found {
+                    return Err(misuse(
+                        span,
+                        "the `include` directive MUST be called directly at the top-level",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// ModuleFileFunction.advanceHorizon (:396-543): read the segments of
+/// `statements` and, breadth first, of the segments they include, each
+/// label (as written) once; `ignore_dev` drops dev includes
+/// (activeIncludeStatements). Failures are Bazel's BAD_MODULE messages.
+fn read_includes(
+    root: &Path,
+    statements: &[IncludeStatement],
+    ignore_dev: bool,
+) -> Result<Includes, String> {
+    let mut includes = Includes::default();
+    let active = |statements: &[IncludeStatement]| -> Vec<IncludeStatement> {
+        statements
+            .iter()
+            .filter(|statement| !(ignore_dev && statement.dev_dependency))
+            .cloned()
+            .collect()
+    };
+    let mut horizon = active(statements);
+    while !horizon.is_empty() {
+        let mut pending = Vec::new();
+        for statement in horizon {
+            if !includes.files.contains_key(&statement.label)
+                && !pending
+                    .iter()
+                    .any(|seen: &IncludeStatement| seen.label == statement.label)
+            {
+                pending.push(statement);
+            }
+        }
+        // Every label is checked before any package or file is read.
+        let mut labels = Vec::new();
+        for statement in &pending {
+            let bad = |message: String| {
+                format!(
+                    "bad include label '{}' at {}: {message}",
+                    statement.label, statement.location
+                )
+            };
+            if !statement.label.starts_with("//") {
+                return Err(bad(
+                    "include() must be called with repo-relative labels (starting with double slashes)"
+                        .to_owned(),
+                ));
+            }
+            let label = crate::label::Label::parse(&statement.label, "").map_err(bad)?;
+            let basename = label.name.rsplit('/').next().unwrap_or(&label.name);
+            if !basename.ends_with(INCLUDE_FILENAME_SUFFIX) {
+                return Err(bad(format!(
+                    "the file to be included must have a name ending in '{INCLUDE_FILENAME_SUFFIX}'"
+                )));
+            }
+            if basename.starts_with('.') {
+                return Err(bad(
+                    "the name of the file to be included must not start with '.'".to_owned(),
+                ));
+            }
+            labels.push(label);
+        }
+        // PackageLookupFunction: the package needs a BUILD file.
+        for (statement, label) in pending.iter().zip(&labels) {
+            let directory = root.join(&label.package);
+            let has_build = ["BUILD.bazel", "BUILD"]
+                .iter()
+                .any(|name| crate::observed_fs::is_file(directory.join(name)));
+            if !has_build {
+                return Err(format!(
+                    "unable to load package for '{}' included at {}: BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - {}",
+                    statement.label, statement.location, label.package
+                ));
+            }
+        }
+        let mut next = Vec::new();
+        for (statement, label) in pending.iter().zip(&labels) {
+            let path = root.join(&label.package).join(&label.name);
+            if !crate::observed_fs::is_file(&path) {
+                return Err(format!(
+                    "error reading '{}' included at {}: not a regular file",
+                    statement.label, statement.location
+                ));
+            }
+            let source = crate::observed_fs::read_to_string(&path).map_err(|error| {
+                format!(
+                    "error reading '{}' included at {}: {error}",
+                    statement.label, statement.location
+                )
+            })?;
+            let filename = path.to_string_lossy().into_owned();
+            let (ast, nested, profile_error) = compile_module_file(&filename, source)?;
+            if includes.source_profile_error.is_none() {
+                includes.source_profile_error = profile_error;
+            }
+            includes
+                .files
+                .insert(statement.label.clone(), (filename, ast));
+            includes.order.push(statement.label.clone());
+            next.extend(active(&nested));
+        }
+        horizon = next;
+    }
+    Ok(includes)
+}
+
+/// ModuleThreadContext.include (:333-366): evaluate a read segment as if it
+/// were textually inserted at the call, with its own variable bindings.
+fn include<'v>(args: &Arguments<'v, '_>, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<()> {
+    let collector = context(eval)?;
+    let mut kwargs = Kwargs::new(args)?;
+    let dev_dependency = kwargs.boolean("dev_dependency")?;
+    let positional: Vec<_> = args
+        .positions(eval.heap())
+        .map_err(|e| anyhow!("{e}"))?
+        .collect();
+    let [label] = positional.as_slice() else {
+        bail!("include() takes exactly one positional argument (label)");
+    };
+    let label = string(*label, "label")?;
+    if collector
+        .evaluation_context
+        .effective_ignore_dev_dependencies()
+        && dev_dependency
+    {
+        return Ok(());
+    }
+    collector.state.borrow_mut().non_module_called = true;
+    let (filename, ast) = {
+        let mut includes = collector.includes.borrow_mut();
+        if includes.unavailable {
+            bail!(
+                "include() needs the module's repository directory, which this native MODULE evaluation does not have"
+            );
+        }
+        let Some((filename, ast)) = includes.files.get(&label).cloned() else {
+            bail!("internal error; included file {label} not compiled");
+        };
+        if let Some(start) = includes.stack.iter().position(|seen| *seen == label) {
+            bail!(
+                "include() cycle detected: {} -> {label}",
+                includes.stack[start..].join(" -> ")
+            );
+        }
+        includes.stack.push(label.clone());
+        (filename, ast)
+    };
+    let globals = collector
+        .globals
+        .clone()
+        .ok_or_else(|| anyhow!("internal error: MODULE globals are not set"))?;
+    let start = collector.state.borrow().pending_attributes.len();
+    let result = Module::with_temp_heap(|module| -> anyhow::Result<()> {
+        let mut segment = Evaluator::new(&module);
+        segment.extra = Some(collector);
+        segment.set_print_handler(collector);
+        segment
+            .set_max_callstack_size(128)
+            .map_err(|e| anyhow!("{e}"))?;
+        segment
+            .eval_module(ast, &globals)
+            .map_err(|e| anyhow!("{e}"))?;
+        finish_tag_attributes_from(&module, &mut collector.state.borrow_mut(), start)
+            .map_err(|e| anyhow!("cannot record MODULE attributes in {filename}: {e}"))?;
+        Ok(())
+    });
+    collector.includes.borrow_mut().stack.pop();
+    result
 }
 
 /// MODULE.bazel `print` (ModuleFileFunction.execModuleFile, :670-674): a
@@ -881,9 +1304,10 @@ fn invoke<'v>(
 ) -> anyhow::Result<Value<'v>> {
     let collector = context(eval)?;
     match name {
-        "include" => bail!(
-            "include() is unsupported until the resolver supplies include filesystem semantics"
-        ),
+        "include" => {
+            include(args, eval)?;
+            return Ok(Value::new_none());
+        }
         "Label" => bail!("Label() is unsupported in MODULE evaluation; use label strings"),
         _ => {}
     }
@@ -1311,10 +1735,21 @@ fn retain_tag_attributes<'v>(
 /// Convert only after successful evaluation and before the temporary heap drops.
 /// Both ordinary tags and innate repository tags use the same bounded types.
 fn finish_tag_attributes(module: &Module, state: &mut State) -> anyhow::Result<()> {
+    finish_tag_attributes_from(module, state, 0)
+}
+
+/// [`finish_tag_attributes`] of the tags retained since `start` (those of
+/// one `include()`d segment, whose slots are in its own module).
+fn finish_tag_attributes_from(
+    module: &Module,
+    state: &mut State,
+    start: usize,
+) -> anyhow::Result<()> {
     // One budget for the entire MODULE's host conversion, including repeated
     // references: each retained declaration produces a distinct owned copy.
     let mut host = HostBudget::default();
-    for pending in std::mem::take(&mut state.pending_attributes) {
+    let pending: Vec<PendingAttributes> = state.pending_attributes.drain(start..).collect();
+    for pending in pending {
         let value = module
             .get(&pending.slot)
             .ok_or_else(|| anyhow!("internal error: missing MODULE attribute root"))?;
@@ -1390,7 +1825,8 @@ fn record_repo_rule<'v>(
             state.file.extension_usages.len() - 1
         }
     };
-    let ordinal = state.pending_attributes.len();
+    let ordinal = state.next_tag_ordinal;
+    state.next_tag_ordinal += 1;
     let declaration_ordinal = state.next_declaration;
     state.next_declaration += 1;
     let usage = &mut state.file.extension_usages[index];
@@ -2692,12 +3128,130 @@ r(name="second",x=x,y=y,module=module,ys=ys,zs=zs,ws=[str(v) for v in ws],count=
         }
         fails(
             "include('//:other.MODULE.bazel')",
-            "include() is unsupported",
+            "include() needs the module's repository directory",
         );
         fails("Label('//:x')", "Label() is unsupported");
         for source in ["native.foo()", "rule()", "provider()"] {
             assert!(evaluate_source("MODULE.bazel", source.to_owned()).is_err());
         }
+    }
+
+    /// `include()` (ModuleFileFunction.advanceHorizon, ModuleThreadContext.include):
+    /// segments read breadth first, evaluated in place with their own
+    /// bindings; tags keep one module-wide order; dev includes follow the
+    /// root's dev filtering; cycles and misuse fail like Bazel.
+    #[test]
+    fn include_evaluates_segments_in_place() {
+        let root = tempfile::tempdir().unwrap();
+        let write = |path: &str, text: &str| {
+            let path = root.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write("BUILD", "");
+        write("sub/BUILD.bazel", "");
+        write(
+            "MODULE.bazel",
+            "module(name = 'm')\nx = use_extension('//:e.bzl', 'e')\nx.t(v = 1)\ninclude('//sub:a.MODULE.bazel')\nx.t(v = 3)\ninclude('//:d.MODULE.bazel', dev_dependency = True)\n",
+        );
+        write(
+            "sub/a.MODULE.bazel",
+            "y = use_extension('//:e.bzl', 'e')\ny.t(v = 2)\ninclude('//sub:b.MODULE.bazel')\n",
+        );
+        write(
+            "sub/b.MODULE.bazel",
+            "bazel_dep(name = 'b', version = '1')\n",
+        );
+        write("d.MODULE.bazel", "bazel_dep(name = 'd', version = '1')\n");
+        let file = evaluate(&root.path().join("MODULE.bazel")).unwrap();
+        assert_eq!(
+            file.included_files,
+            [
+                "//sub:a.MODULE.bazel",
+                "//:d.MODULE.bazel",
+                "//sub:b.MODULE.bazel"
+            ]
+        );
+        let tags = &file.extension_usages[0].tags;
+        assert_eq!(
+            tags.iter()
+                .map(|tag| (tag.ordinal, tag.attributes["v"].clone()))
+                .collect::<Vec<_>>(),
+            [(0, 1.into()), (1, 2.into()), (2, 3.into())]
+        );
+        let deps: Vec<_> = file
+            .dependencies
+            .iter()
+            .map(|dep| dep.name.as_str())
+            .collect();
+        assert_eq!(deps, ["b", "d"]);
+        let ignoring = evaluate_with_context(
+            &root.path().join("MODULE.bazel"),
+            EvaluationContext {
+                ignore_dev_dependencies: true,
+                ..EvaluationContext::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            ignoring.included_files,
+            ["//sub:a.MODULE.bazel", "//sub:b.MODULE.bazel"]
+        );
+        // A segment's bindings are its own.
+        write("sub/b.MODULE.bazel", "y.t(v = 4)\n");
+        let error = evaluate(&root.path().join("MODULE.bazel")).unwrap_err();
+        assert!(error.contains("'y' is not defined"), "{error}");
+        write("sub/b.MODULE.bazel", "include('//sub:a.MODULE.bazel')\n");
+        let error = evaluate(&root.path().join("MODULE.bazel")).unwrap_err();
+        assert!(
+            error.contains("include() cycle detected: //sub:a.MODULE.bazel -> //sub:b.MODULE.bazel -> //sub:a.MODULE.bazel"),
+            "{error}"
+        );
+        for (source, expected) in [
+            (
+                "include('sub:a.MODULE.bazel')",
+                "include() must be called with repo-relative labels",
+            ),
+            (
+                "include('//sub:a.bzl')",
+                "must have a name ending in '.MODULE.bazel'",
+            ),
+            (
+                "include('//sub:.a.MODULE.bazel')",
+                "must not start with '.'",
+            ),
+            ("include('//nob:a.MODULE.bazel')", "BUILD file not found"),
+            ("include('//sub:none.MODULE.bazel')", "not a regular file"),
+            ("x = include", "MUST be called directly at the top-level"),
+            (
+                "include(label = '//sub:a.MODULE.bazel')",
+                "MUST be called with one positional",
+            ),
+        ] {
+            write("MODULE.bazel", source);
+            let error = evaluate(&root.path().join("MODULE.bazel")).unwrap_err();
+            assert!(error.contains(expected), "{source}: {error}");
+            assert!(
+                !error.contains("bad include") || is_include_failure(&error),
+                "{error}"
+            );
+        }
+        // `include` assigned: no longer the directive.
+        write("MODULE.bazel", "include = 3\nx = include\n");
+        assert!(evaluate(&root.path().join("MODULE.bazel")).is_ok());
+        // A registry module may not include (non-dev).
+        let error = evaluate_source_with_includes(
+            "MODULE.bazel",
+            "include('//:a.MODULE.bazel')".to_owned(),
+            EvaluationContext::default(),
+            BuiltinInjection::Disabled,
+            IncludeScope::Registry,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("can only be used in the root module"),
+            "{error}"
+        );
     }
 
     #[test]

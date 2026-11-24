@@ -2,7 +2,8 @@
 //! corpus2-quick (docs/OSS_CORPUS.md, B59-B71): `--macos_minimum_os`,
 //! `--host_macos_minimum_os`, `--protocopt`, `--client_env` and
 //! `--noincompatible_enable_proto_toolchain_resolution` (B59),
-//! `config.string(allow_multiple = True)` (B60), the cases listed in
+//! `config.string(allow_multiple = True)` (B60), `include()` in MODULE.bazel
+//! (B63), the cases listed in
 //! tests/fixtures/corpus2_quick/capture.py. Every case replays the genuine
 //! Bazel 9.3.1 capture tests/fixtures/corpus2_quick/reference_receipt.json
 //! (written by capture.py beside it).
@@ -130,7 +131,12 @@ fn run(workspace: &Path, case: &serde_json::Value) -> Output {
         )
         .args(rc)
         .args(["--cache-dir=cache", command])
-        .args(["--lockfile_mode=off", "--memory-limit=2048"])
+        .args(if case["lockfile"].as_bool().unwrap() {
+            &[][..]
+        } else {
+            &["--lockfile_mode=off"][..]
+        })
+        .arg("--memory-limit=2048")
         .args(strings(&case["flags"]))
         .args(strings(&case["targets"]))
         .output()
@@ -154,6 +160,9 @@ fn corpus2_quick_matches_genuine() {
         for directory in ["home", "tmp"] {
             fs::create_dir(workspace.join(directory)).unwrap();
         }
+        if let Some(text) = case["module_file"].as_str() {
+            fs::write(workspace.join("MODULE.bazel"), text).unwrap();
+        }
         let output = run(&workspace, case);
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -162,7 +171,13 @@ fn corpus2_quick_matches_genuine() {
             .map(|line| normalize(line, workspace.to_str().unwrap()))
             .collect();
         let mut problems = Vec::new();
-        if output.status.code() != case["exit"].as_i64().map(|code| code as i32) {
+        // A MODULE.bazel failure is Bazel's EXTERNAL_DEPS_ERROR (48); the
+        // native CLI exits 1 for every module file failure (docs/OSS_CORPUS.md
+        // B72), so 48 is compared as 1 here.
+        let genuine_exit = case["exit"]
+            .as_i64()
+            .map(|code| if code == 48 { 1 } else { code as i32 });
+        if output.status.code() != genuine_exit {
             problems.push(format!(
                 "exit {:?}, genuine {}",
                 output.status.code(),
@@ -225,6 +240,19 @@ fn corpus2_quick_matches_genuine() {
             }
         } else if stdout != case["stdout"].as_str().unwrap() {
             problems.push(format!("stdout {stdout:?}, genuine {}", case["stdout"]));
+        }
+        // The lockfile's extension entries (the usages digest).
+        if case["lockfile"].as_bool().unwrap() {
+            let lock: serde_json::Value = serde_json::from_str(
+                &fs::read_to_string(workspace.join("MODULE.bazel.lock")).unwrap_or_default(),
+            )
+            .unwrap_or_default();
+            if lock["moduleExtensions"] != case["module_extensions"] {
+                problems.push(format!(
+                    "moduleExtensions {}, genuine {}",
+                    lock["moduleExtensions"], case["module_extensions"]
+                ));
+            }
         }
         if !problems.is_empty() {
             failures.push(format!("{name}: {}\n{stderr}", problems.join("; ")));

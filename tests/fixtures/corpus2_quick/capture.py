@@ -25,9 +25,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BUILD = ['--platforms=//:p', '--host_platform=//:p']
 
 
-def case(command, flags, targets, patterns=(), outputs=(), workspace='workspace', env=None, rc=False):
+def case(command, flags, targets, patterns=(), outputs=(), workspace='workspace', env=None, rc=False,
+         module_file=None, lockfile=False):
     return dict(command=command, flags=flags, targets=targets, patterns=list(patterns),
-                outputs=list(outputs), workspace=workspace, env=env or {}, rc=rc)
+                outputs=list(outputs), workspace=workspace, env=env or {}, rc=rc, module_file=module_file,
+                lockfile=lockfile)
 
 
 CASES = {
@@ -64,6 +66,27 @@ CASES = {
         'build', BUILD + ['--//am:f=d'], ['//am:s', '//am:re'], outputs=['s.txt']),
     'allow_multiple_single_value_transition': case(
         'build', BUILD, ['//am/err:si'], patterns=[r'allows multiple values']),
+    # B63: include() in the root MODULE.bazel; the lockfile's extension
+    # entry (usages digest) is compared too.
+    'include_segments': case(
+        'build', [], ['//:t', '@r//:x'], patterns=[r'in a$', r'in b$', r'in dev$', r'TAG incws from-a',
+                                                   r'TAG incws from-root'],
+        workspace='incws', lockfile=True),
+    'include_ignore_dev_dependency': case(
+        'build', ['--ignore_dev_dependency'], ['//:t', '@r//:x'], patterns=[r'in a$', r'TAG incws from-a'],
+        workspace='incws'),
+    'include_bad_label': case(
+        'build', [], ['//:t'], patterns=[r'bad include label'], workspace='incws',
+        module_file='module(name = "incws")\ninclude("sub:a.MODULE.bazel")\n'),
+    'include_no_package': case(
+        'build', [], ['//:t'], patterns=[r'unable to load package'], workspace='incws',
+        module_file='module(name = "incws")\ninclude("//nob:x.MODULE.bazel")\n'),
+    'include_not_a_file': case(
+        'build', [], ['//:t'], patterns=[r'error reading'], workspace='incws',
+        module_file='module(name = "incws")\ninclude("//sub:none.MODULE.bazel")\n'),
+    'include_misused': case(
+        'build', [], ['//:t'], patterns=[r'MUST be called directly at the top-level'], workspace='incws',
+        module_file='module(name = "incws")\nx = include\n'),
 }
 
 TIME = re.compile(r'^\(\d\d:\d\d:\d\d\) ')
@@ -84,12 +107,16 @@ def main():
         root = os.path.join(scratch, str(index))
         workspace = os.path.join(root, 'ws')
         shutil.copytree(os.path.join(HERE, spec['workspace']), workspace)
+        if spec['module_file'] is not None:
+            with open(os.path.join(workspace, 'MODULE.bazel'), 'w') as module_file:
+                module_file.write(spec['module_file'])
         home = os.path.join(root, 'home')
         os.makedirs(home)
         env = dict(PATH='/usr/bin:/bin', HOME=home, TMPDIR=home, **spec['env'])
         rc = ['--nohome_rc', '--nosystem_rc'] if spec['rc'] else ['--ignore_all_rc_files']
+        lockfile = [] if spec['lockfile'] else ['--lockfile_mode=off']
         argv = ([args.bazel, '--batch'] + rc + [f'--output_user_root={root}/our', spec['command']]
-                + spec['flags'] + spec['targets'])
+                + lockfile + spec['flags'] + spec['targets'])
         result = subprocess.run(argv, cwd=workspace, env=env, capture_output=True, text=True)
         lines = [TIME.sub('(TIME) ', line.replace(workspace, '<WS>'))
                  for line in result.stderr.splitlines()]
@@ -105,7 +132,12 @@ def main():
                 if file in spec['outputs']:
                     path = os.path.join(top, file)
                     files[os.path.relpath(path, out)] = open(path).read()
-        cases[name] = dict(spec, exit=result.returncode, stdout=result.stdout, stderr=matched, outputs=files)
+        extensions = None
+        if spec['lockfile']:
+            with open(os.path.join(workspace, 'MODULE.bazel.lock')) as lock:
+                extensions = json.load(lock)['moduleExtensions']
+        cases[name] = dict(spec, exit=result.returncode, stdout=result.stdout, stderr=matched, outputs=files,
+                           module_extensions=extensions)
     digest = hashlib.sha256(open(args.bazel, 'rb').read()).hexdigest()
     json.dump(dict(bazel='9.3.1', elf_sha256=digest, cases=cases), sys.stdout, indent=1, sort_keys=True)
     print()
