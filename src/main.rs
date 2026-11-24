@@ -414,6 +414,14 @@ fn run() -> Result<(), String> {
                 return Err(bazel_rs::exit_code::command_line(error));
             }
         }
+        // The client environment of the command (crate::client_env), before
+        // anything reads it.
+        bazel_rs::client_env::install(client_env_overrides(&first_options));
+        // `--[no]incompatible_enable_proto_toolchain_resolution`, before any
+        // `.bzl` globals are built (crate::language_modules).
+        bazel_rs::language_modules::set_proto_toolchain_resolution(
+            native.rc.proto_toolchain_resolution.unwrap_or(true),
+        );
         if coverage_command {
             native.configuration.require_coverage();
             // TestTimeout.COVERAGE_CMD_TIMEOUT at COMPUTED_DEFAULT priority.
@@ -625,7 +633,7 @@ fn run() -> Result<(), String> {
     // CommandEnvironment.java:342-416) and the downloader's proxies over it
     // (crate::download_proxy), fixed for the whole command.
     let repository_environment = bazel_rs::repo_env::repository_environment(
-        std::env::vars_os(),
+        bazel_rs::client_env::vars_os(),
         &rc_options.repo_env,
         root.to_str(),
     );
@@ -1990,6 +1998,7 @@ fn info_command(
     for unit in &aliased.priority {
         parse(&mut native, &mut info, unit)?;
     }
+    bazel_rs::client_env::install(client_env_overrides(&aliased));
     announce(options);
     for warning in native.configuration.warnings() {
         warn(warning);
@@ -2023,7 +2032,7 @@ fn info_command(
         }
         names
             .into_iter()
-            .filter_map(|name| std::env::var(&name).ok().map(|value| (name, value)))
+            .filter_map(|name| bazel_rs::client_env::var(&name).map(|value| (name, value)))
             .collect::<Vec<_>>()
     };
     let mut test_inherited = Vec::new();
@@ -2075,6 +2084,9 @@ fn info_command(
     }
     if let Some(mode) = native.rc.starlark_utf8.filter(|mode| *mode != "WARNING") {
         starlark_semantics.push(format!("incompatible_enforce_starlark_utf8={mode}"));
+    }
+    if native.rc.proto_toolchain_resolution == Some(false) {
+        starlark_semantics.push("+incompatible_enable_proto_toolchain_resolution=false".to_owned());
     }
     // The ceiling a build would install (main's policy), not installed.
     let explicit_mb = match native.memory_limit_mb {
@@ -3884,7 +3896,8 @@ fn run_tail(
             .map(str::to_owned)
             .ok_or_else(|| format!("non-UTF-8 path {} is not supported", path.display()))
     };
-    let client_env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    let client_env: std::collections::BTreeMap<String, String> =
+        bazel_rs::client_env::vars().into_iter().collect();
     let build_id = random_uuid()?;
     let line = command_line(&RunInputs {
         workspace: &utf8(root)?,
@@ -4173,7 +4186,8 @@ fn test_tail(
         Some(_) => Some(bazel_rs::test_runner::Tools::embedded(cache)?),
         None => None,
     };
-    let client_env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    let client_env: std::collections::BTreeMap<String, String> =
+        bazel_rs::client_env::vars().into_iter().collect();
     let session = match (session_tests, &tools) {
         (Some(tests), Some(tools)) => Some(bazel_rs::test_runner::Session::new(
             bazel_rs::test_runner::Runner {
@@ -4758,7 +4772,8 @@ fn run_test(context: RunTest<'_>) -> Result<(), String> {
             .map(str::to_owned)
             .ok_or_else(|| format!("non-UTF-8 path {} is not supported", path.display()))
     };
-    let client_env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    let client_env: std::collections::BTreeMap<String, String> =
+        bazel_rs::client_env::vars().into_iter().collect();
     let tmp = match &test.test_tmpdir {
         Some(directory) => utf8(&root.join(directory).join("_tmp"))?,
         None => "_tmp".to_owned(),
@@ -5205,6 +5220,14 @@ impl NativeOptions {
                 name,
                 &unit.option.origin_suffix(),
             ));
+        }
+        // ClientOptions.clientEnv (every command): converted here, applied
+        // by priority from the whole option list (client_env_overrides).
+        if let Some(parsed) = bazel_rs::rc_options::value_option(arg, next, "client_env") {
+            let (form, value, _) = parsed?;
+            bazel_rs::client_env::Overrides::parse(value)
+                .map_err(|error| format!("While parsing option {form}: {error}"))?;
+            return Ok(());
         }
         let query = if command == "query" {
             self.query.parse(arg, next)?
@@ -6454,6 +6477,30 @@ fn alias_candidate_error(error: &str, unit: Option<&bazelrc::Unit>) -> Result<bo
 /// Explicit --flag_alias already affects the first parsing round. In
 /// particular, --flag_alias=compilation_mode=//:text --compilation_mode=arbitrary
 /// must not feed "arbitrary" to the native compilation-mode converter.
+/// The `--client_env` values of `options` (crate::client_env): the rc
+/// files' under the process environment, the command line's over it
+/// (converted and validated by NativeOptions::parse).
+fn client_env_overrides(options: &bazelrc::Expanded) -> bazel_rs::client_env::Overrides {
+    let mut overrides = bazel_rs::client_env::Overrides::default();
+    for (unit, command_line) in options.priority.iter().zip(&options.priority_command_line) {
+        let next = unit.value.as_ref().map(|value| value.text.as_str());
+        let Some(Ok((_, value, _))) =
+            bazel_rs::rc_options::value_option(&unit.option.text, next, "client_env")
+        else {
+            continue;
+        };
+        let Ok(entry) = bazel_rs::client_env::Overrides::parse(value) else {
+            continue;
+        };
+        if *command_line {
+            overrides.command_line.push(entry);
+        } else {
+            overrides.rc.push(entry);
+        }
+    }
+    overrides
+}
+
 fn first_pass_flag_alias_options(options: &bazelrc::Expanded, command: &str) -> bazelrc::Expanded {
     use bazel_rs::flag_alias;
     // Every command with CoreOptions parses `--flag_alias` and rewrites the

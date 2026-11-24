@@ -97,6 +97,8 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "host_features",
     "javacopt",
     "host_javacopt",
+    // ProtoConfiguration.Options.protocOpts: a List<String> option.
+    "protocopt",
     // CppOptions.crosstoolTop (`--crosstool_top`): a NO_OP option whose
     // value only the configuration identity and `config_setting(values)`
     // observe.
@@ -470,6 +472,10 @@ pub(crate) struct SettingDetail {
     pub actual: Label,
     pub ty: SettingType,
     pub default: SettingValue,
+    /// An allow_multiple string setting (`buildSettingIsAllowsMultiple`):
+    /// [`Self::ty`] is a string list, [`Self::default`] `[default]`, and a
+    /// transition must set it to a list.
+    pub allow_multiple: bool,
 }
 
 /// Whether a rule (incoming) or attribute (outgoing) transition is applied.
@@ -1195,6 +1201,7 @@ pub(crate) fn native_input<'v>(
         "host_features" => heap.alloc(native.host_features.clone()),
         "javacopt" => heap.alloc(native.javacopts.clone()),
         "host_javacopt" => heap.alloc(native.host_javacopts.clone()),
+        "protocopt" => heap.alloc(native.protocopts.clone()),
         // CppOptions.crosstoolTop: a Label field (its default is a real
         // label, never null).
         "crosstool_top" => label(
@@ -1853,12 +1860,20 @@ fn apply_changes(
         let what = crate::rule_declarations::canonical_form(&setting);
         let (value, raw) = match slot {
             OptionSlot::Typed(value) => (value, None),
+            OptionSlot::Raw(raw) if detail.allow_multiple => (
+                convert_allow_multiple(actual, &raw, &what).map_err(Failure::message)?,
+                Some(raw),
+            ),
             OptionSlot::Raw(raw) => (
                 convert_setting(detail.ty, &raw, &what).map_err(Failure::message)?,
                 Some(raw),
             ),
         };
-        if converted_equals(&value, &detail.default) {
+        // An allow_multiple setting is compared with `[default]` wrapped
+        // once more (StarlarkTransition.java:259: the details' default is
+        // already `ImmutableList.of(default)`), so a transition's output is
+        // never at its default and always stays in the configuration.
+        if !detail.allow_multiple && converted_equals(&value, &detail.default) {
             options.remove(actual);
             continue;
         }
@@ -1954,6 +1969,30 @@ fn stored_raw(
         | (SettingType::Label, RawKind::Label(_), _) => Ok(value.clone()),
         _ => unmodelled(),
     }
+}
+
+/// validateAndCheckIfAtDefault of an allow_multiple setting
+/// (StarlarkTransition.java:243-259): the value must be a list (a Starlark
+/// list or tuple, both java.util.List; not a dict, set or range), each element converted by the
+/// setting's string type.
+fn convert_allow_multiple(actual: &Label, raw: &Raw, what: &str) -> Result<SettingValue, String> {
+    let RawKind::List(items) = &raw.kind else {
+        return Err(format!(
+            "'{}' allows multiple values and must be set in transition using a starlark list instead of single value '{}'",
+            crate::rule_declarations::canonical_form(actual),
+            raw.java_to_string()
+        ));
+    };
+    items
+        .iter()
+        .map(
+            |item| match convert_setting(SettingType::String, item, what)? {
+                SettingValue::String(text) => Ok(text),
+                _ => unreachable!("string settings convert to strings"),
+            },
+        )
+        .collect::<Result<Vec<_>, _>>()
+        .map(SettingValue::StringList)
 }
 
 /// `Type.convert` of a build setting's type (packages/Type.java:296-321,
@@ -2061,6 +2100,7 @@ fn convert_native(
             | "host_features"
             | "javacopt"
             | "host_javacopt"
+            | "protocopt"
     );
     let invalid = || format!("Invalid value type for option '{name}'");
     let parsing = |message: String| format!("OptionsParsingError for option '{name}': {message}");
@@ -2247,7 +2287,7 @@ fn convert_native(
         }
         "copt" | "cxxopt" | "conlyopt" | "linkopt" | "host_copt" | "host_cxxopt"
         | "host_conlyopt" | "host_linkopt" | "ltoindexopt" | "ltobackendopt" | "features"
-        | "host_features" | "javacopt" | "host_javacopt" => {
+        | "host_features" | "javacopt" | "host_javacopt" | "protocopt" => {
             let field = match name {
                 "ltoindexopt" => "rules.cpp.CppOptions.ltoindexoptList",
                 "ltobackendopt" => "rules.cpp.CppOptions.ltobackendoptList",
@@ -2262,6 +2302,7 @@ fn convert_native(
                 "features" => "analysis.config.CoreOptions.defaultFeatures",
                 "host_features" => "analysis.config.CoreOptions.hostFeatures",
                 "javacopt" => "rules.java.JavaOptions.javacOpts",
+                "protocopt" => "rules.proto.ProtoConfiguration$Options.protocOpts",
                 _ => "rules.java.JavaOptions.hostJavacOpts",
             };
             let values = match &raw.kind {
@@ -2288,6 +2329,7 @@ fn convert_native(
                 "features" => &mut native.features,
                 "host_features" => &mut native.host_features,
                 "javacopt" => &mut native.javacopts,
+                "protocopt" => &mut native.protocopts,
                 _ => &mut native.host_javacopts,
             };
             *target = values;

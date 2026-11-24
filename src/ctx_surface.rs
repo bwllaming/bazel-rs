@@ -82,6 +82,9 @@ pub struct CtxSurface {
     /// JavaOptions.javacOpts (`--javacopt`), as given
     /// (`ctx.fragments.java.default_javac_flags[_depset]`).
     pub javacopts: Vec<String>,
+    /// ProtoConfiguration's `--protocopt` values, as given
+    /// (`ctx.fragments.proto.experimental_protoc_opts`).
+    pub protocopts: Vec<String>,
     /// The configuration's effective `--jvmopt` (`default_jvm_opts`).
     pub jvmopts: Vec<String>,
     /// Package.Metadata buildFilename relative to its source root
@@ -138,6 +141,7 @@ impl Default for CtxSurface {
             features: FeatureSet::default(),
             disabled_default_features: Vec::new(),
             javacopts: Vec::new(),
+            protocopts: Vec::new(),
             jvmopts: Vec::new(),
             build_file_path: String::new(),
             apple_sdk_versions: Default::default(),
@@ -1125,6 +1129,10 @@ fn macos_sdk_version_flag<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::R
     sdk_version_flag(surface, "macos_sdk_version", heap)
 }
 
+fn macos_minimum_os_flag<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    sdk_version_flag(surface, "macos_minimum_os", heap)
+}
+
 fn tvos_sdk_version_flag<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
     sdk_version_flag(surface, "tvos_sdk_version", heap)
 }
@@ -1228,6 +1236,12 @@ fn strict_java_deps<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<
             .to_string()
             .to_ascii_lowercase(),
     ))
+}
+
+/// ProtoConfiguration.protocOpts (rules/proto/ProtoConfiguration.java:169-172):
+/// the `--protocopt` values, an immutable list.
+fn experimental_protoc_opts<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    Ok(frozen_owned_strings(heap, &surface.protocopts))
 }
 
 /// ProtoConfiguration.strictPublicImportsForStarlark (:239-243).
@@ -1382,9 +1396,11 @@ fn members(kind: Kind) -> &'static [(&'static str, Member)] {
         // true, `--experimental_include_xcode_execution_requirements` false.
         // The `*_sdk_version_flag`s read the configuration's
         // `--{ios,macos,tvos,watchos}_sdk_version` (N40) as DottedVersion
-        // (crate::apple_xcode, N25d2a). The other version flags stay null
-        // only while `--xcode_version` and `--{ios,macos,tvos,watchos}_minimum_os`
-        // are rejected by the native option parser; once modelled they must
+        // (crate::apple_xcode, N25d2a), and `macos_minimum_os_flag` reads
+        // `--macos_minimum_os` the same way (AppleConfiguration.java:109,
+        // 294). The other version flags stay null only while
+        // `--xcode_version` and `--{ios,tvos,watchos}_minimum_os` are
+        // rejected by the native option parser; once modelled they must
         // read the configuration's values the same way. Test hooks:
         // tests/ctx_surface.rs apple_version_flags_stay_none_while_the_options_are_rejected
         // and apple_sdk_version_flags_read_the_configuration.
@@ -1394,7 +1410,10 @@ fn members(kind: Kind) -> &'static [(&'static str, Member)] {
             ("include_xcode_exec_requirements", Field(V::Bool(false))),
             ("ios_minimum_os_flag", Field(V::None)),
             ("ios_sdk_version_flag", Field(V::Dyn(ios_sdk_version_flag))),
-            ("macos_minimum_os_flag", Field(V::None)),
+            (
+                "macos_minimum_os_flag",
+                Field(V::Dyn(macos_minimum_os_flag)),
+            ),
             (
                 "macos_sdk_version_flag",
                 Field(V::Dyn(macos_sdk_version_flag)),
@@ -1550,7 +1569,10 @@ fn members(kind: Kind) -> &'static [(&'static str, Member)] {
                     value: V::Dyn(proto_descriptor_sets_include_source_info),
                 },
             ),
-            ("experimental_protoc_opts", Field(V::Strs(&[]))),
+            (
+                "experimental_protoc_opts",
+                Field(V::Dyn(experimental_protoc_opts)),
+            ),
             (
                 "strict_proto_deps",
                 Method {

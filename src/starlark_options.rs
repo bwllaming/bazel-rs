@@ -88,8 +88,15 @@ pub struct BuildSettingInfo {
     pub default: SettingValue,
     /// `BuildSetting.isFlag`: settable on the command line.
     pub is_flag: bool,
-    /// `BuildSetting.isRepeatableFlag` (`config.string_list(repeatable=True)`).
+    /// `BuildSetting.isRepeatableFlag` (`config.string_list(repeatable=True)`),
+    /// or an allow_multiple setting: each command-line occurrence adds one
+    /// string element (StarlarkOptionsParser.java:192-222).
     pub repeatable: bool,
+    /// `BuildSetting.allowsMultiple` (`config.string(allow_multiple=True)`):
+    /// [`Self::ty`] is a string list and [`Self::default`] the list of the
+    /// rule's string `build_setting_default`; `config_setting` converts an
+    /// expected value as a single string (ConfigSetting.java:722-756).
+    pub allow_multiple: bool,
     /// The explicitly specified `scope` (exec transitions, crate::config_registry).
     pub scope: ScopeAttribute,
 }
@@ -98,7 +105,6 @@ impl BuildSettingInfo {
     /// The value in `configuration`: the command-line value, else the default
     /// (StarlarkRuleContext.getBuildSettingValue, analysis/starlark/StarlarkRuleContext.java:738-757;
     /// LabelBuildSettings.ACTUAL, rules/LabelBuildSettings.java:62-83).
-    /// `allow_multiple` settings are not modelled (crate::build_settings).
     pub fn value(&self, configuration: &Configuration) -> SettingValue {
         configuration
             .starlark
@@ -547,6 +553,7 @@ mod tests {
             default,
             is_flag: flag,
             repeatable: false,
+            allow_multiple: false,
             scope: ScopeAttribute::Unspecified,
         })
     }
@@ -574,6 +581,7 @@ mod tests {
                 default: SettingValue::StringList(vec![]),
                 is_flag: true,
                 repeatable: true,
+                allow_multiple: false,
                 scope: ScopeAttribute::Unspecified,
             }),
             "//:lf" => setting(
@@ -780,6 +788,7 @@ mod tests {
                     default: SettingValue::String("d".into()),
                     is_flag: true,
                     repeatable: false,
+                    allow_multiple: false,
                     scope: scope.clone(),
                 }))
             }

@@ -4783,7 +4783,8 @@ ordinary(name="ordinary", help="ordinary help", build_setting_default=True)
                 Some(BuildSetting {
                     kind,
                     flag,
-                    repeatable
+                    repeatable,
+                    allow_multiple: false,
                 })
             );
             assert_eq!(custom.attrs["build_setting_default"], value);

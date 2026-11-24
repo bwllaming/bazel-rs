@@ -732,6 +732,9 @@ pub fn exec_transition(
         // `--host_javacopt`, which propagates (:381).
         javacopts: from.native.host_javacopts.clone(),
         host_javacopts: from.native.host_javacopts.clone(),
+        // ProtoConfiguration$Options propagates `--protocopt`
+        // (builtin_exec_platforms.bzl:422-436).
+        protocopts: from.native.protocopts.clone(),
         // `_java_options` (:350-354): `--host_jvmopt`, or (empty, implicit
         // here) `-XX:ErrorFile=/dev/stderr`; `--host_jvmopt` propagates.
         jvmopts: from.native.host_jvmopts.clone(),
@@ -747,9 +750,13 @@ pub fn exec_transition(
         use_target_platform_for_tests: defaults.use_target_platform_for_tests,
         // In CoreOptions' propagate list (builtin_exec_platforms.bzl:246).
         incompatible_auto_exec_groups: from.native.incompatible_auto_exec_groups,
-        // AppleCommandLineOptions propagates the SDK versions
-        // (builtin_exec_platforms.bzl:170-176).
-        apple_sdk_versions: from.native.apple_sdk_versions.clone(),
+        // AppleCommandLineOptions propagates the SDK versions and
+        // `--host_macos_minimum_os`; its `func` sets `--macos_minimum_os`
+        // to the latter (builtin_exec_platforms.bzl:170-189).
+        apple_sdk_versions: crate::configuration::AppleSdkVersions {
+            macos_minimum_os: from.native.apple_sdk_versions.host_macos_minimum_os.clone(),
+            ..from.native.apple_sdk_versions.clone()
+        },
         action_env: from.native.host_action_env.clone(),
         host_action_env: from.native.host_action_env.clone(),
         strict_action_env: from.native.strict_action_env,
@@ -859,6 +866,7 @@ pub(crate) fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static
     options.insert("host_features", list(&native.host_features));
     options.insert("javacopt", list(&native.javacopts));
     options.insert("host_javacopt", list(&native.host_javacopts));
+    options.insert("protocopt", list(&native.protocopts));
     options.insert("jvmopt", list(&native.effective_jvmopts()));
     options.insert("host_jvmopt", list(&native.host_jvmopts));
     let per_label_options = |items: &[String]| {
@@ -1281,6 +1289,8 @@ mod tests {
                 "--extra_toolchains=//tc:x",
                 "--incompatible_auto_exec_groups",
                 "--macos_sdk_version=10.13",
+                "--macos_minimum_os=10.15",
+                "--host_macos_minimum_os=11.0",
             ])
             .native,
             BTreeMap::from([
@@ -1307,6 +1317,10 @@ mod tests {
         assert!(native.incompatible_auto_exec_groups);
         // AppleCommandLineOptions propagates the SDK versions.
         assert_eq!(native.apple_sdk_versions.macos.as_deref(), Some("10.13"));
+        // ... and `--host_macos_minimum_os`, which `--macos_minimum_os` takes.
+        let apple = &native.apple_sdk_versions;
+        assert_eq!(apple.macos_minimum_os.as_deref(), Some("11.0"));
+        assert_eq!(apple.host_macos_minimum_os.as_deref(), Some("11.0"));
         assert_eq!(
             exec.starlark,
             BTreeMap::from([(label("//f:universal"), SettingValue::Bool(true))])

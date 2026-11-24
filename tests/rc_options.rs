@@ -179,14 +179,6 @@ fn defaults_are_accepted_and_other_values_are_explicit() {
             "--noincompatible_strict_action_env :: Unrecognized option: --noincompatible_strict_action_env",
         ),
         (
-            &[
-                "query",
-                "--incompatible_enable_proto_toolchain_resolution=false",
-                "//:plain",
-            ][..],
-            "the legacy --proto_compiler",
-        ),
-        (
             &["query", "--test_output=errors", "//:plain"][..],
             "--test_output=errors :: Unrecognized option: --test_output=errors",
         ),

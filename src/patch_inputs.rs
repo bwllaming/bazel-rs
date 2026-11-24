@@ -192,7 +192,7 @@ impl LocalPatchPlan {
             Some(environment) => environment,
             None => {
                 // snapshot-unrecorded: library use only (no installed command environment); as above.
-                process = std::env::vars_os().collect();
+                process = crate::client_env::vars_os();
                 &process
             }
         };

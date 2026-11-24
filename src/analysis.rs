@@ -1820,6 +1820,9 @@ pub(crate) fn setting_default(
     invocation: &crate::custom_rule::CustomInvocation,
 ) -> anyhow::Result<crate::configuration::SettingValue> {
     use crate::configuration::SettingValue;
+    let allow_multiple = invocation
+        .build_setting
+        .is_some_and(|setting| setting.allow_multiple);
     Ok(
         match invocation
             .attrs
@@ -1828,6 +1831,12 @@ pub(crate) fn setting_default(
         {
             AttrValue::Bool(value) => SettingValue::Bool(*value),
             AttrValue::Int(value) => SettingValue::Int(i64::from(*value)),
+            // An allow_multiple string setting's default value is the list
+            // of its default (StarlarkRuleContext.java:756,
+            // StarlarkOptionsParser.java:241-242).
+            AttrValue::String(value) if allow_multiple => {
+                SettingValue::StringList(vec![value.clone()])
+            }
             AttrValue::String(value) => SettingValue::String(value.clone()),
             AttrValue::Strings(values) => SettingValue::StringList(values.clone()),
             other => bail!("unsupported build-setting default {other:?}"),

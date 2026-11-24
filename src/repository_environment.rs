@@ -102,7 +102,7 @@ pub(crate) trait EnvironmentReader: Send + Sync {
     /// and `repository_ctx.execute` enumerate it; `getenv` stays name-scoped.
     fn all(&self) -> Result<Vec<(OsString, OsString)>, ReadError> {
         // snapshot-unrecorded: only repository rules and extensions enumerate it; an extension evaluation taints the snapshot, a local repository rule is replayed and compared (crate::snapshot::replay), any other executed rule taints.
-        Ok(std::env::vars_os().collect())
+        Ok(crate::client_env::vars_os())
     }
 }
 
@@ -110,7 +110,7 @@ struct ProcessReader;
 impl EnvironmentReader for ProcessReader {
     fn read(&self, name: &str) -> Result<Option<OsString>, ReadError> {
         // snapshot-unrecorded: recorded as ENV by Snapshot::capture (every reader).
-        Ok(std::env::var_os(name))
+        Ok(crate::client_env::var_os(name))
     }
 }
 

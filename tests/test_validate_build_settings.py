@@ -71,7 +71,7 @@ def synthetic_report(scratch):
         for probe, engine in settings.phases_for(item):
             if (item['name'], probe) in settings.SUPERSEDED:
                 check['phases'].append(dict(probe=probe, engine=engine, status='SUPERSEDED',
-                                            reason=settings.SUPERSEDED_REASON, runs=[]))
+                                            reason=settings.SUPERSEDED[(item["name"], probe)], runs=[]))
                 continue
             spec = settings.specification(item, probe)
             frozen = settings.snapshot(settings.prepare(ref.workspace, spec))
@@ -363,7 +363,8 @@ class ArtifactTests(unittest.TestCase):
 class ReportTests(unittest.TestCase):
     def test_cli_option_probes_are_retired_by_n16b_not_false_failures(self):
         self.assertEqual(sorted(settings.SUPERSEDED), [('native.unsupported', p) for p in
-                                                       ('bool-option', 'negative-bool-option', 'string-option')])
+                                                       ('allow-multiple', 'bool-option', 'negative-bool-option',
+                                                        'string-option')])
         self.assertIn('superseded by N16b', settings.SUPERSEDED_REASON)
         with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
             report = synthetic_report(Path(directory))

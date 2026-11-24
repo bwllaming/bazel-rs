@@ -1,0 +1,8 @@
+load(":defs.bzl", "env", "flags", "tr_rule")
+flags(name = "tool")
+flags(name = "f", tool = ":tool")
+env(name = "e")
+tr_rule(name = "t", dep = ":f")
+config_setting(name = "m", values = {"macos_minimum_os": "10.15"})
+config_setting(name = "pc", values = {"protocopt": "--fatal_warnings"})
+genrule(name = "s", outs = ["s.txt"], cmd = select({":m": "echo m", "//conditions:default": "echo d"}) + " " + select({":pc": "echo pc", "//conditions:default": "echo nopc"}) + " > $@")

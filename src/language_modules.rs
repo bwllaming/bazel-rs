@@ -2218,11 +2218,12 @@ pub fn install(builder: &mut GlobalsBuilder) {
         let heap = builder.frozen_heap();
         let proto = sorted_struct(
             heap,
-            // builtins_bzl/common/exports.bzl; the flag defaults to true
+            // builtins_bzl/common/exports.bzl:23-24: the Starlark semantics
+            // flag, default true
             // (FlagConstants.DEFAULT_INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION).
             vec![(
                 "INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION",
-                FrozenValue::new_bool(true),
+                FrozenValue::new_bool(proto_toolchain_resolution()),
             )],
         );
         (apple_common(heap), py_internal(heap), proto)
@@ -2233,6 +2234,22 @@ pub fn install(builder: &mut GlobalsBuilder) {
     builder.set("py_internal", python);
     builder.set("proto_common_do_not_use", proto);
     crate::cc_common::install(builder);
+}
+
+/// `--incompatible_enable_proto_toolchain_resolution` of this command
+/// (BuildLanguageOptions.java:644-652, default true): one value per process,
+/// set by the CLI after option parsing and before any `.bzl` globals are
+/// built ([`set_proto_toolchain_resolution`]).
+static PROTO_TOOLCHAIN_RESOLUTION: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+/// Set the command's `--[no]incompatible_enable_proto_toolchain_resolution`.
+pub fn set_proto_toolchain_resolution(value: bool) {
+    PROTO_TOOLCHAIN_RESOLUTION.store(value, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn proto_toolchain_resolution() -> bool {
+    PROTO_TOOLCHAIN_RESOLUTION.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The complete `platform_common` namespace value.

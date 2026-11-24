@@ -41,6 +41,12 @@ mod value {
         pub kind: BuildSettingKind,
         pub flag: bool,
         pub repeatable: bool,
+        /// `config.string(allow_multiple = True)` (BuildSetting.allowsMultiple,
+        /// packages/BuildSetting.java:60): every command-line occurrence adds
+        /// a value, so the configured value is a list of strings whose default
+        /// is `[build_setting_default]` (StarlarkOptionsParser.java:205-252,
+        /// StarlarkRuleContext.java:756).
+        pub allow_multiple: bool,
     }
 
     impl fmt::Display for BuildSetting {
@@ -71,6 +77,7 @@ fn config_globals(builder: &mut GlobalsBuilder) {
             kind: BuildSettingKind::Bool,
             flag,
             repeatable: false,
+            allow_multiple: false,
         })
     }
 
@@ -81,6 +88,7 @@ fn config_globals(builder: &mut GlobalsBuilder) {
             kind: BuildSettingKind::Int,
             flag,
             repeatable: false,
+            allow_multiple: false,
         })
     }
 
@@ -88,13 +96,11 @@ fn config_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named, default = false)] flag: bool,
         #[starlark(require = named, default = false)] allow_multiple: bool,
     ) -> anyhow::Result<BuildSetting> {
-        if allow_multiple {
-            bail!("config.string(allow_multiple=True) is unsupported");
-        }
         Ok(BuildSetting {
             kind: BuildSettingKind::String,
             flag,
             repeatable: false,
+            allow_multiple,
         })
     }
 
@@ -109,6 +115,7 @@ fn config_globals(builder: &mut GlobalsBuilder) {
             kind: BuildSettingKind::StringList,
             flag,
             repeatable,
+            allow_multiple: false,
         })
     }
 
@@ -186,7 +193,8 @@ mod tests {
                         BuildSetting {
                             kind,
                             flag,
-                            repeatable: false
+                            repeatable: false,
+                            allow_multiple: false,
                         }
                     );
                     module.freeze().unwrap()
@@ -197,7 +205,8 @@ mod tests {
                     BuildSetting {
                         kind,
                         flag,
-                        repeatable: false
+                        repeatable: false,
+                        allow_multiple: false,
                     }
                 );
             }
@@ -214,11 +223,6 @@ mod tests {
             ("config.string_list(True)", "positional"),
             ("config.bool(flag=1)", "bool"),
             ("config.int(flag=None)", "bool"),
-            ("config.string(allow_multiple=True)", "unsupported"),
-            (
-                "config.string(flag=True, allow_multiple=True)",
-                "unsupported",
-            ),
             ("config.string_list(repeatable=True)", "flag = True"),
             ("config.string_set()", "string_set"),
             ("config.bool().flag", "flag"),
@@ -234,14 +238,15 @@ mod tests {
             });
         }
         Module::with_temp_heap(|module| {
-            let ast = AstModule::parse("config.bzl", "x = config.string_list(flag=True, repeatable=True)\ny = config.string(allow_multiple=False)".into(), &Dialect::Standard).unwrap();
+            let ast = AstModule::parse("config.bzl", "x = config.string_list(flag=True, repeatable=True)\ny = config.string(allow_multiple=False)\nz = config.string(flag=True, allow_multiple=True)".into(), &Dialect::Standard).unwrap();
             Evaluator::new(&module).eval_module(ast, &globals).unwrap();
             assert_eq!(
                 *BuildSetting::from_value(module.get("x").unwrap()).unwrap(),
                 BuildSetting {
                     kind: BuildSettingKind::StringList,
                     flag: true,
-                    repeatable: true
+                    repeatable: true,
+                    allow_multiple: false,
                 }
             );
             assert_eq!(
@@ -250,6 +255,8 @@ mod tests {
                     .kind,
                 BuildSettingKind::String
             );
+            let z = *BuildSetting::from_value(module.get("z").unwrap()).unwrap();
+            assert!(z.allow_multiple && z.flag && z.kind == BuildSettingKind::String);
         });
     }
 }

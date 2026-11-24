@@ -1,0 +1,2 @@
+load("//am:defs.bzl", "fwd_single")
+fwd_single(name = "si", dep = "//am:s")

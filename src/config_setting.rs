@@ -315,10 +315,17 @@ fn user_defined_flags(
             continue;
         };
         let configured = setting.value(configuration);
+        // An allow_multiple setting's type is string (BuildSetting.getType):
+        // the expected value converts as one string.
+        let ty = if setting.allow_multiple {
+            SettingType::String
+        } else {
+            setting.ty
+        };
         // BUILD_SETTING_CONVERTERS with a null conversion context: the value
         // is already canonical (CoreOptionConverters.convertOptionsLabel, :345-350).
         let converted = match starlark_options::convert(
-            setting.ty,
+            ty,
             &value,
             &configuration::parse_canonical_option_label,
         ) {
@@ -326,7 +333,7 @@ fn user_defined_flags(
             Err(ConversionError::Invalid) => {
                 errors.push(attribute_error(format!(
                     "error while parsing user-defined configuration values: '{value}' cannot be converted to {specified} type {}",
-                    setting.ty.name()
+                    ty.name()
                 )));
                 continue;
             }
@@ -343,9 +350,38 @@ fn user_defined_flags(
             want: configured.to_string(),
         };
         // List-valued settings match if any entry equals the single expected
-        // value (:722-756); allow_multiple settings are not modelled.
+        // value (:722-756). An allow_multiple setting the configuration does
+        // not set is its raw default string (BuildSettingProvider.getDefaultValue,
+        // :684-689), compared for equality; a set one is a list.
         // A transition's raw StarlarkList/Tuple is a java.util.List too.
-        if let Some(actual_values) = configured.string_items() {
+        if setting.allow_multiple {
+            let SettingValue::String(expected) = &converted else {
+                unreachable!("allow_multiple settings convert to strings");
+            };
+            match configuration.starlark.get(&setting.label) {
+                None => {
+                    let default = setting
+                        .default
+                        .string_items()
+                        .and_then(|items| items.first().cloned());
+                    if default.as_deref() != Some(expected.as_str()) {
+                        diffs.push(Diff {
+                            what: flag.specified.clone(),
+                            got: converted.to_string(),
+                            want: default.unwrap_or_default(),
+                        });
+                    }
+                }
+                Some(_) => {
+                    if !configured
+                        .string_items()
+                        .is_some_and(|actual| actual.contains(expected))
+                    {
+                        diffs.push(diff());
+                    }
+                }
+            }
+        } else if let Some(actual_values) = configured.string_items() {
             let SettingValue::StringList(expected) = &converted else {
                 unreachable!("string_list settings convert to lists");
             };
@@ -1070,6 +1106,7 @@ mod tests {
                 default,
                 is_flag: true,
                 repeatable: false,
+                allow_multiple: false,
                 scope: Default::default(),
             }),
             feature_flag: None,

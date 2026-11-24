@@ -631,13 +631,13 @@ fn ctx_surface_is_per_configured_target_key() {
 
 /// The apple fragment's version flags are null because the Apple version
 /// options are not accepted natively. Once `--xcode_version` and the
-/// `--<platform>_sdk_version` / `--<platform>_minimum_os` options are
-/// modelled, crate::ctx_surface must read them (as N25d2a DottedVersion
+/// `--{ios,tvos,watchos}_minimum_os` options are modelled (the SDK versions
+/// and `--macos_minimum_os` are), crate::ctx_surface must read them (as N25d2a DottedVersion
 /// values) and this test must change with it.
 #[test]
 fn apple_version_flags_stay_none_while_the_options_are_rejected() {
     let ws = workspace();
-    for option in ["--xcode_version=15.0", "--macos_minimum_os=13.0"] {
+    for option in ["--xcode_version=15.0", "--ios_minimum_os=13.0"] {
         let error = ws.rejected(&[option, "//test:sx"]);
         assert!(error.contains(option.split('=').next().unwrap()), "{error}");
     }
@@ -658,7 +658,7 @@ Flags = provider(fields = ["text"])
 
 def _flags(ctx):
     a = ctx.fragments.apple
-    values = [a.ios_sdk_version_flag, a.macos_sdk_version_flag, a.tvos_sdk_version_flag, a.watchos_sdk_version_flag]
+    values = [a.ios_sdk_version_flag, a.macos_sdk_version_flag, a.tvos_sdk_version_flag, a.watchos_sdk_version_flag, a.macos_minimum_os_flag]
     text = repr([(type(v), str(v)) for v in values])
     if ctx.attr.tool:
         text = text + " exec=" + ctx.attr.tool[Flags].text
@@ -677,9 +677,9 @@ flags = rule(
         "sdk/BUILD.bazel",
         "load(':defs.bzl', 'flags')\nflags(name = 'tool')\nflags(name = 'f', tool = ':tool')\n",
     );
-    let none = r#"[("NoneType", "None"), ("NoneType", "None"), ("NoneType", "None"), ("NoneType", "None")]"#;
+    let none = r#"[("NoneType", "None"), ("NoneType", "None"), ("NoneType", "None"), ("NoneType", "None"), ("NoneType", "None")]"#;
     assert_eq!(ws.built(&["//sdk:f"]), format!("{none} exec={none}\n"));
-    let set = r#"[("DottedVersion", "17.0"), ("DottedVersion", "13.1.0"), ("NoneType", "None"), ("DottedVersion", "10")]"#;
+    let set = r#"[("DottedVersion", "17.0"), ("DottedVersion", "13.1.0"), ("NoneType", "None"), ("DottedVersion", "10"), ("NoneType", "None")]"#;
     assert_eq!(
         ws.built(&[
             "--ios_sdk_version=17.0",
@@ -688,5 +688,25 @@ flags = rule(
             "//sdk:f",
         ]),
         format!("{set} exec={set}\n")
+    );
+    // `--macos_minimum_os`: the exec configuration's is the parent's
+    // `--host_macos_minimum_os` (builtin_exec_platforms.bzl:177-189).
+    let none4 =
+        r#"("NoneType", "None"), ("NoneType", "None"), ("NoneType", "None"), ("NoneType", "None")"#;
+    assert_eq!(
+        ws.built(&["--macos_minimum_os=10.15", "//sdk:f"]),
+        format!(
+            "[{none4}, (\"DottedVersion\", \"10.15\")] exec=[{none4}, (\"NoneType\", \"None\")]\n"
+        )
+    );
+    assert_eq!(
+        ws.built(&[
+            "--macos_minimum_os=10.15",
+            "--host_macos_minimum_os=12",
+            "//sdk:f"
+        ]),
+        format!(
+            "[{none4}, (\"DottedVersion\", \"10.15\")] exec=[{none4}, (\"DottedVersion\", \"12\")]\n"
+        )
     );
 }

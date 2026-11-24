@@ -1,0 +1,309 @@
+{
+ "bazel": "9.3.1",
+ "cases": {
+  "allow_multiple_at_default": {
+   "command": "build",
+   "env": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--//am:f=d"
+   ],
+   "outputs": {
+    "k8-fastbuild-ST-d75e1a5d4e76/bin/am/s.txt": "[[\"d\"], \"list\", \"d\"]\n",
+    "k8-fastbuild/bin/am/s.txt": "[[\"d\"], \"list\", \"d\"]\n"
+   },
+   "patterns": [],
+   "rc": false,
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//am:s",
+    "//am:re"
+   ],
+   "workspace": "workspace"
+  },
+  "allow_multiple_comma": {
+   "command": "build",
+   "env": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--//am:f=a,b"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/am/s.txt": "[[\"a,b\"], \"list\", \"comma\"]\n"
+   },
+   "patterns": [],
+   "rc": false,
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//am:s"
+   ],
+   "workspace": "workspace"
+  },
+  "allow_multiple_default": {
+   "command": "build",
+   "env": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {
+    "k8-fastbuild-ST-490ddc5358c5/bin/am/s.txt": "[[\"d\", \"t\"], \"list\", \"d\"]\n",
+    "k8-fastbuild-ST-490ddc5358c5/bin/am/s2.txt": "[[\"d\", \"t\"], \"list\", \"t\"]\n",
+    "k8-fastbuild-ST-d75e1a5d4e76/bin/am/s.txt": "[[\"d\"], \"list\", \"d\"]\n",
+    "k8-fastbuild/bin/am/s.txt": "[[\"d\"], \"list\", \"d\"]\n"
+   },
+   "patterns": [
+    "IN \\["
+   ],
+   "rc": false,
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/am/defs.bzl:16:10: IN [\"d\"]",
+     "pattern": "IN \\["
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//am:s",
+    "//am:ap",
+    "//am:re",
+    "//am:ap2"
+   ],
+   "workspace": "workspace"
+  },
+  "allow_multiple_repeated": {
+   "command": "build",
+   "env": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--//am:f=a",
+    "--//am:f=b"
+   ],
+   "outputs": {
+    "k8-fastbuild-ST-5277f620f07d/bin/am/s.txt": "[[\"a\", \"b\", \"t\"], \"list\", \"a\"]\n",
+    "k8-fastbuild-ST-5277f620f07d/bin/am/s2.txt": "[[\"a\", \"b\", \"t\"], \"list\", \"t\"]\n",
+    "k8-fastbuild-ST-5e96ca7cd282/bin/am/s.txt": "[[\"d\"], \"list\", \"d\"]\n",
+    "k8-fastbuild/bin/am/s.txt": "[[\"a\", \"b\"], \"list\", \"a\"]\n"
+   },
+   "patterns": [
+    "IN \\["
+   ],
+   "rc": false,
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/am/defs.bzl:16:10: IN [\"a\", \"b\"]",
+     "pattern": "IN \\["
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//am:s",
+    "//am:ap",
+    "//am:re",
+    "//am:ap2"
+   ],
+   "workspace": "workspace"
+  },
+  "allow_multiple_single_value_transition": {
+   "command": "build",
+   "env": {},
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "outputs": {},
+   "patterns": [
+    "allows multiple values"
+   ],
+   "rc": false,
+   "stderr": [
+    {
+     "line": "ERROR: <WS>/am/err/BUILD.bazel:2:11: on dependency edge //am/err:si (2744422) -|dep|-> //am:s: '//am:f' allows multiple values and must be set in transition using a starlark list instead of single value 'x'",
+     "pattern": "allows multiple values"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//am/err:si"
+   ],
+   "workspace": "workspace"
+  },
+  "apple_and_proto_options": {
+   "command": "build",
+   "env": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--macos_minimum_os=10.15",
+    "--protocopt=--fatal_warnings",
+    "--protocopt=-a"
+   ],
+   "outputs": {
+    "k8-fastbuild-ST-d193f37ffb31/bin/opts/f.txt": "[10.15, [\"--fatal_warnings\", \"-a\", \"--x\"], \"list\"] exec=[None, [\"--fatal_warnings\", \"-a\", \"--x\"], \"list\"]\n",
+    "k8-fastbuild/bin/opts/f.txt": "[10.15, [\"--fatal_warnings\", \"-a\"], \"list\"] exec=[None, [\"--fatal_warnings\", \"-a\"], \"list\"]\n",
+    "k8-fastbuild/bin/opts/s.txt": "m echo pc\n"
+   },
+   "patterns": [],
+   "rc": false,
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//opts:f",
+    "//opts:s",
+    "//opts:t"
+   ],
+   "workspace": "workspace"
+  },
+  "client_env_command_line": {
+   "command": "build",
+   "env": {
+    "FOO": "real"
+   },
+   "exit": 0,
+   "flags": [
+    "--client_env=BAR=cli",
+    "--client_env=FOO=cli"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/e.txt": "CC=clang FOO=cli BAR=cli\n"
+   },
+   "patterns": [],
+   "rc": true,
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//:e"
+   ],
+   "workspace": "rcws"
+  },
+  "client_env_invalid": {
+   "command": "build",
+   "env": {},
+   "exit": 2,
+   "flags": [
+    "--client_env=CC"
+   ],
+   "outputs": {},
+   "patterns": [
+    "client_env"
+   ],
+   "rc": true,
+   "stderr": [
+    {
+     "line": "ERROR: While parsing option --client_env=CC: Variable definitions must be in the form of a 'name=value' assignment",
+     "pattern": "client_env"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//:e"
+   ],
+   "workspace": "rcws"
+  },
+  "client_env_rc": {
+   "command": "build",
+   "env": {
+    "FOO": "real"
+   },
+   "exit": 0,
+   "flags": [],
+   "outputs": {
+    "k8-fastbuild/bin/e.txt": "CC=clang FOO=real BAR=rc\n"
+   },
+   "patterns": [],
+   "rc": true,
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//:e"
+   ],
+   "workspace": "rcws"
+  },
+  "host_macos_minimum_os": {
+   "command": "build",
+   "env": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--host_macos_minimum_os=12.1"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/opts/f.txt": "[None, [], \"list\"] exec=[12.1, [], \"list\"]\n"
+   },
+   "patterns": [],
+   "rc": false,
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//opts:f"
+   ],
+   "workspace": "workspace"
+  },
+  "proto_toolchain_resolution_default": {
+   "command": "build",
+   "env": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--nobuild"
+   ],
+   "outputs": {},
+   "patterns": [
+    "PROTO"
+   ],
+   "rc": false,
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/proto/defs.bzl:2:6: PROTO True",
+     "pattern": "PROTO"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//proto:p"
+   ],
+   "workspace": "workspace"
+  },
+  "proto_toolchain_resolution_off": {
+   "command": "build",
+   "env": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--nobuild",
+    "--noincompatible_enable_proto_toolchain_resolution"
+   ],
+   "outputs": {},
+   "patterns": [
+    "PROTO"
+   ],
+   "rc": false,
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/proto/defs.bzl:2:6: PROTO False",
+     "pattern": "PROTO"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//proto:p"
+   ],
+   "workspace": "workspace"
+  }
+ },
+ "elf_sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c"
+}

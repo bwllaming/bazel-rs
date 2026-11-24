@@ -1,0 +1,2 @@
+X = proto_common_do_not_use.INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION
+print("PROTO", X)

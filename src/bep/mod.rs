@@ -635,7 +635,7 @@ fn user_name() -> String {
                 (fields.nth(1)? == uid).then(|| name.to_owned())
             })
         })
-        .or_else(|| std::env::var("USER").ok())
+        .or_else(|| crate::client_env::var("USER"))
         .unwrap_or_default()
 }
 

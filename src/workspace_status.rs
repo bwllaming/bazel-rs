@@ -210,7 +210,7 @@ fn user_name() -> String {
             return name.to_owned();
         }
     }
-    std::env::var("USER").unwrap_or_default()
+    crate::client_env::var("USER").unwrap_or_default()
 }
 
 /// NetUtil.computeShortHostName (:67-73): the local host's name

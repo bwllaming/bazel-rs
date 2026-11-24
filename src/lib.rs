@@ -42,6 +42,7 @@ mod cc_actions;
 mod cc_common;
 mod cc_features;
 mod cc_variables;
+pub mod client_env;
 mod command_line;
 mod command_options;
 pub mod config_registry;

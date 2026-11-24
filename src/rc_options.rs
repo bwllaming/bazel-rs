@@ -61,6 +61,9 @@ pub struct RcOptions {
     /// starlark-semantics` only (no other effect; see [`utf8_enforcement`]'s
     /// neighbours).
     pub use_cc_configure_from_rules_cc: bool,
+    /// `--[no]incompatible_enable_proto_toolchain_resolution`
+    /// (BuildLanguageOptions.java:644-652; `None`: the default true).
+    pub proto_toolchain_resolution: Option<bool>,
 }
 
 /// `--NAME`'s value through Converters.IntegerConverter.
@@ -338,13 +341,12 @@ impl RcOptions {
         // other modelled RemoteOptions are crate::remote_cache::RemoteOptions
         // (N41, docs/REMOTE_EXECUTION.md).
         if let Some(value) = boolean(arg, &["incompatible_enable_proto_toolchain_resolution"]) {
-            // Default true (packages/semantics/FlagConstants.java:48); the
-            // native proto_common_do_not_use exports True (crate::language_modules).
-            if !value? {
-                return Err(format!(
-                    "unsupported option {arg}{origin}: --incompatible_enable_proto_toolchain_resolution=false (the legacy --proto_compiler/--proto_toolchain_for_* path of proto rules) is not implemented; only the Bazel 9.3 default true is modelled"
-                ));
-            }
+            // Default true (packages/semantics/FlagConstants.java:48):
+            // `proto_common_do_not_use.INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION`
+            // (crate::language_modules). protobuf's rules then take protoc and
+            // the lang toolchains from their legacy `configuration_field("proto",
+            // …)` attributes instead of toolchain resolution (crate::late_bound).
+            self.proto_toolchain_resolution = Some(value?);
             return Ok(Some(false));
         }
         // `--[no]incompatible_strict_action_env` is a configuration option
@@ -788,10 +790,11 @@ mod tests {
                 "{arg}"
             );
         }
-        let message = error(
+        let options = parse(
             "build",
-            &["--incompatible_enable_proto_toolchain_resolution=false"],
-        );
-        assert!(message.contains("legacy --proto_compiler"), "{message}");
+            &["--noincompatible_enable_proto_toolchain_resolution"],
+        )
+        .unwrap();
+        assert_eq!(options.proto_toolchain_resolution, Some(false));
     }
 }

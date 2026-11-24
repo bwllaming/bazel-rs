@@ -1320,6 +1320,11 @@ pub struct Expanded {
     pub steps: Vec<(Step, Position)>,
     /// Native option units in priority order (valid when no step fails).
     pub priority: Vec<Unit>,
+    /// For each [`Self::priority`] unit: whether it has the command line's
+    /// priority (OptionPriority.PriorityCategory.COMMAND_LINE): a
+    /// command-line option or an expansion of a command-line `--config`,
+    /// not an rc option or an expansion of an rc file's `--config`.
+    pub priority_command_line: Vec<bool>,
     /// Residue (targets, subcommands) in parse-call order.
     pub residue: Vec<Arg>,
     pub notes: Vec<Note>,
@@ -1472,7 +1477,9 @@ struct Chunk {
 
 enum Item {
     Native(Unit),
-    Config(String, Vec<Item>),
+    /// A `--config` (its value, whether the `--config` itself is a
+    /// command-line argument) and its expansion.
+    Config(String, bool, Vec<Item>),
     Announce(bool),
     Platform(bool, Vec<Item>),
     Fail(String),
@@ -1624,7 +1631,9 @@ fn scan(args: &[(Arg, bool)], bit: u8) -> Scan {
                     .map(str::to_owned)
                     .or_else(|| value.map(|value| value.text))
                     .unwrap_or_default();
-                scan.items.push(Item::Config(value, Vec::new()));
+                let command_line = matches!(arg.origin, Origin::CommandLine);
+                scan.items
+                    .push(Item::Config(value, command_line, Vec::new()));
             }
             "announce_rc" | "enable_platform_specific_config" => {
                 let parsed = match inline {
@@ -1752,7 +1761,7 @@ impl Expander<'_> {
                         this.out.steps.push((Step::Unit(unit.clone()), position));
                     }
                     Item::Fail(error) => this.fail(error.clone(), open_note),
-                    Item::Config(_, children) | Item::Platform(_, children) => {
+                    Item::Config(_, _, children) | Item::Platform(_, children) => {
                         walk(this, children, open_note)
                     }
                     Item::Announce(_) => {}
@@ -1979,7 +1988,7 @@ pub fn expand(
     // expandConfigOptions (ConfigExpander.java:100-132): the top-level
     // --config instances in priority order.
     for item in items.iter_mut() {
-        if let Item::Config(config, children) = item {
+        if let Item::Config(config, _, children) = item {
             let config = config.clone();
             match this.expand_config(&chunks, &groups, &config) {
                 Some(expansion) => *children = expansion,
@@ -1995,7 +2004,7 @@ pub fn expand(
                     *value = *enabled;
                     platform_value(children, value);
                 }
-                Item::Config(_, children) => platform_value(children, value),
+                Item::Config(_, _, children) => platform_value(children, value),
                 _ => {}
             }
         }
@@ -2015,7 +2024,7 @@ pub fn expand(
             for item in items.iter_mut() {
                 match item {
                     Item::Platform(_, children) => found = Some(children),
-                    Item::Config(_, children) => {
+                    Item::Config(_, _, children) => {
                         if let Some(nested) = last_platform(children) {
                             found = Some(nested);
                         }
@@ -2030,22 +2039,39 @@ pub fn expand(
         }
     }
     // Flatten in priority order.
-    fn flatten(items: Vec<Item>, out: &mut Expanded, configs: &mut Vec<String>) {
+    // `command_line`: the top-level argument the items stand for (an option
+    // or the `--config` they expand) is a command-line argument.
+    fn flatten(
+        items: Vec<Item>,
+        out: &mut Expanded,
+        configs: &mut Vec<String>,
+        command_line: Option<bool>,
+    ) {
         for item in items {
             match item {
-                Item::Native(unit) => out.priority.push(unit),
-                Item::Config(config, children) => {
+                Item::Native(unit) => {
+                    out.priority_command_line.push(
+                        command_line.unwrap_or(matches!(unit.option.origin, Origin::CommandLine)),
+                    );
+                    out.priority.push(unit)
+                }
+                Item::Config(config, from_command_line, children) => {
                     configs.push(config);
-                    flatten(children, out, configs);
+                    flatten(
+                        children,
+                        out,
+                        configs,
+                        Some(command_line.unwrap_or(from_command_line)),
+                    );
                 }
                 Item::Announce(value) => out.announce = value,
-                Item::Platform(_, children) => flatten(children, out, configs),
+                Item::Platform(_, children) => flatten(children, out, configs, command_line),
                 Item::Fail(_) => unreachable!("failures end the expansion"),
             }
         }
     }
     let mut configs = Vec::new();
-    flatten(items, &mut this.out, &mut configs);
+    flatten(items, &mut this.out, &mut configs, None);
     let mut seen = BTreeSet::new();
     let mut duplicates: Vec<String> = Vec::new();
     for config in configs {

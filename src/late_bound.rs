@@ -108,6 +108,25 @@ pub(crate) fn resolve(
         // BazelPythonConfiguration.getPythonTop always returns null
         // (bazel/rules/python/BazelPythonConfiguration.java:124-129).
         ("py", "native_rules_allowlist") | ("bazel_py", "python_top") => None,
+        // ProtoConfiguration (rules/proto/ProtoConfiguration.java:188-231):
+        // `--proto_compiler` and `--proto_toolchain_for_*`, which the native
+        // option parser accepts only at their defaults
+        // (ProtoConstants.java:44-58; crate::option_defaults). protobuf's
+        // rules read them through their legacy attributes under
+        // `--noincompatible_enable_proto_toolchain_resolution`.
+        ("proto", "proto_compiler") => Some("@@bazel_tools//tools/proto:protoc".to_owned()),
+        ("proto", "proto_toolchain_for_java") => {
+            Some("@@bazel_tools//tools/proto:java_toolchain".to_owned())
+        }
+        ("proto", "proto_toolchain_for_java_lite") => {
+            Some("@@bazel_tools//tools/proto:javalite_toolchain".to_owned())
+        }
+        ("proto", "proto_toolchain_for_cc") => {
+            Some("@@bazel_tools//tools/proto:cc_toolchain".to_owned())
+        }
+        ("proto", "proto_toolchain_for_j2objc") => {
+            Some("@@bazel_tools//tools/j2objc:j2objc_proto_toolchain".to_owned())
+        }
         _ => return None,
     })
 }
@@ -219,8 +238,11 @@ mod tests {
                 "{fragment}.{field}"
             );
         }
+        assert_eq!(
+            resolve("proto", "proto_compiler", &defaults),
+            Some(Some("@@bazel_tools//tools/proto:protoc".to_owned()))
+        );
         for (fragment, field) in [
-            ("proto", "proto_compiler"),
             ("android", "optimizing_dexer"),
             ("j2objc", "dead_code_report"),
         ] {

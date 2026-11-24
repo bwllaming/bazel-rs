@@ -2072,6 +2072,7 @@ pub(crate) trait Phase1: Host {
                 actual: info.label.clone(),
                 ty: info.ty,
                 default: info.default,
+                allow_multiple: info.allow_multiple,
             },
         ))
     }
@@ -2452,11 +2453,18 @@ pub(crate) trait Phase1: Host {
         {
             return Ok(Some(BuildSettingInfo {
                 label: rule.label.clone(),
-                ty: SettingType::of(setting.kind),
+                // An allow_multiple string setting holds a list of strings
+                // (crate::build_settings::BuildSetting::allow_multiple).
+                ty: if setting.allow_multiple {
+                    SettingType::StringList
+                } else {
+                    SettingType::of(setting.kind)
+                },
                 default: crate::analysis::setting_default(custom)
                     .map_err(|error| format!("{}: {error}", rule.label))?,
                 is_flag: setting.flag,
-                repeatable: setting.repeatable,
+                repeatable: setting.repeatable || setting.allow_multiple,
+                allow_multiple: setting.allow_multiple,
                 scope: custom.declaration.explicit_scope.clone(),
             }));
         }
@@ -2479,6 +2487,7 @@ pub(crate) trait Phase1: Host {
             default: SettingValue::Label(self.resolve_rule_src(rule, default)?),
             is_flag: kind == "label_flag",
             repeatable: false,
+            allow_multiple: false,
             // The native `scope` attribute (rules/LabelBuildSettings.java:93-96)
             // is stored only when explicitly specified.
             scope: match rule

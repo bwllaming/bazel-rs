@@ -60,13 +60,17 @@ PLAN = [(c['name'], c['kind']) for c in CASES]
 # accepted in that recorded form. CASES keeps them for historical identity.
 SUPERSEDED_REASON = ('superseded by N16b: Starlark build settings on the command line are implemented '
                      '(docs/CONFIGURATION.md); the pre-N16b unsupported-option boundary no longer exists')
+ALLOW_MULTIPLE_REASON = ('superseded by corpus2-quick (OSS corpus B60): config.string(allow_multiple = True) '
+                         'is implemented (docs/CONFIGURATION.md); the unsupported-descriptor boundary no longer exists')
 SUPERSEDED = {('native.unsupported', probe): SUPERSEDED_REASON
               for probe in ('string-option', 'bool-option', 'negative-bool-option')}
+SUPERSEDED[('native.unsupported', 'allow-multiple')] = ALLOW_MULTIPLE_REASON
 
 
 def superseded_phase(phase):
     """A retired probe's phase: no runs or evidence, only the recorded reason."""
-    return (phase.get('status') == 'SUPERSEDED' and phase.get('reason') == SUPERSEDED_REASON
+    return (phase.get('status') == 'SUPERSEDED'
+            and phase.get('reason') == SUPERSEDED.get(('native.unsupported', phase.get('probe')))
             and phase.get('runs') == [] and set(phase) == {'probe', 'engine', 'status', 'reason', 'runs'})
 DIAGNOSTICS = {
     'default': r'build_setting_default[^\n]*(?:mandatory|required|missing|None|bool|int|string|list|range|convert)|(?:mandatory|required|missing)[^\n]*build_setting_default|(?:out of range|32.bit|not.*boolean|expected.*(?:bool|int|string|list))',

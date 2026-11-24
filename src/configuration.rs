@@ -344,6 +344,34 @@ pub const OPTIONS: &[OptionDef] = &[
         source: "build/lib/rules/apple/AppleCommandLineOptions.java:92-100",
         deprecation: None,
     },
+    // `--macos_minimum_os` and `--host_macos_minimum_os` (aspect's
+    // bazel-examples .bazelrc): DottedVersion.Option values like the SDK
+    // versions, read by `ctx.fragments.apple.macos_minimum_os_flag`
+    // (AppleConfiguration.java:109, 294). The exec transition sets
+    // `macos_minimum_os` to `host_macos_minimum_os` and propagates the
+    // latter (builtin_exec_platforms.bzl:177-189).
+    OptionDef {
+        name: "macos_minimum_os",
+        old_name: None,
+        abbrev: None,
+        kind: OptionKind::DottedVersion,
+        default: "null",
+        allow_multiple: false,
+        non_configurable: false,
+        source: "build/lib/rules/apple/AppleCommandLineOptions.java:136-145",
+        deprecation: None,
+    },
+    OptionDef {
+        name: "host_macos_minimum_os",
+        old_name: None,
+        abbrev: None,
+        kind: OptionKind::DottedVersion,
+        default: "null",
+        allow_multiple: false,
+        non_configurable: false,
+        source: "build/lib/rules/apple/AppleCommandLineOptions.java:147-156",
+        deprecation: None,
+    },
     // ConfigSetting.DEPRECATED_PRE_PLATFORMS_FLAGS (rules/config/ConfigSetting.java:95-97):
     // selectable in `config_setting(values)` with Bazel's main-repository
     // deprecation warning (crate::config_setting). `--cpu` names the output
@@ -1919,6 +1947,13 @@ pub struct NativeOptions {
     /// propagates to exec configurations (builtin_exec_platforms.bzl:381).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub host_javacopts: Vec<String>,
+    /// ProtoConfiguration.Options.protocOpts (`--protocopt`,
+    /// rules/proto/ProtoConfiguration.java:49-56): read by
+    /// `ctx.fragments.proto.experimental_protoc_opts` (:169-172), which
+    /// protobuf's proto_common passes to protoc. Propagates to exec
+    /// configurations (builtin_exec_platforms.bzl:422-436).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub protocopts: Vec<String>,
     /// JavaOptions.jvmOpts (`--jvmopt`, JavaOptions.java:71-80):
     /// `ctx.fragments.java.default_jvm_opts` (JavaConfiguration.java:116).
     /// The exec transition sets it to `--host_jvmopt`, or to
@@ -1989,8 +2024,11 @@ pub struct NativeOptions {
     /// `--ios_sdk_version`, `--watchos_sdk_version`, `--tvos_sdk_version`,
     /// `--macos_sdk_version` (AppleCommandLineOptions.java:59-100, default
     /// null), in that order; propagated to exec configurations
-    /// (builtin_exec_platforms.bzl:170-176). Omitted from the identity
-    /// serialization while all are null.
+    /// (builtin_exec_platforms.bzl:170-176). Then `--macos_minimum_os` and
+    /// `--host_macos_minimum_os` (:136-156): the exec configuration's
+    /// `macos_minimum_os` is the parent's `host_macos_minimum_os`
+    /// (:177-189). Omitted from the identity serialization while all are
+    /// null (each of the two later ones while it is null).
     #[serde(skip_serializing_if = "AppleSdkVersions::is_unset")]
     pub apple_sdk_versions: AppleSdkVersions,
     /// `--action_env` (CoreOptions.java:525-545), normalized; the exec
@@ -2110,13 +2148,18 @@ pub fn host_cpu() -> &'static str {
     }
 }
 
-/// The four Apple SDK version options (DottedVersion.Option strings).
+/// The Apple DottedVersion.Option options: the four SDK versions and
+/// `--[host_]macos_minimum_os` (strings as given).
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct AppleSdkVersions {
     pub ios: Option<String>,
     pub watchos: Option<String>,
     pub tvos: Option<String>,
     pub macos: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub macos_minimum_os: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_macos_minimum_os: Option<String>,
 }
 
 impl AppleSdkVersions {
@@ -2130,17 +2173,21 @@ impl AppleSdkVersions {
             "watchos_sdk_version" => &mut self.watchos,
             "tvos_sdk_version" => &mut self.tvos,
             "macos_sdk_version" => &mut self.macos,
+            "macos_minimum_os" => &mut self.macos_minimum_os,
+            "host_macos_minimum_os" => &mut self.host_macos_minimum_os,
             _ => return None,
         })
     }
 
-    /// The value of one `*_sdk_version` option.
+    /// The value of one of these options.
     pub fn get(&self, name: &str) -> Option<&Option<String>> {
         Some(match name {
             "ios_sdk_version" => &self.ios,
             "watchos_sdk_version" => &self.watchos,
             "tvos_sdk_version" => &self.tvos,
             "macos_sdk_version" => &self.macos,
+            "macos_minimum_os" => &self.macos_minimum_os,
+            "host_macos_minimum_os" => &self.host_macos_minimum_os,
             _ => return None,
         })
     }
@@ -2238,6 +2285,7 @@ impl Default for NativeOptions {
             host_features: Vec::new(),
             javacopts: Vec::new(),
             host_javacopts: Vec::new(),
+            protocopts: Vec::new(),
             jvmopts: Vec::new(),
             host_jvmopts: Vec::new(),
             values: BTreeMap::new(),
@@ -2275,6 +2323,7 @@ impl NativeOptions {
             "host_features" => &self.host_features,
             "javacopt" => &self.javacopts,
             "host_javacopt" => &self.host_javacopts,
+            "protocopt" => &self.protocopts,
             "jvmopt" => &self.jvmopts,
             "host_jvmopt" => &self.host_jvmopts,
             _ => return None,
@@ -2678,8 +2727,9 @@ pub struct CommandLineOptions {
 /// (allowMultiple, the default String element converter; PerLabelOptions
 /// for `per_file_copt`) and whether `query` registers them (only
 /// CoreOptions, QueryCommand.java:59-67): CppOptions.java:236-282, 563-582,
-/// 602-667; CoreOptions.java:831-856; JavaOptions.java:50-69.
-const FLAG_LIST_OPTIONS: [(&str, bool); 19] = [
+/// 602-667; CoreOptions.java:831-856; JavaOptions.java:50-69;
+/// ProtoConfiguration.java:49-56.
+const FLAG_LIST_OPTIONS: [(&str, bool); 20] = [
     ("copt", false),
     ("cxxopt", false),
     ("conlyopt", false),
@@ -2699,6 +2749,7 @@ const FLAG_LIST_OPTIONS: [(&str, bool); 19] = [
     ("host_javacopt", false),
     ("jvmopt", false),
     ("host_jvmopt", false),
+    ("protocopt", false),
 ];
 
 /// CoreOptions.getNormalizedFeatures (CoreOptions.java:1210-1242): the
@@ -3314,6 +3365,7 @@ impl CommandLineOptions {
                 "host_features" => &mut native.host_features,
                 "javacopt" => &mut native.javacopts,
                 "host_javacopt" => &mut native.host_javacopts,
+                "protocopt" => &mut native.protocopts,
                 "jvmopt" => &mut native.jvmopts,
                 "host_jvmopt" => &mut native.host_jvmopts,
                 other => unreachable!("flag list option {other}"),
