@@ -121,8 +121,71 @@ at the end of commands or now with the native `bazel-rs gc`
 (docs/CACHE_GC.md); to drop all of it, delete the cache directory (with no
 command running).
 
-The `bazel-*` convenience links: bazel-rs never creates them, so `clean`
-leaves any it finds alone (they belong to genuine Bazel's output base).
+The convenience symlinks: `clean` then deletes the `--symlink_prefix`'s
+(default `bazel-`) `bin`, `testlogs`, `genfiles`, `out` and
+`<workspace directory name>` links that are symlinks — whatever output base
+they point into, genuine Bazel's too — and the prefix's own path and its empty
+parent directories (OutputDirectoryLinksUtils.removeOutputDirectoryLinks);
+real files and directories of those names stay. `--symlink_prefix=/` deletes
+nothing.
+
+## Convenience symlinks
+
+`build`, `test`, `run` and `coverage` create and update the workspace's
+`bazel-bin`, `bazel-testlogs`, `bazel-out` and `bazel-<workspace directory
+name>` links like Bazel 9.3.1 (OutputDirectoryLinksUtils,
+ExecutionTool.handleConvenienceSymlinks; crate::convenience_symlinks; genuine
+capture tests/fixtures/convenience_symlinks). They point into the native
+output base, the workspace's state directory (docs/WORKTREES.md): each git
+worktree's links name its own output tree.
+
+| link | target |
+|---|---|
+| `bazel-bin` | `<state>/execroot/_main/bazel-out/<cfg>/bin` |
+| `bazel-testlogs` | `<state>/execroot/_main/bazel-out/<cfg>/testlogs` |
+| `bazel-out` | `<state>/execroot/_main/bazel-out` |
+| `bazel-<workspace>` | `<state>/execroot/_main` (holds only `bazel-out`, docs/INFO.md) |
+| `bazel-genfiles` | `bazel-out/<cfg>/bin`, only with `--noincompatible_skip_genfiles_symlink`; otherwise an existing one is deleted |
+
+* `<cfg>`: the requested targets' configuration (after their rule
+  transitions) when they share one; the top-level configuration when they
+  have several and one of them is it, or when none was analyzed; otherwise
+  `bazel-bin` and `bazel-testlogs` are deleted with `WARNING: cleared
+  convenience symlink(s) bazel-bin, bazel-testlogs because they wouldn't
+  contain requested targets' outputs. Those targets self-transition to
+  multiple distinct configurations`.
+* When: once the analysis configured the top-level targets, before
+  execution — also when an action or the analysis fails; not under
+  `--nobuild` (so not for `fetch TARGET...`), not when the target patterns
+  fail to load. `query`, `cquery`, `aquery`, `info` and `fetch` leave them
+  alone.
+* A link already pointing at its target is left alone, any other symlink
+  (genuine Bazel's, a stale one) is replaced; a real file or directory of
+  that name is never touched: `WARNING: failed to create one or more
+  convenience symlinks for prefix 'bazel-':` with a `cannot create symbolic
+  link bazel-bin -> TARGET:  WORKSPACE/bazel-bin is not a symlink` line per
+  link (FileSystemUtils.ensureSymbolicLink). Deleting only deletes symlinks.
+* `--symlink_prefix=P` names them `P{bin,testlogs,out,<workspace>}` (a `/`
+  in P creates the directories); `--symlink_prefix=/` creates and deletes
+  nothing. `--experimental_convenience_symlinks`: `normal` (the default),
+  `clean` (delete them), `ignore` (`--noexperimental_convenience_symlinks`:
+  touch nothing), `log_only` (only report them).
+* The output base and its `execroot/` get Bazel's `DO_NOT_BUILD_HERE` file
+  (the workspace path), by which Bazel recognizes links into an output base.
+* The build results print the artifacts through the links (PathPrettyPrinter,
+  docs/PROGRESS.md): `bazel-bin/pkg/out.txt`, `../bazel-bin/pkg/out.txt`
+  from the subdirectory `pkg`, `bazel-out/k8-opt-exec/bin/…` for another
+  configuration's output.
+* The BEP ConvenienceSymlinksIdentified event lists them (docs/BEP.md).
+* Copying through them copies the outputs (`cp bazel-out/k8-fastbuild/bin/pkg/f
+  pkg/`): regular outputs are hardlinks of the read-only published files,
+  output symlinks resolve to them. A tree artifact and a runfiles tree are a
+  symlink to the published directory (Bazel's are real directories), so
+  `cp -R bazel-bin/pkg/tree dst` copies the link; copy the tree's files, or
+  `cp -RL`.
+* Package discovery never follows directory links, so the links never add
+  packages to `//...`; globs skip them (docs/GLOB_SYMLINKS.md), and creating
+  or retargeting them never invalidates the analysis snapshot.
 
 ## `fetch`
 

@@ -1260,7 +1260,7 @@ pub fn execute_with_tests(
     }
     // The build results (BuildResultPrinter): only after an execution
     // phase, at the artifacts' paths in the output tree (crate::output_tree;
-    // the paths Bazel prints without convenience symlinks).
+    // crate::build_results prints them through the convenience symlinks).
     let execution_root = crate::output_tree::execution_root(options.cache);
     let displayed = |produced: &Produced| execution_root.join(&produced.real);
     if execute {

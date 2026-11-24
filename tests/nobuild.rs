@@ -268,10 +268,16 @@ fn executing_build_builds_every_reported_artifact() {
     assert!(err.contains("2 actions executed, 0 cache hits"), "{err}");
     let reported = aspect_report(&err);
     assert_eq!(reported.len(), 1, "{err}");
-    let path = Path::new(reported[0]);
-    // In the output tree (crate::build_results).
-    assert!(path.starts_with(ws.path().join("cache/worktrees")), "{err}");
-    assert!(path.ends_with("bazel-out/k8-fastbuild/bin/pkg/t.aspect"));
+    // In the output tree, through the `bazel-bin` convenience symlink
+    // (crate::build_results).
+    assert_eq!(reported[0], "bazel-bin/pkg/t.aspect", "{err}");
+    let path = ws.path().join(reported[0]);
+    assert!(
+        fs::canonicalize(&path)
+            .unwrap()
+            .starts_with(fs::canonicalize(ws.path().join("cache/worktrees")).unwrap()),
+        "{err}"
+    );
     assert_eq!(fs::read_to_string(path).unwrap(), "aspect\n");
 
     // --nobuild: the same report at the planned exec path, nothing built.

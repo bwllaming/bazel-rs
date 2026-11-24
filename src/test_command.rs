@@ -524,8 +524,9 @@ impl TestOptions {
                     "test_runner_fail_fast" => self.runner_fail_fast = value,
                     "incompatible_check_sharding_support" => self.check_sharding_support = value,
                     "zip_undeclared_test_outputs" => self.zip_undeclared_outputs = value,
-                    // The native profile has no convenience symlinks and
-                    // does not model the up-to-date check.
+                    // The native test log paths are the shared results' in
+                    // the cache (not below the convenience symlinks), and
+                    // the up-to-date check is not modelled.
                     "print_relative_test_log_paths" | "check_tests_up_to_date" if value => {
                         return Err(unsupported(arg));
                     }

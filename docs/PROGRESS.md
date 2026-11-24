@@ -55,9 +55,13 @@ tests/console_text.rs):
   (`--keep_going`), `Aspect A of //x up-to-date:`, budgeted by
   `--show_result` (default 1), then `Use --verbose_failures to see the
   command lines of failed build steps.` after a failure. The paths are the
-  output tree's (`$(bazel-rs info bazel-bin)/…`): bazel-rs creates no
-  convenience symlinks, so it prints what Bazel prints with
-  `--symlink_prefix=/`. The targets print in the request's order (genuine's
+  output tree's (`$(bazel-rs info bazel-bin)/…`) through the convenience
+  symlinks the command created, relative to the working directory
+  (PathPrettyPrinter: `bazel-bin/pkg/out.txt`, `../bazel-bin/…` from a
+  subdirectory, `bazel-out/…` or `bazel-<workspace>/…` when only those
+  exist; docs/COMMANDS.md "Convenience symlinks"); absolute without them
+  (`--symlink_prefix=/`, `--experimental_convenience_symlinks=ignore` or
+  `clean`). The targets print in the request's order (genuine's
   is a hash set's). The earlier native lines, `LABEL<TAB>PATH` per artifact
   at its executed path in the action cache, every artifact whatever
   `--show_result`, are printed too when `BAZEL_RS_RESULT_LINES=1` (stdout

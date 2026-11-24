@@ -88,7 +88,10 @@ base `<state>` is the workspace's state directory in it,
 
 The genuine paths below `<output_base>` and the native paths below `<state>`
 are the same, so scripts like `$(bazel-rs info bazel-bin)/pkg/tool` and
-`cd $(bazel-rs info execution_root)` keep working.
+`cd $(bazel-rs info execution_root)` keep working, and so do the workspace's
+`bazel-bin`, `bazel-out`, `bazel-testlogs` and `bazel-<workspace>`
+convenience symlinks, which every executing build points at these
+directories (docs/COMMANDS.md "Convenience symlinks").
 
 ## The output tree
 

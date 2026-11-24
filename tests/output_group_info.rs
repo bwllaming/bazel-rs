@@ -174,8 +174,7 @@ fn private_transitive_validation_group_is_restricted() {
     let built = ws.build(&[":validation"]);
     let text = ok(&built);
     assert!(
-        text.contains("Target //:validation up-to-date:\n  ")
-            && text.contains("/bin/validation.txt\n"),
+        text.contains("Target //:validation up-to-date:\n  bazel-bin/validation.txt\n"),
         "{text}"
     );
     assert_eq!(ws.read("validation.txt").as_deref(), Some("x"));

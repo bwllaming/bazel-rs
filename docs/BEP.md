@@ -184,7 +184,12 @@ Declared differences (normalized away, by design or not modelled):
   counts; the JVM, Skyframe, network and worker metrics are left out.
 * BuildToolLogs: native process stats and critical path wording; Bazel always
   lists its default `command.profile.gz`, native only with `--profile`.
-* ConvenienceSymlinksIdentified is empty (native creates no `bazel-*` links).
+* ConvenienceSymlinksIdentified lists the convenience symlinks as genuine
+  (CREATE with the target relative to the output base, DELETE; empty for
+  `--symlink_prefix=/` and `--experimental_convenience_symlinks=ignore`; not
+  posted with `--noexperimental_convenience_symlinks_bep_event`;
+  docs/COMMANDS.md "Convenience symlinks"). It is posted after the targets'
+  completion (genuine: when the links are updated).
 * Not posted: Fetch, TestProgress, TargetSummary, aspect TargetComplete
   events, analysis-failure TargetComplete events under `--keep_going` (their
   TargetConfigured ids are announced and aborted).

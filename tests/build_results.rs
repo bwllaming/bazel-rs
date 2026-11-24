@@ -72,8 +72,9 @@ fn kept(stderr: &str) -> Vec<String> {
 /// `0 packages loaded`, genuine's `N aspect applications` of only the
 /// newly configured ones), the times, the process counts (other actions,
 /// another sandbox), the order of several targets' results (genuine's is
-/// a hash set's), and the paths (bazel-rs has no convenience symlinks: the
-/// output tree's path stands for `bazel-bin/…`).
+/// a hash set's). The paths print through the convenience symlinks
+/// (`bazel-bin/…`), like genuine's; an output tree path would still stand
+/// for its `bazel-bin/…` form.
 fn normalized(lines: &[String], output_tree: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut blocks: Vec<Vec<String>> = Vec::new();

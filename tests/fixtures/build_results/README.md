@@ -16,6 +16,6 @@ Declared native differences the test normalizes: the counts of `Analyzed`
 the newly configured ones), the process counts (other internal actions,
 `linux-sandbox` for genuine's `processwrapper-sandbox`), the order of several
 targets' results (genuine's is a hash set's; native: the request's order),
-and the paths: bazel-rs creates no convenience symlinks, so it prints the
-output tree's paths (`$(bazel-rs info bazel-bin)/…`), what Bazel prints with
-`--symlink_prefix=/`. `--verbose_failures`' command lines are not modelled.
+and `--verbose_failures`' command lines (not modelled). The paths print
+through the convenience symlinks like Bazel's (`bazel-bin/…`,
+tests/fixtures/convenience_symlinks).

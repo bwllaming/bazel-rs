@@ -114,8 +114,9 @@ implementation-specific content-addressed cache; every executing build also
 links them at their exec paths below the workspace's
 `<cache>/worktrees/<name>-<hash>/execroot/_main` (`bazel-rs info
 output_base`), so `$(bazel-rs info bazel-bin)/pkg/tool` names a built file
-like Bazel's `bazel-bin` (docs/INFO.md; no convenience symlinks are created in
-the workspace). Default cache: `<workspace>/bazel-rs-out`; override with the
+like Bazel's `bazel-bin` (docs/INFO.md), and the workspace's `bazel-bin`,
+`bazel-out`, `bazel-testlogs` and `bazel-<workspace>` convenience symlinks
+point there, as with Bazel (docs/COMMANDS.md "Convenience symlinks"). Default cache: `<workspace>/bazel-rs-out`; override with the
 startup option `--cache-dir=/absolute/path`.
 
 **Progress on a terminal.** When stdout and stderr are a terminal,
@@ -454,8 +455,8 @@ Action logs spool to temporary files and bounded tails are replayed to stderr.
   with `ignore_directories()` in the root `REPO.bazel`) to keep them out, as
   with Bazel (docs/IGNORED_DIRECTORIES.md, docs/GLOB_SYMLINKS.md).
 * **`glob()` follows symlinks (N28d).** A main-repository glob reaching a link
-  to a host path, such as Bazel's `bazel-*` convenience links, fails
-  explicitly; ignore those links (see docs/GLOB_SYMLINKS.md).
+  to a host path fails explicitly (see docs/GLOB_SYMLINKS.md); the `bazel-*`
+  convenience links (bazel-rs's and Bazel's) are skipped instead.
 
 ## Differential checks and measurements
 

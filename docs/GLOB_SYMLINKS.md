@@ -138,17 +138,29 @@ artifacts (`engine.rs`), `.bzl` loads (`loading.rs`) and `glob()`:
   (`outside its repository root`): their links are author content, not
   repository-rule output, and following them would let checked-in or archived
   links read arbitrary host files. Nothing is ever written through a link.
-* **Convenience links in the main repository.** Bazel's `bazel-bin`,
-  `bazel-out`, `bazel-testlogs` and `bazel-<workspace>` links point into the
-  output base, a host path. A main-repository `glob()` that reaches one (for
-  example `glob(["**/*.txt"])` in the root package) fails explicitly with
-  `glob symlink …/bazel-out resolves to …, outside its repository root …`.
-  Keep them out of globs and `//...` by ignoring them: list each link in
-  `.bazelignore` (its lines are literal path prefixes) or match them all with
-  `ignore_directories(["bazel-*"])` in the root `REPO.bazel`
-  (docs/IGNORED_DIRECTORIES.md). An ignored directory link is neither
-  traversed nor read, so the policy check is skipped for it, as Bazel skips
-  ignored directories (GlobCache.globCacheShouldTraverseDirectory).
+* **Convenience links.** The `bazel-bin`, `bazel-out`, `bazel-testlogs` and
+  `bazel-<workspace>` links (bazel-rs's own, docs/COMMANDS.md "Convenience
+  symlinks", and genuine Bazel's) point into an output base. `glob()` skips
+  them — neither results nor traversed, before the link policy — when the
+  link's target (read, not followed) is below this workspace's native output
+  base's `execroot`, or its name ends like a convenience link's (`-bin`,
+  `-genfiles`, `-testlogs` four levels, `-out` two levels,
+  `-<workspace directory name>` one level below a directory named
+  `execroot` holding `DO_NOT_BUILD_HERE`): Bazel's own test for them
+  (ProcessPackageDirectory.isConvenienceSymlink), so the links of any
+  earlier `--symlink_prefix` are recognized too. The analysis snapshot's
+  glob listings leave them out the same way (crate::observed_fs::Projection;
+  re-evaluated whenever a listing changes), so creating or retargeting them
+  never invalidates a snapshot. Declared divergence: Bazel's `glob()`
+  follows them into its output tree (a root `glob(["**/*.txt"])` lists
+  `bazel-bin/…` and `bazel-out/…` files, whatever earlier builds left
+  there); natively the glob is the same with or without the links. A link
+  of such a name pointing anywhere else is an ordinary link (the policy
+  below). Package discovery never follows directory links
+  (crate::workspace), so `//...` never includes them, as Bazel's
+  ProcessPackageDirectory skips them. Ignoring them (`.bazelignore`,
+  `ignore_directories(["bazel-*"])` in the root `REPO.bazel`,
+  docs/IGNORED_DIRECTORIES.md) still works and is never needed.
 * Dangling links are skipped by `glob()` and are `missing input file` for
   source artifacts under every policy.
 * Archive data in generated repositories: entries extracted by

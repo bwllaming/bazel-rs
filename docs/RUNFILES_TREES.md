@@ -417,7 +417,7 @@ execution. The mismatches, all explained in the receipt:
 
 | case | Bazel | native | cause |
 |---|---|---|---|
-| `Running command line:` (3), `Runnable command line:` | `../bazel-bin/pkg/b` | absolute native path | Bazel pretty-prints through convenience symlinks; native has none |
+| `Running command line:` (3), `Runnable command line:` | `../bazel-bin/pkg/b` | absolute native path | Bazel pretty-prints through convenience symlinks; native prints the executable's path in the action cache |
 | R1 stdout | client `RUNFILES_DIR` and the `--run_env==` variable survive | cleared | `--batch` puts the client environment over the run environment (RunCommand.java:320-327); native follows the client/server contract |
 | R6 `--norun` stdout | runs the target | does not | `--batch` ignores `should_exec` (BlazeRuntime.java:1137-1180) |
 
@@ -432,8 +432,8 @@ targets matches the recorded genuine runfiles trees, MANIFEST paths,
 
 ## Not covered
 
-Bazel's
-convenience symlinks and relative pretty paths; `--portable_paths` and
+Relative
+pretty paths of `run`'s command lines; `--portable_paths` and
 `--emit_script_path_in_exec_request`; fileset trees, unresolved
 symlink artifacts in runfiles, output services; Windows (no runfiles trees,
 manifest-only runfiles).

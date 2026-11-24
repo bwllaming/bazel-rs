@@ -44,8 +44,8 @@ EnumFilterConverter, TriStateConverter):
 | `--target_pattern_file=FILE` | `build`/`test`/`fetch` read their patterns from FILE (TargetPatternsHelper.readFrom): one per line, up to `#`, trimmed, empty lines dropped, negative patterns as on the command line; with command-line patterns `Command-line target pattern and --target_pattern_file cannot both be specified` (exit 2); an unreadable file `I/O error reading from PATH: PATH (No such file or directory)` (exit 2); `run`/`cquery` accept and ignore it, `query` does not know it (`Unrecognized option`); an empty list builds nothing (`build`: the usage warning, success; `test`: no test targets, exit 4) |
 
 `bazel coverage` and `--collect_code_coverage` are docs/COVERAGE.md.
-Explicit failures: `--check_tests_up_to_date`, `--print_relative_test_log_paths` (no
-convenience symlinks), `--experimental_cancel_concurrent_tests=on_failed|on_passed`,
+Explicit failures: `--check_tests_up_to_date`, `--print_relative_test_log_paths` (the
+log paths are the shared test results' in the cache, not the output tree's), `--experimental_cancel_concurrent_tests=on_failed|on_passed`,
 `--runs_per_test_detects_flakes`, `--[no]trim_test_configuration`,
 `--experimental_retain_test_configuration_across_testonly`,
 `--default_test_resources`, a `select()` in `shard_count` of a test to run (`test`, `run`
@@ -392,7 +392,8 @@ check covers Starlark rules only; remote caching of coverage test
 actions; worker test strategies (test actions
 themselves run through the spawn strategy selection and are sandboxed by
 default, docs/SANDBOX.md; runfiles other than external repository files
-are hardlinks where Bazel's sandbox shows symlinks); Bazel's
-convenience symlinks (`bazel-testlogs`) and relative log paths; the
+are hardlinks where Bazel's sandbox shows symlinks); relative log paths
+(`--print_relative_test_log_paths`; `bazel-testlogs` itself is created,
+docs/COMMANDS.md "Convenience symlinks"); the
 test.cache_status proto (native `status.json`); `test.err` splitting beyond
 appending; BEP TestProgress events (TestResult/TestSummary are posted, docs/BEP.md); Windows (`tw.exe`, `xml.exe`).

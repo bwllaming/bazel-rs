@@ -348,8 +348,10 @@ fn status_file_in_an_output_group_resolves_alone() {
     let text = stderr(&built);
     assert!(built.status.success(), "{text}");
     assert!(
-        text.contains("Aspect //pkg:defs.bzl%status_aspect of //pkg:gen up-to-date:\n  ")
-            && text.contains("/execroot/_main/bazel-out/volatile-status.txt\n"),
+        // Through the `bazel-out` convenience symlink (PathPrettyPrinter).
+        text.contains(
+            "Aspect //pkg:defs.bzl%status_aspect of //pkg:gen up-to-date:\n  bazel-out/volatile-status.txt\n"
+        ),
         "{text}"
     );
 }
