@@ -257,7 +257,10 @@ impl Key {
 /// `cp -p` and archive extraction give new files old ones). A future
 /// timestamp is never settled.
 pub fn settled(metadata: &fs::Metadata, start: SystemTime, owned: bool) -> bool {
-    let birth = owned
+    // macOS moves a file's birth time back with its modification time
+    // (utimes to before the birth time, e.g. `touch -d`, `cp -p`, archive
+    // extraction), so there it proves nothing and the change time decides.
+    let birth = (owned && cfg!(target_os = "linux"))
         .then(|| metadata.created().ok().and_then(system_nanos))
         .flatten();
     let change = match birth {

@@ -152,7 +152,15 @@ fn run() -> Result<(), String> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     bazel_rs::perf_mark("main.start");
-    let line = bazelrc::split_command_line(args)?;
+    let mut line = bazelrc::split_command_line(args)?;
+    // Genuine canonicalizes its output base (blaze.cc:1317); on macOS the
+    // usual temporary roots are symlinks (/tmp, /var -> /private/...), which
+    // the caches' no-symlink checks refuse (crate::platform).
+    line.cache_dir = line.cache_dir.map(|dir| {
+        bazel_rs::platform::canonical_root(Path::new(&dir))
+            .display()
+            .to_string()
+    });
     let cache = line.cache_dir.clone().map(PathBuf::from);
     let command = line.command.clone().unwrap_or_else(|| "help".into());
     let rest = line.command_args.clone();

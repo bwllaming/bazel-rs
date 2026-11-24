@@ -15,8 +15,15 @@ pub fn self_exe() -> &'static Path {
     Path::new("/proc/self/exe")
 }
 
+/// A `--cache-dir` as given: Linux keeps it unchanged (a symlink in it is
+/// refused by the caches' checks).
+pub fn canonical_root(path: &Path) -> std::path::PathBuf {
+    path.to_path_buf()
+}
+
 /// Whether a process (or zombie) with this PID exists: its /proc entry.
 pub fn process_exists(pid: u32) -> bool {
+    // snapshot-unrecorded: process liveness (the work-directory owner, tests), never a planning input.
     Path::new(&format!("/proc/{pid}")).exists()
 }
 
@@ -24,6 +31,7 @@ pub fn process_exists(pid: u32) -> bool {
 /// field may contain spaces/parens, so parse after the last ')'). None when
 /// the process is already gone.
 pub fn process_group_of(pid: u32) -> Option<u32> {
+    // snapshot-unrecorded: a child's process group (the memory watchdog's registration).
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let after_comm = stat.rsplit_once(')')?.1;
     // Remaining fields: state ppid pgrp ...

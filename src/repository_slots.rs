@@ -123,6 +123,11 @@ fn lock_file(locks: &Path, name: &str) -> Result<File, String> {
         // O_NOFOLLOW | O_NONBLOCK, as the store's other locks.
         options.custom_flags(0x20000 | 0x800);
     }
+    #[cfg(not(target_os = "linux"))]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
     let file = options
         .open(&path)
         .map_err(|e| format!("cannot open repository lock {}: {e}", path.display()))?;

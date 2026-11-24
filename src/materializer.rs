@@ -592,7 +592,7 @@ fn materialize_registry(
         }
         // Lock serializes publishers. A crash between these two publications leaves
         // no valid tree+manifest pair and is repaired on the next invocation.
-        fs::rename(staging.path(), &destination)
+        crate::repository_store::rename_sealed(staging.path(), &destination)
             .map_err(|e| format!("cannot publish repository: {e}"))?;
         atomic_write(&manifest_path, &encoded)?;
         // The warm check again, exactly as the next run's reuse runs it
@@ -873,7 +873,7 @@ pub fn materialize_override<T>(
         crate::repository_ctx::remove_tree(&destination)
             .map_err(|e| format!("cannot remove corrupt repository cache: {e}"))?;
     }
-    fs::rename(staging.path(), &destination)
+    crate::repository_store::rename_sealed(staging.path(), &destination)
         .map_err(|e| format!("cannot publish repository: {e}"))?;
     atomic_write(&manifest_path, &encoded)?;
     if let Some(digest) = computed {

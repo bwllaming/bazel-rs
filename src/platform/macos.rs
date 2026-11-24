@@ -20,9 +20,39 @@ pub fn self_exe() -> &'static Path {
     static EXE: OnceLock<PathBuf> = OnceLock::new();
     EXE.get_or_init(|| {
         std::env::current_exe()
+            // snapshot-unrecorded: this binary's own path (re-execution, its identity).
             .and_then(|path| path.canonicalize())
             .unwrap_or_else(|_| PathBuf::from(std::env::args_os().next().unwrap_or_default()))
     })
+}
+
+/// An absolute root (`--cache-dir`) with the symlinks of its longest
+/// existing prefix resolved, like genuine's Canonicalize of its output base
+/// (blaze.cc:1317): macOS's temporary directories live below the root
+/// symlinks /tmp and /var (to /private/...), which the caches' no-symlink
+/// checks would refuse. Relative paths (joined to the canonical working
+/// directory later) and unresolvable ones stay as given.
+pub fn canonical_root(path: &Path) -> PathBuf {
+    if !path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let mut existing = path;
+    let mut rest = Vec::new();
+    loop {
+        // snapshot-unrecorded: the cache root's own location (startup).
+        if let Ok(canonical) = existing.canonicalize() {
+            let mut result = canonical;
+            result.extend(rest.iter().rev());
+            return result;
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_owned());
+                existing = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
 }
 
 fn pid(pid: u32) -> Option<rustix::process::Pid> {

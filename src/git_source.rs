@@ -328,7 +328,8 @@ pub fn materialize<T>(
         crate::repository_ctx::remove_tree(&destination)
             .map_err(|e| format!("cannot remove corrupt Git tree: {e}"))?;
     }
-    fs::rename(stage.path(), &destination).map_err(|e| format!("cannot publish Git tree: {e}"))?;
+    crate::repository_store::rename_sealed(stage.path(), &destination)
+        .map_err(|e| format!("cannot publish Git tree: {e}"))?;
     // These are two atomic renames, NOT an atomic pair. Missing/mismatching
     // manifests after a crash trigger refetch, never silent source reuse.
     if let Err(error) = atomic_write(&manifest_path, &encoded) {

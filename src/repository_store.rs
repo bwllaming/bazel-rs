@@ -1856,10 +1856,32 @@ pub(crate) fn seal_root(root: &Path) -> Result<(), String> {
 }
 
 /// A whole tree that is published without leaving its parent directory
-/// (registry and Git trees: staged inside their `trees/`).
+/// (registry and Git trees: staged inside their `trees/`; published with
+/// [`rename_sealed`]).
 pub(crate) fn seal_tree(root: &Path) -> Result<(), String> {
     seal_below(root)?;
     seal_root(root)
+}
+
+/// Rename the sealed tree `stage` to `destination` in the same directory
+/// ([`seal_tree`]). Linux renames a read-only directory within its parent;
+/// macOS refuses to rename any directory its caller cannot write (xnu's
+/// vn_authorize_renamex asks for KAUTH_VNODE_ADD_SUBDIRECTORY on the moved
+/// directory itself, for its ".." entry), so there the root gets its owner
+/// write bit for the rename and its sealed mode back at the destination.
+pub(crate) fn rename_sealed(stage: &Path, destination: &Path) -> std::io::Result<()> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        use crate::nofollow_modes as nofollow;
+        let sealed = nofollow::change(nofollow::At::Path(stage), |mode| Some(mode | 0o200))?;
+        fs::rename(stage, destination)?;
+        if let Some(mode) = sealed {
+            nofollow::change(nofollow::At::Path(destination), |_| Some(mode))?;
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    fs::rename(stage, destination)
 }
 
 /// Tests: run `tamper`, which writes `path` (a file or link to create,
@@ -2792,7 +2814,11 @@ fn no_follow(options: &mut OpenOptions) {
         options.custom_flags(0x20000 | 0x800);
     }
     #[cfg(not(target_os = "linux"))]
-    let _ = options;
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // macOS: the same O_NOFOLLOW | O_NONBLOCK (other values there).
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
 }
 
 fn stable(before: &fs::Metadata, after: &fs::Metadata) -> bool {
@@ -6985,6 +7011,8 @@ mod tests {
     }
 
     #[cfg(unix)]
+    // Linux only: non-UTF-8 file names (APFS refuses them).
+    #[cfg(target_os = "linux")]
     #[test]
     fn non_utf8_and_invalid_paths_are_rejected() {
         use std::os::unix::ffi::OsStringExt;
