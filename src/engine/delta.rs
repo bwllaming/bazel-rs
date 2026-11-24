@@ -996,10 +996,22 @@ impl<'a> DeltaBuilder<'a> {
 
     /// [`register_artifact`] in this build.
     fn register_artifact(&mut self, file: &File, artifact: &Artifact) {
+        // On a worker the build's own output registrations see none of the
+        // others' (`register_output`): an output another sharer registered
+        // first (merged, or published ahead) still names this build's own
+        // action here. That is the shared output's loser, which the merge
+        // decides and rewrites (crate::engine::sweep), not a second
+        // artifact; only this build's own registrations are held to one.
+        let local = !self.keys.is_empty()
+            && self.keys.contains(&quick_key(file))
+            && self.index.contains_key(file);
         match self.lookup(file) {
             Some(registered) => {
                 if (cfg!(debug_assertions) || verify_artifacts())
                     && !same_artifact(&registered, artifact)
+                    && !(matches!(self.hooks, Hooks::Worker)
+                        && !local
+                        && super::same_but_producer(&registered, artifact))
                 {
                     panic!(
                         "internal error: File {} re-registered with a different artifact: registered {registered:?}, now {artifact:?}",
@@ -2718,5 +2730,72 @@ mod tests {
         );
         assert!(builder.lookup(&other.file).is_none());
         assert!(!builder.fill_done());
+    }
+
+    /// A worker build's own output an earlier sharer registered (merged
+    /// or published ahead) still names this build's action: the shared
+    /// output's loser, decided by the merge, not a second artifact (the
+    /// frozen-all corpus_parity5 flake: two configurations sharing an
+    /// output root). Its own registrations stay held to one artifact.
+    #[test]
+    fn a_worker_builds_shared_output_is_not_a_second_artifact() {
+        let repositories = RepositorySet::new(std::env::temp_dir());
+        let artifacts = ConcurrentArtifactIndex::default();
+        let (groups, memos, environment) = (
+            InputGroups::default(),
+            InputMemos::default(),
+            ClientEnvironment::default(),
+        );
+        let path = PathBuf::from("bazel-out/k8-fastbuild-ST-1/bin/pkg/out.txt");
+        let artifact = |producer: &str| {
+            Artifact::new(
+                path.clone(),
+                path.clone(),
+                Some((producer.into(), 0)),
+                "//pkg:gen".into(),
+                false,
+                false,
+            )
+        };
+        let (winner, loser) = (artifact("//pkg:gen[a]#0"), artifact("//pkg:gen[b]#0"));
+        artifacts.register(file_hash(&winner.file), &winner.file, &winner, 3, 3, false);
+        let view = EngineView {
+            semantic_only: false,
+            compact_repo_mapping: false,
+            repositories: &repositories,
+            artifacts: &artifacts,
+            reader: 6,
+            input_groups: &groups,
+            input_memos: &memos,
+            client_environment: &environment,
+            lowering: None,
+        };
+        let mut builder = DeltaBuilder::new(view, Hooks::Worker, 6);
+        builder.register_artifact(&loser.file, &loser);
+        assert!(same_artifact(
+            &builder.lookup(&loser.file).unwrap(),
+            &winner
+        ));
+        // Its own registration, then another artifact of the File: an
+        // internal error (debug builds).
+        let own_path = PathBuf::from("bazel-out/k8-fastbuild/bin/pkg/own.txt");
+        let own = Artifact::new(
+            own_path.clone(),
+            own_path,
+            Some(("//pkg:own#0".into(), 0)),
+            "//pkg:own".into(),
+            false,
+            false,
+        );
+        builder.register_artifact(&own.file, &own);
+        let mut other = own.clone();
+        other.make_mut().producer = Some(("//pkg:own#1".into(), 0));
+        let registered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            builder.register_artifact(&own.file, &other);
+        }));
+        assert_eq!(
+            registered.is_err(),
+            cfg!(debug_assertions) || verify_artifacts()
+        );
     }
 }

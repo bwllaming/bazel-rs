@@ -878,6 +878,20 @@ fn same_artifact(a: &Artifact, b: &Artifact) -> bool {
         && a.file == b.file
 }
 
+/// Whether two artifacts are the same but for their producer: one generated
+/// File's artifact as two sharers of the output each name it (their own
+/// action) before the merges decide the winner.
+fn same_but_producer(a: &Artifact, b: &Artifact) -> bool {
+    a.producer.is_some()
+        && b.producer.is_some()
+        && a.real == b.real
+        && a.exec == b.exec
+        && a.owner == b.owner
+        && a.directory == b.directory
+        && a.constant_metadata == b.constant_metadata
+        && a.file == b.file
+}
+
 /// Whether BAZEL_RS_VERIFY_VIEWS=1 asks to rebuild every memoized
 /// dependency view on each later edge and compare (W1a's debug verifier).
 fn verify_views() -> bool {
@@ -936,10 +950,30 @@ struct IndexEntry {
     stamp: u32,
     /// T2: registered from a published phase-2 result, not merged yet.
     provisional: bool,
-    /// T2: the provisional artifact a merge replaced with a different one
-    /// (a stale copy registered again — a dependency view memo built from
-    /// the provisional result — is not the invariant's violation).
-    superseded: Option<Box<Artifact>>,
+    /// T2: the stale artifacts of the File, each a shared output's loser's
+    /// own: the provisional artifact a merge replaced with a different one,
+    /// or one a later sharer published while the merged entry was already
+    /// there (a copy of it registered again — a dependency view memo built
+    /// from the published result — is not the invariant's violation).
+    superseded: Option<Box<[Artifact]>>,
+}
+
+impl IndexEntry {
+    /// Whether `artifact` is one of the File's stale artifacts.
+    fn is_superseded(&self, artifact: &Artifact) -> bool {
+        self.superseded
+            .as_deref()
+            .is_some_and(|stale| stale.iter().any(|stale| same_artifact(stale, artifact)))
+    }
+
+    /// Keep `artifact` as one of the File's stale artifacts.
+    fn supersede(&mut self, artifact: Artifact) {
+        if !self.is_superseded(&artifact) {
+            let mut stale = self.superseded.take().map(Vec::from).unwrap_or_default();
+            stale.push(artifact);
+            self.superseded = Some(stale.into_boxed_slice());
+        }
+    }
 }
 
 /// One shard of [`ConcurrentArtifactIndex`]: File -> (artifact, stamp),
@@ -1061,6 +1095,18 @@ impl ConcurrentArtifactIndex {
                 {
                     check_reregistered(&entry.file, &entry.artifact, artifact);
                     entry.stamp = stamp;
+                } else if entry.stamp < stamp
+                    && artifact.producer.is_some()
+                    && !same_artifact(&entry.artifact, artifact)
+                {
+                    // A later sharer (in plan order) of a File an earlier
+                    // entry registered (merged, or published ahead of its
+                    // merge) publishes its own action as producer: it is
+                    // the shared output's loser (the merges name the
+                    // earlier entry's), and the copies of its artifact its
+                    // readers' prepares register are stale, not a second
+                    // artifact. The entry itself is left as it is.
+                    entry.supersede(artifact.clone());
                 }
             }
         }
@@ -1113,11 +1159,7 @@ impl ConcurrentArtifactIndex {
                 && !entry.provisional
                 && entry.stamp <= reader
             {
-                if !entry
-                    .superseded
-                    .as_deref()
-                    .is_some_and(|stale| same_artifact(stale, artifact.borrow()))
-                {
+                if !entry.is_superseded(artifact.borrow()) {
                     check_reregistered(&entry.file, &entry.artifact, artifact.borrow());
                 }
                 return true;
@@ -1135,10 +1177,9 @@ impl ConcurrentArtifactIndex {
                     // Only a merge's registration makes it canonical.
                     if !provisional {
                         if !same_artifact(&entry.artifact, artifact.borrow()) {
-                            entry.superseded = Some(Box::new(std::mem::replace(
-                                &mut entry.artifact,
-                                artifact.into_owned(),
-                            )));
+                            let stale =
+                                std::mem::replace(&mut entry.artifact, artifact.into_owned());
+                            entry.supersede(stale);
                         }
                         entry.provisional = false;
                         entry.stamp = entry.stamp.min(stamp);
@@ -1153,11 +1194,7 @@ impl ConcurrentArtifactIndex {
                         entry.provisional = false;
                     }
                 } else if entry.stamp <= reader {
-                    if !entry
-                        .superseded
-                        .as_deref()
-                        .is_some_and(|stale| same_artifact(stale, artifact.borrow()))
-                    {
+                    if !entry.is_superseded(artifact.borrow()) {
                         check_reregistered(&entry.file, &entry.artifact, artifact.borrow());
                     }
                 } else if provisional && artifact.borrow().producer.is_some() {
@@ -16649,6 +16686,49 @@ mod tests {
             cfg!(debug_assertions) || verify_artifacts()
         );
         assert!(index.current(&file).is_none());
+    }
+
+    /// A later sharer's published artifact of a File an earlier entry
+    /// registered (published ahead, then merged; or merged first) is the
+    /// shared output's loser: its readers' prepares register copies of it,
+    /// which are stale, not a second artifact (the frozen-all
+    /// corpus_parity5 flake). The entry keeps the earlier one.
+    #[test]
+    fn a_later_sharers_published_copy_is_superseded() {
+        let (winner, loser) = (generated_out_txt(), loser_out_txt());
+        let file = winner.file.clone();
+        for merged_first in [false, true] {
+            let index = ConcurrentArtifactIndex::default();
+            if !merged_first {
+                index.publish_provisional(file_hash(&file), &file, &winner, 3);
+            }
+            index.register(file_hash(&file), &file, &winner, 3, 3, false);
+            index.publish_provisional(file_hash(&file), &file, &loser, 6);
+            // A reader's prepare registers the loser's copy (no panic in
+            // debug builds), and the entry stays the winner's.
+            index.register(file_hash(&file), &file, &loser, 7, 7, true);
+            let (now, provisional, stamp) = index.current(&file).unwrap();
+            assert!(same_artifact(&now, &winner) && !provisional && stamp == 3);
+        }
+        // Published ahead, the loser publishing before the winner's merge.
+        let index = ConcurrentArtifactIndex::default();
+        index.publish_provisional(file_hash(&file), &file, &winner, 3);
+        index.publish_provisional(file_hash(&file), &file, &loser, 6);
+        index.register(file_hash(&file), &file, &winner, 3, 3, false);
+        index.register(file_hash(&file), &file, &loser, 7, 7, true);
+        assert!(same_artifact(&index.current(&file).unwrap().0, &winner));
+        // An earlier publisher is no loser: a different copy of it is
+        // still checked against the merged entry.
+        let index = ConcurrentArtifactIndex::default();
+        index.register(file_hash(&file), &file, &winner, 8, 8, false);
+        index.publish_provisional(file_hash(&file), &file, &loser, 2);
+        let registered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            index.register(file_hash(&file), &file, &loser, 9, 9, true);
+        }));
+        assert_eq!(
+            registered.is_err(),
+            cfg!(debug_assertions) || verify_artifacts()
+        );
     }
 
     /// T2 review: an entry left provisional after a walk is found.

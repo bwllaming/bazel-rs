@@ -2122,7 +2122,19 @@ phase 1 needs the prepare's engine reads as node reads (a `PrepareCx` over
   plan indices, not to its publisher's own builds (a rebuild registers it
   again), and only a merge's registration replaces it (a different
   canonical artifact — a shared output's loser naming the winner — is kept
-  as `superseded` for re-registrations of the stale copy). A worker's
+  as `superseded` for re-registrations of the stale copy; so is a later
+  sharer's published artifact when an earlier entry registered the File
+  first, merged or published — its readers' prepares register copies of
+  it). A worker build's own output that another sharer registered first
+  still names the build's own action (`DeltaBuilder::register_output` sees
+  only the build's producers): the shared output's loser, decided and
+  rewritten at the merge; only the build's own registrations are held to
+  one artifact. These two were the debug-only `re-registered with a
+  different artifact` panics of the frozen-everywhere suite's
+  corpus_parity5 (two configurations sharing an output root; 5 of 16 runs
+  on main; the index's entries are unchanged, so release builds behave as
+  before). Tests `engine::tests::a_later_sharers_published_copy_is_superseded`,
+  `delta::tests::a_worker_builds_shared_output_is_not_a_second_artifact`. A worker's
   delta records every read of a provisional entry and every generated File
   it found unregistered (`TargetDelta::reads`); the tool runfiles groups
   and shared input runs keep their fill's reads (users inherit them; a
