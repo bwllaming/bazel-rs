@@ -744,6 +744,11 @@ impl Worker {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::from(log));
+        if self.key.sandboxed {
+            // The sandbox worker re-executes this binary (macOS's
+            // CoreFoundation variable, crate::process_wrapper).
+            crate::process_wrapper::carry_cf_encoding(&mut command);
+        }
         {
             use std::os::unix::process::CommandExt;
             // Its own process group: the shutdown kills the whole group, and

@@ -1072,6 +1072,7 @@ fn worker(args: &[String]) -> Result<i32, String> {
         // A persistent worker: the worker process replaces this one under
         // the ruleset (Landlock domains survive exec), keeping its stdin and
         // stdout, and the executor's worker pool manages its lifetime.
+        crate::process_wrapper::restore_cf_encoding(&mut command);
         let error = crate::spawn_lock::exec(&mut command);
         return Err(format!("cannot execute '{}': {error}", arguments[0]));
     }

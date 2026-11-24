@@ -69,6 +69,7 @@ One concurrency group per tag (never cancelled). Two stages:
   |---|---|---|
   | `linux-x86_64` | `ubuntu-24.04` (GitHub-hosted x86_64; glibc 2.39, so the glibc archive needs glibc ≥ 2.39 — printed by the job's "Build machine" step) | `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl` |
   | `linux-arm64` | `ubuntu-24.04-arm` (GitHub-hosted arm64) | `aarch64-unknown-linux-musl` |
+  | `macos-arm64` | `macos-15` (GitHub-hosted arm64 macOS; no zig) | `aarch64-apple-darwin` |
 
   `fail-fast`, timeout 75 minutes, `permissions: contents: read`: check out
   the tag with full history (`fetch-depth: 0`); install the toolchain of
@@ -89,6 +90,10 @@ One concurrency group per tag (never cancelled). Two stages:
   $RUNNER_TEMP/release` with `GH_TOKEN=${{ github.token }}`; it needs no Rust.
   The archives, checksums and notes are kept as the artifact `release-<tag>`
   for 14 days (also on failure).
+- **`verify-macos`**, one job on `macos-15` after `publish`: downloads the
+  published `aarch64-apple-darwin` archive and its `.sha256` with curl, runs
+  `shasum -a 256 -c`, `codesign --verify` (the ad-hoc signature) and
+  `bazel-rs --version`.
 
 **Build records** (`<archive stem>.release.json`, schema 1): version, commit,
 compatibility target, rustc, and the archive's notes row (triple, platform,
@@ -96,8 +101,8 @@ linkage, smoke test, sha256, …). The publish stage requires exactly one
 record per target of `--target` (default: every default target), for this
 version and commit, each next to its archive at the recorded sha256, and one
 compatibility target; it copies the archives, writes `SHA256SUMS` and the
-`.sha256` files again, and the notes. **Adding a platform** (e.g. macOS arm64
-on `macos-14`): a row in `TARGETS` of `scripts/release.py` (its `runner`,
+`.sha256` files again, and the notes. **Adding a platform**: a row in
+`TARGETS` of `scripts/release.py` (its `runner`,
 `cpu`, `bundle`, linkage rule) and an entry in the workflow matrix;
 `tests/test_release.py` checks that the matrix builds every default target on
 its runner exactly once.
@@ -142,6 +147,7 @@ command): a CI rehearsal in a scratch clone (see Tests).
 | `x86_64-unknown-linux-gnu` | yes | dynamic, glibc of the build host: the release is built on `ubuntu-24.04`, so it needs glibc ≥ 2.39 (Ubuntu 24.04, Debian 13 or newer); no glibc version suffix is pinned | `cargo build --locked --release`, host `cc` |
 | `x86_64-unknown-linux-musl` | yes | static-pie: musl libc, jemalloc, no shared library | `--target x86_64-unknown-linux-musl`, C code by `zig cc -target x86_64-linux-musl`, linked by the host `cc` with Rust's self-contained musl runtime |
 | `aarch64-unknown-linux-musl` | yes | static | as above with `zig cc -target aarch64-linux-musl`, linked by `rust-lld`, `JEMALLOC_SYS_WITH_LG_PAGE=16` (runs on 4/16/64 KiB page kernels); in CI natively on `ubuntu-24.04-arm`, locally also cross-built on x86_64 |
+| `aarch64-apple-darwin` | yes | dynamic, macOS system libraries only (libSystem, Security/CoreFoundation frameworks); macOS ≥ 11 | `cargo build --locked --release --target aarch64-apple-darwin` natively on macOS (`macos-15`), Apple clang for the C code; ld64 signs ad hoc (arm64 macOS runs nothing unsigned). Not built by a local `--dry-run` on Linux (no cross build; noted and skipped) |
 
 The static x86_64 binary is the portable one: it runs on any x86_64 Linux
 (no glibc version requirement; Rust's minimum kernel 3.2). It is the same code
@@ -176,6 +182,18 @@ alternating runs on a shared 64-core machine (seconds wall, peak RSS):
 
 The warm no-op's extra ~35 MB is jemalloc arena memory (it shrinks to ~8 MB
 with `MALLOC_CONF=narenas:8`), not seen at the full-analysis peak.
+
+**macOS arm64** (docs/MACOS.md). The binary embeds Bazel 9.3.1's
+darwin-arm64 `@bazel_tools` (`resources/bazel_tools/darwin-arm64/`) and
+reports the host like genuine Bazel on Apple silicon (`ctx.os.name`
+`mac os x`, `@platforms//os:osx`, `@platforms//cpu:aarch64`,
+`bazel-out/darwin_arm64-fastbuild`). The linkage check reads the Mach-O
+header: CPU type arm64, an `LC_CODE_SIGNATURE` (ld64's ad-hoc signature),
+and only `/usr/lib/` or `/System/Library/` dylibs; the notes' requirement
+is "macOS ≥ <LC_BUILD_VERSION minos>; system libraries only". The smoke test
+runs natively on the macOS runner, its network build expecting
+`@platforms//os:osx`. The archive is not notarized: a `curl` download runs as
+it is, a browser download needs `xattr -d com.apple.quarantine bazel-rs`.
 
 **Linux arm64.** The arm64 binary embeds Bazel 9.3.1's linux-arm64
 `@bazel_tools` (`resources/bazel_tools/linux-arm64/`, its JDK and compiled

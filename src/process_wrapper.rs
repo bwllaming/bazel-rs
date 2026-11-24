@@ -71,6 +71,48 @@ fn self_exe() -> &'static Path {
     crate::platform::self_exe()
 }
 
+/// macOS: CoreFoundation, which this binary links (the system certificate
+/// store), sets `__CF_USER_TEXT_ENCODING` in every process that loads it
+/// when the variable is missing — also in a re-executed supervisor whose
+/// environment is the spawn's own. The executor carries the spawn's own
+/// value (or its absence) in [`CF_CARRIER`]; the supervisor restores exactly
+/// that before it starts the command ([`restore_cf_encoding`]).
+#[cfg(target_os = "macos")]
+const CF_ENCODING: &str = "__CF_USER_TEXT_ENCODING";
+#[cfg(target_os = "macos")]
+const CF_CARRIER: &str = "BAZEL_RS_SPAWN_CF_USER_TEXT_ENCODING";
+
+/// Executor side of [`CF_ENCODING`]'s round trip: the spawn's explicit value
+/// travels in the carrier (a spawn environment is always explicit: the
+/// callers clear the inherited one).
+#[cfg(target_os = "macos")]
+pub(crate) fn carry_cf_encoding(command: &mut Command) {
+    let value = command
+        .get_envs()
+        .find(|(name, _)| *name == CF_ENCODING)
+        .and_then(|(_, value)| value.map(OsStr::to_os_string));
+    match value {
+        Some(value) => command.env(CF_CARRIER, value),
+        None => command.env_remove(CF_CARRIER),
+    };
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn carry_cf_encoding(_command: &mut Command) {}
+
+/// Supervisor side of [`CF_ENCODING`]'s round trip (a no-op off macOS).
+#[cfg(target_os = "macos")]
+pub(crate) fn restore_cf_encoding(command: &mut Command) {
+    match std::env::var_os(CF_CARRIER) {
+        Some(value) => command.env(CF_ENCODING, value),
+        None => command.env_remove(CF_ENCODING),
+    };
+    command.env_remove(CF_CARRIER);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn restore_cf_encoding(_command: &mut Command) {}
+
 /// The errno reported for a start error that carries none (std's start
 /// errors all carry one; a malformed command line would already have failed
 /// the supervisor's own start).
@@ -260,6 +302,7 @@ impl Launch {
             .map(Spawned::direct);
         }
         let (ours, theirs) = UnixStream::pair()?;
+        carry_cf_encoding(&mut self.command);
         self.command.stdin(Stdio::from(OwnedFd::from(theirs)));
         let started = crate::spawn_lock::spawn_supervisor(&mut self.command);
         // Drop this process's copy of the supervisor's end: end-of-file on
@@ -532,6 +575,7 @@ fn exit_descriptor(_pid: Pid) -> Option<OwnedFd> {
 /// the shell that started it.
 fn start_command(command: &mut Command) -> io::Result<Child> {
     command.stdin(Stdio::null());
+    restore_cf_encoding(command);
     crate::signals::new_session_in_child(command);
     // Every signal at its default action (ClearSignalMask in the
     // process-wrapper's child, process-wrapper-legacy.cc:72).

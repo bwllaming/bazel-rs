@@ -77,15 +77,18 @@ any distribution and a `x86_64-unknown-linux-gnu` build that needs the glibc it
 was built against (glibc ≥ 2.39: built on Ubuntu 24.04) (each release's notes give the checksums, requirements and
 install steps; from 0.2.0 on, arm64 after 0.2.0).
 
-Platform support: Linux x86_64 and Linux aarch64 (4, 16 or 64 KiB pages). Each
+Platform support: Linux x86_64 and Linux aarch64 (4, 16 or 64 KiB pages), and
+macOS arm64 (docs/MACOS.md). Each
 binary embeds Bazel 9.3.1's `@bazel_tools` of its own platform
 (`resources/bazel_tools/<platform>/`, from the official
 `bazel-9.3.1-linux-x86_64` / `bazel-9.3.1-linux-arm64` release) and reports its
 host like genuine Bazel on that platform: `ctx.os.arch` `amd64` / `aarch64`,
 `@platforms//cpu:x86_64` / `@platforms//cpu:aarch64`, output roots
 `bazel-out/k8-*` / `bazel-out/aarch64-*` (docs/HOST_OS.md). Other systems
-(macOS, Windows) are not supported yet; the release tooling has room for more
-targets (docs/RELEASING.md). Install the
+than macOS on Apple silicon (`aarch64-apple-darwin`, docs/MACOS.md: genuine's
+processwrapper-sandbox semantics, no darwin-sandbox yet) — Windows, Intel Macs —
+are not supported yet; the release tooling has room for more targets
+(docs/RELEASING.md). Install the
 `bazel-rs` binary anywhere on PATH and run it from a workspace like Bazel
 (`bazel-rs build //...`); it does not replace `bazel` or Bazelisk. Releases are
 built and published by GitHub Actions (`.github/workflows/release.yml`) when a

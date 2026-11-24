@@ -34,6 +34,7 @@ darwin-sandbox) is open — see the end.
 | `--cache-dir` | as given | canonicalized (the symlinks /tmp, /var → /private/...), like genuine's output base |
 | Digest memo settledness | birth time for owned files | change time only (macOS moves the birth time back with the mtime) |
 | Lock files | `O_NOFOLLOW \| O_NONBLOCK` (Linux values) | the same flags with macOS's values |
+| Spawn environment | exactly the action's | the same: CoreFoundation (linked for the system certificate store) adds `__CF_USER_TEXT_ENCODING` to every process that loads it, so the executor carries the spawn's own value (or its absence) to the re-executed supervisor, which restores it before starting the command |
 | jemalloc | arena binding | the same (tikv-jemalloc works on macOS) |
 
 `unsafe` is used for nothing new: the macOS code uses rustix and nix safe
@@ -94,8 +95,17 @@ an offline workspace, then a built-in-profile build that materializes the
 embedded `@bazel_tools` and checks `@platforms//host` =
 `@platforms//os:osx,@platforms//cpu:aarch64`; it runs with macOS's default
 `TMPDIR` below `/var`), then with `TMPDIR=$RUNNER_TEMP` the library unit tests
-and `scripts/ci-integration-tests-macos.txt` (the hermetic programs that pass
-on macOS; most others wrap the CLI in GNU `timeout`, which macOS lacks).
+and `scripts/ci-integration-tests-macos.txt`: the hermetic programs of the
+Linux job (`scripts/ci-integration-tests.txt`) minus those whose expectations
+are the Linux x86_64 host's (`bazel-out/k8-*` paths: actions_params,
+args_map_each, artifact_identity, cache_gc, directory_expander,
+filegroup_output_group, native, parallel_cli, py_label_runfiles_path,
+py_repo_mapping, py_shared_library, runfiles), that use GNU `stat` in their
+actions (hardlink_staging, output_permissions), non-UTF-8 file names
+(bazel_lexer_strings), glibc's error texts (libc_string) or /proc telemetry
+(plan_timings). The integration tests wrap the CLI in GNU timeout(1):
+`tests/support/temp_root.rs`'s `TIMEOUT` is Homebrew coreutils' `gtimeout`
+on macOS, which the job installs.
 Linux-only tests carry `#[cfg(target_os = "linux")]` with the reason:
 expectations of the Linux x86_64 host (`k8`), GNU `stat`/`timeout`, `/proc`,
 ETXTBSY (macOS executes files open for writing), non-UTF-8 file names (APFS
