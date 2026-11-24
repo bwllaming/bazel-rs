@@ -103,6 +103,7 @@ pub(crate) fn carry_cf_encoding(_command: &mut Command) {}
 /// Supervisor side of [`CF_ENCODING`]'s round trip (a no-op off macOS).
 #[cfg(target_os = "macos")]
 pub(crate) fn restore_cf_encoding(command: &mut Command) {
+    // snapshot-unrecorded: the re-executed supervisor's own environment.
     match std::env::var_os(CF_CARRIER) {
         Some(value) => command.env(CF_ENCODING, value),
         None => command.env_remove(CF_ENCODING),

@@ -434,7 +434,9 @@ mod tests {
         let group = child.id();
         assert_eq!(group_exists(group), Ok(true));
         kill_group(group).unwrap();
-        // The killed, unreaped (zombie) leader is still a group member.
+        // The killed, unreaped (zombie) leader is still a group member
+        // (macOS refuses to signal a group of zombies: EPERM).
+        #[cfg(target_os = "linux")]
         assert_eq!(group_exists(group), Ok(true));
         assert_eq!(child.wait().unwrap().signal(), Some(9));
         assert_eq!(group_exists(group), Ok(false));
