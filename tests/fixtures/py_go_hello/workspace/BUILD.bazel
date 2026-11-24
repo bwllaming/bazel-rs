@@ -1,0 +1,27 @@
+# Python and Go with their downloaded toolchains (scripts/host_parity.py
+# case py_go_hello): rules_python's hermetic interpreter, rules_go's SDK
+# for the host (cgo through the host's C++ toolchain).
+
+load("@rules_go//go:def.bzl", "go_binary", "go_test")
+load("@rules_python//python:py_binary.bzl", "py_binary")
+load("@rules_python//python:py_test.bzl", "py_test")
+
+py_binary(
+    name = "py_hello",
+    srcs = ["py_hello.py"],
+)
+
+py_test(
+    name = "py_hello_test",
+    srcs = ["py_hello_test.py"],
+)
+
+go_binary(
+    name = "go_hello",
+    srcs = ["go_hello.go"],
+)
+
+go_test(
+    name = "go_hello_test",
+    srcs = ["go_hello_test.go"],
+)
