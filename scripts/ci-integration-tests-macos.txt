@@ -49,7 +49,6 @@ provider_init
 provider_payload_files
 py_label_runfiles_path
 py_repo_mapping
-py_shared_library
 query_language
 rc_options
 registry_lockfile

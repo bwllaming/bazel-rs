@@ -2,7 +2,8 @@
 // captures come from a Linux x86_64 host (`bazel-out/k8-fastbuild/...`):
 // genuine's default `--cpu` (AutoCpuConverter) names the configuration
 // output directories, `k8` on Linux x86_64, `aarch64` on Linux arm64,
-// `darwin_arm64` on macOS arm64 (docs/MACOS.md). Include with
+// `darwin_arm64` on macOS arm64 (docs/MACOS.md); and the environment
+// variable genuine's macOS spawns add. Include with
 // `include!("support/host_cpu.rs");`.
 
 /// This host's default `--cpu`, the prefix of `bazel-out/<cpu>-fastbuild`.
@@ -45,4 +46,20 @@ fn as_k8(text: &str) -> String {
         text = text.replace(&format!("{HOST_CPU}{suffix}"), &format!("k8{suffix}"));
     }
     text
+}
+
+/// genuine's spawns on macOS carry `__CF_USER_TEXT_ENCODING` besides the
+/// action's environment (the server's CoreFoundation value; bazel-rs passes
+/// its own, docs/MACOS.md): whether an `env` line is that variable there.
+#[allow(dead_code)]
+fn is_macos_spawn_variable(line: &str) -> bool {
+    cfg!(target_os = "macos") && line.starts_with("__CF_USER_TEXT_ENCODING=")
+}
+
+/// `text` (an `env` listing) without [`is_macos_spawn_variable`] lines.
+#[allow(dead_code)]
+fn without_macos_spawn_variables(text: &str) -> String {
+    text.split_inclusive('\n')
+        .filter(|line| !is_macos_spawn_variable(line))
+        .collect()
 }

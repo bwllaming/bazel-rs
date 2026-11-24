@@ -11,6 +11,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 include!("support/explicit_modules.rs");
+// macOS: the CoreFoundation variable of every spawn.
+include!("support/host_cpu.rs");
 
 struct Workspace(tempfile::TempDir);
 
@@ -138,6 +140,7 @@ fn environment(outputs: &[(String, PathBuf)], name: &str) -> Vec<String> {
         .unwrap()
         .lines()
         .filter(|line| !["PWD=", "SHLVL=", "_="].iter().any(|p| line.starts_with(p)))
+        .filter(|line| !is_macos_spawn_variable(line))
         .map(|line| match line.strip_prefix("TMPDIR=") {
             Some(tmp) => {
                 assert!(tmp.starts_with('/') && tmp != "/explicit", "{line}");
