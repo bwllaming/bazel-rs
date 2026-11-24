@@ -108,7 +108,7 @@ direct attribute dependencies of the requested tests, which are kept.
 
 | field | value |
 |---|---|
-| `mnemonic` | `FileWrite`, `TemplateExpand`, or the spawn's mnemonic |
+| `mnemonic` | `FileWrite`, `TemplateExpand`, `Symlink`/`ExecutableSymlink`/`SolibSymlink`/`UnresolvedSymlink` (as aquery names them), or the spawn's mnemonic |
 | `argv` | the spawn's argv (`/bin/bash -c CMD "" ARGS…` for `run_shell`), parameter files expanded like SpawnAction.getArguments (an argument naming one of the action's parameter files, `@path`, `--flagfile=path` or the bare path of `use_param_file("%s")`, is replaced by the arguments it holds; `shell` quoting undone; a `flag_per_line` file's `--flag=value` lines stay single arguments). A command line natively deferred to execution (Args over tree artifacts) is expanded as genuine's analysis does without input metadata: a directory stays its path, or what a `map_each` maps it to with a NoopExpander (a `map_each` closure retained with `allow_closure` is not callable before the target's module freezes and leaves the path). A Java compilation (`java_common.compile`'s Javac, JavacTurbine) answers JavaCompileAction.getArguments: the launcher, the flags and `--classpath`, as aquery prints them, without JavaBuilder's parameter file. `None` for writes and template expansions |
 | `content` | the written content; for a template expansion, the source template read when `target.actions` is accessed (an observed read), with the substitutions applied; `None` otherwise |
 | `substitutions` | the template expansion's substitutions; `None` otherwise |
