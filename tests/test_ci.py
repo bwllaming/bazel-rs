@@ -25,7 +25,7 @@ class CiTest(unittest.TestCase):
     def test_workflow_has_the_macos_job(self):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
         for needle in (
-            "runs-on: macos-14",
+            "runs-on: macos-15",
             "cargo build --locked",
             "python3 scripts/smoke.py target/debug/bazel-rs --network",
             "scripts/ci-integration-tests-macos.txt",

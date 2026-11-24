@@ -89,7 +89,7 @@ jobs:
     # macOS runner; scripts/ci-integration-tests-macos.txt lists the
     # hermetic integration tests that run there (the Linux-only subsystems
     # are cfg-gated). Formatting and the Linux gates stay in `check`.
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
