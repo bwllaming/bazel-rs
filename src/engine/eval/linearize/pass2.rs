@@ -314,6 +314,12 @@ impl Engine {
 
 /// `Engine::commit_loaded_package` of a package the evaluation loaded,
 /// unless the engine loaded it itself meanwhile (a flush's phase 2).
+///
+/// Engine maps only: no `track_package_printed`, so neither a
+/// `linearize::capture` `PkgCommit` event (the tape applies it outside
+/// `with_engine`'s capture pause, inside a running attempt) nor a tracker
+/// event — the tracker learns of the commit from the tape's own
+/// `PkgCommit` op (`TapeReplay`), where the walk records it.
 pub(crate) fn commit_package(engine: &mut Engine, package: &PackageId, loaded: Option<&PkgValue>) {
     if engine.packages.contains_key(package) {
         return;

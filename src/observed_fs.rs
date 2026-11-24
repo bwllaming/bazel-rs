@@ -120,7 +120,7 @@ pub(crate) fn record_private<R>(f: impl FnOnce() -> R) -> (R, Recording) {
     let events = frame.close();
     drop(scope);
     let recorder = Recorder::new(0);
-    recorder.apply_events(events);
+    recorder.apply_events_private(events);
     let mut recording = recorder.take();
     // The facade has no per-proof start time. Revalidate all content, including
     // memo answers, rather than granting any stat-only trust to a proof.
@@ -1755,6 +1755,47 @@ impl Recorder {
         }
     }
 
+    /// [`Self::apply_events`] into a private proof's recorder
+    /// ([`record_private`]): the captured sets are copied, not consumed — a
+    /// set is marked recorded (and its events freed) only by the window's
+    /// recorder, so a set a proof replays still reaches the window where
+    /// its own frame commits it. A set the window recorded already (its
+    /// events freed) cannot be copied: the proof is tainted Unstable (a
+    /// conservative miss) instead of proving with fewer inputs.
+    fn apply_events_private(&self, events: Events) {
+        for event in events.events {
+            self.apply_event(event);
+        }
+        for child in &events.children {
+            self.copy_captured(child);
+        }
+    }
+
+    /// [`Self::apply_events_private`] of one captured set and those it
+    /// holds.
+    fn copy_captured(&self, captured: &Captured) {
+        let guard = lock(&captured.events);
+        if captured.is_recorded() && guard.is_empty() {
+            drop(guard);
+            self.store_taint(
+                Taint::Unstable,
+                "a private proof replayed a captured set the window recorded already".to_owned(),
+            );
+            return;
+        }
+        for event in &guard.events {
+            match event {
+                Event::Observe(path, op, outcome) => self.store_observation_ref(path, op, outcome),
+                event => self.apply_event(event.clone()),
+            }
+        }
+        let children = guard.children.clone();
+        drop(guard);
+        for child in &children {
+            self.copy_captured(child);
+        }
+    }
+
     /// A captured set reaching the recorder ([`replay`]): its events and
     /// those of the sets it holds — once; a later replay is a no-op.
     fn replay_captured(&self, captured: &Captured) {
@@ -2147,10 +2188,18 @@ pub(crate) fn in_frame() -> bool {
 /// whatever becomes of that attempt: in its frame they would be dropped
 /// with an abandoned attempt (or a node the tape never replays) while the
 /// memos they back (a merged source's path, a loaded package) stay.
+///
+/// The invariant: no frame opened before the call may be closed or dropped
+/// during `f` (a guard moved into `f`, a `UnitScope` finished there): its
+/// depth indexes the stack set aside, and its events would go to `f`'s
+/// stack. Frames are scoped guards, so this holds unless a guard is moved
+/// into `f`; debug builds check it ([`FrameGuard::stack`]). Frames `f`
+/// opens must close before it returns (also checked).
 pub(crate) fn outside_frames<R>(f: impl FnOnce() -> R) -> R {
-    struct Restore(Vec<Events>);
+    struct Restore(Vec<Events>, u64);
     impl Drop for Restore {
         fn drop(&mut self) {
+            STACK.with(|stack| stack.set(self.1));
             let saved = std::mem::take(&mut self.0);
             let _ = FRAMES.try_with(|frames| {
                 if let Ok(mut frames) = frames.try_borrow_mut() {
@@ -2164,7 +2213,11 @@ pub(crate) fn outside_frames<R>(f: impl FnOnce() -> R) -> R {
         }
     }
     let saved = FRAMES.with(|frames| std::mem::take(&mut *frames.borrow_mut()));
-    let _restore = Restore(saved);
+    let stack = STACKS.with(|stacks| {
+        stacks.set(stacks.get() + 1);
+        stacks.get()
+    });
+    let _restore = Restore(saved, STACK.with(|current| current.replace(stack)));
     f()
 }
 
@@ -2194,6 +2247,26 @@ fn to_frame(captured: Arc<Captured>) -> Result<(), Arc<Captured>> {
 struct FrameGuard {
     depth: usize,
     open: bool,
+    /// The frame stack it was opened on ([`STACK`]): closing or dropping it
+    /// inside an [`outside_frames`] call that began after it opened is a
+    /// bug (its depth indexes the set-aside stack), checked in debug builds.
+    stack: u64,
+}
+
+thread_local! {
+    /// This thread's current frame stack: 0, or the stack an
+    /// [`outside_frames`] call runs on (each call a new number).
+    static STACK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// The last number [`outside_frames`] gave a stack on this thread.
+    static STACKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// [`FrameGuard::stack`]'s check (debug builds; not while unwinding).
+fn check_stack(stack: u64) {
+    debug_assert!(
+        std::thread::panicking() || STACK.with(std::cell::Cell::get) == stack,
+        "internal error: a frame opened outside an outside_frames call was closed inside it"
+    );
 }
 
 impl FrameGuard {
@@ -2207,12 +2280,17 @@ impl FrameGuard {
             frames.push(Events::default());
             frames.len() - 1
         });
-        Some(Self { depth, open: true })
+        Some(Self {
+            depth,
+            open: true,
+            stack: STACK.with(std::cell::Cell::get),
+        })
     }
 
     /// Close the frame: its events.
     fn close(mut self) -> Events {
         self.open = false;
+        check_stack(self.stack);
         FRAMES.with(|frames| {
             let mut frames = frames.borrow_mut();
             debug_assert_eq!(frames.len(), self.depth + 1, "frames close innermost first");
@@ -2225,6 +2303,7 @@ impl FrameGuard {
 impl Drop for FrameGuard {
     fn drop(&mut self) {
         if self.open {
+            check_stack(self.stack);
             let _ = FRAMES.try_with(|frames| {
                 if let Ok(mut frames) = frames.try_borrow_mut() {
                     frames.truncate(self.depth);
@@ -4055,6 +4134,43 @@ mod tests {
             .collect();
         expected.sort();
         assert_eq!(seen, expected);
+    }
+
+    /// `outside_frames`' invariant: a frame opened before the call and
+    /// finished inside it is caught in debug builds.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "closed inside it")]
+    fn a_frame_from_outside_closed_inside_outside_frames_is_an_error() {
+        let _window = record_this_thread();
+        let unit = unit_scope();
+        outside_frames(move || drop(unit.finish()));
+    }
+
+    /// A private proof ([`record_private`]) copies the captured sets it
+    /// replays (a memo hit inside the proof) without consuming them: the
+    /// window still records a set when the frame holding it commits after
+    /// the proof. A set the window recorded already (its events freed)
+    /// taints the proof instead of proving with fewer inputs.
+    #[test]
+    fn private_proofs_do_not_consume_the_windows_captured_sets() {
+        let temp = tempfile::tempdir().unwrap();
+        let window = record_this_thread();
+        let unit = unit_scope();
+        let (_, memo) = capture(|| exists(temp.path().join("memo")));
+        let memo = memo.unwrap();
+        let (_, proof) = record_private(|| replay(&memo));
+        assert_eq!(proof.observations.len(), 1, "{:?}", proof.observations);
+        assert!(proof.taints.is_empty());
+        assert!(!memo.is_recorded());
+        commit(unit.finish());
+        assert!(memo.is_recorded());
+        let memo_path = temp.path().join("memo").display().to_string();
+        assert_eq!(paths_of(&window.recorder.snapshot()), [(memo_path, "STAT")]);
+        if !auditing() {
+            let (_, late) = record_private(|| replay(&memo));
+            assert!(late.taints.contains_key(&Taint::Unstable), "{late:?}");
+        }
     }
 
     /// Two spellings of one path (`Path` equality ignores a trailing

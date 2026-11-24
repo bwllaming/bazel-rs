@@ -1183,6 +1183,22 @@ Branch `eval-s2-load` (rebased on main `f397e89a`, eval-s2-pass1 merged).
   `BAZEL_RS_EVAL_TEST_ABANDON_WALKED=1` (the attempt a walk ran in is
   answered `Missing` at the need's return); test
   `eval_pass2::a_walk_inside_an_abandoned_attempt_is_in_the_recording`.
+  Leaving the walk's events out of the attempt-captured sets (a `Tgt`
+  value's set, `source_observed`, the store's package observations) is
+  safe because those memos never outlive the window they are replayed
+  into: they live in one evaluation's structures (`EvalShared`, the store,
+  the linearizer), a process opens at most one window (`RECORDER` is a
+  `OnceLock`), a capture exists only while recording, and a replay after
+  the window closed reaches no recorder (and consumes nothing). The one
+  other recorder, a private proof's (`record_private`, repository
+  publication proofs on a fresh `RepositorySet`), copies the sets it
+  replays instead of consuming them (before, its throwaway recorder marked
+  a window's set recorded and freed its events, so the window's own commit
+  of it recorded nothing); a set the window recorded already taints the
+  proof (a conservative miss). Test
+  `observed_fs::private_proofs_do_not_consume_the_windows_captured_sets`.
+  `outside_frames`' invariant — no frame opened before the call is closed
+  or dropped during it — is checked in debug builds.
 
 Results (2026-11-08, ~/code `80d6724f3a`, LTO release binary, warm
 repositories, `BAZEL_RS_SNAPSHOT=off`, `build --nobuild //src/...`, one run
