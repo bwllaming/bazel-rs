@@ -45,6 +45,52 @@ pub fn main_repository_mapping_failure(error: &str) -> Option<String> {
     .then(|| format!("Error computing the main repository mapping: {error}"))
 }
 
+/// ExitCode.EXTERNAL_DEPS_ERROR: an ExternalDeps failure of module
+/// resolution (BAD_MODULE, MODULE_NOT_FOUND, VERSION_RESOLUTION_ERROR, …).
+pub const EXTERNAL_DEPS_ERROR: i32 = 48;
+/// The exit code of a failure without a FailureDetail code of its own
+/// (`*_UNKNOWN` codes): a non-registry override's repository that could not
+/// be fetched, `mod`'s resolution failures (ModCommand.MOD_COMMAND_UNKNOWN).
+pub const UNKNOWN_FAILURE: i32 = 37;
+
+/// The first module resolution failure of this command: its message and
+/// exit code ([`note_module_failure`]).
+static MODULE_FAILURE: std::sync::OnceLock<(String, i32)> = std::sync::OnceLock::new();
+
+/// Module resolution failed with `message` (crate::repository::RepositorySet
+/// reading the root MODULE.bazel or resolving the graph). Bazel computes
+/// the main repository mapping, hence module resolution, before anything
+/// else in every analyzing command, `query` and `fetch`; its
+/// ExternalDepsException codes exit [`EXTERNAL_DEPS_ERROR`]
+/// (ModuleFileFunction, Selection, BazelDepGraphFunction), except a
+/// non-registry override whose repository fails to fetch: the repository's
+/// own failure, [`UNKNOWN_FAILURE`] (ModuleFileFunction.getModuleFile).
+/// Genuine captures: tests/fixtures/module_failure_exit_codes.
+pub fn note_module_failure(message: &str) {
+    let code = if message.starts_with("cannot resolve local override for ")
+        || message.starts_with("error fetching git_override of module ")
+        || message.starts_with("error fetching archive_override of module ")
+    {
+        UNKNOWN_FAILURE
+    } else {
+        EXTERNAL_DEPS_ERROR
+    };
+    let _ = MODULE_FAILURE.set((message.to_owned(), code));
+}
+
+/// The exit code of a command that failed with `error` because module
+/// resolution failed ([`note_module_failure`]; `mod` reports any such
+/// failure as MOD_COMMAND_UNKNOWN, 37). `None` for any other failure: the
+/// typed record gates the text, which must contain the recorded message.
+pub fn module_failure(error: &str, mod_command: bool) -> Option<i32> {
+    let (message, code) = MODULE_FAILURE.get()?;
+    (!message.is_empty() && error.contains(message.as_str())).then_some(if mod_command {
+        UNKNOWN_FAILURE
+    } else {
+        *code
+    })
+}
+
 /// Record the exit code of this command's failure (the first one wins).
 pub fn record(code: i32) {
     let _ = RECORDED.compare_exchange(0, code, Ordering::Relaxed, Ordering::Relaxed);

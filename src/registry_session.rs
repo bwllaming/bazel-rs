@@ -240,7 +240,9 @@ impl RegistrySession {
         let lockfile = if mode == LockfileMode::Off {
             Lockfile::default()
         } else {
-            lockfile::read(&read_path, mode)?
+            // BAD_LOCKFILE: a module resolution failure (exit 48).
+            lockfile::read(&read_path, mode)
+                .inspect_err(|error| crate::exit_code::note_module_failure(error))?
         };
         let read_path = read_path.clone();
         Ok(Self {

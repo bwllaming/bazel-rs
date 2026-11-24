@@ -142,13 +142,23 @@ fn stdout(output: &Output) -> String {
 }
 
 fn last_error(output: &Output) -> String {
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
+    failure(output, 1, "bazel-rs: ")
+}
+
+/// The last error of a command that failed module resolution: Bazel's
+/// ExternalDepsException, exit 48 (tests/fixtures/module_failure_exit_codes).
+fn module_error(output: &Output) -> String {
+    failure(output, 48, "ERROR: ")
+}
+
+fn failure(output: &Output, code: i32, prefix: &str) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(code), "{stderr}");
+    assert!(output.stdout.is_empty());
     stderr
         .lines()
         .rev()
-        .find_map(|line| line.strip_prefix("bazel-rs: "))
+        .find_map(|line| line.strip_prefix(prefix))
         .unwrap_or_default()
         .to_owned()
 }
@@ -215,7 +225,7 @@ fn eager_lockfile_path_fails_loudly_on_a_bad_extension_label() {
     )
     .unwrap();
     assert_eq!(
-        last_error(&f.query("update", &["//:plain"])),
+        module_error(&f.query("update", &["//:plain"])),
         "Error computing the main repository mapping: invalid label for module extension found at @@badext+//:MODULE.bazel:3:21: no repo visible as '@nope' here"
     );
     assert!(f.lock().is_none());
@@ -249,7 +259,7 @@ fn eager_lockfile_path_fails_loudly_on_a_bad_extension_label() {
             .output()
             .unwrap();
         assert_eq!(
-            last_error(&output),
+            module_error(&output),
             "Error computing the main repository mapping: invalid label for module extension found at @@badext+//:MODULE.bazel:3:21: no repo visible as '@nope' here",
             "{registry} {mode}"
         );
@@ -281,7 +291,7 @@ fn modules_cannot_declare_the_builtin_repository_name() {
             module.display()
         );
         for mode in ["off", "update"] {
-            assert_eq!(last_error(&f.query(mode, &["//:plain"])), expected);
+            assert_eq!(module_error(&f.query(mode, &["//:plain"])), expected);
         }
     }
 }
@@ -304,7 +314,7 @@ fn non_registry_module_locations_use_the_canonical_module_file_label() {
     )
     .unwrap();
     assert_eq!(
-        last_error(&f.query("update", &["//:plain"])),
+        module_error(&f.query("update", &["//:plain"])),
         "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a use_repo() call at @@collide_local+//:MODULE.bazel:4:9, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive"
     );
 }

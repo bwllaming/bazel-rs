@@ -1,0 +1,3 @@
+module(name = "x")
+r = use_repo_rule("//:defs.bzl", "r")
+r(name = "r")

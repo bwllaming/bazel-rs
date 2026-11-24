@@ -289,10 +289,13 @@ fn sha256(bytes: &[u8]) -> String {
 #[test]
 fn error_and_off_modes_never_write_and_error_requires_hashes() {
     let f = Fixture::new();
+    // ModuleFileFunction: BAD_LOCKFILE, exit 48.
+    let output = f.query(&[ALLOW, "--lockfile_mode=error"]);
+    assert_eq!(output.status.code(), Some(48));
     f.fails(
         &[ALLOW, "--lockfile_mode=error"],
         &format!(
-            "bazel-rs: Missing checksum for registry file http://127.0.0.1:{}/r1/modules/lockdemo_a/1.0/MODULE.bazel not permitted with --lockfile_mode=error. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile.",
+            "ERROR: Missing checksum for registry file http://127.0.0.1:{}/r1/modules/lockdemo_a/1.0/MODULE.bazel not permitted with --lockfile_mode=error. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile.",
             f.server.port
         ),
     );

@@ -1261,6 +1261,7 @@ fn run() -> Result<(), String> {
         _ => {}
     }
     bazel_rs::perf_mark("startup.options");
+    MOD_COMMAND.store(command == "mod", std::sync::atomic::Ordering::Relaxed);
     let session = open_registry_session()?;
     resolver_options.registry_session = session.clone();
     snapshot.set_registry_session(session.clone());
@@ -6440,6 +6441,10 @@ enum FetchMode {
 /// with errors: ...`, exit 2).
 static FETCH_TARGETS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// This command is `mod` (a module resolution failure exits 37,
+/// crate::exit_code::module_failure).
+static MOD_COMMAND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// This command is `print_action` (an aquery of the targets, crate::print_action).
 static PRINT_ACTION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -7109,6 +7114,18 @@ fn main() {
                 bazel_rs::exit_code::REMOTE_ENVIRONMENTAL_ERROR,
                 Some(&message),
             );
+            exit(code);
+        }
+        // A module resolution failure (crate::exit_code::module_failure):
+        // Bazel reports it as the main repository mapping's failure, exit 48
+        // (37 for a non-registry override's fetch, and in `mod`), `fetch`
+        // included.
+        if let Some(code) = bazel_rs::exit_code::module_failure(
+            &error,
+            MOD_COMMAND.load(std::sync::atomic::Ordering::Relaxed),
+        ) {
+            eprintln!("ERROR: {error}");
+            let code = finish_reports(code, Some(&error));
             exit(code);
         }
         // FetchCommand.fetchTarget: QUERY_EVALUATION_ERROR, exit 2.

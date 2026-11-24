@@ -1,0 +1,3 @@
+module(name = "x")
+e = use_extension("//:nope.bzl", "e")
+use_repo(e, "r")

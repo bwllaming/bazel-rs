@@ -2245,7 +2245,10 @@ impl RepositorySet {
         }
         self.state
             .root_module
-            .get_or_init(|| module_graph::read_root_module(&self.state.root, &self.state.options))
+            .get_or_init(|| {
+                module_graph::read_root_module(&self.state.root, &self.state.options)
+                    .inspect_err(|error| crate::exit_code::note_module_failure(error))
+            })
             .as_ref()
             .map_err(Clone::clone)
     }
@@ -2615,6 +2618,7 @@ impl RepositorySet {
                     &self.state.options,
                     self.source_cache_path()?,
                 )
+                .inspect_err(|error| crate::exit_code::note_module_failure(error))
             })
             .as_ref()
             .map_err(Clone::clone)

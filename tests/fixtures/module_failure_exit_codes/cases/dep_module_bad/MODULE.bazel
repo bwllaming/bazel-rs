@@ -1,0 +1,3 @@
+module(name = "x")
+bazel_dep(name = "dep")
+local_path_override(module_name = "dep", path = "dep")

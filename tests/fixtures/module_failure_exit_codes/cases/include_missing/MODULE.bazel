@@ -1,0 +1,2 @@
+module(name = "x")
+include("//:nope.MODULE.bazel")

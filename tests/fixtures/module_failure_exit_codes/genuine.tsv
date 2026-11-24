@@ -1,0 +1,187 @@
+bad_dep	build //:t	48	ERROR: Error computing the main repository mapping: in module dependency chain <root> -> nosuchmodule_xyz@1: module nosuchmodule_xyz@1 not found in registries:
+bad_dep	build --nobuild //:t	48	ERROR: Error computing the main repository mapping: in module dependency chain <root> -> nosuchmodule_xyz@1: module nosuchmodule_xyz@1 not found in registries:
+bad_dep	build --keep_going //:t	48	ERROR: Error computing the main repository mapping: in module dependency chain <root> -> nosuchmodule_xyz@1: module nosuchmodule_xyz@1 not found in registries:
+bad_dep	query //:t	48	ERROR: Error computing the main repository mapping: in module dependency chain <root> -> nosuchmodule_xyz@1: module nosuchmodule_xyz@1 not found in registries:
+bad_dep	cquery //:t	48	ERROR: Error computing the main repository mapping: in module dependency chain <root> -> nosuchmodule_xyz@1: module nosuchmodule_xyz@1 not found in registries:
+bad_dep	aquery //:t	48	ERROR: Error computing the main repository mapping: in module dependency chain <root> -> nosuchmodule_xyz@1: module nosuchmodule_xyz@1 not found in registries:
+bad_dep	test //:t	48	ERROR: Error computing the main repository mapping: in module dependency chain <root> -> nosuchmodule_xyz@1: module nosuchmodule_xyz@1 not found in registries:
+bad_dep	fetch //:t	48	ERROR: Error computing the main repository mapping: in module dependency chain <root> -> nosuchmodule_xyz@1: module nosuchmodule_xyz@1 not found in registries:
+bad_dep	mod graph	37	ERROR: in module dependency chain <root> -> nosuchmodule_xyz@1: module nosuchmodule_xyz@1 not found in registries:
+bad_dep	info workspace	0	
+bad_dep	run //:t	48	ERROR: Error computing the main repository mapping: in module dependency chain <root> -> nosuchmodule_xyz@1: module nosuchmodule_xyz@1 not found in registries:
+bad_lockfile	build //:t	0	
+bad_lockfile	build --nobuild //:t	0	
+bad_lockfile	build --keep_going //:t	0	
+bad_lockfile	query //:t	0	
+bad_lockfile	cquery //:t	0	
+bad_lockfile	aquery //:t	0	
+bad_lockfile	test //:t	4	ERROR: No test targets were found, yet testing was requested
+bad_lockfile	fetch //:t	0	
+bad_lockfile	mod graph	0	
+bad_lockfile	info workspace	0	
+bad_lockfile	run //:t	2	ERROR: Cannot run target //:t: Not executable
+bad_lockfile_v28	build //:t	48	ERROR: Error computing the main repository mapping: Failed to read and parse the MODULE.bazel.lock file with error: java.io.EOFException: End of input at line 2 column 1 path $.lockFileVersion. Try deleting it and rerun the build.
+bad_lockfile_v28	build --nobuild //:t	48	ERROR: Error computing the main repository mapping: Failed to read and parse the MODULE.bazel.lock file with error: java.io.EOFException: End of input at line 2 column 1 path $.lockFileVersion. Try deleting it and rerun the build.
+bad_lockfile_v28	build --keep_going //:t	48	ERROR: Error computing the main repository mapping: Failed to read and parse the MODULE.bazel.lock file with error: java.io.EOFException: End of input at line 2 column 1 path $.lockFileVersion. Try deleting it and rerun the build.
+bad_lockfile_v28	query //:t	48	ERROR: Error computing the main repository mapping: Failed to read and parse the MODULE.bazel.lock file with error: java.io.EOFException: End of input at line 2 column 1 path $.lockFileVersion. Try deleting it and rerun the build.
+bad_lockfile_v28	cquery //:t	48	ERROR: Error computing the main repository mapping: Failed to read and parse the MODULE.bazel.lock file with error: java.io.EOFException: End of input at line 2 column 1 path $.lockFileVersion. Try deleting it and rerun the build.
+bad_lockfile_v28	aquery //:t	48	ERROR: Error computing the main repository mapping: Failed to read and parse the MODULE.bazel.lock file with error: java.io.EOFException: End of input at line 2 column 1 path $.lockFileVersion. Try deleting it and rerun the build.
+bad_lockfile_v28	test //:t	48	ERROR: Error computing the main repository mapping: Failed to read and parse the MODULE.bazel.lock file with error: java.io.EOFException: End of input at line 2 column 1 path $.lockFileVersion. Try deleting it and rerun the build.
+bad_lockfile_v28	fetch //:t	48	ERROR: Error computing the main repository mapping: Failed to read and parse the MODULE.bazel.lock file with error: java.io.EOFException: End of input at line 2 column 1 path $.lockFileVersion. Try deleting it and rerun the build.
+bad_lockfile_v28	mod graph	37	ERROR: Failed to read and parse the MODULE.bazel.lock file with error: java.io.EOFException: End of input at line 2 column 1 path $.lockFileVersion. Try deleting it and rerun the build.
+bad_lockfile_v28	info workspace	0	
+bad_lockfile_v28	run //:t	48	ERROR: Error computing the main repository mapping: Failed to read and parse the MODULE.bazel.lock file with error: java.io.EOFException: End of input at line 2 column 1 path $.lockFileVersion. Try deleting it and rerun the build.
+dep_module_bad	build //:t	48	ERROR: @@dep+//:MODULE.bazel:2:5: Traceback (most recent call last):
+dep_module_bad	build --nobuild //:t	48	ERROR: @@dep+//:MODULE.bazel:2:5: Traceback (most recent call last):
+dep_module_bad	build --keep_going //:t	48	ERROR: @@dep+//:MODULE.bazel:2:5: Traceback (most recent call last):
+dep_module_bad	query //:t	48	ERROR: @@dep+//:MODULE.bazel:2:5: Traceback (most recent call last):
+dep_module_bad	cquery //:t	48	ERROR: @@dep+//:MODULE.bazel:2:5: Traceback (most recent call last):
+dep_module_bad	aquery //:t	48	ERROR: @@dep+//:MODULE.bazel:2:5: Traceback (most recent call last):
+dep_module_bad	test //:t	48	ERROR: @@dep+//:MODULE.bazel:2:5: Traceback (most recent call last):
+dep_module_bad	fetch //:t	48	ERROR: @@dep+//:MODULE.bazel:2:5: Traceback (most recent call last):
+dep_module_bad	mod graph	37	ERROR: @@dep+//:MODULE.bazel:2:5: Traceback (most recent call last):
+dep_module_bad	info workspace	0	
+dep_module_bad	run //:t	48	ERROR: @@dep+//:MODULE.bazel:2:5: Traceback (most recent call last):
+dep_path_missing	build //:t	37	ERROR: <OUTPUT_BASE>/external/bazel_tools/tools/build_defs/repo/local.bzl:55:13: An error occurred during the fetch of repository 'dep+':
+dep_path_missing	build --nobuild //:t	37	ERROR: <OUTPUT_BASE>/external/bazel_tools/tools/build_defs/repo/local.bzl:55:13: An error occurred during the fetch of repository 'dep+':
+dep_path_missing	build --keep_going //:t	37	ERROR: <OUTPUT_BASE>/external/bazel_tools/tools/build_defs/repo/local.bzl:55:13: An error occurred during the fetch of repository 'dep+':
+dep_path_missing	query //:t	37	ERROR: <OUTPUT_BASE>/external/bazel_tools/tools/build_defs/repo/local.bzl:55:13: An error occurred during the fetch of repository 'dep+':
+dep_path_missing	cquery //:t	37	ERROR: <OUTPUT_BASE>/external/bazel_tools/tools/build_defs/repo/local.bzl:55:13: An error occurred during the fetch of repository 'dep+':
+dep_path_missing	aquery //:t	37	ERROR: <OUTPUT_BASE>/external/bazel_tools/tools/build_defs/repo/local.bzl:55:13: An error occurred during the fetch of repository 'dep+':
+dep_path_missing	test //:t	37	ERROR: <OUTPUT_BASE>/external/bazel_tools/tools/build_defs/repo/local.bzl:55:13: An error occurred during the fetch of repository 'dep+':
+dep_path_missing	fetch //:t	37	ERROR: <OUTPUT_BASE>/external/bazel_tools/tools/build_defs/repo/local.bzl:55:13: An error occurred during the fetch of repository 'dep+':
+dep_path_missing	mod graph	37	ERROR: <OUTPUT_BASE>/external/bazel_tools/tools/build_defs/repo/local.bzl:55:13: An error occurred during the fetch of repository 'dep+':
+dep_path_missing	info workspace	0	
+dep_path_missing	run //:t	37	ERROR: <OUTPUT_BASE>/external/bazel_tools/tools/build_defs/repo/local.bzl:55:13: An error occurred during the fetch of repository 'dep+':
+dup_dep	build //:t	48	ERROR: <WS>/MODULE.bazel:3:10: Traceback (most recent call last):
+dup_dep	build --nobuild //:t	48	ERROR: <WS>/MODULE.bazel:3:10: Traceback (most recent call last):
+dup_dep	build --keep_going //:t	48	ERROR: <WS>/MODULE.bazel:3:10: Traceback (most recent call last):
+dup_dep	query //:t	48	ERROR: <WS>/MODULE.bazel:3:10: Traceback (most recent call last):
+dup_dep	cquery //:t	48	ERROR: <WS>/MODULE.bazel:3:10: Traceback (most recent call last):
+dup_dep	aquery //:t	48	ERROR: <WS>/MODULE.bazel:3:10: Traceback (most recent call last):
+dup_dep	test //:t	48	ERROR: <WS>/MODULE.bazel:3:10: Traceback (most recent call last):
+dup_dep	fetch //:t	48	ERROR: <WS>/MODULE.bazel:3:10: Traceback (most recent call last):
+dup_dep	mod graph	37	ERROR: <WS>/MODULE.bazel:3:10: Traceback (most recent call last):
+dup_dep	info workspace	0	
+dup_dep	run //:t	48	ERROR: <WS>/MODULE.bazel:3:10: Traceback (most recent call last):
+ext_fail	build //:t	1	ERROR: <WS>/defs.bzl:2:9: Traceback (most recent call last):
+ext_fail	build --nobuild //:t	1	ERROR: <WS>/defs.bzl:2:9: Traceback (most recent call last):
+ext_fail	build --keep_going //:t	1	ERROR: <WS>/defs.bzl:2:9: Traceback (most recent call last):
+ext_fail	query //:t	0	
+ext_fail	cquery //:t	1	ERROR: <WS>/defs.bzl:2:9: Traceback (most recent call last):
+ext_fail	aquery //:t	1	ERROR: <WS>/defs.bzl:2:9: Traceback (most recent call last):
+ext_fail	test //:t	1	ERROR: <WS>/defs.bzl:2:9: Traceback (most recent call last):
+ext_fail	fetch //:t	2	ERROR: <WS>/defs.bzl:2:9: Traceback (most recent call last):
+ext_fail	mod graph	2	ERROR: <WS>/defs.bzl:2:9: Traceback (most recent call last):
+ext_fail	info workspace	0	
+ext_fail	run //:t	2	ERROR: Cannot run target //:t: Not executable
+ext_fail_unused	build //:t	0	
+ext_fail_unused	build --nobuild //:t	0	
+ext_fail_unused	build --keep_going //:t	0	
+ext_fail_unused	query //:t	0	
+ext_fail_unused	cquery //:t	0	
+ext_fail_unused	aquery //:t	0	
+ext_fail_unused	test //:t	4	ERROR: No test targets were found, yet testing was requested
+ext_fail_unused	fetch //:t	0	
+ext_fail_unused	mod graph	2	ERROR: <WS>/defs.bzl:2:9: Traceback (most recent call last):
+ext_fail_unused	info workspace	0	
+ext_fail_unused	run //:t	2	ERROR: Cannot run target //:t: Not executable
+ext_import	build //:t	0	
+ext_import	build --nobuild //:t	0	
+ext_import	build --keep_going //:t	0	
+ext_import	query //:t	0	
+ext_import	cquery //:t	0	
+ext_import	aquery //:t	0	
+ext_import	test //:t	4	ERROR: No test targets were found, yet testing was requested
+ext_import	fetch //:t	0	
+ext_import	mod graph	2	ERROR: Error loading '//:nope.bzl' for module extensions, requested by <WS>/MODULE.bazel:2:18: cannot load '//:nope.bzl': no such file: cannot load '//:nope.bzl': no such file
+ext_import	info workspace	0	
+ext_import	run //:t	2	ERROR: Cannot run target //:t: Not executable
+ext_missing_repo	build //:t	1	ERROR: Analysis of target '//:t' failed; build aborted: module extension @@//:defs.bzl%e does not generate repository "r", yet it is imported as "r" in the usage at <WS>/MODULE.bazel:2:18
+ext_missing_repo	build --nobuild //:t	1	ERROR: Analysis of target '//:t' failed; build aborted: module extension @@//:defs.bzl%e does not generate repository "r", yet it is imported as "r" in the usage at <WS>/MODULE.bazel:2:18
+ext_missing_repo	build --keep_going //:t	1	ERROR: command succeeded, but not all targets were analyzed
+ext_missing_repo	query //:t	0	
+ext_missing_repo	cquery //:t	1	ERROR: Analysis of target '//:t' failed; build aborted: module extension @@//:defs.bzl%e does not generate repository "r", yet it is imported as "r" in the usage at <WS>/MODULE.bazel:2:18
+ext_missing_repo	aquery //:t	1	ERROR: Analysis of target '//:t' failed; build aborted: module extension @@//:defs.bzl%e does not generate repository "r", yet it is imported as "r" in the usage at <WS>/MODULE.bazel:2:18
+ext_missing_repo	test //:t	1	ERROR: Analysis of target '//:t' failed; build aborted: module extension @@//:defs.bzl%e does not generate repository "r", yet it is imported as "r" in the usage at <WS>/MODULE.bazel:2:18
+ext_missing_repo	fetch //:t	2	ERROR: Analysis of target '//:t' failed; build aborted: module extension @@//:defs.bzl%e does not generate repository "r", yet it is imported as "r" in the usage at <WS>/MODULE.bazel:2:18
+ext_missing_repo	mod graph	2	ERROR: module extension @@//:defs.bzl%e does not generate repository "r", yet it is imported as "r" in the usage at <WS>/MODULE.bazel:2:18
+ext_missing_repo	info workspace	0	
+ext_missing_repo	run //:t	2	ERROR: Cannot run target //:t: Not executable
+ext_missing_repo_unused	build //:t	0	
+ext_missing_repo_unused	build --nobuild //:t	0	
+ext_missing_repo_unused	build --keep_going //:t	0	
+ext_missing_repo_unused	query //:t	0	
+ext_missing_repo_unused	cquery //:t	0	
+ext_missing_repo_unused	aquery //:t	0	
+ext_missing_repo_unused	test //:t	4	ERROR: No test targets were found, yet testing was requested
+ext_missing_repo_unused	fetch //:t	0	
+ext_missing_repo_unused	mod graph	2	ERROR: module extension @@//:defs.bzl%e does not generate repository "r", yet it is imported as "r" in the usage at <WS>/MODULE.bazel:2:18
+ext_missing_repo_unused	info workspace	0	
+ext_missing_repo_unused	run //:t	2	ERROR: Cannot run target //:t: Not executable
+fail	build //:t	48	ERROR: <WS>/MODULE.bazel:2:5: Traceback (most recent call last):
+fail	build --nobuild //:t	48	ERROR: <WS>/MODULE.bazel:2:5: Traceback (most recent call last):
+fail	build --keep_going //:t	48	ERROR: <WS>/MODULE.bazel:2:5: Traceback (most recent call last):
+fail	query //:t	48	ERROR: <WS>/MODULE.bazel:2:5: Traceback (most recent call last):
+fail	cquery //:t	48	ERROR: <WS>/MODULE.bazel:2:5: Traceback (most recent call last):
+fail	aquery //:t	48	ERROR: <WS>/MODULE.bazel:2:5: Traceback (most recent call last):
+fail	test //:t	48	ERROR: <WS>/MODULE.bazel:2:5: Traceback (most recent call last):
+fail	fetch //:t	48	ERROR: <WS>/MODULE.bazel:2:5: Traceback (most recent call last):
+fail	mod graph	37	ERROR: <WS>/MODULE.bazel:2:5: Traceback (most recent call last):
+fail	info workspace	0	
+fail	run //:t	48	ERROR: <WS>/MODULE.bazel:2:5: Traceback (most recent call last):
+include_missing	build //:t	48	ERROR: Error computing the main repository mapping: error reading '//:nope.MODULE.bazel' included at <WS>/MODULE.bazel:2:1: not a regular file
+include_missing	build --nobuild //:t	48	ERROR: Error computing the main repository mapping: error reading '//:nope.MODULE.bazel' included at <WS>/MODULE.bazel:2:1: not a regular file
+include_missing	build --keep_going //:t	48	ERROR: Error computing the main repository mapping: error reading '//:nope.MODULE.bazel' included at <WS>/MODULE.bazel:2:1: not a regular file
+include_missing	query //:t	48	ERROR: Error computing the main repository mapping: error reading '//:nope.MODULE.bazel' included at <WS>/MODULE.bazel:2:1: not a regular file
+include_missing	cquery //:t	48	ERROR: Error computing the main repository mapping: error reading '//:nope.MODULE.bazel' included at <WS>/MODULE.bazel:2:1: not a regular file
+include_missing	aquery //:t	48	ERROR: Error computing the main repository mapping: error reading '//:nope.MODULE.bazel' included at <WS>/MODULE.bazel:2:1: not a regular file
+include_missing	test //:t	48	ERROR: Error computing the main repository mapping: error reading '//:nope.MODULE.bazel' included at <WS>/MODULE.bazel:2:1: not a regular file
+include_missing	fetch //:t	48	ERROR: Error computing the main repository mapping: error reading '//:nope.MODULE.bazel' included at <WS>/MODULE.bazel:2:1: not a regular file
+include_missing	mod graph	37	ERROR: error reading '//:nope.MODULE.bazel' included at <WS>/MODULE.bazel:2:1: not a regular file
+include_missing	info workspace	0	
+include_missing	run //:t	48	ERROR: Error computing the main repository mapping: error reading '//:nope.MODULE.bazel' included at <WS>/MODULE.bazel:2:1: not a regular file
+old_lockfile_error	build //:t	48	ERROR: Error computing the main repository mapping: The version of MODULE.bazel.lock is not supported by this version of Bazel. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile.
+old_lockfile_error	build --nobuild //:t	48	ERROR: Error computing the main repository mapping: The version of MODULE.bazel.lock is not supported by this version of Bazel. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile.
+old_lockfile_error	build --keep_going //:t	48	ERROR: Error computing the main repository mapping: The version of MODULE.bazel.lock is not supported by this version of Bazel. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile.
+old_lockfile_error	query //:t	48	ERROR: Error computing the main repository mapping: The version of MODULE.bazel.lock is not supported by this version of Bazel. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile.
+old_lockfile_error	cquery //:t	48	ERROR: Error computing the main repository mapping: The version of MODULE.bazel.lock is not supported by this version of Bazel. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile.
+old_lockfile_error	aquery //:t	48	ERROR: Error computing the main repository mapping: The version of MODULE.bazel.lock is not supported by this version of Bazel. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile.
+old_lockfile_error	test //:t	48	ERROR: Error computing the main repository mapping: The version of MODULE.bazel.lock is not supported by this version of Bazel. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile.
+old_lockfile_error	fetch //:t	48	ERROR: Error computing the main repository mapping: The version of MODULE.bazel.lock is not supported by this version of Bazel. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile.
+old_lockfile_error	mod graph	37	ERROR: The version of MODULE.bazel.lock is not supported by this version of Bazel. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile.
+old_lockfile_error	info workspace	0	
+old_lockfile_error	run //:t	48	ERROR: Error computing the main repository mapping: The version of MODULE.bazel.lock is not supported by this version of Bazel. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile.
+repo_rule_fail	build //:t	1	ERROR: <WS>/defs.bzl:2:9: An error occurred during the fetch of repository '+r+r':
+repo_rule_fail	build --nobuild //:t	1	ERROR: <WS>/defs.bzl:2:9: An error occurred during the fetch of repository '+r+r':
+repo_rule_fail	build --keep_going //:t	1	ERROR: <WS>/defs.bzl:2:9: An error occurred during the fetch of repository '+r+r':
+repo_rule_fail	query //:t	0	
+repo_rule_fail	cquery //:t	1	ERROR: <WS>/defs.bzl:2:9: An error occurred during the fetch of repository '+r+r':
+repo_rule_fail	aquery //:t	1	ERROR: <WS>/defs.bzl:2:9: An error occurred during the fetch of repository '+r+r':
+repo_rule_fail	test //:t	1	ERROR: <WS>/defs.bzl:2:9: An error occurred during the fetch of repository '+r+r':
+repo_rule_fail	fetch //:t	2	ERROR: <WS>/defs.bzl:2:9: An error occurred during the fetch of repository '+r+r':
+repo_rule_fail	mod graph	0	
+repo_rule_fail	info workspace	0	
+repo_rule_fail	run //:t	2	ERROR: Cannot run target //:t: Not executable
+syntax	build //:t	48	ERROR: <WS>/MODULE.bazel:2:1: syntax error at 'newline': expected ,
+syntax	build --nobuild //:t	48	ERROR: <WS>/MODULE.bazel:2:1: syntax error at 'newline': expected ,
+syntax	build --keep_going //:t	48	ERROR: <WS>/MODULE.bazel:2:1: syntax error at 'newline': expected ,
+syntax	query //:t	48	ERROR: <WS>/MODULE.bazel:2:1: syntax error at 'newline': expected ,
+syntax	cquery //:t	48	ERROR: <WS>/MODULE.bazel:2:1: syntax error at 'newline': expected ,
+syntax	aquery //:t	48	ERROR: <WS>/MODULE.bazel:2:1: syntax error at 'newline': expected ,
+syntax	test //:t	48	ERROR: <WS>/MODULE.bazel:2:1: syntax error at 'newline': expected ,
+syntax	fetch //:t	48	ERROR: <WS>/MODULE.bazel:2:1: syntax error at 'newline': expected ,
+syntax	mod graph	37	ERROR: <WS>/MODULE.bazel:2:1: syntax error at 'newline': expected ,
+syntax	info workspace	0	
+syntax	run //:t	48	ERROR: <WS>/MODULE.bazel:2:1: syntax error at 'newline': expected ,
+unknown_fn	build //:t	48	ERROR: <WS>/MODULE.bazel:2:1: name 'nosuch' is not defined
+unknown_fn	build --nobuild //:t	48	ERROR: <WS>/MODULE.bazel:2:1: name 'nosuch' is not defined
+unknown_fn	build --keep_going //:t	48	ERROR: <WS>/MODULE.bazel:2:1: name 'nosuch' is not defined
+unknown_fn	query //:t	48	ERROR: <WS>/MODULE.bazel:2:1: name 'nosuch' is not defined
+unknown_fn	cquery //:t	48	ERROR: <WS>/MODULE.bazel:2:1: name 'nosuch' is not defined
+unknown_fn	aquery //:t	48	ERROR: <WS>/MODULE.bazel:2:1: name 'nosuch' is not defined
+unknown_fn	test //:t	48	ERROR: <WS>/MODULE.bazel:2:1: name 'nosuch' is not defined
+unknown_fn	fetch //:t	48	ERROR: <WS>/MODULE.bazel:2:1: name 'nosuch' is not defined
+unknown_fn	mod graph	37	ERROR: <WS>/MODULE.bazel:2:1: name 'nosuch' is not defined
+unknown_fn	info workspace	0	
+unknown_fn	run //:t	48	ERROR: <WS>/MODULE.bazel:2:1: name 'nosuch' is not defined
