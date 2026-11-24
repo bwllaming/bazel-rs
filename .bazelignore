@@ -80,6 +80,7 @@ tests/fixtures/cquery_main_platform/workspace
 tests/fixtures/cquery_output/workspace
 tests/fixtures/cquery_proto/workspace
 tests/fixtures/custom
+tests/fixtures/darwin_sandbox/workspace
 tests/fixtures/depset_structs/workspace
 tests/fixtures/directory_expander/workspace
 tests/fixtures/disk_cache/workspace

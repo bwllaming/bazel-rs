@@ -115,8 +115,13 @@ def sha256_file(path: Path) -> str:
 # sorted and deduplicated — bazel-rs's checksums are its own ConfigIds and
 # its labels canonical by design, docs/CQUERY.md), "aquery" (stdout is
 # aquery's text output: its action blocks sorted, bazel-rs orders them
-# differently).
+# differently), "output_base_globs" (files below the output base, e.g. the
+# darwin-sandbox profiles `--sandbox_debug` keeps; their indented lines
+# sorted per block, genuine writes the writable directories from a hash set).
+# `{WORKSPACE}` and `{HOME}` in arguments become the tool's paths. A case's
+# "hosts" limits it to those hosts (host_platform_name()).
 HP = "host_parity/workspace"
+SANDBOX_PROBES = ["default", "block_network", "requires_network", "no_sandbox", "local"]
 
 CASES = [
     {
@@ -151,6 +156,24 @@ CASES = [
              "stderr": [r"^INFO: \d+ processes?: ", r"^//:env_test "],
              "files": ["bazel-testlogs/env_test/test.log", "bazel-testlogs/env_test/test.xml"]},
             {"args": ["run", "//:tool"]},
+        ],
+    },
+    {
+        "name": "darwin_sandbox",
+        "hosts": ["darwin-arm64"],
+        "workspace": "darwin_sandbox/workspace",
+        "steps": [
+            {"args": ["build", "//...", "--sandbox_debug"],
+             "stderr": [r"^INFO: \d+ processes?: "],
+             "files": [f"bazel-bin/{n}.txt" for n in SANDBOX_PROBES],
+             "output_base_globs": ["sandbox/*/*/sandbox.sb"]},
+            {"args": ["build", "//...", "--sandbox_default_allow_network=false", "--action_env=PROBE_RUN=2"],
+             "stderr": [r"^INFO: \d+ processes?: "],
+             "files": [f"bazel-bin/{n}.txt" for n in SANDBOX_PROBES]},
+            {"args": ["build", "//...", "--sandbox_writable_path=/Users/Shared", "--sandbox_block_path={WORKSPACE}",
+                      "--action_env=PROBE_RUN=3"],
+             "stderr": [r"^INFO: \d+ processes?: "],
+             "files": [f"bazel-bin/{n}.txt" for n in SANDBOX_PROBES]},
         ],
     },
     {
@@ -350,7 +373,20 @@ def read_file(path: Path, norm: Normalizer) -> str:
     return norm(data.decode("utf-8", "replace"))
 
 
-def collect(tool: Tool, ws: Path, step: dict, result: dict, norm: Normalizer) -> dict:
+def sorted_blocks(text: str) -> str:
+    out, run_ = [], []
+    for line in text.splitlines(True):
+        if line.startswith((" ", "\t")):
+            run_.append(line)
+            continue
+        out.extend(sorted(run_))
+        run_ = []
+        out.append(line)
+    out.extend(sorted(run_))
+    return "".join(out)
+
+
+def collect(tool: Tool, ws: Path, step: dict, result: dict, norm: Normalizer, output_base: Path) -> dict:
     items: dict[str, str] = {"exit": str(result["exit"])}
     if step.get("stdout", True):
         stdout = norm(result["stdout"])
@@ -375,6 +411,9 @@ def collect(tool: Tool, ws: Path, step: dict, result: dict, norm: Normalizer) ->
                 items[norm(line)] = read_file(ws / line, norm)
     for rel in step.get("trees", []):
         items[rel + "/"] = tree_listing(ws / rel, norm)
+    for pattern in step.get("output_base_globs", []):
+        texts = sorted(sorted_blocks(read_file(path, norm)) for path in output_base.glob(pattern))
+        items["<OUTPUT_BASE>/" + pattern] = "".join(f"## file {i}\n{t}" for i, t in enumerate(texts)) or "<none>\n"
     return items
 
 
@@ -392,6 +431,8 @@ def run(args: argparse.Namespace) -> int:
     known = 0
     for case in CASES:
         if only and case["name"] not in only:
+            continue
+        if "hosts" in case and report["host"] not in case["hosts"] and not args.all_hosts:
             continue
         print(f"=== case {case['name']}", flush=True)
         per_tool = {}
@@ -415,8 +456,9 @@ def run(args: argparse.Namespace) -> int:
             ])
             steps = []
             for step in case["steps"]:
-                result = run_step(tool, ws, env, step["args"], args.timeout)
-                items = collect(tool, ws, step, result, norm)
+                argv = [a.replace("{WORKSPACE}", str(ws)).replace("{HOME}", env["HOME"]) for a in step["args"]]
+                result = run_step(tool, ws, env, argv, args.timeout)
+                items = collect(tool, ws, step, result, norm, Path(paths.get("output_base", "/nonexistent")))
                 steps.append({"result": result, "items": items})
                 print(f"  {tool.name:8} exit={result['exit']} {result['seconds']:7.1f}s  {' '.join(step['args'])[:100]}",
                       flush=True)
@@ -466,6 +508,7 @@ def main(argv: list[str] | None = None) -> int:
     runp.add_argument("--only")
     runp.add_argument("--report")
     runp.add_argument("--strict", action="store_true")
+    runp.add_argument("--all-hosts", action="store_true", help="also the cases of other hosts")
     runp.add_argument("--timeout", type=int, default=1800)
     runp.add_argument("--diff-limit", type=int, default=20000)
     args = parser.parse_args(argv)
