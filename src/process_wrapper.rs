@@ -77,10 +77,10 @@ fn self_exe() -> &'static Path {
 /// environment is the spawn's own. The executor carries the spawn's own
 /// value (or its absence) in [`CF_CARRIER`]; the supervisor restores exactly
 /// that before it starts the command ([`restore_cf_encoding`]).
-#[cfg(target_os = "macos")]
-const CF_ENCODING: &str = "__CF_USER_TEXT_ENCODING";
-#[cfg(target_os = "macos")]
-const CF_CARRIER: &str = "BAZEL_RS_SPAWN_CF_USER_TEXT_ENCODING";
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) const CF_ENCODING: &str = "__CF_USER_TEXT_ENCODING";
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) const CF_CARRIER: &str = "BAZEL_RS_SPAWN_CF_USER_TEXT_ENCODING";
 
 /// Executor side of [`CF_ENCODING`]'s round trip: the spawn's explicit value
 /// travels in the carrier (a spawn environment is always explicit: the

@@ -218,3 +218,12 @@ pub fn host_name() -> Option<String> {
         .into_owned();
     (!name.is_empty()).then_some(name)
 }
+
+/// The user database's home directory of this process's user (the JVM's
+/// `user.home`, which genuine's darwin-sandbox reads instead of `$HOME`).
+pub fn user_home() -> Option<PathBuf> {
+    nix::unistd::User::from_uid(nix::unistd::getuid())
+        .ok()
+        .flatten()
+        .map(|user| user.dir)
+}

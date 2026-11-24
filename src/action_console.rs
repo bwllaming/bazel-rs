@@ -45,7 +45,8 @@ pub fn is_reported(error: &str) -> bool {
 /// The runner of a reported failed action whose spawn succeeded (its
 /// outputs were missing): SpawnStats counts the spawn under it.
 pub fn reported_runner(error: &str) -> Option<&'static str> {
-    const RUNNERS: [&str; 7] = [
+    const RUNNERS: [&str; 8] = [
+        "darwin-sandbox",
         "linux-sandbox",
         "local",
         "processwrapper-sandbox",

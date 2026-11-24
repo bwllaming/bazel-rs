@@ -38,11 +38,12 @@
 //! where the namespaces cannot be created, exactly like genuine's.
 //!
 //! On macOS (docs/MACOS.md) neither Linux backend exists: `sandboxed` is
-//! [`Backend::NoIsolation`], genuine's processwrapper-sandbox (the spawn's
-//! own sandbox execroot, no isolation; runner name
-//! `processwrapper-sandbox`). Genuine would pick its darwin-sandbox
-//! (`sandbox-exec`) there; an explicit `darwin-sandbox` fails with a
-//! not-implemented error until it is ported.
+//! [`Backend::Darwin`], genuine's darwin-sandbox (darwin.rs: the spawn's own
+//! sandbox execroot under `sandbox-exec` with genuine's profile; runner name
+//! `darwin-sandbox`, also registered as `darwin-sandbox`) when
+//! `sandbox-exec` works on the host, else [`Backend::NoIsolation`],
+//! genuine's processwrapper-sandbox (no isolation; runner name
+//! `processwrapper-sandbox`).
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -74,10 +75,17 @@ pub use namespaces::KNOB as NAMESPACES_KNOB;
 #[cfg(not(target_os = "linux"))]
 pub const NAMESPACES_KNOB: &str = "BAZEL_RS_SANDBOX_NAMESPACES";
 
-/// genuine's macOS sandbox strategy (DarwinSandboxedSpawnRunner), not
-/// ported yet: requesting it fails explicitly on macOS.
-#[cfg(target_os = "macos")]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod darwin;
+pub use darwin::KNOB as DARWIN_KNOB;
+
+/// genuine's macOS sandbox strategy (DarwinSandboxedSpawnRunner, darwin.rs),
+/// registered where `sandbox-exec` works (SandboxModule.java:301-312).
 const IDENTIFIER_DARWIN_SANDBOX: &str = "darwin-sandbox";
+
+/// The hidden argv[1] of the darwin-sandbox's argv[0] helper
+/// ([`exec_arg0_main`]).
+pub const EXEC_ARG0_ARG: &str = "__exec-arg0";
 
 /// The strategies this engine registers, in the identifier spellings Bazel
 /// 9.3 registers them: "standalone" and "local" (StandaloneModule.java:98),
@@ -311,15 +319,10 @@ pub fn mount_pair(input: &str) -> Result<(String, String), String> {
 /// when the identifier is requested, or for the error's list).
 pub fn validate(options: &SpawnOptions) -> Result<(), String> {
     let check = |identifier: &str, request: &str| -> Result<(), String> {
-        #[cfg(target_os = "macos")]
-        if identifier == IDENTIFIER_DARWIN_SANDBOX {
-            return Err(format!(
-                "{} (requested for {request})",
-                crate::platform::not_implemented("the darwin-sandbox strategy")
-            ));
-        }
         let known = if identifier == "linux-sandbox" {
             linux_sandbox_registered(options)
+        } else if identifier == IDENTIFIER_DARWIN_SANDBOX {
+            darwin_sandbox_registered(options)
         } else {
             REGISTERED.contains(&identifier) || identifier == "remote" && options.remote_registered
         };
@@ -352,7 +355,14 @@ pub fn validate(options: &SpawnOptions) -> Result<(), String> {
 /// cache or executor is configured.
 fn registered(options: &SpawnOptions) -> Vec<&'static str> {
     let mut identifiers = REGISTERED.to_vec();
-    if !linux_sandbox_registered(options) {
+    if darwin_sandbox_registered(options) {
+        if let Some(slot) = identifiers
+            .iter_mut()
+            .find(|identifier| **identifier == "linux-sandbox")
+        {
+            *slot = IDENTIFIER_DARWIN_SANDBOX;
+        }
+    } else if !linux_sandbox_registered(options) {
         identifiers.retain(|identifier| *identifier != "linux-sandbox");
     }
     if options.remote_registered {
@@ -384,10 +394,13 @@ pub enum Backend {
     /// Neither: `sandboxed` cannot execute anything (a kernel without
     /// Landlock and namespaces; the library's in-process unit tests).
     Unavailable,
-    /// macOS: genuine's processwrapper-sandbox — the spawn runs in its own
-    /// sandbox execroot under the sandbox worker, which restricts nothing
-    /// (docs/MACOS.md; darwin-sandbox is not ported yet).
+    /// macOS without a working `sandbox-exec`: genuine's
+    /// processwrapper-sandbox — the spawn runs in its own sandbox execroot
+    /// under the sandbox worker, which restricts nothing (docs/MACOS.md).
     NoIsolation,
+    /// macOS: genuine's darwin-sandbox (darwin.rs) — the sandbox worker
+    /// supervises `sandbox-exec` with the spawn's Seatbelt profile.
+    Darwin,
 }
 
 /// The `sandboxed` backend, probed once per process: the namespace sandbox
@@ -411,7 +424,11 @@ fn backend_for(_options: Option<&SpawnOptions>) -> Backend {
     if cfg!(test) {
         return Backend::Unavailable;
     }
-    Backend::NoIsolation
+    if darwin::supported() {
+        Backend::Darwin
+    } else {
+        Backend::NoIsolation
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -462,23 +479,29 @@ fn linux_sandbox_registered(options: &SpawnOptions) -> bool {
     backend_for(Some(options)) == Backend::Namespaces
 }
 
+/// Whether `darwin-sandbox` is a registered identifier (SandboxModule:
+/// only when DarwinSandboxedSpawnRunner.isSupported).
+fn darwin_sandbox_registered(options: &SpawnOptions) -> bool {
+    backend_for(Some(options)) == Backend::Darwin
+}
+
 /// The runner name of a `sandboxed` spawn: `linux-sandbox` with the
 /// namespace backend, `processwrapper-sandbox` otherwise (the runner genuine
 /// resolves `sandboxed` to on hosts without usable namespaces).
 pub fn sandboxed_runner_name() -> &'static str {
-    if backend() == Backend::Namespaces {
-        "linux-sandbox"
-    } else {
-        "processwrapper-sandbox"
+    match backend() {
+        Backend::Namespaces => "linux-sandbox",
+        Backend::Darwin => IDENTIFIER_DARWIN_SANDBOX,
+        _ => "processwrapper-sandbox",
     }
 }
 
 /// The progress display's strategy of a `sandboxed` spawn.
 pub fn sandboxed_progress() -> crate::progress::Strategy {
-    if backend() == Backend::Namespaces {
-        crate::progress::Strategy::LinuxSandbox
-    } else {
-        crate::progress::Strategy::ProcessWrapperSandbox
+    match backend() {
+        Backend::Namespaces => crate::progress::Strategy::LinuxSandbox,
+        Backend::Darwin => crate::progress::Strategy::DarwinSandbox,
+        _ => crate::progress::Strategy::ProcessWrapperSandbox,
     }
 }
 
@@ -526,6 +549,9 @@ fn strategies(mnemonic: &str) -> Result<Vec<Strategy>, String> {
         .map(|identifier| match *identifier {
             IDENTIFIER_STANDALONE | "local" => Ok(Strategy::Standalone),
             IDENTIFIER_SANDBOXED | "linux-sandbox" => Ok(Strategy::Sandboxed),
+            IDENTIFIER_DARWIN_SANDBOX if darwin_sandbox_registered(options) => {
+                Ok(Strategy::Sandboxed)
+            }
             "processwrapper-sandbox" => Ok(Strategy::ProcessWrapper),
             "worker" => Ok(Strategy::Worker),
             "remote" if options.remote_registered => Ok(Strategy::Remote),
@@ -663,6 +689,9 @@ struct WorkerConfig {
     /// supervising it: a sandboxed persistent worker (crate::worker), whose
     /// stdin and stdout are the worker protocol's streams.
     exec: bool,
+    /// darwin-sandbox: the spawn's Seatbelt profile; the worker supervises
+    /// `sandbox-exec -f PROFILE argv...` (darwin.rs).
+    sandbox_exec: Option<PathBuf>,
 }
 
 impl WorkerConfig {
@@ -677,6 +706,7 @@ impl WorkerConfig {
             setup_error: None,
             arg0: None,
             exec: false,
+            sandbox_exec: None,
         }
     }
 
@@ -716,6 +746,10 @@ impl WorkerConfig {
         if self.exec {
             argv.push("--exec".into());
         }
+        if let Some(path) = &self.sandbox_exec {
+            argv.push("--sandbox-exec".into());
+            argv.push(display(path));
+        }
         argv.push("--".into());
         argv.extend(arguments.iter().cloned());
         argv
@@ -754,6 +788,10 @@ impl WorkerConfig {
                 "--setup-error" => {
                     index += 1;
                     config.setup_error = Some(path(&args.get(index))?);
+                }
+                "--sandbox-exec" => {
+                    index += 1;
+                    config.sandbox_exec = Some(path(&args.get(index))?);
                 }
                 "--arg0" => {
                     index += 1;
@@ -810,7 +848,9 @@ pub fn wrap(
     let options = options();
     let deny_network = denies_network(execution_info);
     #[cfg(not(target_os = "linux"))]
-    let mut config = {
+    let mut config = if backend() == Backend::Darwin {
+        darwin_config(execroot, tmp, environment, deny_network, debug_root)?
+    } else {
         // processwrapper-sandbox: nothing to restrict (genuine's ignores the
         // writable, blocked and network settings as well).
         let _ = (execroot, tmp, environment, deny_network);
@@ -866,6 +906,41 @@ pub fn wrap(
     config.setup_error = Some(debug_root.join("sandbox-setup-error"));
     config.arg0 = arg0.map(str::to_owned);
     Ok(config.argv(arguments))
+}
+
+/// The darwin-sandbox's configuration: the spawn's profile, written to
+/// `sandbox.sb` in its sandbox directory like genuine's
+/// (DarwinSandboxedSpawnRunner.prepareSpawn:186, writeConfig), and the
+/// statistics file beside it.
+#[cfg(not(target_os = "linux"))]
+fn darwin_config(
+    execroot: &Path,
+    tmp: &Path,
+    environment: &BTreeMap<String, std::ffi::OsString>,
+    deny_network: bool,
+    debug_root: &Path,
+) -> Result<WorkerConfig, String> {
+    let options = options();
+    let test_tmpdir = environment
+        .get("TEST_TMPDIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let text = darwin::profile(&darwin::Profile {
+        execroot,
+        tmpdir: tmp,
+        test_tmpdir: test_tmpdir.as_deref(),
+        writable_paths: &options.sandbox_writable_path,
+        block_paths: &options.sandbox_block_path,
+        deny_network,
+        statistics: &debug_root.join("stats.out"),
+    })?;
+    let profile = debug_root.join("sandbox.sb");
+    fs::write(&profile, text)
+        .map_err(|error| format!("cannot write {}: {error}", profile.display()))?;
+    Ok(WorkerConfig {
+        sandbox_exec: Some(profile),
+        ..WorkerConfig::empty()
+    })
 }
 
 /// The Landlock sandbox's configuration: the paths Bazel's linux-sandbox
@@ -1048,6 +1123,36 @@ fn worker(args: &[String]) -> Result<i32, String> {
         })
         .map_err(|error| format!("cannot execute '{}': {error}", arguments[0]));
     }
+    if let Some(profile) = &config.sandbox_exec {
+        debug(&format!(
+            "darwin-sandbox worker: profile {}",
+            profile.display()
+        ));
+        // sandbox-exec applies the profile and executes the command in
+        // place; an argv[0] spelling of its own goes through this binary's
+        // helper (sandbox-exec runs its argument as both path and argv[0]).
+        let mut command = Command::new(darwin::SANDBOX_EXEC);
+        command.arg("-f").arg(profile);
+        if let Some(arg0) = &config.arg0 {
+            // snapshot-unrecorded: the supervisor's own carrier variable.
+            let cf = std::env::var_os(crate::process_wrapper::CF_CARRIER);
+            command
+                .arg(crate::platform::self_exe())
+                .arg(EXEC_ARG0_ARG)
+                .arg(match &cf {
+                    Some(value) => {
+                        let mut spec = std::ffi::OsString::from("=");
+                        spec.push(value);
+                        spec
+                    }
+                    None => std::ffi::OsString::from("-"),
+                })
+                .arg(arg0);
+        }
+        command.args(arguments);
+        return crate::process_wrapper::run_supervised(&mut command)
+            .map_err(|error| format!("cannot execute '{}': {error}", darwin::SANDBOX_EXEC));
+    }
     debug(&format!(
         "linux-sandbox (landlock) worker: writable={:?} blocked={:?} deny_network={}",
         config.writable, config.blocked, config.deny_network
@@ -1078,6 +1183,40 @@ fn worker(args: &[String]) -> Result<i32, String> {
     }
     crate::process_wrapper::run_supervised(&mut command)
         .map_err(|error| format!("cannot execute '{}': {error}", arguments[0]))
+}
+
+/// The darwin-sandbox's argv[0] helper (main dispatches `__exec-arg0`
+/// here, inside the sandbox): `CF ARG0 PROGRAM ARGS...` executes PROGRAM with
+/// ARG0 as its argv[0] and the spawn's `__CF_USER_TEXT_ENCODING` (CF: `=VALUE`
+/// or `-` for none; this binary's CoreFoundation adds its own,
+/// crate::process_wrapper::restore_cf_encoding). Returns only on failure.
+pub fn exec_arg0_main(args: &[std::ffi::OsString]) -> i32 {
+    let [cf, arg0, program, rest @ ..] = args else {
+        eprintln!("darwin-sandbox: {EXEC_ARG0_ARG} needs CF ARG0 PROGRAM [ARGS...]");
+        return 127;
+    };
+    let mut command = Command::new(program);
+    {
+        use std::os::unix::process::CommandExt;
+        command.arg0(arg0);
+    }
+    command.args(rest);
+    match cf.to_str() {
+        Some("-") => {
+            command.env_remove(crate::process_wrapper::CF_ENCODING);
+        }
+        _ => {
+            let bytes = std::os::unix::ffi::OsStrExt::as_bytes(cf.as_os_str());
+            let value: &std::ffi::OsStr = std::os::unix::ffi::OsStrExt::from_bytes(&bytes[1..]);
+            command.env(crate::process_wrapper::CF_ENCODING, value);
+        }
+    }
+    let error = crate::spawn_lock::exec(&mut command);
+    eprintln!(
+        "darwin-sandbox: cannot execute '{}': {error}",
+        program.to_string_lossy()
+    );
+    127
 }
 
 fn path(argument: &Option<&String>) -> Result<PathBuf, String> {

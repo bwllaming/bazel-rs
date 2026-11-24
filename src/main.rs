@@ -7049,6 +7049,16 @@ fn main() {
         let args: Vec<String> = raw.map(|arg| arg.to_string_lossy().into_owned()).collect();
         std::process::exit(bazel_rs::sandbox::worker_main(&args));
     }
+    // The darwin-sandbox's argv[0] helper (crate::sandbox::exec_arg0_main):
+    // the sandbox worker runs it under sandbox-exec when a spawn's argv[0]
+    // differs from its program.
+    let mut raw = std::env::args_os().skip(1);
+    if raw
+        .next()
+        .is_some_and(|arg| arg == bazel_rs::sandbox::EXEC_ARG0_ARG)
+    {
+        std::process::exit(bazel_rs::sandbox::exec_arg0_main(&raw.collect::<Vec<_>>()));
+    }
     // The native coverage output generator (crate::coverage): a coverage
     // test action's LCOV_MERGER launcher starts this binary with it.
     let mut raw = std::env::args_os().skip(1);
