@@ -278,7 +278,7 @@ class TargetsTest(unittest.TestCase):
     def test_target_table(self):
         self.assertEqual(
             [t.triple for t in release.select_targets(None)],
-            ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"],
+            ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl", "aarch64-apple-darwin"],
         )
         self.assertEqual(
             [t.triple for t in release.select_targets(["aarch64-unknown-linux-musl", "x86_64-unknown-linux-gnu"])],
@@ -291,6 +291,11 @@ class TargetsTest(unittest.TestCase):
         self.assertEqual((arm.runner, arm.cpu, arm.bundle, arm.platform, arm.kernel),
                          ("ubuntu-24.04-arm", "aarch64", "linux-arm64", "Linux arm64", "4.1"))
         self.assertIn(("JEMALLOC_SYS_WITH_LG_PAGE", "16"), arm.env)
+        mac = release.TARGETS_BY_TRIPLE["aarch64-apple-darwin"]
+        self.assertTrue(mac.default and not mac.static and mac.zig is None and not mac.caveat)
+        self.assertEqual((mac.runner, mac.cpu, mac.bundle, mac.platform, mac.binary, mac.os_value, mac.machine),
+                         ("macos-15", "aarch64", "darwin-arm64", "macOS arm64", "macho", "osx", release.MACHO_ARM64))
+        self.assertEqual(release.archive_stem("1.2.3", mac.triple), "bazel-rs-1.2.3-aarch64-apple-darwin")
         for t in release.TARGETS:
             # Every target's embedded tools bundle is checked in.
             self.assertTrue((ROOT / "resources/bazel_tools" / t.bundle / "embedded_tools.tar.gz").is_file(), t.bundle)
@@ -364,6 +369,12 @@ class TargetsTest(unittest.TestCase):
             (["/q/qemu-aarch64"], False, release.SMOKE_QEMU),
         )
         self.assertEqual(release.smoke_plan(arm, None, True, release.EM_X86_64, no_binfmt), (None, False, release.SMOKE_NONE))
+        mac = release.TARGETS_BY_TRIPLE["aarch64-apple-darwin"]
+        self.assertEqual(release.smoke_plan(mac, None, False, release.MACHO_ARM64, no_binfmt), ([], True, release.SMOKE_FULL))
+        # QEMU and binfmt_misc run ELF files only.
+        with self.assertRaisesRegex(release.ReleaseError, "on macOS"):
+            release.smoke_plan(mac, "/q/qemu-aarch64", False, release.EM_AARCH64, no_binfmt)
+        self.assertEqual(release.smoke_plan(mac, None, True, release.EM_X86_64, no_binfmt), (None, False, release.SMOKE_NONE))
         with self.assertRaisesRegex(release.ReleaseError, "--qemu-aarch64"):
             release.smoke_plan(arm, None, False, release.EM_X86_64, no_binfmt)
 
@@ -959,13 +970,17 @@ class StagesTest(unittest.TestCase):
             with self.assertRaisesRegex(release.ReleaseError, "missing aarch64-unknown-linux-musl"):
                 release.load_records(built, version="1.2.3", commit=HEAD, targets=targets)
             arm = self.write_build(built / "release-build-linux-arm64", "aarch64-unknown-linux-musl")
+            with self.assertRaisesRegex(release.ReleaseError, "missing aarch64-apple-darwin"):
+                release.load_records(built, version="1.2.3", commit=HEAD, targets=targets)
+            self.write_build(built / "release-build-macos-arm64", "aarch64-apple-darwin")
             pairs, compat, rustc = release.load_records(built, version="1.2.3", commit=HEAD, targets=targets)
             self.assertEqual([info.triple for info, _ in pairs], [t.triple for t in targets])
             self.assertEqual((compat, rustc), ("9.3.1", "rustc 1.99.0"))
             self.assertEqual(pairs[2][0].platform, "Linux arm64")
             self.assertEqual(pairs[2][0].kernel, "4.1")
+            self.assertEqual(pairs[3][0].platform, "macOS arm64")
             # Only the selected targets may be present.
-            with self.assertRaisesRegex(release.ReleaseError, "unexpected aarch64-unknown-linux-musl"):
+            with self.assertRaisesRegex(release.ReleaseError, "unexpected aarch64-apple-darwin, aarch64-unknown-linux-musl"):
                 release.load_records(built, version="1.2.3", commit=HEAD, targets=targets[:2])
             with self.assertRaisesRegex(release.ReleaseError, "publishing 1.2.4"):
                 release.load_records(built, version="1.2.4", commit=HEAD, targets=targets)
@@ -997,12 +1012,15 @@ class StagesTest(unittest.TestCase):
             )
             self.assertEqual([a.name for a in result.archives], [f"{release.archive_stem('1.2.3', t.triple)}.tar.gz" for t in targets])
             sums = (work / "dist" / "SHA256SUMS").read_text().splitlines()
-            self.assertEqual(len(sums), 3)
+            self.assertEqual(len(sums), 4)
+            self.assertTrue(any(line.endswith("  bazel-rs-1.2.3-aarch64-apple-darwin.tar.gz") for line in sums), sums)
             notes = result.notes.read_text()
             self.assertIn("Linux arm64 (`aarch64-unknown-linux-musl`)", notes)
+            self.assertIn("macOS arm64 (`aarch64-apple-darwin`)", notes)
+            self.assertIn("- `aarch64-apple-darwin`: macOS arm64 (Apple silicon), req; signed ad hoc", notes)
             self.assertIn("| Built by | [GitHub Actions run](https://github.com/o/r/actions/runs/1) |", notes)
             self.assertIn("port(arm64): x", notes)
-            self.assertEqual(len(result.assets), 3 + 3 + 1)
+            self.assertEqual(len(result.assets), 4 + 4 + 1)
 
 
 class WorkflowTest(unittest.TestCase):
@@ -1049,6 +1067,68 @@ class WorkflowTest(unittest.TestCase):
                 self.assertNotIn(triple, built)
                 built[triple] = runner
         self.assertEqual(built, {t.triple: t.runner for t in release.TARGETS if t.default})
+
+
+def macho(cputype=release.MACHO_ARM64, dylibs=("/usr/lib/libSystem.B.dylib",), signed=True, minos=0x0B0000):
+    """A minimal thin 64-bit Mach-O: header plus load commands."""
+    commands = []
+    for name in dylibs:
+        raw = name.encode() + b"\0"
+        raw += bytes(-len(raw) % 8)
+        size = 24 + len(raw)
+        commands.append((0xC).to_bytes(4, "little") + size.to_bytes(4, "little") + (24).to_bytes(4, "little")
+                        + bytes(12) + raw)
+    if minos is not None:
+        commands.append((0x32).to_bytes(4, "little") + (24).to_bytes(4, "little") + (1).to_bytes(4, "little")
+                        + minos.to_bytes(4, "little") + minos.to_bytes(4, "little") + bytes(4))
+    if signed:
+        commands.append((0x1D).to_bytes(4, "little") + (16).to_bytes(4, "little") + bytes(8))
+    body = b"".join(commands)
+    header = (release.MACHO_MAGIC_64.to_bytes(4, "little") + cputype.to_bytes(4, "little") + bytes(4)
+              + (2).to_bytes(4, "little") + len(commands).to_bytes(4, "little") + len(body).to_bytes(4, "little")
+              + bytes(8))
+    return header + body
+
+
+class MachOTest(unittest.TestCase):
+    def check(self, data):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bazel-rs"
+            path.write_bytes(data)
+            return release.check_linkage(FakeRunner(), release.TARGETS_BY_TRIPLE["aarch64-apple-darwin"], path)
+
+    def test_system_linked_signed_arm64_passes(self):
+        frameworks = ("/usr/lib/libSystem.B.dylib", "/usr/lib/libiconv.2.dylib",
+                      "/System/Library/Frameworks/Security.framework/Versions/A/Security")
+        self.assertEqual(self.check(macho(dylibs=frameworks)), "macOS ≥ 11.0; system libraries only")
+        self.assertEqual(self.check(macho(minos=0x0E0201)), "macOS ≥ 14.2.1; system libraries only")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "x"
+            path.write_bytes(macho(dylibs=frameworks))
+            info = release.macho_info(path)
+        self.assertEqual(info.dylibs, list(frameworks))
+        self.assertTrue(info.signed)
+
+    def test_rejections(self):
+        with self.assertRaisesRegex(release.ReleaseError, "not a 64-bit Mach-O"):
+            self.check(b"\x7fELF" + bytes(60))
+        with self.assertRaisesRegex(release.ReleaseError, "not a Mach-O executable for arm64"):
+            self.check(macho(cputype=0x01000007))
+        with self.assertRaisesRegex(release.ReleaseError, "no code signature"):
+            self.check(macho(signed=False))
+        with self.assertRaisesRegex(release.ReleaseError, "outside macOS: /opt/homebrew/lib/libzstd.1.dylib"):
+            self.check(macho(dylibs=("/usr/lib/libSystem.B.dylib", "/opt/homebrew/lib/libzstd.1.dylib")))
+        broken = bytearray(macho())
+        broken[36:40] = (4).to_bytes(4, "little")  # first command's size < 8
+        with self.assertRaisesRegex(release.ReleaseError, "malformed"):
+            self.check(bytes(broken))
+
+    def test_host_machine(self):
+        uname = lambda sysname, machine: os.uname_result((sysname, "h", "r", "v", machine))  # noqa: E731
+        self.assertEqual(release.host_machine(uname("Darwin", "arm64")), release.MACHO_ARM64)
+        self.assertEqual(release.host_machine(uname("Linux", "aarch64")), release.EM_AARCH64)
+        self.assertEqual(release.host_machine(uname("Linux", "x86_64")), release.EM_X86_64)
+        self.assertIsNone(release.host_machine(uname("Darwin", "x86_64")))
 
 
 class BumpVersionTest(unittest.TestCase):

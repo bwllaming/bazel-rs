@@ -11,8 +11,11 @@
 #   publish — one job: collect every build job's archives, check them against
 #             their records, write SHA256SUMS and the notes,
 #             `gh release create --verify-tag`, re-download and compare sha256.
-# Adding a platform (e.g. macOS arm64 on macos-14) = a TARGETS row in
-# scripts/release.py plus a matrix entry here. It never creates or moves tags.
+#   verify-macos — after publishing: download the macOS archive from the
+#             release like a user (curl), check its sha256 and ad-hoc code
+#             signature and run it.
+# Adding a platform = a TARGETS row in scripts/release.py plus a matrix entry
+# here. It never creates or moves tags.
 # Re-run a failed release with `gh workflow run release.yml -f tag=vX.Y.Z`
 # (after deleting a partial release).
 name: Release
@@ -56,6 +59,11 @@ jobs:
           - name: linux-arm64
             runner: ubuntu-24.04-arm
             targets: aarch64-unknown-linux-musl
+          # Native on GitHub's arm64 macOS runner (docs/MACOS.md): Apple
+          # clang for the C code, ld64's ad-hoc signature.
+          - name: macos-arm64
+            runner: macos-15
+            targets: aarch64-apple-darwin
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 75
     steps:
@@ -68,7 +76,7 @@ jobs:
       - name: Build machine
         run: |
           uname -srm
-          ldd --version | head -1
+          if [ "$RUNNER_OS" = macOS ]; then sw_vers; xcrun --show-sdk-version; else ldd --version | head -1; fi
 
       - name: Rust toolchain from rust-toolchain.toml
         # Installs the pinned channel with its components and the musl
@@ -82,12 +90,14 @@ jobs:
           cargo --version
 
       - name: Cache zig
+        if: runner.os == 'Linux'
         uses: actions/cache@v4
         with:
           path: .direnv/zig
           key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/setup-zig.sh') }}
 
       - name: zig (C compiler of the musl builds)
+        if: runner.os == 'Linux'
         run: scripts/setup-zig.sh
 
       - name: Cargo cache
@@ -156,3 +166,24 @@ jobs:
             ${{ runner.temp }}/release/RELEASE_NOTES.md
           if-no-files-found: ignore
           retention-days: 14
+
+  verify-macos:
+    name: verify the macOS download
+    needs: publish
+    runs-on: macos-15
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Download, check and run the published aarch64-apple-darwin archive
+        # Like a user: curl (no quarantine attribute), the .sha256 beside it,
+        # the ad-hoc signature arm64 macOS requires, then the binary itself.
+        run: |
+          stem="bazel-rs-${TAG#v}-aarch64-apple-darwin"
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          cd "$RUNNER_TEMP"
+          curl -fsSL --retry 3 -O "$url/$stem.tar.gz" -O "$url/$stem.tar.gz.sha256"
+          shasum -a 256 -c "$stem.tar.gz.sha256"
+          tar xzf "$stem.tar.gz"
+          codesign --verify --verbose "$stem/bazel-rs"
+          "$stem/bazel-rs" --version

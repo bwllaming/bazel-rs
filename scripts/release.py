@@ -13,8 +13,9 @@ builds, smoke-tests and packages locally, in a fresh temporary `git worktree`
 with its own CARGO_TARGET_DIR, without tagging. --ci (the workflow, on the
 tag push) builds the checked-out tag in place once per target (default:
 x86_64-unknown-linux-gnu, dynamically linked against the build host's glibc,
-and the static x86_64-unknown-linux-musl and aarch64-unknown-linux-musl, C
-code compiled with `zig cc`), smoke-tests, packages deterministic tarballs,
+the static x86_64-unknown-linux-musl and aarch64-unknown-linux-musl, C
+code compiled with `zig cc`, and aarch64-apple-darwin, built natively on a
+macOS runner), smoke-tests, packages deterministic tarballs,
 creates the GitHub release of the existing tag with `gh` and verifies it by
 download; it never creates or pushes tags. The workflow splits --ci into
 `--stage build` (one job per runner of TARGETS, e.g. a native arm64 runner)
@@ -50,6 +51,10 @@ BRANCH = "main"
 TARGET = "x86_64-unknown-linux-gnu"
 PACKAGE = "bazel-rs"
 EM_X86_64, EM_AARCH64 = 62, 183
+# Mach-O (docs/MACOS.md): the 64-bit little-endian magic and CPU_TYPE_ARM64
+# (mach/machine.h), which stands in for an ELF e_machine in Target.machine.
+MACHO_MAGIC_64 = 0xFEEDFACF
+MACHO_ARM64 = 0x0100000C
 
 
 @dataclasses.dataclass(frozen=True)
@@ -58,7 +63,7 @@ class Target:
 
     triple: str
     arch: str  # as shown in the notes
-    machine: int  # ELF e_machine
+    machine: int  # ELF e_machine (Mach-O: the CPU type, MACHO_ARM64)
     # `zig cc -target` for the target's C code (jemalloc, ring, blake3,
     # src/musl_string.c); None: the host's cc and a plain `cargo build`.
     zig: str | None
@@ -79,6 +84,12 @@ class Target:
     linker: str | None = None  # CARGO_TARGET_<TRIPLE>_LINKER
     env: tuple[tuple[str, str], ...] = ()
     caveat: str | None = None  # a warning in the notes (none today)
+    # The executable format: "elf" (Linux) or "macho" (macOS, built only on
+    # a macOS machine: no cross build).
+    binary: str = "elf"
+    # The `@platforms//os` value of a host running it (the network smoke
+    # test's HOST_CONSTRAINTS).
+    os_value: str = "linux"
 
     @property
     def platform(self) -> str:
@@ -97,8 +108,14 @@ TARGETS = (
         runner="ubuntu-24.04-arm", cpu="aarch64", bundle="linux-arm64", kernel="4.1",
         linker="rust-lld", env=(("JEMALLOC_SYS_WITH_LG_PAGE", "16"),),
     ),
-    # macOS (e.g. aarch64-apple-darwin on macos-14) would be one more row
-    # with its runner, plus a smoke/linkage rule for Mach-O.
+    # macOS arm64, natively on GitHub's arm64 macOS runner: the host's cc
+    # (Apple clang) builds jemalloc and ring; ld64 signs the executable
+    # ad hoc, which arm64 macOS requires (check_linkage verifies it).
+    Target(
+        "aarch64-apple-darwin", "arm64", MACHO_ARM64, None, static=False, default=True,
+        runner="macos-15", cpu="aarch64", bundle="darwin-arm64", os_name="macOS", kernel="",
+        binary="macho", os_value="osx",
+    ),
 )
 TARGETS_BY_TRIPLE = {t.triple: t for t in TARGETS}
 # Statically linked C runtime of the musl targets (licence texts from the zig
@@ -668,8 +685,77 @@ def elf_linkage(path: Path) -> tuple[bool, int]:
     return interp, needed
 
 
+# Mach-O load commands (mach-o/loader.h) check_linkage reads.
+LC_CODE_SIGNATURE = 0x1D
+LC_VERSION_MIN_MACOSX = 0x24
+LC_BUILD_VERSION = 0x32
+LC_DYLIBS = (0xC, 0x20, 0x80000018, 0x8000001F, 0x80000023)  # LOAD, LAZY_LOAD, LOAD_WEAK, REEXPORT, LOAD_UPWARD
+# Where the dynamic libraries of a macOS installation live (the dyld
+# shared cache): anything else would have to ship with the binary.
+MACOS_SYSTEM_PREFIXES = ("/usr/lib/", "/System/Library/")
+
+
+@dataclasses.dataclass
+class MachO:
+    cputype: int
+    dylibs: list[str]
+    signed: bool  # LC_CODE_SIGNATURE (ld64's ad-hoc signature on arm64)
+    minos: str | None  # LC_BUILD_VERSION / LC_VERSION_MIN_MACOSX
+
+
+def _macho_version(value: int) -> str:
+    """A Mach-O `xxxx.yy.zz` version number (11.0, 14.2.1)."""
+    text = f"{value >> 16}.{(value >> 8) & 0xFF}"
+    return text + (f".{value & 0xFF}" if value & 0xFF else "")
+
+
+def macho_info(path: Path) -> MachO:
+    """The CPU type, linked dylibs, signature and minimum macOS of a thin
+    64-bit little-endian Mach-O executable."""
+    data = path.read_bytes()
+
+    def u32(at: int) -> int:
+        return int.from_bytes(data[at : at + 4], "little")
+
+    if len(data) < 32 or u32(0) != MACHO_MAGIC_64:
+        raise ReleaseError(f"{path} is not a 64-bit Mach-O file")
+    cputype, ncmds = u32(4), u32(16)
+    dylibs, signed, minos = [], False, None
+    at = 32
+    for _ in range(ncmds):
+        cmd, size = u32(at), u32(at + 4)
+        if size < 8 or at + size > len(data):
+            raise ReleaseError(f"{path}: malformed Mach-O load command at offset {at}")
+        if cmd in LC_DYLIBS:
+            name = data[at + u32(at + 8) : at + size].split(b"\0", 1)[0]
+            dylibs.append(name.decode())
+        elif cmd == LC_CODE_SIGNATURE:
+            signed = True
+        elif cmd == LC_BUILD_VERSION:
+            minos = _macho_version(u32(at + 12))
+        elif cmd == LC_VERSION_MIN_MACOSX and minos is None:
+            minos = _macho_version(u32(at + 8))
+        at += size
+    return MachO(cputype, dylibs, signed, minos)
+
+
+def check_macho_linkage(target: Target, binary: Path) -> str:
+    """The requirement line of a macOS archive: its CPU, signed, system dylibs only."""
+    info = macho_info(binary)
+    if info.cputype != target.machine:
+        raise ReleaseError(f"{binary} is not a Mach-O executable for {target.arch} (CPU type {info.cputype:#x})")
+    if not info.signed:
+        raise ReleaseError(f"{binary} has no code signature: arm64 macOS refuses to run unsigned executables")
+    foreign = [lib for lib in info.dylibs if not lib.startswith(MACOS_SYSTEM_PREFIXES)]
+    if foreign:
+        raise ReleaseError(f"{binary} links libraries outside macOS: {', '.join(foreign)}")
+    return f"macOS ≥ {info.minos or '11.0'}; system libraries only"
+
+
 def check_linkage(run: Run, target: Target, binary: Path) -> str:
     """The requirement line of the notes; fails unless static targets are static."""
+    if target.binary == "macho":
+        return check_macho_linkage(target, binary)
     if elf_machine(binary) != target.machine:
         raise ReleaseError(f"{binary} is not an ELF executable for {target.arch} (e_machine {target.machine})")
     interp, needed = elf_linkage(binary)
@@ -697,8 +783,12 @@ def binfmt_runs(machine: int, root: Path = Path("/proc/sys/fs/binfmt_misc")) -> 
     return False
 
 
-def host_machine() -> int | None:
-    return {"x86_64": EM_X86_64, "aarch64": EM_AARCH64}.get(os.uname().machine)
+def host_machine(uname: os.uname_result | None = None) -> int | None:
+    """This machine's Target.machine: an ELF e_machine, on macOS the Mach-O CPU type."""
+    uname = uname or os.uname()
+    if uname.sysname == "Darwin":
+        return {"arm64": MACHO_ARM64}.get(uname.machine)
+    return {"x86_64": EM_X86_64, "aarch64": EM_AARCH64}.get(uname.machine)
 
 
 # --------------------------------------------------------------------------
@@ -750,6 +840,7 @@ def smoke_test(
     prefix: Sequence[str] = (),
     execute: bool = True,
     host_cpu: str | None = None,
+    os_value: str = "linux",
 ) -> str:
     """--version, version, help, and an offline query + build (twice).
 
@@ -796,7 +887,7 @@ def smoke_test(
             raise ReleaseError(f"wrong build output in {output}")
         outputs.append(output)
     if host_cpu:
-        network_smoke_test(run, binary, scratch, prefix, host_cpu)
+        network_smoke_test(run, binary, scratch, prefix, host_cpu, os_value)
     return compat
 
 
@@ -1215,7 +1306,13 @@ def render_notes(info: NotesInfo, changelog: str, prepend: str | None = None) ->
         out.append(f"| `{a.archive}` | {a.platform} (`{a.triple}`) | {a.requirement} | {a.tested} | `{a.sha256}` |")
     out += ["", "## Requirements", ""]
     for a in info.assets:
-        if a.static:
+        if a.triple.endswith("-apple-darwin"):
+            line = (
+                f"- `{a.triple}`: {a.platform} (Apple silicon), {a.requirement}; signed ad hoc by the linker, "
+                "not notarized: a `curl` download runs as-is (a browser download is quarantined: "
+                "`xattr -d com.apple.quarantine bazel-rs`)."
+            )
+        elif a.static:
             line = f"- `{a.triple}`: any {a.platform} distribution (kernel {a.kernel} or newer); statically linked, no glibc needed."
         else:
             line = f"- `{a.triple}`: {a.platform} with {a.requirement} (e.g. Ubuntu 24.04 or newer)."
@@ -1495,10 +1592,15 @@ def smoke_plan(
     """(argv prefix, or None to skip; whether actions execute; notes text) for one target."""
     if target.machine == host or binfmt(target.machine):
         return [], True, SMOKE_FULL
-    if qemu:
+    if qemu and target.binary == "elf":
         return [qemu], False, SMOKE_QEMU
     if allow_untested:
         return None, False, SMOKE_NONE
+    if target.binary == "macho":
+        raise ReleaseError(
+            f"cannot run {target.triple} binaries here: build and smoke-test it on macOS "
+            f"(the release workflow's {target.runner} job)"
+        )
     raise ReleaseError(
         f"cannot run {target.triple} binaries here: pass --qemu-aarch64 PATH (qemu-user), "
         "register qemu-aarch64 with binfmt_misc, or --allow-untested to ship it labelled untested"
@@ -1673,6 +1775,11 @@ def build_release(
                 target_env = {**env, **cross_env(t, zig, work / "tools", work / "zig-cache")}
                 run([cargo, "build", "--locked", "--release", "--target", t.triple], cwd=src, env=target_env, capture=False)
                 binary = target_dir / t.triple / "release" / PACKAGE
+            elif t.binary == "macho":
+                if os.uname().sysname != "Darwin":
+                    raise ReleaseError(f"{t.triple} builds on macOS only (the release workflow's {t.runner} job)")
+                run([cargo, "build", "--locked", "--release", "--target", t.triple], cwd=src, env=env, capture=False)
+                binary = target_dir / t.triple / "release" / PACKAGE
             else:
                 run([cargo, "build", "--locked", "--release"], cwd=src, env=env, capture=False)
                 binary = target_dir / "release" / PACKAGE
@@ -1697,7 +1804,7 @@ def build_release(
                     tar.extractall(unpacked, filter="data")
                 shipped = unpacked / archive_stem(version, t.triple) / PACKAGE
                 host_cpu = t.cpu if smoke_network and execute else None
-                found = smoke_test(run, shipped, version, scratch / t.triple, prefix, execute, host_cpu)
+                found = smoke_test(run, shipped, version, scratch / t.triple, prefix, execute, host_cpu, t.os_value)
                 if host_cpu:
                     tested += SMOKE_NETWORK
                 if compat and found != compat:
@@ -1872,6 +1979,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     targets = select_targets(args.target)
+    if not args.ci and not args.target and os.uname().sysname != "Darwin":
+        # A local --dry-run on Linux cannot build the macOS archive (no cross
+        # build); the release workflow's macOS job builds it.
+        skipped = [t.triple for t in targets if t.binary == "macho"]
+        targets = [t for t in targets if t.binary != "macho"]
+        if skipped:
+            print(f"note: {', '.join(skipped)} builds on macOS only (the release workflow); not built here", file=sys.stderr)
     print("targets: " + ", ".join(t.triple for t in targets) + ("" if args.stage == "all" else f" [stage {args.stage}]"))
     # Tools and smoke runners first: fail before the long build.
     zig, plans = None, {}
