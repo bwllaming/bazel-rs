@@ -15,6 +15,7 @@ include!("support/temp_root.rs");
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 include!("support/sealed_trees.rs");
+include!("support/host_cpu.rs");
 
 const DAY: i64 = 24 * 60 * 60;
 
@@ -215,7 +216,7 @@ fn executed(stderr: &str) -> usize {
 fn cached(fixture: &Fixture, name: &str) -> bool {
     list(&fixture.cache().join("actions")).iter().any(|entry| {
         entry
-            .join("outputs/bazel-out/k8-fastbuild/bin")
+            .join(host_out("outputs/bazel-out/k8-fastbuild/bin"))
             .join(name)
             .exists()
     })

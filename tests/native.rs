@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 include!("support/snapshot_off.rs");
 include!("support/explicit_modules.rs");
 include!("support/sealed_trees.rs");
+include!("support/host_cpu.rs");
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Workspace(PathBuf);
@@ -230,10 +231,13 @@ fn artifact_paths_cannot_cross_package_boundaries() {
 
 #[test]
 fn distinct_artifacts_with_the_same_execution_path_are_rejected() {
-    let ws = Workspace::new(
+    let ws = Workspace::new(&host_out(
         "genrule(name='make',outs=['x'],cmd='echo generated > $@')\nfilegroup(name='ambiguous',srcs=[':make','bazel-out/k8-fastbuild/bin/x'])\n",
+    ));
+    ws.file(
+        &host_out("bazel-out/k8-fastbuild/bin/x"),
+        "different source",
     );
-    ws.file("bazel-out/k8-fastbuild/bin/x", "different source");
     // No cache directory afterwards: the snapshot store would be there.
     let result = ws.run_with(&["build", ":ambiguous"], &[SNAPSHOT_OFF]);
     assert!(!result.status.success());

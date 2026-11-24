@@ -96,16 +96,19 @@ embedded `@bazel_tools` and checks `@platforms//host` =
 `@platforms//os:osx,@platforms//cpu:aarch64`; it runs with macOS's default
 `TMPDIR` below `/var`), then with `TMPDIR=$RUNNER_TEMP` the library unit tests
 and `scripts/ci-integration-tests-macos.txt`: the hermetic programs of the
-Linux job (`scripts/ci-integration-tests.txt`) minus those whose expectations
-are the Linux x86_64 host's (`bazel-out/k8-*` paths: actions_params,
-args_map_each, artifact_identity, cache_gc, directory_expander,
-filegroup_output_group, native, parallel_cli, py_label_runfiles_path,
-py_repo_mapping, py_shared_library, runfiles), that use GNU `stat` in their
+Linux job (`scripts/ci-integration-tests.txt`) minus those that use GNU `stat` in their
 actions (hardlink_staging, output_permissions), non-UTF-8 file names
 (bazel_lexer_strings), glibc's error texts (libc_string) or /proc telemetry
 (plan_timings). The integration tests wrap the CLI in GNU timeout(1):
 `tests/support/temp_root.rs`'s `TIMEOUT` is Homebrew coreutils' `gtimeout`
-on macOS, which the job installs.
+on macOS, which the job installs. Programs whose genuine captures come from
+a Linux x86_64 host (`bazel-out/k8-fastbuild/...`) derive the output
+directories from the host's default `--cpu` (`tests/support/host_cpu.rs`:
+`host_out` turns an expectation into this host's paths, `as_k8` this host's
+output into the capture's spelling, leaving a fixture's literal `k8` alone):
+actions_params, args_map_each, artifact_identity, cache_gc,
+directory_expander, filegroup_output_group, native, parallel_cli,
+py_label_runfiles_path, py_repo_mapping, py_shared_library, runfiles.
 Linux-only tests carry `#[cfg(target_os = "linux")]` with the reason:
 expectations of the Linux x86_64 host (`k8`), GNU `stat`/`timeout`, `/proc`,
 ETXTBSY (macOS executes files open for writing), non-UTF-8 file names (APFS
