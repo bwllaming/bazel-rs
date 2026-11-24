@@ -463,6 +463,7 @@ pub enum Strategy {
     RemoteCache = 4,
     Worker = 5,
     Remote = 6,
+    DarwinSandbox = 7,
 }
 
 impl Strategy {
@@ -474,6 +475,7 @@ impl Strategy {
             4 => Some(Self::RemoteCache),
             5 => Some(Self::Worker),
             6 => Some(Self::Remote),
+            7 => Some(Self::DarwinSandbox),
             _ => None,
         }
     }
@@ -487,6 +489,7 @@ impl Strategy {
             Self::RemoteCache => "remote-cache",
             Self::Worker => "worker",
             Self::Remote => "remote",
+            Self::DarwinSandbox => "darwin-sandbox",
         }
     }
 }

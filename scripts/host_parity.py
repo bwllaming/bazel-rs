@@ -115,9 +115,10 @@ def sha256_file(path: Path) -> str:
 # sorted and deduplicated — bazel-rs's checksums are its own ConfigIds and
 # its labels canonical by design, docs/CQUERY.md), "aquery" (stdout is
 # aquery's text output: its action blocks sorted, bazel-rs orders them
-# differently), "output_base_globs" (files below the output base, e.g. the
-# darwin-sandbox profiles `--sandbox_debug` keeps; their indented lines
-# sorted per block, genuine writes the writable directories from a hash set).
+# differently), "sandbox_profiles" (the darwin-sandbox profiles
+# `--sandbox_debug` keeps: genuine's `<output base>/sandbox/*/*/sandbox.sb`,
+# bazel-rs's `<cache>/work/*/sandbox.sb`; their indented lines sorted per
+# block, genuine writes the writable directories from a hash set).
 # `{WORKSPACE}` and `{HOME}` in arguments become the tool's paths. A case's
 # "hosts" limits it to those hosts (host_platform_name()).
 HP = "host_parity/workspace"
@@ -166,7 +167,7 @@ CASES = [
             {"args": ["build", "//...", "--sandbox_debug"],
              "stderr": [r"^INFO: \d+ processes?: "],
              "files": [f"bazel-bin/{n}.txt" for n in SANDBOX_PROBES],
-             "output_base_globs": ["sandbox/*/*/sandbox.sb"]},
+             "sandbox_profiles": True},
             {"args": ["build", "//...", "--sandbox_default_allow_network=false", "--action_env=PROBE_RUN=2"],
              "stderr": [r"^INFO: \d+ processes?: "],
              "files": [f"bazel-bin/{n}.txt" for n in SANDBOX_PROBES]},
@@ -302,6 +303,9 @@ class Normalizer:
         # `INFO: N processes` line).
         text = re.sub(r"<OUTPUT_BASE>/sandbox/[a-z-]+/\d+/execroot/_main", "<SPAWN_ROOT>", text)
         text = re.sub(r"<STATE>/(tests/)?work/[0-9a-f]+(-\d+)+/execroot", "<SPAWN_ROOT>", text)
+        # The spawn's sandbox directory (its profile, statistics file).
+        text = re.sub(r"<OUTPUT_BASE>/sandbox/[a-z-]+/\d+/", "<SPAWN_DIR>/", text)
+        text = re.sub(r"<STATE>/(tests/)?work/[0-9a-f]+(-\d+)+/", "<SPAWN_DIR>/", text)
         # bazel-rs's output store: the execution root's outputs are links into it.
         text = re.sub(r"<STATE>/actions/[0-9a-f]{64}/outputs/", "<EXECROOT>/", text)
         text = re.sub(r"/sandbox/([a-z-]+)/\d+/", r"/sandbox/\1/N/", text)
@@ -411,9 +415,13 @@ def collect(tool: Tool, ws: Path, step: dict, result: dict, norm: Normalizer, ou
                 items[norm(line)] = read_file(ws / line, norm)
     for rel in step.get("trees", []):
         items[rel + "/"] = tree_listing(ws / rel, norm)
-    for pattern in step.get("output_base_globs", []):
-        texts = sorted(sorted_blocks(read_file(path, norm)) for path in output_base.glob(pattern))
-        items["<OUTPUT_BASE>/" + pattern] = "".join(f"## file {i}\n{t}" for i, t in enumerate(texts)) or "<none>\n"
+    if step.get("sandbox_profiles"):
+        if tool.name == "genuine":
+            paths = output_base.glob("sandbox/*/*/sandbox.sb")
+        else:
+            paths = (tool.state / "cache").glob("work/*/sandbox.sb")
+        texts = sorted(sorted_blocks(read_file(path, norm)) for path in paths)
+        items["sandbox profiles"] = "".join(f"## profile {i}\n{t}" for i, t in enumerate(texts)) or "<none>\n"
     return items
 
 
