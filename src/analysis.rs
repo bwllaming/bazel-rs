@@ -3500,9 +3500,20 @@ fn analyze_inner(
                     crate::target_actions::PROVIDER_ID.to_owned(),
                     module
                         .heap()
-                        .alloc(crate::target_actions::TargetActions::new(
+                        .alloc(crate::target_actions::TargetActions::with_native(
                             &context.actions.borrow(),
-                            repositories.clone(),
+                            target_runfiles
+                                .files_to_run
+                                .as_ref()
+                                .map(|files_to_run| {
+                                    crate::target_actions::runfiles_support_views(
+                                        files_to_run,
+                                        &target.runfiles,
+                                        &target.action_env,
+                                    )
+                                })
+                                .unwrap_or_default(),
+                            Some(repositories.clone()),
                         )),
                 );
             }

@@ -1,0 +1,29 @@
+load(":defs.bzl", "genrule_test", "leaf", "tool", "walk_test")
+
+genrule(
+    name = "gen",
+    srcs = ["in.txt"],
+    outs = ["gen.out"],
+    cmd = "cat $< > $@",
+    tags = ["manual"],
+)
+
+genrule_test(name = "gen_test", dep = ":gen")
+
+leaf(name = "leaf", tags = ["manual"])
+
+tool(name = "t", srcs = ["in.txt"], deps = [":leaf"], tags = ["manual"])
+
+genrule(
+    name = "uses_tool",
+    outs = ["uses_tool.out"],
+    cmd = "$(location :t) > $@",
+    tools = [":t"],
+    tags = ["manual"],
+)
+
+walk_test(name = "walk_test", target = ":uses_tool")
+
+genrule_test(name = "tool_test", dep = ":t")
+
+genrule_test(name = "uses_tool_test", dep = ":uses_tool")

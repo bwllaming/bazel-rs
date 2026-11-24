@@ -1713,6 +1713,22 @@ struct RunfilesNodes {
     location: Option<String>,
 }
 
+/// The targets whose `Target.actions` views the analysis keeps
+/// ([`Engine::inspected_targets`]): the named labels (in every
+/// configuration), or every target when a requested analysis test's
+/// attribute aspect propagates.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct InspectedTargets {
+    labels: HashSet<Label>,
+    every: bool,
+}
+
+impl InspectedTargets {
+    pub(crate) fn contains(&self, label: &Label) -> bool {
+        self.every || self.labels.contains(label)
+    }
+}
+
 /// An analyzed rule target in its configuration.
 #[derive(Clone, Debug, Default)]
 struct ConfiguredNode {
@@ -3516,7 +3532,7 @@ pub struct Engine {
     /// (crate::target_actions): the attribute dependencies of the requested
     /// analysis-test rules, decided before the analysis
     /// ([`Engine::inspected_targets`]).
-    inspected_targets: Arc<HashSet<Label>>,
+    inspected_targets: Arc<InspectedTargets>,
     generated: Shared<BTreeMap<Label, (Label, String)>>,
     group_nodes: Shared<BTreeMap<Label, Arc<GroupNode>>>,
     group_budget: HostBudget,
@@ -9423,12 +9439,7 @@ impl Engine {
             // target of an analysis test's own configuration (a testing
             // aspect that propagates reads `target.actions` of the subject's
             // dependencies, B32).
-            retain_actions: engine.inspected_targets.contains(&rule.label)
-                || engine
-                    .configurations
-                    .get(config)
-                    .native
-                    .evaluating_for_analysis_test,
+            retain_actions: engine.retains_actions(&rule.label, config),
             prerequisite_failures,
         };
         Ok(PreparedTarget {
@@ -9996,6 +10007,13 @@ impl Engine {
         let mut label_map = crate::location_expander::LocationMap::default();
         let mut tools = Vec::new();
         let mut tool_trees = Vec::new();
+        // Target.actions of a genrule an analysis test can inspect
+        // (crate::target_actions): its tools' files to run, in
+        // CommandHelper's order (FilesToRunProvider.getFilesToRun: the
+        // runfiles tree artifact among them).
+        let retain_actions =
+            matches!(rule.kind, RuleKind::Genrule) && self.retains_actions(&rule.label, config);
+        let mut tool_files: Vec<File> = Vec::new();
         let mut template_variables: Vec<Vec<(String, String)>> = Vec::new();
         if let (RuleKind::Genrule, Some(native)) = (&rule.kind, &rule.native) {
             self.genrule_toolchains_errors(rule, config, configured, custom_providers)?;
@@ -10052,6 +10070,18 @@ impl Engine {
                     runfiles_info.get(&ConfiguredTargetKey::new(actual.clone(), edge_config)),
                 );
                 let files_to_run = runfiles.files_to_run(&files);
+                if retain_actions {
+                    let listed = files_to_run.files();
+                    match files_to_run.runfiles_tree() {
+                        Some((index, tree)) => {
+                            let index = index.min(listed.len());
+                            tool_files.extend(listed[..index].iter().cloned());
+                            tool_files.push(tree.clone());
+                            tool_files.extend(listed[index..].iter().cloned());
+                        }
+                        None => tool_files.extend(listed.iter().cloned()),
+                    }
+                }
                 // A tool with runfiles support also brings its runfiles
                 // tree and its executable, which may be missing from its
                 // files to build (CommandHelper.java:156-166): staged at
@@ -10289,6 +10319,8 @@ impl Engine {
                     ),
                 ));
             }
+            // The workspace status files a stamping genrule reads.
+            let mut stamp_files: Vec<File> = Vec::new();
             if !self.semantic_only() {
                 let mut execution_info = rule_execution_info(rule);
                 if native_bool(rule, "local") {
@@ -10322,6 +10354,7 @@ impl Engine {
                 } else {
                     Vec::new()
                 };
+                stamp_files.extend(status_inputs.iter().map(Artifact::file));
                 let mut action = Action {
                     id: action_owner.clone(),
                     command: format!(
@@ -10414,6 +10447,52 @@ impl Engine {
             for artifact in &artifacts {
                 register_artifact(artifact_index, &artifact.file, artifact);
                 declared.insert(config, artifact.exec.to_path_buf(), artifact.clone());
+            }
+            if retain_actions {
+                // GenRuleBase.java:168-232: the GenRuleAction's view, its
+                // inputs the `srcs`, the tools, `$genrule_setup` and the
+                // workspace status files, in that order.
+                let setup_path = crate::builtin_tools::GENRULE_SETUP_EXEC_PATH;
+                let setup = File::new(FileData {
+                    is_directory: false,
+                    is_symlink: false,
+                    path: setup_path.to_owned(),
+                    short_path: setup_path
+                        .strip_prefix("external/")
+                        .map_or_else(|| setup_path.to_owned(), |rest| format!("../{rest}")),
+                    owner: "@@bazel_tools//tools/genrule:genrule-setup.sh".to_owned(),
+                    is_source: true,
+                });
+                let view = crate::target_actions::ActionView::native(
+                    "Genrule",
+                    Some(vec![
+                        "/bin/bash".to_owned(),
+                        "-c".to_owned(),
+                        format!("source {setup_path}; {command}"),
+                    ]),
+                    inputs
+                        .iter()
+                        .map(Artifact::file)
+                        .chain(tool_files)
+                        .chain(std::iter::once(setup))
+                        .chain(stamp_files)
+                        .collect(),
+                    artifacts.iter().map(Artifact::file).collect(),
+                    action_env
+                        .fixed
+                        .iter()
+                        .map(|(name, value)| (name.clone(), value.clone()))
+                        .collect(),
+                );
+                custom_providers.entry(key.clone()).or_default().insert(
+                    crate::target_actions::PROVIDER_ID.to_owned(),
+                    crate::target_actions::TargetActions::with_native(
+                        &[],
+                        vec![view],
+                        Some(self.repositories.clone()),
+                    )
+                    .frozen(),
+                );
             }
             runfiles_info.insert(
                 key.clone(),
@@ -11469,8 +11548,9 @@ impl Engine {
     /// requested labels and their (already loaded) packages, decided before
     /// the analysis, so a target's views never depend on the analysis
     /// order. Only these targets keep views: the others answer no field.
-    fn inspected_targets(&self, labels: &[Label]) -> HashSet<Label> {
+    fn inspected_targets(&self, labels: &[Label]) -> InspectedTargets {
         let mut inspected = HashSet::new();
+        let mut every = false;
         for label in labels {
             let Some(rule) = self
                 .packages
@@ -11485,6 +11565,17 @@ impl Engine {
             if !custom.declaration.analysis_test {
                 continue;
             }
+            // An attribute aspect that propagates (rules_cc's
+            // `_propagating_testing_aspect`, `attr_aspects = ["*"]`) reads
+            // `target.actions` of whatever it visits — an exec tool's
+            // dependencies, toolchains, other packages — so every target of
+            // the request keeps its actions (B32).
+            every |= custom.schema.values().any(|spec| {
+                spec.declaration
+                    .aspect_definitions
+                    .iter()
+                    .any(|aspect| aspect.propagates)
+            });
             for text in &rule.srcs {
                 if let Ok(dependency) = self.resolve_rule_src(rule, text) {
                     inspected.insert(dependency);
@@ -11563,7 +11654,24 @@ impl Engine {
                 pending.push(actual);
             }
         }
-        inspected
+        InspectedTargets {
+            labels: inspected,
+            every,
+        }
+    }
+
+    /// Whether the analysis keeps `Target.actions` views of `label` in
+    /// `config`: a target an analysis test of the request can inspect
+    /// ([`Engine::inspected_targets`]), or any target of an analysis test's
+    /// own configuration (a testing aspect that propagates reads
+    /// `target.actions` of the subject's dependencies, B32).
+    fn retains_actions(&self, label: &Label, config: ConfigId) -> bool {
+        self.inspected_targets.contains(label)
+            || self
+                .configurations
+                .get(config)
+                .native
+                .evaluating_for_analysis_test
     }
 
     fn plan_build_with_checkpoint(

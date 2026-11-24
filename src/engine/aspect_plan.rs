@@ -1597,13 +1597,9 @@ fn plan_application<C: AspectCx>(
         base_rule,
         aspect_identity: aspect.identity.clone(),
         action_execution,
-        retain_actions: cx.engine().inspected_targets.contains(&base_key.label)
-            || cx
-                .engine()
-                .configurations
-                .get(base_key.config)
-                .native
-                .evaluating_for_analysis_test,
+        retain_actions: cx
+            .engine()
+            .retains_actions(&base_key.label, base_key.config),
     };
     cx.analyze(&key, context, application, commit)
 }

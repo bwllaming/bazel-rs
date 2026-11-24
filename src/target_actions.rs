@@ -161,6 +161,105 @@ impl ActionView {
     }
 }
 
+impl ActionView {
+    /// A natively planned action's view (no content or substitutions).
+    pub(crate) fn native(
+        mnemonic: &str,
+        argv: Option<Vec<String>>,
+        inputs: Vec<File>,
+        outputs: Vec<File>,
+        env: Vec<(String, String)>,
+    ) -> Self {
+        let mut seen = std::collections::HashSet::new();
+        let inputs = inputs
+            .into_iter()
+            .filter(|file| seen.insert(file.path.clone()))
+            .collect();
+        ActionView {
+            mnemonic: mnemonic.to_owned(),
+            argv,
+            content: Content::None,
+            substitutions: None,
+            inputs,
+            outputs,
+            env,
+        }
+    }
+}
+
+/// The actions RunfilesSupport registers for an executable after the rule's
+/// own (RuleConfiguredTargetBuilder.build; analysis/RunfilesSupport.java:
+/// 280-347, 467-545): RepoMappingManifestAction, with runfiles manifests
+/// SourceManifestAction (the input manifest) and with runfile links
+/// SymlinkTreeAction (the MANIFEST from the input manifest, the
+/// configuration's action environment; its other inputs only on Windows),
+/// then RunfilesTreeAction (the runfiles tree artifact over the runfiles'
+/// artifacts, the manifest and the repository mapping manifest).
+pub(crate) fn runfiles_support_views(
+    files_to_run: &crate::runfiles::FilesToRun,
+    options: &crate::runfiles_tree::RunfilesOptions,
+    action_env: &crate::action_env::ActionEnvironment,
+) -> Vec<ActionView> {
+    let (Some(executable), Some(runfiles), Some(repo_mapping), Some((_, tree))) = (
+        files_to_run.executable(),
+        files_to_run.runfiles(),
+        files_to_run.repo_mapping_manifest(),
+        files_to_run.runfiles_tree(),
+    ) else {
+        return Vec::new();
+    };
+    let mut views = vec![ActionView::native(
+        "RepoMappingManifest",
+        None,
+        Vec::new(),
+        vec![repo_mapping.clone()],
+        Vec::new(),
+    )];
+    if options.build_runfile_manifests {
+        let input_manifest = File::new(crate::starlark_types::FileData {
+            path: format!("{}.runfiles_manifest", executable.path),
+            short_path: format!("{}.runfiles_manifest", executable.short_path),
+            owner: repo_mapping.owner.clone(),
+            is_source: false,
+            is_directory: false,
+            is_symlink: false,
+        });
+        views.push(ActionView::native(
+            "SourceSymlinkManifest",
+            None,
+            Vec::new(),
+            vec![input_manifest.clone()],
+            Vec::new(),
+        ));
+        if options.links()
+            && let Some(manifest) = files_to_run.runfiles_manifest()
+        {
+            views.push(ActionView::native(
+                "SymlinkTree",
+                None,
+                vec![input_manifest],
+                vec![manifest.clone()],
+                action_env
+                    .fixed
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            ));
+        }
+    }
+    let mut contents = runfiles.all_artifacts();
+    contents.extend(files_to_run.runfiles_manifest().cloned());
+    contents.push(repo_mapping.clone());
+    views.push(ActionView::native(
+        "RunfilesTree",
+        None,
+        contents,
+        vec![tree.clone()],
+        Vec::new(),
+    ));
+    views
+}
+
 /// SpawnAction.getStarlarkArgv (:229-235): `getArguments()`, the whole
 /// command line, parameter files included: an argument naming one of the
 /// action's parameter files (`@path`, `--flagfile=path`) is replaced by the
@@ -277,6 +376,32 @@ impl TargetActions {
             actions: actions.iter().map(ActionView::of).collect(),
             repositories: Some(repositories),
         }
+    }
+
+    /// The registered actions followed by natively planned ones
+    /// ([`runfiles_support_views`]).
+    pub(crate) fn with_native(
+        actions: &[RegisteredAction],
+        native: Vec<ActionView>,
+        repositories: Option<Arc<RepositorySet>>,
+    ) -> Self {
+        TargetActions {
+            actions: actions.iter().map(ActionView::of).chain(native).collect(),
+            repositories,
+        }
+    }
+
+    /// Frozen, for a native rule target's provider map.
+    pub(crate) fn frozen(self) -> starlark::values::OwnedFrozenValue {
+        starlark::environment::Module::with_temp_heap(|module| {
+            let value = module.heap().alloc(self);
+            module.set("value", value);
+            module
+                .freeze()
+                .expect("freezing owned target actions cannot fail")
+                .get("value")
+                .expect("the frozen module has the value")
+        })
     }
 
     /// The actions of a merged configured target: each value's actions in

@@ -1010,6 +1010,10 @@ pub(crate) struct QueryAspect {
     /// The aspect's required parameters (StarlarkDefinedAspect.
     /// getRequiredParameters), checked against a rule propagating it.
     pub required_parameters: Vec<String>,
+    /// The aspect propagates along its target's attributes or toolchains (a
+    /// non-empty or function `attr_aspects`/`toolchains_aspects`): what an analysis test's attribute aspect
+    /// visits is unbounded (crate::engine's inspected targets).
+    pub propagates: bool,
 }
 
 /// The aspects of an `aspects=` list with their required aspects first, once
@@ -1036,6 +1040,18 @@ pub(crate) fn query_aspects(value: Value<'_>) -> Vec<QueryAspect> {
             attrs: aspect.declaration.attrs.clone(),
             required_providers: aspect.declaration.required_providers.clone(),
             required_parameters: aspect.declaration.required_parameters.clone(),
+            propagates: !aspect.attr_aspects_function.is_empty()
+                || aspect
+                    .declaration
+                    .attr_aspects
+                    .as_ref()
+                    .is_none_or(|names| !names.is_empty())
+                || !aspect.toolchains_aspects_function.is_empty()
+                || aspect
+                    .declaration
+                    .toolchains_aspects
+                    .as_ref()
+                    .is_none_or(|names| !names.is_empty()),
         });
     }
     let mut result = Vec::new();

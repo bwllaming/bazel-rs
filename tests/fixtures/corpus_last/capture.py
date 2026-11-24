@@ -38,6 +38,19 @@ CASES = {
         ['fwd/b.runfiles_manifest', 'fwd/b.repo_mapping', 'fwd/b.runfiles/MANIFEST']),
     'forwarded_group_seen': (
         'build', BUILD + ['--nobuild'], ['//fwd:seen'], [r'SEEN seen '], [], []),
+    # B32: an analysis test reads a native genrule's actions, and a
+    # propagating aspect reads the actions of an exec tool and its
+    # dependencies (outside the test's configuration).
+    'genrule_actions': (
+        'build', BUILD + ['--nobuild'], ['//acts:gen_test'], [r'ACTIONS '], [], []),
+    'executable_runfiles_actions': (
+        'build', BUILD + ['--nobuild'], ['//acts:tool_test'], [r'ACTIONS '], [], []),
+    'genrule_tool_actions': (
+        'build', BUILD + ['--nobuild'], ['//acts:uses_tool_test'], [r'ACTIONS '], [], []),
+    'executable_runfiles_actions_no_links': (
+        'build', BUILD + ['--nobuild', '--nobuild_runfile_links'], ['//acts:tool_test'], [r'ACTIONS '], [], []),
+    'propagating_aspect_actions': (
+        'build', BUILD + ['--nobuild'], ['//acts:walk_test'], [r'WALK '], [], []),
 }
 
 TIME = re.compile(r'^\(\d\d:\d\d:\d\d\) ')

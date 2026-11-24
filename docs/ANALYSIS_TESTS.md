@@ -83,7 +83,12 @@ configuration (`evaluating for analysis test`: the test's
 `analysis_test_transition` changed the configuration) keeps its views
 too, so a testing aspect that propagates (`attr_aspects = ["*"]`, rules_cc's
 `_propagating_testing_aspect`) reads `target.actions` of the subject's
-dependencies (B32). The engine decides that set from the
+dependencies (B32). When a requested analysis test has an attribute aspect
+that propagates (a non-empty or function `attr_aspects` or
+`toolchains_aspects`), every target of the request keeps its views: such an
+aspect visits targets outside the test's configuration and package (rules_cc's
+`test_propeller_host_builds` reads the actions of an exec tool and of its
+toolchain and wrapper dependencies, B32). The engine decides that set from the
 requested labels and their packages before the analysis
 (`Engine::inspected_targets`), so it never depends on the analysis order.
 A snapshot holds no providers, and an incremental re-analysis requests
@@ -98,9 +103,7 @@ that key, and `target.actions` fails there as an unknown field. That is a
 deliberate, explicit gap: genuine answers the actions for any rule target.
 It is reached only by a rule that is not an analysis test reading
 `dep.actions`, or by an analysis test that is not requested itself (only a
-dependency of the request), or by a propagating testing aspect past the
-test's configuration (rules_cc's `test_propeller_host_builds`: an exec
-tool's dependencies). skylib's and rules_testing's aspects read the
+dependency of the request). skylib's and rules_testing's aspects read the
 direct attribute dependencies of the requested tests, which are kept.
 
 | field | value |
@@ -120,10 +123,25 @@ the aspects' actions in application order, then its own
 its views when its base target is inspected (rules_testing's
 `make_testing_aspect(aspects = [...])` over protobuf's `java_proto_aspect`).
 
-Native rules do not keep their actions. Their targets answer an empty list,
-except `genrule`, `genquery` and `starlark_doc_extract`, which register
-actions: for those, `actions` is not a field. A failed target in a
-configuration that allows analysis failures has no actions.
+An executable's views end with the actions its RunfilesSupport registers
+(RunfilesSupport.java:280-347, 467-545): `RepoMappingManifest`, with
+runfiles manifests `SourceSymlinkManifest` (the input manifest), with
+runfile links `SymlinkTree` (input: the input manifest; env: the
+configuration's action environment), then `RunfilesTree` (inputs: the
+runfiles' artifacts, the manifest and the repository mapping manifest;
+output: the `<executable>.runfiles` tree artifact); `argv` is `None` for all
+four.
+
+A kept `genrule` answers its GenRuleAction (`Genrule`; argv `/bin/bash -c
+"source <genrule-setup.sh>; CMD"`; inputs the `srcs`, the tools' files to
+run with their runfiles tree artifacts, `genrule-setup.sh` and the
+workspace status files of a stamping genrule; env the action environment;
+GenRuleBase.java:168-232; B32: rules_cc's `test_fdo_profile_action_graph`).
+The other native rules do not keep their actions. Their targets answer an
+empty list, except `genquery` and `starlark_doc_extract`, which register
+actions: for those, and for a genrule that is not kept, `actions` is not a
+field. A failed target in a configuration that allows analysis failures has
+no actions.
 
 Cost: on abseil-cpp (`build --nobuild //...`, 3,722 actions, about 2,000
 of them registered by Starlark rules, no analysis tests), the retained

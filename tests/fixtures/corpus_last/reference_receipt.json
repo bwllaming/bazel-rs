@@ -1,6 +1,51 @@
 {
  "bazel": "9.3.1",
  "cases": {
+  "executable_runfiles_actions": {
+   "command": "build",
+   "exists": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--nobuild"
+   ],
+   "outputs": {},
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/acts/defs.bzl:9:10: ACTIONS [(\"MakeTool\", [\"/bin/bash\", \"-c\", \"echo '#!/bin/sh' > $1\", \"\", \"bazel-out/k8-fastbuild/bin/acts/t.sh\"], [\"acts/in.txt\"], [\"bazel-out/k8-fastbuild/bin/acts/t.sh\"], []), (\"RepoMappingManifest\", None, [], [\"bazel-out/k8-fastbuild/bin/acts/t.sh.repo_mapping\"], []), (\"SourceSymlinkManifest\", None, [], [\"bazel-out/k8-fastbuild/bin/acts/t.sh.runfiles_manifest\"], []), (\"SymlinkTree\", None, [\"bazel-out/k8-fastbuild/bin/acts/t.sh.runfiles_manifest\"], [\"bazel-out/k8-fastbuild/bin/acts/t.sh.runfiles/MANIFEST\"], [(\"PATH\", \"/bin:/usr/bin:/usr/local/bin\")]), (\"RunfilesTree\", None, [\"bazel-out/k8-fastbuild/bin/acts/t.sh\", \"bazel-out/k8-fastbuild/bin/acts/t.sh.runfiles/MANIFEST\", \"bazel-out/k8-fastbuild/bin/acts/t.sh.repo_mapping\"], [\"bazel-out/k8-fastbuild/bin/acts/t.sh.runfiles\"], [])]",
+     "pattern": "ACTIONS "
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//acts:tool_test"
+   ],
+   "workspace": "workspace"
+  },
+  "executable_runfiles_actions_no_links": {
+   "command": "build",
+   "exists": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--nobuild",
+    "--nobuild_runfile_links"
+   ],
+   "outputs": {},
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/acts/defs.bzl:9:10: ACTIONS [(\"MakeTool\", [\"/bin/bash\", \"-c\", \"echo '#!/bin/sh' > $1\", \"\", \"bazel-out/k8-fastbuild/bin/acts/t.sh\"], [\"acts/in.txt\"], [\"bazel-out/k8-fastbuild/bin/acts/t.sh\"], []), (\"RepoMappingManifest\", None, [], [\"bazel-out/k8-fastbuild/bin/acts/t.sh.repo_mapping\"], []), (\"SourceSymlinkManifest\", None, [], [\"bazel-out/k8-fastbuild/bin/acts/t.sh.runfiles_manifest\"], []), (\"RunfilesTree\", None, [\"bazel-out/k8-fastbuild/bin/acts/t.sh\", \"bazel-out/k8-fastbuild/bin/acts/t.sh.runfiles_manifest\", \"bazel-out/k8-fastbuild/bin/acts/t.sh.repo_mapping\"], [\"bazel-out/k8-fastbuild/bin/acts/t.sh.runfiles\"], [])]",
+     "pattern": "ACTIONS "
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//acts:tool_test"
+   ],
+   "workspace": "workspace"
+  },
   "files_only_no_tree": {
    "command": "build",
    "exists": {
@@ -92,6 +137,72 @@
    "stdout": "",
    "targets": [
     "//fwd:f"
+   ],
+   "workspace": "workspace"
+  },
+  "genrule_actions": {
+   "command": "build",
+   "exists": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--nobuild"
+   ],
+   "outputs": {},
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/acts/defs.bzl:9:10: ACTIONS [(\"Genrule\", [\"/bin/bash\", \"-c\", \"source external/bazel_tools/tools/genrule/genrule-setup.sh; cat acts/in.txt > bazel-out/k8-fastbuild/bin/acts/gen.out\"], [\"acts/in.txt\", \"external/bazel_tools/tools/genrule/genrule-setup.sh\"], [\"bazel-out/k8-fastbuild/bin/acts/gen.out\"], [(\"PATH\", \"/bin:/usr/bin:/usr/local/bin\")])]",
+     "pattern": "ACTIONS "
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//acts:gen_test"
+   ],
+   "workspace": "workspace"
+  },
+  "genrule_tool_actions": {
+   "command": "build",
+   "exists": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--nobuild"
+   ],
+   "outputs": {},
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/acts/defs.bzl:9:10: ACTIONS [(\"Genrule\", [\"/bin/bash\", \"-c\", \"source external/bazel_tools/tools/genrule/genrule-setup.sh; bazel-out/p-opt-exec/bin/acts/t.sh > bazel-out/k8-fastbuild/bin/acts/uses_tool.out\"], [\"bazel-out/p-opt-exec/bin/acts/t.sh\", \"bazel-out/p-opt-exec/bin/acts/t.sh.runfiles\", \"external/bazel_tools/tools/genrule/genrule-setup.sh\"], [\"bazel-out/k8-fastbuild/bin/acts/uses_tool.out\"], [(\"PATH\", \"/bin:/usr/bin:/usr/local/bin\")])]",
+     "pattern": "ACTIONS "
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//acts:uses_tool_test"
+   ],
+   "workspace": "workspace"
+  },
+  "propagating_aspect_actions": {
+   "command": "build",
+   "exists": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--nobuild"
+   ],
+   "outputs": {},
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/acts/defs.bzl:58:10: WALK [(\"@@//acts:leaf\", [\"FileWrite\"]), (\"@@//acts:t\", [\"MakeTool\", \"RepoMappingManifest\", \"SourceSymlinkManifest\", \"SymlinkTree\", \"RunfilesTree\"])]",
+     "pattern": "WALK "
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//acts:walk_test"
    ],
    "workspace": "workspace"
   }
