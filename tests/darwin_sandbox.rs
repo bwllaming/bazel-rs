@@ -54,16 +54,18 @@ impl Workspace {
             &manifest().join("tests/fixtures/darwin_sandbox/workspace"),
             &ws,
         );
-        // The offline platforms module instead of the registry's.
+        // The offline platforms module instead of the registry's, outside
+        // the workspace (`//...` would take its packages for the main
+        // repository's).
         let module = fs::read_to_string(ws.join("MODULE.bazel")).unwrap();
         fs::write(
             ws.join("MODULE.bazel"),
             module
                 + "bazel_dep(name = \"platforms\", version = \"1.0.0\")\n\
-                   local_path_override(module_name = \"platforms\", path = \"platforms\")\n",
+                   local_path_override(module_name = \"platforms\", path = \"../platforms\")\n",
         )
         .unwrap();
-        extract_platforms(&ws.join("platforms"));
+        extract_platforms(&root.join("platforms"));
         fs::create_dir_all(root.join("tmp")).unwrap();
         Self { _root: dir, root }
     }
