@@ -84,3 +84,10 @@ pub fn open_entry_nofollow<P: rustix::path::Arg>(
 pub fn explicit_system_limit(_resource: rustix::process::Resource) -> Option<u64> {
     None
 }
+
+/// What Bazel's client adds to the client environment: nothing on Linux
+/// (GetProcessedEnv, src/main/cpp/option_processor_unix.cc:32-50, adds the
+/// DARWIN_USER_* directories on macOS only).
+pub fn client_env_additions() -> &'static [(std::ffi::OsString, std::ffi::OsString)] {
+    &[]
+}

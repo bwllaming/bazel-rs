@@ -9,6 +9,7 @@ try() {
 }
 {
   try read_workspace "cat '$src_dir/MODULE.bazel'"
+  try read_zoneinfo "cat /usr/share/zoneinfo/UTC"
   try write_workspace "echo x > '$src_dir/written_by_action'"
   try write_execroot "echo x > '$gen_dir/written_by_action'"
   try write_spawn_root "echo x > written_by_action"
@@ -20,4 +21,6 @@ try() {
   try mkdir_users_shared "mkdir /Users/Shared/darwin_sandbox_probe.$$ && rmdir /Users/Shared/darwin_sandbox_probe.$$"
   try network_remote "/usr/bin/curl -sS -m 20 -o /dev/null https://bcr.bazel.build/"
   try exec_ps "/bin/ps -p $$"
+  echo "cf_user_text_encoding=${__CF_USER_TEXT_ENCODING+set}"
+  echo "darwin_user_temp_dir=${DARWIN_USER_TEMP_DIR+set}"
 } > "$out"

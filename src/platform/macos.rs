@@ -227,3 +227,26 @@ pub fn user_home() -> Option<PathBuf> {
         .flatten()
         .map(|user| user.dir)
 }
+
+/// What Bazel's client adds to the client environment on macOS
+/// (GetProcessedEnv, src/main/cpp/option_processor_unix.cc:32-50):
+/// `DARWIN_USER_TEMP_DIR` and `DARWIN_USER_CACHE_DIR`, confstr's values
+/// (`/var/folders/.../T/`, `.../C/`), after the process environment (so they
+/// win over it). Read once per process with `/usr/bin/getconf`, which prints
+/// confstr's value (no unsafe FFI).
+pub fn client_env_additions() -> &'static [(std::ffi::OsString, std::ffi::OsString)] {
+    static VALUES: OnceLock<Vec<(std::ffi::OsString, std::ffi::OsString)>> = OnceLock::new();
+    VALUES.get_or_init(|| {
+        ["DARWIN_USER_TEMP_DIR", "DARWIN_USER_CACHE_DIR"]
+            .into_iter()
+            .filter_map(|name| {
+                let mut command = std::process::Command::new("/usr/bin/getconf");
+                command.arg(name).stdin(std::process::Stdio::null());
+                let output = crate::spawn_lock::output(&mut command).ok()?;
+                let value = String::from_utf8(output.stdout).ok()?;
+                let value = value.trim_end_matches('\n');
+                (output.status.success() && !value.is_empty()).then(|| (name.into(), value.into()))
+            })
+            .collect()
+    })
+}

@@ -82,14 +82,41 @@ fn overrides() -> Option<&'static Overrides> {
     OVERRIDES.get().filter(|overrides| !overrides.is_empty())
 }
 
-/// The whole client environment.
-pub fn vars_os() -> Vec<(OsString, OsString)> {
+/// The process environment as Bazel's client passes it: with the
+/// platform's additions (crate::platform::client_env_additions: macOS's
+/// DARWIN_USER_* directories) after it, so they win.
+fn process_env() -> Vec<(OsString, OsString)> {
     // snapshot-unrecorded: the callers' own records apply (each reader was a std::env::vars_os read before; the overrides come from the keyed options).
     let process = std::env::vars_os();
+    let additions = crate::platform::client_env_additions();
+    if additions.is_empty() {
+        return process.collect();
+    }
+    process
+        .filter(|(name, _)| !additions.iter().any(|(added, _)| added == name))
+        .chain(additions.iter().cloned())
+        .collect()
+}
+
+/// The whole client environment.
+pub fn vars_os() -> Vec<(OsString, OsString)> {
+    let process = process_env();
     match overrides() {
-        None => process.collect(),
+        None => process,
         Some(overrides) => overrides.apply(process),
     }
+}
+
+/// One value of [`process_env`].
+fn process_var_os(name: &OsStr) -> Option<OsString> {
+    if let Some((_, value)) = crate::platform::client_env_additions()
+        .iter()
+        .find(|(added, _)| added == name)
+    {
+        return Some(value.clone());
+    }
+    // snapshot-unrecorded: as vars_os.
+    std::env::var_os(name)
 }
 
 /// The client environment's UTF-8 entries.
@@ -114,14 +141,12 @@ pub fn var_os(name: impl AsRef<OsStr>) -> Option<OsString> {
         if let Some(value) = find(&overrides.command_line) {
             return Some(value);
         }
-        // snapshot-unrecorded: as vars_os.
-        if let Some(value) = std::env::var_os(name) {
+        if let Some(value) = process_var_os(name) {
             return Some(value);
         }
         return find(&overrides.rc);
     }
-    // snapshot-unrecorded: as vars_os.
-    std::env::var_os(name)
+    process_var_os(name)
 }
 
 /// One client environment value as UTF-8 (`None` when unset or not UTF-8).
