@@ -144,6 +144,29 @@ impl ActionKey {
         }
     }
 
+    /// The key of a native action of the runfiles support
+    /// (RepoMappingManifestAction, SourceManifestAction,
+    /// SymlinkTreeAction/RunfilesTreeAction): its kind, then its framed
+    /// `parts` (the output path and everything its output is computed
+    /// from). Shareable like Bazel's: two configured targets whose
+    /// configurations share an output directory (two exec configurations
+    /// that differ only in options outside the output directory name)
+    /// register equal runfiles support actions, which
+    /// Actions.canBeShared shares (B69).
+    pub(crate) fn native(kind: &str, parts: &[&[u8]]) -> Self {
+        let mut key = Fingerprint::default();
+        key.str(kind);
+        key.count(parts.len());
+        for part in parts {
+            key.bytes(part);
+        }
+        Self {
+            digest: key.finalize(),
+            uncompared: None,
+            shareable: true,
+        }
+    }
+
     /// Actions.canBeShared of the actions keyed `self` and `other`, both of
     /// one owner (Actions.assignOwnersAndThrowIfConflictToleratingSharedActions):
     /// an unshareable action is the other only when its files are equal

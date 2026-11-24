@@ -1605,3 +1605,42 @@ fn runfiles_tree_tally_matches_the_genuine_receipt() {
         assert_eq!(serde_json::Value::Array(runs), row["genuine"], "{id}");
     }
 }
+
+/// B69 (tests/fixtures/shared_runfiles_support, genuine 9.3.1): a tool
+/// analyzed in two exec configurations with one output directory registers
+/// equal runfiles support actions (repo mapping, manifest, tree) twice;
+/// Bazel shares them like any equal actions (Actions.canBeShared), so both
+/// consumers build.
+#[test]
+fn equal_runfiles_support_actions_are_shared() {
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/shared_runfiles_support");
+    let ws = Workspace(
+        tempfile::Builder::new()
+            .prefix("shared-runfiles-support-")
+            .tempdir_in(crate::test_temp::root())
+            .unwrap(),
+    );
+    copy_fixture(&fixture.join("workspace"), ws.path());
+    let output = ws.run(&[
+        "build",
+        "--host_platform=//plat:host",
+        "--extra_execution_platforms=//plat2:host",
+        "//:on_a",
+        "//:on_b",
+    ]);
+    success(&output);
+    let exec = ws.path().join("bazel-out/k8-opt-exec/bin/t_");
+    assert_eq!(
+        fs::read_to_string(exec.join("t.repo_mapping")).unwrap(),
+        ",x,_main\n"
+    );
+    assert!(exec.join("t.runfiles/MANIFEST").exists());
+    for name in ["on_a", "on_b"] {
+        assert_eq!(
+            fs::read_to_string(ws.path().join(format!("bazel-bin/{name}.txt"))).unwrap(),
+            "hi\n",
+            "{name}"
+        );
+    }
+}

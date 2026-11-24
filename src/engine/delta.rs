@@ -1375,19 +1375,29 @@ impl<'a> DeltaBuilder<'a> {
         Ok(shared)
     }
 
-    /// Register the only output of a native runfiles node.
-    fn runfiles_output(
+    /// Register the only output of a runfiles support action keyed `key`
+    /// ([`crate::shared_actions::ActionKey::native`]): its artifact, and
+    /// whether the action is new (else an equal action of another
+    /// configured target produces the path, shared like Bazel's
+    /// Actions.canBeShared: plan no node).
+    fn shared_runfiles_output(
         &mut self,
         key: &ConfiguredTargetKey,
         id: &str,
         file: &File,
-    ) -> Result<Artifact, String> {
+        action_key: crate::shared_actions::ActionKey,
+    ) -> Result<(Artifact, bool), String> {
         let exec = PathBuf::from(&file.path);
-        self.register_output(&exec, &OutputProducer::native(&key.label.to_string()))?;
+        let producer = Arc::new(OutputProducer {
+            owner: key.label.to_string(),
+            label: None,
+            action: Some((id.to_owned(), action_key)),
+        });
+        let shared = self.register_output(&exec, &producer)?;
         let artifact = Artifact::new(
             exec.clone(),
             exec.clone(),
-            Some((id.to_owned(), 0)),
+            Some((shared.clone().unwrap_or_else(|| id.to_owned()), 0)),
             file.owner.clone(),
             false,
             false,
@@ -1396,10 +1406,10 @@ impl<'a> DeltaBuilder<'a> {
         self.ops.push(DeltaOp::Declared {
             key: DeclaredKey::new(key.config, exec),
             artifact: artifact.clone(),
-            replace: true,
+            replace: shared.is_none(),
             predeclared: false,
         });
-        Ok(artifact)
+        Ok((artifact, shared.is_none()))
     }
 
     /// RunfilesSupport.create (analysis/RunfilesSupport.java:280-347) for a
@@ -1451,32 +1461,39 @@ impl<'a> DeltaBuilder<'a> {
         // RepoMappingManifestAction.
         let content = precomputed.content?;
         let id = format!("{action_owner}#repo_mapping");
-        self.ops.push(DeltaOp::Node(
-            Box::new(PlannedAction {
-                action: Action {
-                    id: id.clone(),
-                    command: String::new(),
-                    inputs: Vec::new(),
-                    outputs: vec![PathBuf::from(&repo_mapping.path)],
-                    write: Some(crate::action::WriteAction {
-                        content: content.into(),
-                        executable: false,
-                    }),
-                    program: None,
-                    arguments: Vec::new(),
-                    environment: BTreeMap::new(),
-                    shell_strict: false,
-                    extra: crate::action::ActionExtra::default(),
-                    ..Action::default()
-                },
-                dependencies: Vec::new(),
-                deferred: None,
-                groups: Vec::new(),
-                groups_at: None,
-            }),
-            None,
-        ));
-        let repo_mapping_artifact = self.runfiles_output(key, &id, repo_mapping)?;
+        let repo_mapping_key = crate::shared_actions::ActionKey::native(
+            "RepoMappingManifest",
+            &[repo_mapping.path.as_bytes(), &content],
+        );
+        let (repo_mapping_artifact, new) =
+            self.shared_runfiles_output(key, &id, repo_mapping, repo_mapping_key)?;
+        if new {
+            self.ops.push(DeltaOp::Node(
+                Box::new(PlannedAction {
+                    action: Action {
+                        id: id.clone(),
+                        command: String::new(),
+                        inputs: Vec::new(),
+                        outputs: vec![PathBuf::from(&repo_mapping.path)],
+                        write: Some(crate::action::WriteAction {
+                            content: content.into(),
+                            executable: false,
+                        }),
+                        program: None,
+                        arguments: Vec::new(),
+                        environment: BTreeMap::new(),
+                        shell_strict: false,
+                        extra: crate::action::ActionExtra::default(),
+                        ..Action::default()
+                    },
+                    dependencies: Vec::new(),
+                    deferred: None,
+                    groups: Vec::new(),
+                    groups_at: None,
+                }),
+                None,
+            ));
+        }
         // The tree mapping; conflicts are reported by the manifest action.
         let conflicts = precomputed.conflicts;
         let mapping = precomputed.mapping;
@@ -1527,20 +1544,29 @@ impl<'a> DeltaBuilder<'a> {
         };
         // SourceManifestAction: the input manifest.
         let input_manifest = suffixed_file(executable, ".runfiles_manifest");
+        let entries_bytes = runfiles_entries_bytes(&entries);
         let manifest_artifact = if options.build_runfile_manifests {
             let id = format!("{action_owner}#runfiles_manifest");
-            let manifest = action(
-                &id,
-                vec![PathBuf::from(&input_manifest.path)],
-                crate::action::Transform::RunfilesManifest {
-                    entries: entries.clone(),
-                },
+            let manifest_key = crate::shared_actions::ActionKey::native(
+                "SourceManifest",
+                &[input_manifest.path.as_bytes(), &entries_bytes],
             );
-            let (inputs, ignored) = (Arc::clone(&inputs), Arc::clone(main_ignored));
-            self.lower(None, move || {
-                lower_native_action(manifest, &inputs, &ignored)
-            })?;
-            Some(self.runfiles_output(key, &id, &input_manifest)?)
+            let (artifact, new) =
+                self.shared_runfiles_output(key, &id, &input_manifest, manifest_key)?;
+            if new {
+                let manifest = action(
+                    &id,
+                    vec![PathBuf::from(&input_manifest.path)],
+                    crate::action::Transform::RunfilesManifest {
+                        entries: entries.clone(),
+                    },
+                );
+                let (inputs, ignored) = (Arc::clone(&inputs), Arc::clone(main_ignored));
+                self.lower(None, move || {
+                    lower_native_action(manifest, &inputs, &ignored)
+                })?;
+            }
+            Some(artifact)
         } else {
             None
         };
@@ -1551,6 +1577,30 @@ impl<'a> DeltaBuilder<'a> {
         let tree_id = format!("{action_owner}#runfiles_tree");
         let tree = match &manifest_artifact {
             Some(manifest) => {
+                let tree_key = crate::shared_actions::ActionKey::native(
+                    "RunfilesTree",
+                    &[
+                        tree_file.path.as_bytes(),
+                        &entries_bytes,
+                        manifest.exec.as_os_str().as_encoded_bytes(),
+                        executable_artifact.exec.as_os_str().as_encoded_bytes(),
+                        &[u8::from(options.enable_runfiles)],
+                    ],
+                );
+                let (tree_artifact, new) =
+                    self.shared_runfiles_output(key, &tree_id, &tree_file, tree_key)?;
+                if !new {
+                    return Ok(Some(RunfilesNodes {
+                        tree: Some(tree_artifact),
+                        manifest: manifest_artifact.clone(),
+                        repo_mapping: repo_mapping_artifact,
+                        executable: executable_artifact,
+                        entries: mapped,
+                        conflicts,
+                        conflict_error: runfiles.conflict_error(),
+                        location: rule.location.clone(),
+                    }));
+                }
                 let mut tree_inputs = Vec::with_capacity(inputs.len() + 2);
                 tree_inputs.extend(inputs.iter().cloned());
                 tree_inputs.push(manifest.clone());
@@ -1569,7 +1619,7 @@ impl<'a> DeltaBuilder<'a> {
                 self.lower(None, move || {
                     lower_native_action(tree, &tree_inputs, &ignored)
                 })?;
-                Some(self.runfiles_output(key, &tree_id, &tree_file)?)
+                Some(tree_artifact)
             }
             None => None,
         };
@@ -2668,6 +2718,28 @@ pub(super) fn compare_deltas(key: &ConfiguredTargetKey, worker: &TargetDelta, he
         fail("the tool runfiles groups it used", &worker.uses, &here.uses);
     }
     parallel::note_verified_delta();
+}
+
+/// The framed bytes of a runfiles tree's entries (each runfiles path, then
+/// its file's execution path or the empty-file tag), keyed by the runfiles
+/// support's manifest and tree actions.
+fn runfiles_entries_bytes(entries: &crate::action::RunfilesEntries) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+    for (path, file) in entries.iter() {
+        bytes.extend_from_slice(&(path.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(path.as_bytes());
+        match file {
+            Some(file) => {
+                let file = file.as_os_str().as_encoded_bytes();
+                bytes.push(1);
+                bytes.extend_from_slice(&(file.len() as u64).to_le_bytes());
+                bytes.extend_from_slice(file);
+            }
+            None => bytes.push(0),
+        }
+    }
+    bytes
 }
 
 #[cfg(test)]
