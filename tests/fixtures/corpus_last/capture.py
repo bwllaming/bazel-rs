@@ -49,6 +49,8 @@ CASES = {
         'build', BUILD + ['--nobuild'], ['//acts:uses_tool_test'], [r'ACTIONS '], [], []),
     'executable_runfiles_actions_no_links': (
         'build', BUILD + ['--nobuild', '--nobuild_runfile_links'], ['//acts:tool_test'], [r'ACTIONS '], [], []),
+    'symlink_actions': (
+        'build', BUILD + ['--nobuild'], ['//acts:links_test'], [r'ACTIONS '], [], []),
     'propagating_aspect_actions': (
         'build', BUILD + ['--nobuild'], ['//acts:walk_test'], [r'WALK '], [], []),
 }

@@ -205,6 +205,28 @@
     "//acts:walk_test"
    ],
    "workspace": "workspace"
+  },
+  "symlink_actions": {
+   "command": "build",
+   "exists": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--nobuild"
+   ],
+   "outputs": {},
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/acts/defs.bzl:9:10: ACTIONS [(\"Symlink\", None, [\"acts/in.txt\"], [\"bazel-out/k8-fastbuild/bin/acts/links_plain\"], []), (\"ExecutableSymlink\", None, [\"acts/in.txt\"], [\"bazel-out/k8-fastbuild/bin/acts/links_exe\"], []), (\"UnresolvedSymlink\", None, [], [\"bazel-out/k8-fastbuild/bin/acts/links_dangling\"], [])]",
+     "pattern": "ACTIONS "
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//acts:links_test"
+   ],
+   "workspace": "workspace"
   }
  },
  "elf_sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c"

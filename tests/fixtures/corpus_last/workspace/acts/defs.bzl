@@ -63,3 +63,15 @@ walk_test = rule(
     analysis_test = True,
     attrs = {"target": attr.label(aspects = [walk_aspect])},
 )
+
+def _links_impl(ctx):
+    src = ctx.file.src
+    plain = ctx.actions.declare_file(ctx.label.name + "_plain")
+    ctx.actions.symlink(output = plain, target_file = src)
+    exe = ctx.actions.declare_file(ctx.label.name + "_exe")
+    ctx.actions.symlink(output = exe, target_file = src, is_executable = True)
+    dangling = ctx.actions.declare_symlink(ctx.label.name + "_dangling")
+    ctx.actions.symlink(output = dangling, target_path = "nowhere")
+    return [DefaultInfo(files = depset([plain, exe, dangling]))]
+
+links = rule(_links_impl, attrs = {"src": attr.label(allow_single_file = True)})

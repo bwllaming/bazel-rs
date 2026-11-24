@@ -130,8 +130,13 @@ impl ActionView {
                         .collect(),
                 ),
             )
-        } else if action.extra.transform.is_some() {
-            (action.extra.mnemonic.clone(), None, Content::None, None)
+        } else if let Some(transform) = &action.extra.transform {
+            (
+                transform_mnemonic(action, transform),
+                None,
+                Content::None,
+                None,
+            )
         } else {
             (
                 action.extra.mnemonic.clone(),
@@ -185,6 +190,37 @@ impl ActionView {
             env,
         }
     }
+}
+
+/// The mnemonic of a native transform a rule registered (aquery's,
+/// crate::engine::aquery): SymlinkAction.getMnemonic (`Symlink`,
+/// `ExecutableSymlink`; cc_common's SolibSymlinkAction `SolibSymlink`),
+/// UnresolvedSymlinkAction's `UnresolvedSymlink`, else the action's own.
+fn transform_mnemonic(
+    action: &crate::action::Action,
+    transform: &crate::action::Transform,
+) -> String {
+    if !action.extra.mnemonic.is_empty() {
+        return action.extra.mnemonic.clone();
+    }
+    match transform {
+        crate::action::Transform::Symlink {
+            require_executable,
+            progress,
+            ..
+        } => {
+            if progress.starts_with("SolibSymlink ") {
+                "SolibSymlink"
+            } else if *require_executable {
+                "ExecutableSymlink"
+            } else {
+                "Symlink"
+            }
+        }
+        crate::action::Transform::UnresolvedSymlink { .. } => "UnresolvedSymlink",
+        _ => crate::profile::mnemonic(action),
+    }
+    .to_owned()
 }
 
 /// The actions RunfilesSupport registers for an executable after the rule's

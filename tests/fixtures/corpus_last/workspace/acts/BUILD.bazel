@@ -1,4 +1,4 @@
-load(":defs.bzl", "genrule_test", "leaf", "tool", "walk_test")
+load(":defs.bzl", "genrule_test", "leaf", "links", "tool", "walk_test")
 
 genrule(
     name = "gen",
@@ -27,3 +27,7 @@ walk_test(name = "walk_test", target = ":uses_tool")
 genrule_test(name = "tool_test", dep = ":t")
 
 genrule_test(name = "uses_tool_test", dep = ":uses_tool")
+
+links(name = "links", src = "in.txt", tags = ["manual"])
+
+genrule_test(name = "links_test", dep = ":links")
