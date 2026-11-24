@@ -1508,6 +1508,11 @@ pub struct RunResult {
 #[derive(Clone, Debug)]
 pub struct TestSummary {
     pub label: String,
+    /// Label.getDisplayForm with the main repository's mapping, the name
+    /// the summary line prints (TestSummaryPrinter.print, :150): `@apparent//`
+    /// for a repository the main repository sees (B71). Defaults to
+    /// [`Self::label`].
+    pub display_label: String,
     pub status: TestStatus,
     /// TestSummary.isSkipped, distinct from a test action that returned NO_STATUS.
     pub skipped: bool,
@@ -1535,6 +1540,7 @@ impl TestSummary {
     ) -> Self {
         let mut summary = TestSummary {
             label: label.to_owned(),
+            display_label: label.to_owned(),
             status: TestStatus::NoStatus,
             skipped: false,
             num_cached: 0,
@@ -1716,7 +1722,7 @@ fn print_summary_line(summary: &TestSummary, verbose: bool, show_cases: bool, ou
         }
     );
     let width = 78usize.saturating_sub(message.chars().count());
-    let mut line = summary.label.clone();
+    let mut line = summary.display_label.clone();
     while line.chars().count() < width {
         line.push(' ');
     }

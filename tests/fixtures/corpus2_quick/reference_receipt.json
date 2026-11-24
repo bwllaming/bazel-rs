@@ -183,6 +183,50 @@
    ],
    "workspace": "workspace"
   },
+  "args_booleans": {
+   "command": "build",
+   "env": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
+   "outputs": {
+    "k8-fastbuild/bin/ab/t.txt": "true\n--b\nfalse\nNone\n1\n--fmt\nv=true\ntrue\nfalse\nNone\n2\ne=true\ne=3\n--es_opt=keep_empty_files=true\n--j\n[false,None]\n--before\n-b\ntrue\n"
+   },
+   "patterns": [],
+   "rc": false,
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//ab:t"
+   ],
+   "workspace": "workspace"
+  },
+  "args_booleans_action_key": {
+   "command": "aquery",
+   "env": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
+   "outputs": {},
+   "patterns": [],
+   "rc": false,
+   "stderr": [],
+   "stdout": "action 'Action ab/t.txt'\n  Mnemonic: Action\n  Target: //ab:t\n  Configuration: k8-fastbuild\n  Execution platform: //:p\n  ActionKey: 8a9c0b320390df8c85822bd0f27240571d0d2644efcb8fd82e0ed40d004c4252\n  Inputs: []\n  Outputs: [bazel-out/k8-fastbuild/bin/ab/t.txt]\n  Command Line: (exec /bin/bash \\\n    -c \\\n    'for a in \"$@\"; do echo \"$a\"; done > bazel-out/k8-fastbuild/bin/ab/t.txt' \\\n    '' \\\n    true \\\n    --b \\\n    false \\\n    None \\\n    1 \\\n    --fmt \\\n    'v=true' \\\n    true \\\n    false \\\n    None \\\n    2 \\\n    'e=true' \\\n    'e=3' \\\n    '--es_opt=keep_empty_files=true' \\\n    --j \\\n    '[false,None]' \\\n    --before \\\n    -b \\\n    true)\n# Configuration: 274442258987e0f055ad57ffc49dfa0657553d74ca1ca716462f9dfb10afe8ea\n# Execution platform: //:p\n\n",
+   "targets": [
+    "//ab:t"
+   ],
+   "workspace": "workspace"
+  },
   "client_env_command_line": {
    "command": "build",
    "env": {
@@ -256,6 +300,86 @@
     "//:e"
    ],
    "workspace": "rcws"
+  },
+  "compiler_default": {
+   "command": "build",
+   "env": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
+   "outputs": {
+    "k8-fastbuild/bin/cmp/s.txt": "default\n"
+   },
+   "patterns": [],
+   "rc": false,
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//cmp:s"
+   ],
+   "workspace": "workspace"
+  },
+  "compiler_set": {
+   "command": "build",
+   "env": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--compiler=clang"
+   ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
+   "outputs": {
+    "k8-fastbuild/bin/cmp/s.txt": "clang\n"
+   },
+   "patterns": [],
+   "rc": false,
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//cmp:s"
+   ],
+   "workspace": "workspace"
+  },
+  "compiler_transition_and_exec": {
+   "command": "build",
+   "env": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--compiler=clang",
+    "--host_compiler=hostc"
+   ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
+   "outputs": {
+    "k8-fastbuild-ST-f335c6e1fced/bin/cmp/s.txt": "gccx\n",
+    "p-opt-exec/bin/cmp/s.txt": "hc\n"
+   },
+   "patterns": [
+    "READ"
+   ],
+   "rc": false,
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/cmp/defs.bzl:2:10: READ clang hostc",
+     "pattern": "READ"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//cmp:f"
+   ],
+   "workspace": "workspace"
   },
   "host_macos_minimum_os": {
    "command": "build",
@@ -530,6 +654,158 @@
    "stdout": "",
    "targets": [
     "//proto:p"
+   ],
+   "workspace": "workspace"
+  },
+  "resolve_command": {
+   "command": "build",
+   "env": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
+   "outputs": {
+    "k8-fastbuild/bin/rc/t1.txt": "[[], [\"/bin/bash\", \"-c\", \"echo hi\"], []]\n",
+    "k8-fastbuild/bin/rc/t2.txt": "[[\"bazel-out/p-opt-exec/bin/rc/tool.sh\", \"rc/data.txt\", \"rc/a.txt\", \"rc/b.txt\", \"bazel-out/p-opt-exec/bin/rc/tool.sh.runfiles\"], [\"/bin/bash\", \"-c\", \"bazel-out/p-opt-exec/bin/rc/tool.sh rc/a.txt rc/b.txt rc/src.txt rc/c.txt $$x\"], []]\n",
+    "k8-fastbuild/bin/rc/t3.txt": "[[\"bazel-out/p-opt-exec/bin/rc/tool.sh\", \"rc/data.txt\", \"bazel-out/p-opt-exec/bin/rc/tool.sh.runfiles\"], [\"/bin/bash\", \"-c\", \"x bar fastbuild\"], []]\n"
+   },
+   "patterns": [],
+   "rc": false,
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//rc:t1",
+    "//rc:t2",
+    "//rc:t3"
+   ],
+   "workspace": "workspace"
+  },
+  "resolve_command_errors": {
+   "command": "build",
+   "env": {},
+   "exit": 1,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p",
+    "--keep_going"
+   ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
+   "outputs": {},
+   "patterns": [
+    "in cmd attribute of r rule //rc:t4",
+    "in r rule //rc:t5",
+    "in r rule //rc:t6"
+   ],
+   "rc": false,
+   "stderr": [
+    {
+     "line": "ERROR: <WS>/rc/BUILD.bazel:7:2: in cmd attribute of r rule //rc:t4: label '//rc:nope' in $(location) expression is not a declared prerequisite of this rule",
+     "pattern": "in cmd attribute of r rule //rc:t4"
+    },
+    {
+     "line": "ERROR: <WS>/rc/BUILD.bazel:8:2: in r rule //rc:t5: label '//rc:nope' in $(location) expression is not a declared prerequisite of this rule",
+     "pattern": "in r rule //rc:t5"
+    },
+    {
+     "line": "ERROR: <WS>/rc/BUILD.bazel:9:2: in r rule //rc:t6: $(UNDEF) not defined",
+     "pattern": "in r rule //rc:t6"
+    }
+   ],
+   "stdout": "",
+   "targets": [
+    "//rc:t4",
+    "//rc:t5",
+    "//rc:t6"
+   ],
+   "workspace": "workspace"
+  },
+  "test_summary_display_form": {
+   "command": "test",
+   "env": {},
+   "exit": 0,
+   "flags": [],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
+   "outputs": {},
+   "patterns": [],
+   "rc": false,
+   "stderr": [],
+   "stdout": "@other//:t                                                               PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+   "targets": [
+    "//:all"
+   ],
+   "workspace": "tlws"
+  },
+  "testonly_analysis_failure": {
+   "command": "test",
+   "env": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
+   "outputs": {},
+   "patterns": [
+    "CAUSE //to:lib non-test"
+   ],
+   "rc": false,
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/to/defs.bzl:11:18: CAUSE //to:lib non-test target '//to:lib' depends on testonly target '//to:only' and doesn't have testonly attribute set",
+     "pattern": "CAUSE //to:lib non-test"
+    }
+   ],
+   "stdout": "//to:check                                                               PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+   "targets": [
+    "//to:check"
+   ],
+   "workspace": "workspace"
+  },
+  "testonly_analysis_failure_with_other_errors": {
+   "command": "test",
+   "env": {},
+   "exit": 0,
+   "flags": [
+    "--platforms=//:p",
+    "--host_platform=//:p"
+   ],
+   "lockfile": false,
+   "module_extensions": null,
+   "module_file": null,
+   "outputs": {},
+   "patterns": [
+    "CAUSE //to:lib2 non-test",
+    "CAUSE //to:lib2 source file",
+    "CAUSE //to:lib2 .//to:a.y. does not produce"
+   ],
+   "rc": false,
+   "stderr": [
+    {
+     "line": "DEBUG: <WS>/to/defs.bzl:11:18: CAUSE //to:lib2 non-test target '//to:lib2' depends on testonly target '//to:only' and doesn't have testonly attribute set",
+     "pattern": "CAUSE //to:lib2 non-test"
+    },
+    {
+     "line": "DEBUG: <WS>/to/defs.bzl:11:18: CAUSE //to:lib2 source file '//to:a.y' is misplaced here (expected .x)",
+     "pattern": "CAUSE //to:lib2 source file"
+    },
+    {
+     "line": "DEBUG: <WS>/to/defs.bzl:11:18: CAUSE //to:lib2 '//to:a.y' does not produce any r srcs files (expected .x)",
+     "pattern": "CAUSE //to:lib2 .//to:a.y. does not produce"
+    }
+   ],
+   "stdout": "//to:check2                                                              PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+   "targets": [
+    "//to:check2"
    ],
    "workspace": "workspace"
   }

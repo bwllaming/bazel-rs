@@ -1,0 +1,6 @@
+load(":defs.bzl", "r", "t_test")
+r(name = "only", testonly = True)
+r(name = "lib", deps = [":only"])
+r(name = "lib2", deps = [":only"], srcs = ["a.y"])
+t_test(name = "check", target_under_test = ":lib")
+t_test(name = "check2", target_under_test = ":lib2")

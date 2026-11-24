@@ -1,0 +1,6 @@
+load(":defs.bzl", "fwd")
+config_setting(name = "clang", values = {"compiler": "clang"})
+config_setting(name = "gccx", values = {"compiler": "gcc-x"})
+config_setting(name = "hc", values = {"compiler": "hostc"})
+genrule(name = "s", outs = ["s.txt"], cmd = "echo " + select({":clang": "clang", ":gccx": "gccx", ":hc": "hc", "//conditions:default": "default"}) + " > $@")
+fwd(name = "f", dep = ":s", tool = ":s")

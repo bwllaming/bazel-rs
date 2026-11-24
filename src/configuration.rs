@@ -1315,6 +1315,44 @@ pub const VALUE_OPTIONS: &[ValueOption] = &[
         exec: ExecValue::Propagate,
         exec_source: "builtin_exec_platforms.bzl:300",
     },
+    // CppOptions.cppCompiler (`--compiler`, default null): no Bazel 9.3.1
+    // code reads it but `config_setting(values)` (grpc's
+    // `@opencensus-cpp//opencensus:llvm_compiler`) and transitions; the
+    // exec transition sets it to `--host_compiler` (builtin_exec_platforms.bzl:338).
+    ValueOption {
+        option: OptionDef {
+            name: "compiler",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::NullableString,
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:113-119",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:338 (`--host_compiler`)",
+    },
+    // CppOptions.hostCppCompiler (`--host_compiler`, a no-op flag),
+    // propagated (builtin_exec_platforms.bzl:297).
+    ValueOption {
+        option: OptionDef {
+            name: "host_compiler",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::NullableString,
+            default: "null",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:121-127",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:297",
+    },
     // CppOptions.experimentalCppModules (`--experimental_cpp_modules`):
     // `cpp.experimental_cpp_modules()` (CppConfiguration.java:876-880; B32).
     ValueOption {
@@ -2467,12 +2505,12 @@ impl NativeOptions {
                 }
             }
         }
-        // CppOptions' exec `func` (builtin_exec_platforms.bzl:336):
-        // `--grte_top` = `--host_grte_top`.
-        if let (Some(grte_top), Some(host)) =
-            (value_option("grte_top"), self.values.get("host_grte_top"))
-        {
-            exec.set_value(grte_top, host.clone());
+        // CppOptions' exec `func` (builtin_exec_platforms.bzl:336-338):
+        // `--grte_top` = `--host_grte_top`, `--compiler` = `--host_compiler`.
+        for (target, host) in [("grte_top", "host_grte_top"), ("compiler", "host_compiler")] {
+            if let (Some(target), Some(host)) = (value_option(target), self.values.get(host)) {
+                exec.set_value(target, host.clone());
+            }
         }
         exec.values
     }
@@ -4345,6 +4383,8 @@ mod tests {
                 "custom_malloc",
                 "grte_top",
                 "host_grte_top",
+                "compiler",
+                "host_compiler",
                 "experimental_cpp_modules",
                 "apple_generate_dsym"
             ]

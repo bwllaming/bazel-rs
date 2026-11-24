@@ -3,7 +3,9 @@
 //! `--host_macos_minimum_os`, `--protocopt`, `--client_env` and
 //! `--noincompatible_enable_proto_toolchain_resolution` (B59),
 //! `config.string(allow_multiple = True)` (B60), `include()` in MODULE.bazel
-//! (B63), the cases listed in
+//! (B63), `ctx.resolve_command` (B64), Args' booleans (B65),
+//! `--compiler` (B68), testonly errors under `--allow_analysis_failures`
+//! (B70) and the test summary's display labels (B71), the cases listed in
 //! tests/fixtures/corpus2_quick/capture.py. Every case replays the genuine
 //! Bazel 9.3.1 capture tests/fixtures/corpus2_quick/reference_receipt.json
 //! (written by capture.py beside it).
@@ -238,8 +240,22 @@ fn corpus2_quick_matches_genuine() {
             if actual != expected {
                 problems.push(format!("outputs {actual:?}, genuine {expected:?}"));
             }
-        } else if stdout != case["stdout"].as_str().unwrap() {
-            problems.push(format!("stdout {stdout:?}, genuine {}", case["stdout"]));
+        } else {
+            // Test times (`PASSED in 0.1s`) differ between runs; aquery's
+            // `# Configuration: CHECKSUM` is the native configuration id.
+            let times = |text: &str| {
+                let text = fancy_regex::Regex::new(r" in [0-9.]+s")
+                    .unwrap()
+                    .replace_all(text, " in Ns")
+                    .into_owned();
+                fancy_regex::Regex::new(r"# Configuration: [0-9a-f]{64}")
+                    .unwrap()
+                    .replace_all(&text, "# Configuration: CFG")
+                    .into_owned()
+            };
+            if times(&stdout) != times(case["stdout"].as_str().unwrap()) {
+                problems.push(format!("stdout {stdout:?}, genuine {}", case["stdout"]));
+            }
         }
         // The lockfile's extension entries (the usages digest).
         if case["lockfile"].as_bool().unwrap() {

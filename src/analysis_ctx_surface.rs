@@ -294,29 +294,178 @@ pub(crate) fn surface_properties(builder: &mut MethodsBuilder) {
         .map_err(|error| anyhow!("invalid label in ctx.package_relative_label: {error}"))?;
         crate::starlark_types::alloc_label(heap, &crate::rule_declarations::canonical_form(&label))
     }
-    /// StarlarkRuleContext.resolveCommand (:1137-1195): not modelled.
+    /// StarlarkRuleContext.resolveCommand (:1137-1195): a CommandHelper over
+    /// `tools` and `label_dict`, the command's locations expanded with exec
+    /// paths and the rule's location map (`expand_locations`), then its Make
+    /// variables (`make_variables` over the configuration's), returned as
+    /// `(inputs, argv, [])`: the tools' files to build and runfiles trees,
+    /// and BashCommandConstructor's `/bin/bash -c COMMAND`.
     #[allow(clippy::too_many_arguments)]
     fn resolve_command<'v>(
         this: Value<'v>,
-        #[starlark(require = named)] command: Option<Value<'v>>,
+        #[starlark(require = named, default = "")] command: &str,
         #[starlark(require = named)] attribute: Option<Value<'v>>,
-        #[starlark(require = named)] expand_locations: Option<Value<'v>>,
+        #[starlark(require = named, default = false)] expand_locations: bool,
         #[starlark(require = named)] make_variables: Option<Value<'v>>,
         #[starlark(require = named)] tools: Option<Value<'v>>,
         #[starlark(require = named)] label_dict: Option<Value<'v>>,
         #[starlark(require = named)] execution_requirements: Option<Value<'v>>,
-    ) -> anyhow::Result<NoneType> {
-        let _ = (
-            command,
-            attribute,
-            expand_locations,
-            make_variables,
-            tools,
-            label_dict,
-            execution_requirements,
-        );
-        current_surface(this)?;
-        bail!("ctx.resolve_command is not implemented by the native profile")
+        heap: Heap<'v>,
+    ) -> anyhow::Result<Value<'v>> {
+        let rule = current_surface(this)?;
+        let parameter_type = |name: &str, value: Value<'v>, want: &str| {
+            anyhow!(
+                "in call to resolve_command(), parameter '{name}' got value of type '{}', want '{want}'",
+                value.get_type()
+            )
+        };
+        let attribute = match attribute {
+            Some(value) if !value.is_none() => Some(
+                value
+                    .unpack_str()
+                    .ok_or_else(|| parameter_type("attribute", value, "string or NoneType"))?
+                    .to_owned(),
+            ),
+            _ => None,
+        };
+        // checkLabelDict (:1247-1281).
+        let mut label_map: Vec<(String, Vec<crate::starlark_types::File>)> = Vec::new();
+        let mut add = |label: String, files: Vec<crate::starlark_types::File>| match label_map
+            .iter_mut()
+            .find(|(seen, _)| *seen == label)
+        {
+            Some((_, known)) => {
+                for file in files {
+                    if !known.contains(&file) {
+                        known.push(file);
+                    }
+                }
+            }
+            None => label_map.push((label, files)),
+        };
+        if let Some(value) = label_dict {
+            let dict = DictRef::from_value(value)
+                .ok_or_else(|| parameter_type("label_dict", value, "dict"))?;
+            for (key, entry) in dict.iter() {
+                let label = crate::starlark_types::label_canonical_form(key)
+                    .ok_or_else(|| anyhow!("invalid key {} in 'label_dict'", key.to_repr()))?;
+                let items = sequence(entry).ok_or_else(|| {
+                    anyhow!(
+                        "invalid value {} in 'label_dict': expected iterable, but got '{}'",
+                        entry.to_repr(),
+                        entry.get_type()
+                    )
+                })?;
+                let mut files = Vec::new();
+                for item in items {
+                    let file = crate::starlark_types::file_of(item).ok_or_else(|| {
+                        anyhow!("invalid value {} in 'label_dict'", entry.to_repr())
+                    })?;
+                    files.push(file.clone());
+                }
+                add(label, files);
+            }
+        }
+        // The CommandHelper constructor (analysis/CommandHelper.java:128-181):
+        // each tool's files to build are inputs (a NestedSet in stable order:
+        // the files to build, then the runfiles trees and executables); its
+        // label as written maps to its executable, else its files to build.
+        let mut transitive: Vec<crate::starlark_types::File> = Vec::new();
+        let mut direct: Vec<crate::starlark_types::File> = Vec::new();
+        if let Some(value) = tools {
+            let items =
+                sequence(value).ok_or_else(|| parameter_type("tools", value, "sequence"))?;
+            for (index, item) in items.iter().enumerate() {
+                let tool = crate::starlark_types::command_helper_tool(*item).ok_or_else(|| {
+                    anyhow!(
+                        "at index {index} of tools, got element of type {}, want Target",
+                        item.get_type()
+                    )
+                })?;
+                transitive.extend(tool.files_to_build.iter().cloned());
+                match tool.executable {
+                    Some(executable) => {
+                        if let Some(tree) = tool.runfiles_tree {
+                            direct.push(tree);
+                            direct.push(executable.clone());
+                        }
+                        add(tool.label, vec![executable]);
+                    }
+                    None => add(tool.label, tool.files_to_build),
+                }
+            }
+        }
+        let mut inputs: Vec<crate::starlark_types::File> = Vec::new();
+        for file in transitive.into_iter().chain(direct) {
+            if !inputs.contains(&file) {
+                inputs.push(file);
+            }
+        }
+        let mut command = command.to_owned();
+        if expand_locations {
+            command = surface::resolve_command_locations(
+                rule,
+                &command,
+                attribute.as_deref(),
+                &label_map,
+            )?;
+        }
+        if let Some(value) = make_variables.filter(|value| !value.is_none()) {
+            let dict = DictRef::from_value(value)
+                .ok_or_else(|| parameter_type("make_variables", value, "dict or NoneType"))?;
+            let mut additional = Vec::new();
+            for (key, entry) in dict.iter() {
+                match (key.unpack_str(), entry.unpack_str()) {
+                    (Some(key), Some(entry)) => additional.push((key.to_owned(), entry.to_owned())),
+                    _ => bail!(
+                        "got dict<{}, {}> for 'make_variables', want dict<string, string>",
+                        key.get_type(),
+                        entry.get_type()
+                    ),
+                }
+            }
+            command = surface::expand_make_variables_of(
+                rule,
+                attribute.as_deref(),
+                &command,
+                &additional,
+            )?;
+        }
+        if let Some(value) = execution_requirements.filter(|value| !value.is_none()) {
+            let dict = DictRef::from_value(value)
+                .ok_or_else(|| parameter_type("execution_requirements", value, "dict"))?;
+            for (key, entry) in dict.iter() {
+                if key.unpack_str().is_none() || entry.unpack_str().is_none() {
+                    bail!(
+                        "got dict<{}, {}> for 'execution_requirements', want dict<string, string>",
+                        key.get_type(),
+                        entry.get_type()
+                    );
+                }
+            }
+        }
+        // CommandHelper.maxCommandLength (64000 off Windows): a longer
+        // command runs from a generated `.resolve_command_N.script.sh`.
+        if command.len() > 64_000 {
+            bail!(
+                "ctx.resolve_command: the command is {} characters; Bazel runs commands longer than 64000 characters from a generated .resolve_command_N.script.sh file, which the native profile does not model",
+                command.len()
+            );
+        }
+        // The sh toolchain's path of the execution platform (the native
+        // shell, as for ctx.actions.run_shell); `requires-darwin` uses
+        // /bin/bash too (CommandHelper.shellPath).
+        let argv = ["/bin/bash".to_owned(), "-c".to_owned(), command];
+        let inputs = heap.alloc(starlark::values::list::AllocList(
+            inputs
+                .into_iter()
+                .map(|file| crate::starlark_types::alloc_file(heap, file)),
+        ));
+        let argv = heap.alloc(starlark::values::list::AllocList(
+            argv.iter().map(|arg| heap.alloc(arg.as_str())),
+        ));
+        let manifests = heap.alloc(starlark::values::list::AllocList::EMPTY);
+        Ok(heap.alloc((inputs, argv, manifests)))
     }
     /// StarlarkRuleContext.resolveTools (:1197-1217) with
     /// `--incompatible_disallow_ctx_resolve_tools` (default true).

@@ -2989,6 +2989,42 @@ pub(crate) fn target_location_entry(value: Value<'_>) -> Option<(String, Vec<Fil
     ))
 }
 
+/// A tool dependency as CommandHelper sees it (analysis/CommandHelper.java:139-171).
+pub(crate) struct CommandHelperTool {
+    /// The label as written (AliasProvider.getDependencyLabel).
+    pub label: String,
+    /// FileProvider.getFilesToBuild.
+    pub files_to_build: Vec<File>,
+    /// FilesToRunProvider.getExecutable.
+    pub executable: Option<File>,
+    /// RunfilesSupport.getRunfilesTreeArtifact, when the tool has one.
+    pub runfiles_tree: Option<File>,
+}
+
+/// [`CommandHelperTool`] of a Target value.
+pub(crate) fn command_helper_tool(value: Value<'_>) -> Option<CommandHelperTool> {
+    let target = TargetValue::from_value(value)?.0.as_ref();
+    let label = match &target.kind {
+        TargetKind::Alias(alias, _) => alias.clone(),
+        TargetKind::Merged(base) => match base.as_ref() {
+            TargetKind::Alias(alias, _) => alias.clone(),
+            _ => target.label.canonical_form(),
+        },
+        _ => target.label.canonical_form(),
+    };
+    let files_to_run = target.runfiles.files_to_run.as_ref();
+    Some(CommandHelperTool {
+        label,
+        files_to_build: target.files.clone(),
+        executable: files_to_run
+            .and_then(|files_to_run| files_to_run.executable())
+            .cloned(),
+        runfiles_tree: files_to_run
+            .and_then(|files_to_run| files_to_run.runfiles_tree())
+            .map(|(_, tree)| tree.clone()),
+    })
+}
+
 // Typed unpacking keeps the builtin's argument errors in the macro binder.
 // ValueTyped retains the original (possibly frozen) Label without allocating.
 enum LabelInput<'v> {

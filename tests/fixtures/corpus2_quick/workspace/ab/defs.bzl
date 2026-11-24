@@ -1,0 +1,16 @@
+def _r(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    args = ctx.actions.args()
+    args.add(True)
+    args.add("--b", False)
+    args.add(None)
+    args.add(1)
+    args.add("--fmt", True, format = "v=%s")
+    args.add_all([True, False, None, 2])
+    args.add_all([True, 3], format_each = "e=%s")
+    args.add_joined(["--es_opt", "keep_empty_files", True], join_with = "=")
+    args.add_joined("--j", [False, None], join_with = ",", format_joined = "[%s]")
+    args.add_all("--before", [True], before_each = "-b")
+    ctx.actions.run_shell(outputs = [out], arguments = [args], command = 'for a in "$@"; do echo "$a"; done > ' + out.path)
+    return [DefaultInfo(files = depset([out]))]
+r = rule(implementation = _r)

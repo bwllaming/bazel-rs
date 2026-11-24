@@ -2274,6 +2274,7 @@ mod tests {
                 build: vec![label("//pkg:t"), label("@@r+//x:y")],
                 tests: vec![PlannedTest {
                     label: label("//pkg:t"),
+                    display: "//pkg:t".to_owned(),
                     info: crate::test_command::TestRuleInfo {
                         rule_class: "sh_test".into(),
                         size: crate::test_command::TestSize::Small,

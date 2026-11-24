@@ -1757,6 +1757,11 @@ struct ConfiguredNode {
     /// ConfigFeatureFlagProvider of a `config_feature_flag` (forwarded by
     /// aliases; Starlark FeatureFlagInfo values are phase-2 providers).
     feature_flag: Option<crate::feature_flags::FeatureFlagValue>,
+    /// The testonly errors of a Starlark rule's edges in a configuration
+    /// that allows analysis failures (`in KIND rule L: non-test target ...`):
+    /// prerequisite validation errors like Self::starlark_prerequisite_errors'
+    /// (B70).
+    suppressed_testonly: Vec<String>,
 }
 
 /// A failure of toolchain resolution: a ToolchainException, reported as
@@ -6018,6 +6023,11 @@ impl Engine {
         // attributes in the rule class (BaseRuleClasses.java:291-297); its
         // no-config prerequisites are file-checked first (N28c).
         let mut errors = Self::package_metadata_errors(cx, rule, configured)?;
+        // The edges' testonly errors the phase-1 walk suppressed under
+        // `--allow_analysis_failures` (ConfiguredNode::suppressed_testonly).
+        if let Some(node) = configured.get(key) {
+            errors.extend(node.suppressed_testonly.iter().cloned());
+        }
         // The built-in `toolchains` attribute follows (StarlarkRuleClassFunctions.baseRule,
         // :159-194): TemplateVariableInfo rules, no files.
         let toolchains_spec = crate::custom_rule::toolchains_attribute_spec();
@@ -6283,6 +6293,11 @@ impl Engine {
         } else {
             format!("{events}\n{error}")
         }
+    }
+
+    /// [`Self::display_form`] for the CLI (the test summary's labels).
+    pub fn display_label(&self, label: &Label) -> String {
+        self.display_form(label)
     }
 
     /// Label.getDisplayForm with the main repository's mapping
@@ -7031,6 +7046,7 @@ impl Engine {
             coverage.runs.push(crate::snapshot::derive::Run {
                 test: crate::request::PlannedTest {
                     label: label.clone(),
+                    display: self.display_form(&label),
                     info,
                     location,
                 },

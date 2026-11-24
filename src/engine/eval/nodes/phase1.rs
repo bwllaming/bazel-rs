@@ -657,6 +657,9 @@ pub(crate) trait Phase1: Host {
         }
         resolved_value_gate(&rule)?;
         self.visible(&rule.visibility, &rule_authority(&rule), None)?;
+        // The testonly errors a Starlark rule suppresses under
+        // `--allow_analysis_failures` (Self::validate_or_suppress, B70).
+        let mut suppressed_testonly = Vec::new();
         for (attribute, dependency, dep_config, late_bound, target) in prerequisites {
             let is_source = matches!(target, Target::Source(_));
             let forwarding = matches!(&target, Target::Rule(dep) if forwards(dep));
@@ -727,12 +730,13 @@ pub(crate) trait Phase1: Host {
                         visible_from,
                     ));
                 }
-                self.validate_prerequisite(
+                self.validate_or_suppress(
                     &rule,
                     config,
                     &dependency,
                     &|| describe_with_aliases(&[], &dependency, "target"),
                     skip_testonly,
+                    &mut suppressed_testonly,
                 )?;
                 continue;
             }
@@ -750,7 +754,14 @@ pub(crate) trait Phase1: Host {
                     visible_from,
                 ));
             }
-            self.validate_prerequisite(&rule, config, &actual, &description, skip_testonly)?;
+            self.validate_or_suppress(
+                &rule,
+                config,
+                &actual,
+                &description,
+                skip_testonly,
+                &mut suppressed_testonly,
+            )?;
         }
         // Starlark rules: prerequisite errors need the analyzed prerequisites'
         // files and providers, so they are reported before the implementation
@@ -951,6 +962,7 @@ pub(crate) trait Phase1: Host {
                 toolchain_type,
                 declared_toolchain,
                 feature_flag,
+                suppressed_testonly,
             },
         );
         if rule.custom.is_some() {
@@ -4773,6 +4785,40 @@ pub(crate) trait Phase1: Host {
             .map_or(Ok(()), |error| {
                 Err(located(rule.location.as_deref(), error))
             })
+    }
+
+    /// [`Self::validate_prerequisite`] of a rule's own edge. A Starlark rule
+    /// in a configuration that allows analysis failures records its testonly
+    /// error in `suppressed` instead: like its other prerequisite validation
+    /// errors (RuleContext.Builder.validateDirectPrerequisite) it becomes an
+    /// `AnalysisFailureInfo` cause (Engine::starlark_prerequisite_errors,
+    /// B55/B70).
+    fn validate_or_suppress(
+        &mut self,
+        rule: &Rule,
+        config: ConfigId,
+        dependency: &Label,
+        description: &dyn Fn() -> String,
+        skip_testonly: bool,
+        suppressed: &mut Vec<String>,
+    ) -> Result<(), String> {
+        let Some(error) =
+            self.prerequisite_error(rule, config, dependency, description, skip_testonly)?
+        else {
+            return Ok(());
+        };
+        let allowed = rule.custom.is_some()
+            && self
+                .configuration(config)
+                .native
+                .value("allow_analysis_failures")
+                == Some(crate::configuration::OptionValue::Bool(true));
+        if allowed {
+            suppressed.push(error);
+            Ok(())
+        } else {
+            Err(located(rule.location.as_deref(), error))
+        }
     }
 
     /// The testonly error of [`Self::validate_prerequisite`] (`None` when

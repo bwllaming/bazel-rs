@@ -165,6 +165,9 @@ pub struct ConfigurationSummary {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlannedTest {
     pub label: Label,
+    /// The label's display form with the main repository's mapping
+    /// (Label.getDisplayForm; the test summary line, B71).
+    pub display: String,
     pub info: TestRuleInfo,
     pub location: Option<String>,
 }

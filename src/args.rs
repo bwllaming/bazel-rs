@@ -420,12 +420,23 @@ fn object_op(value: Value<'_>, eval: &Evaluator<'_, '_, '_>) -> crate::aquery_ke
         }
     } else if let Some(label) = crate::starlark_types::label_command_line_form(value, eval) {
         ArgsOp::Label(label)
+    } else if let Some(flag) = value.unpack_bool() {
+        // The object's Java toString, as on the command line (string_value).
+        ArgsOp::Object {
+            file: false,
+            text: java_boolean(flag).to_owned(),
+        }
     } else {
         ArgsOp::Object {
             file: false,
             text: value.to_str(),
         }
     }
+}
+
+/// Boolean.toString.
+fn java_boolean(flag: bool) -> &'static str {
+    if flag { "true" } else { "false" }
 }
 
 /// Snapshot a list/tuple of strings and active Args objects without tree
@@ -450,10 +461,16 @@ fn string_value(value: Value<'_>, eval: &Evaluator<'_, '_, '_>) -> anyhow::Resul
         // Label.getDisplayForm with the main repository mapping
         // (StarlarkCustomCommandLine.java:967-978): `@dep//pkg:x`, not `@@dep+//pkg:x`.
         Ok(label)
-    } else if value.is_none() || matches!(value.get_type(), "int" | "bool") {
-        // CommandLineItem.expandToCommandLine uses Starlark.str for None.
-        // rules_java's source-jar action passes optional manifest fields this
-        // way (the genuine singlejar argv contains the literal "None").
+    } else if let Some(flag) = value.unpack_bool() {
+        // CommandLineItem.expandToCommandLine is the object's Java toString:
+        // Boolean.toString, `true`/`false` (rules_ts's ts_proto_library
+        // passes `keep_empty_files=True` through add_joined, B65).
+        Ok(java_boolean(flag).to_owned())
+    } else if value.is_none() || value.get_type() == "int" {
+        // CommandLineItem.expandToCommandLine: the Java toString of
+        // StarlarkInt (decimal) and of None (`None`). rules_java's source-jar
+        // action passes optional manifest fields this way (the genuine
+        // singlejar argv contains the literal "None").
         Ok(value.to_str())
     } else {
         bail!(
@@ -1229,7 +1246,7 @@ serialized(a) == "--k=v w\n--many=x y\npos\np=q\n" and expanded([a]) == ["--k=v 
         pass(
             r#"
 a.add("--flag").add("--file", file, format="pre:%s:%%:post").add(Label("//pkg:rule")).add(42).add(True).add("雪 $HOME", format=None).add("--none", None)
-expanded(["before", a, "after"]) == ["before", "--flag", "--file", "pre:pkg/file with $ spaces:%:post", "//pkg:rule", "42", "True", "雪 $HOME", "--none", "None", "after"]
+expanded(["before", a, "after"]) == ["before", "--flag", "--file", "pre:pkg/file with $ spaces:%:post", "//pkg:rule", "42", "true", "雪 $HOME", "--none", "None", "after"]
 "#,
         );
     }

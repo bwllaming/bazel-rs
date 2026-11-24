@@ -2857,6 +2857,7 @@ fn incremental_finish(
                     engine.test_rule_info(label).map(|info| {
                         info.map(|(info, location)| bazel_rs::request::PlannedTest {
                             label: label.clone(),
+                            display: engine.display_label(label),
                             info,
                             location,
                         })
@@ -3699,6 +3700,7 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
     let test_info = engine.test_rule_info(label).map(|info| {
         info.map(|(info, location)| bazel_rs::request::PlannedTest {
             label: label.clone(),
+            display: engine.display_label(label),
             info,
             location,
         })
@@ -4077,6 +4079,7 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
             let (info, location) = infos.remove(label).expect("filtered test");
             bazel_rs::request::PlannedTest {
                 label: label.clone(),
+                display: engine.display_label(label),
                 info,
                 location,
             }
@@ -4145,6 +4148,18 @@ fn test_tail(
         Ok(request) => request.test_labels(),
         Err(_) => selected,
     };
+    // The tests' display forms (the summary lines, B71).
+    let test_display: std::collections::BTreeMap<bazel_rs::label::Label, String> =
+        match &planned.request {
+            Ok(bazel_rs::request::PlannedRequest {
+                command: bazel_rs::request::RequestCommand::Test { tests, .. },
+                ..
+            }) => tests
+                .iter()
+                .map(|test| (test.label.clone(), test.display.clone()))
+                .collect(),
+            _ => Default::default(),
+        };
     let mut skipped: std::collections::BTreeSet<_> = planned
         .request
         .as_ref()
@@ -4273,6 +4288,7 @@ fn test_tail(
                 options,
                 session.map(bazel_rs::test_runner::Session::finish),
                 &skipped,
+                &test_display,
             );
         }
     };
@@ -4569,6 +4585,7 @@ fn test_build_failure(
     options: &bazel_rs::test_command::TestOptions,
     outcome: Option<bazel_rs::test_runner::Outcome>,
     skipped: &std::collections::BTreeSet<bazel_rs::label::Label>,
+    display: &std::collections::BTreeMap<bazel_rs::label::Label, String>,
 ) -> Result<(), String> {
     use bazel_rs::test_command::{
         TestStatus, TestSummary, TestTimeout, should_output_log, summary_text,
@@ -4607,9 +4624,8 @@ fn test_build_failure(
                 .is_none_or(|next| !(next.is_alphanumeric() || "_-./+".contains(next)))
         })
     };
-    let summaries: Vec<TestSummary> = tests
-        .iter()
-        .map(|label| {
+    let failure_summary = |label: &bazel_rs::label::Label| -> TestSummary {
+        {
             let shown = label_print(label);
             if skipped.contains(label) {
                 let mut summary = TestSummary::aggregate(&shown, TestTimeout::Moderate, &[], false);
@@ -4647,8 +4663,20 @@ fn test_build_failure(
                 TestStatus::NoStatus
             };
             summary
+        }
+    };
+    let summaries: Vec<TestSummary> = tests
+        .iter()
+        .map(|label| {
+            let mut summary = failure_summary(label);
+            // TestSummaryPrinter's display form (B71).
+            if let Some(shown) = display.get(label) {
+                summary.display_label = shown.clone();
+            }
+            summary
         })
         .collect();
+
     // TerminalTestResultNotifier.notify: the locally cached results' logs,
     // then the summary.
     let mut text = Vec::new();

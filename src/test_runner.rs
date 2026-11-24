@@ -745,6 +745,7 @@ impl<'a> Session<'a> {
             &collected,
             options.verbose_timeout_warnings,
         );
+        summary.display_label = planned.display.clone();
         // TestResultAggregator.markIncomplete (runtime/TestResultAggregator.java
         // :270-282): a test with an action without a result is NO_STATUS when
         // the build stops on the first failure (--nokeep_going:

@@ -135,6 +135,10 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "host_grte_top",
     "experimental_cpp_modules",
     "apple_generate_dsym",
+    // CppOptions.cppCompiler/hostCppCompiler: nullable Strings only
+    // config_setting and transitions read (B68).
+    "compiler",
+    "host_compiler",
 ];
 
 /// Table-driven options (crate::configuration::VALUE_OPTIONS) read and
@@ -199,6 +203,8 @@ const GENERIC_VALUE_OPTIONS: &[(&str, &str)] = &[
         "rules.cpp.CppOptions.memprofProfileLabel",
     ),
     ("custom_malloc", "rules.cpp.CppOptions.customMalloc"),
+    ("compiler", "rules.cpp.CppOptions.cppCompiler"),
+    ("host_compiler", "rules.cpp.CppOptions.hostCppCompiler"),
     ("grte_top", "rules.cpp.CppOptions.libcTopLabel"),
     ("host_grte_top", "rules.cpp.CppOptions.hostLibcTopLabel"),
     (

@@ -2088,6 +2088,65 @@ pub(crate) fn expand_location(
     }
 }
 
+/// CommandHelper.resolveCommandAndExpandLabels (analysis/CommandHelper.java:233-247)
+/// with LocationExpander.withExecPaths: the location map is the
+/// CommandHelper's label map plus the rule's prerequisites and outputs; a
+/// failure is an attribute error of `attribute` (expandAttribute), else a
+/// rule error, and the command is returned unchanged.
+pub(crate) fn resolve_command_locations(
+    rule: &RuleSurface,
+    value: &str,
+    attribute: Option<&str>,
+    label_map: &[(String, Vec<crate::starlark_types::File>)],
+) -> anyhow::Result<String> {
+    let parse = |arg: &str| {
+        Label::parse_in(
+            arg,
+            &rule.label.repository,
+            &rule.label.package,
+            &rule.mapping,
+        )
+    };
+    let resolve = |name: &str, arg: &str| {
+        crate::location_expander::apply_with(name, arg, true, &parse, &rule.locations, label_map)
+            .unwrap_or_else(|| Err(format!("$({name}) not defined")))
+    };
+    match crate::location_expander::expand(value, &resolve) {
+        Ok(expanded) => Ok(expanded),
+        Err(message) => {
+            match attribute {
+                Some(attribute) => rule.attribute_error(attribute, &message),
+                None => rule.rule_error(&message),
+            }
+            Ok(value.to_owned())
+        }
+    }
+}
+
+/// StarlarkRuleContext.expandMakeVariables (:960-977) with a nullable
+/// attribute: Expander.expand reports a failure as an attribute error of
+/// `attribute`, else a rule error, and returns the command unchanged.
+pub(crate) fn expand_make_variables_of(
+    rule: &RuleSurface,
+    attribute: Option<&str>,
+    command: &str,
+    additional: &[(String, String)],
+) -> anyhow::Result<String> {
+    match attribute {
+        Some(attribute) => expand_make_variables(rule, attribute, command, additional),
+        None => {
+            let lookup = |name: &str| lookup_variable(&rule.config, additional, name);
+            match expand_template(command, &lookup, 0)? {
+                Ok(expanded) => Ok(expanded),
+                Err(message) => {
+                    rule.rule_error(&message);
+                    Ok(command.to_owned())
+                }
+            }
+        }
+    }
+}
+
 /// RunfilesSupport.computeArgs (analysis/RunfilesSupport.java:602-610):
 /// `Expander.withDataLocations().tokenized(attribute)` (analysis/Expander.java).
 /// Each value goes through TemplateExpander over a LocationTemplateContext

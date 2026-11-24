@@ -66,6 +66,30 @@ CASES = {
         'build', BUILD + ['--//am:f=d'], ['//am:s', '//am:re'], outputs=['s.txt']),
     'allow_multiple_single_value_transition': case(
         'build', BUILD, ['//am/err:si'], patterns=[r'allows multiple values']),
+    # B64: ctx.resolve_command.
+    'resolve_command': case(
+        'build', BUILD, ['//rc:t1', '//rc:t2', '//rc:t3'], outputs=['t1.txt', 't2.txt', 't3.txt']),
+    'resolve_command_errors': case(
+        'build', BUILD + ['--keep_going'], ['//rc:t4', '//rc:t5', '//rc:t6'],
+        patterns=[r'in cmd attribute of r rule //rc:t4', r'in r rule //rc:t5', r'in r rule //rc:t6']),
+    # B65: Args formats a bool as Java's Boolean.toString (and the action key).
+    'args_booleans': case('build', BUILD, ['//ab:t'], outputs=['t.txt']),
+    'args_booleans_action_key': case('aquery', BUILD, ['//ab:t']),
+    # B68: --compiler/--host_compiler (config_setting, transitions, exec).
+    'compiler_default': case('build', BUILD, ['//cmp:s'], outputs=['s.txt']),
+    'compiler_set': case('build', BUILD + ['--compiler=clang'], ['//cmp:s'], outputs=['s.txt']),
+    'compiler_transition_and_exec': case(
+        'build', BUILD + ['--compiler=clang', '--host_compiler=hostc'], ['//cmp:f'], patterns=[r'READ'],
+        outputs=['s.txt']),
+    # B70: a testonly violation under --allow_analysis_failures is an
+    # AnalysisFailureInfo cause, with the edge's other prerequisite errors.
+    'testonly_analysis_failure': case(
+        'test', BUILD, ['//to:check'], patterns=[r'CAUSE //to:lib non-test']),
+    'testonly_analysis_failure_with_other_errors': case(
+        'test', BUILD, ['//to:check2'], patterns=[r'CAUSE //to:lib2 non-test', r'CAUSE //to:lib2 source file',
+                                                 r'CAUSE //to:lib2 .//to:a.y. does not produce']),
+    # B71: the test summary names a test in the main repository's display form.
+    'test_summary_display_form': case('test', [], ['//:all'], workspace='tlws'),
     # B63: include() in the root MODULE.bazel; the lockfile's extension
     # entry (usages digest) is compared too.
     'include_segments': case(
