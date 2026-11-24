@@ -41,6 +41,7 @@ tests/fixtures/cc_compile/workspace
 tests/fixtures/cc_features/outside
 tests/fixtures/cc_features/tools
 tests/fixtures/cc_features/vendor
+tests/fixtures/cc_hello/workspace
 tests/fixtures/cc_toolchain/stubs
 tests/fixtures/cc_toolchain/vendor
 tests/fixtures/cc_toolchain/workspace

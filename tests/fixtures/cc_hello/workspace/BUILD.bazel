@@ -1,0 +1,25 @@
+# A C++ hello world with the host's auto-configured toolchain
+# (scripts/host_parity.py case cc_hello; on macOS rules_cc's cc_configure
+# with Xcode's clang).
+
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
+
+cc_library(
+    name = "greet",
+    srcs = ["greet.cc"],
+    hdrs = ["greet.h"],
+)
+
+cc_binary(
+    name = "hello",
+    srcs = ["hello.cc"],
+    deps = [":greet"],
+)
+
+cc_test(
+    name = "hello_test",
+    srcs = ["hello_test.cc"],
+    deps = [":greet"],
+)
