@@ -83,6 +83,60 @@ jobs:
           python3 -m unittest discover -s tests -p test_ci.py
           python3 -m unittest discover -s tests -p test_self_build.py
 
+  macos:
+    name: macOS arm64 build, unit and hermetic integration tests, smoke
+    # docs/MACOS.md: the native aarch64-apple-darwin build on GitHub's arm64
+    # macOS runner; scripts/ci-integration-tests-macos.txt lists the
+    # hermetic integration tests that run there (the Linux-only subsystems
+    # are cfg-gated). Formatting and the Linux gates stay in `check`.
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain from rust-toolchain.toml
+        # rustup is preinstalled on GitHub's macOS images.
+        run: |
+          rustup toolchain install --no-self-update
+          rustc --version
+          cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Scratch directories the tests expect
+        run: mkdir -p /tmp/opencode artifacts
+
+      - name: cargo clippy (aarch64-apple-darwin)
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build --locked
+
+      - name: Smoke test (version, query, genrule builds; built-in profile)
+        run: python3 scripts/smoke.py target/debug/bazel-rs --network
+
+      - name: Library unit tests
+        if: success() || failure()
+        run: cargo test --locked --lib
+
+      - name: Hermetic integration tests (macOS subset)
+        if: success() || failure()
+        run: |
+          args=()
+          while read -r name; do
+            args+=(--test "$name")
+          done < scripts/ci-integration-tests-macos.txt
+          cargo test --locked --no-fail-fast "${args[@]}"
+
+      - name: Release tooling tests
+        if: success() || failure()
+        run: |
+          python3 -m unittest discover -s tests -p test_release.py
+          python3 -m unittest discover -s tests -p test_ci.py
+          python3 -m unittest discover -s tests -p test_smoke.py
+
   self-build:
     name: Bazel self-build with the latest bazel-rs release
     # Dogfood (docs/SELF_BUILD.md): the latest published bazel-rs builds this

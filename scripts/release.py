@@ -800,13 +800,23 @@ def smoke_test(
     return compat
 
 
-def network_smoke_test(run: Run, binary: Path, scratch: Path, prefix: Sequence[str], host_cpu: str) -> None:
+def network_smoke_test(
+    run: Run,
+    binary: Path,
+    scratch: Path,
+    prefix: Sequence[str],
+    host_cpu: str,
+    os_value: str = "linux",
+) -> None:
     """The built-in profile (the default) in a second workspace, with network.
 
     Materializes the binary's embedded @bazel_tools (the per-platform bundle)
     and resolves the host platform from the Bazel Central Registry's
-    `platforms`: the genrule records `$(TARGET_CPU)` and @platforms//host's
-    HOST_CONSTRAINTS, which must name `host_cpu` (the target's CPU).
+    `platforms`: the genrule records `$(TARGET_CPU)` (the target platform's
+    CPU, --incompatible_target_cpu_from_platform) and @platforms//host's
+    HOST_CONSTRAINTS, which must name `host_cpu` (the target's
+    `@platforms//cpu` value) and `os_value` (its `@platforms//os` value:
+    `linux`, `osx`).
     """
     ws = scratch / "ws-network"
     ws.mkdir(parents=True, exist_ok=True)
@@ -819,7 +829,7 @@ def network_smoke_test(run: Run, binary: Path, scratch: Path, prefix: Sequence[s
     if len(lines) != 1:
         raise ReleaseError(f"unexpected build output: {stdout!r}")
     got = Path(lines[0].split("\t", 1)[1]).read_text().strip()
-    want = f"{host_cpu} @platforms//cpu:{host_cpu},@platforms//os:linux"
+    want = f"{host_cpu} @platforms//cpu:{host_cpu},@platforms//os:{os_value}"
     if got != want:
         raise ReleaseError(f"host platform: the binary detected {got!r}, expected {want!r}")
 

@@ -6,15 +6,31 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 LIST = ROOT / "scripts" / "ci-integration-tests.txt"
+MACOS_LIST = ROOT / "scripts" / "ci-integration-tests-macos.txt"
 
 
 class CiTest(unittest.TestCase):
     def test_integration_list_names_existing_test_programs(self):
-        names = LIST.read_text().split()
-        self.assertTrue(names)
-        self.assertEqual(names, sorted(set(names)), "sorted, no duplicates")
-        for name in names:
-            self.assertTrue((ROOT / "tests" / f"{name}.rs").is_file(), name)
+        for path in (LIST, MACOS_LIST):
+            names = path.read_text().split()
+            self.assertTrue(names, path)
+            self.assertEqual(names, sorted(set(names)), f"{path}: sorted, no duplicates")
+            for name in names:
+                self.assertTrue((ROOT / "tests" / f"{name}.rs").is_file(), name)
+
+    def test_macos_subset_is_part_of_the_hermetic_list(self):
+        # docs/MACOS.md: the macOS job runs hermetic programs only.
+        self.assertLessEqual(set(MACOS_LIST.read_text().split()), set(LIST.read_text().split()))
+
+    def test_workflow_has_the_macos_job(self):
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        for needle in (
+            "runs-on: macos-14",
+            "cargo build --locked",
+            "python3 scripts/smoke.py target/debug/bazel-rs --network",
+            "scripts/ci-integration-tests-macos.txt",
+        ):
+            self.assertIn(needle, workflow)
 
     def test_workflow_runs_the_gate_commands(self):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
