@@ -765,6 +765,8 @@ fn supervise(
     if subreaper {
         kill_remaining_children();
     }
+    #[cfg(target_os = "macos")]
+    drain_process_group(pid);
     match raw.map(status) {
         Some(raw) => {
             send(&mut control, &Report::Exited(raw));
@@ -818,6 +820,29 @@ fn reap_orphans_while_running(command: Pid) {
             // The exited child is not listed yet: look again shortly.
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+    }
+}
+
+/// macOS: WaitForProcessGroupToTerminate (process-tools-darwin.cc:73-131):
+/// the command's process group, SIGKILLed after the command exited, is
+/// waited for until no member is left, killed again every millisecond.
+/// Genuine keeps the leader a zombie while it lists the group (sysctl
+/// KERN_PROC_PGRP); without that listing here the leader is reaped first
+/// and the group is probed with signal 0 (ESRCH: empty). A group ID is not
+/// reused while a member exists (xnu allocates no PID that is a live
+/// group's ID), so the repeated kill reaches only the command's group.
+/// Members that left the group (`setsid`) survive, as with genuine's
+/// process-wrapper on macOS. A member that cannot be reaped (a zombie whose
+/// parent escaped the group) ends the wait after ten seconds; genuine would
+/// wait forever.
+#[cfg(target_os = "macos")]
+fn drain_process_group(pid: Pid) {
+    let started = std::time::Instant::now();
+    while rustix::process::test_kill_process_group(pid).is_ok()
+        && started.elapsed() < std::time::Duration::from_secs(10)
+    {
+        let _ = rustix::process::kill_process_group(pid, Signal::KILL);
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }
 
