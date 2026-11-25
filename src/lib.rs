@@ -20,6 +20,7 @@ mod analysis_runtime;
 mod apple_xcode;
 pub mod aquery;
 pub mod aquery_key;
+pub mod aquery_snapshot;
 pub mod archive;
 pub mod args;
 mod aspect_propagation;

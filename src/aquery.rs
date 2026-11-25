@@ -396,7 +396,7 @@ pub fn strip_filters(expression: &Expr) -> Result<Expr, String> {
 
 /// One configuration of the dump (KnownConfigurations: the BEP
 /// Configuration's mnemonic, platform name, checksum and is_tool).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Configuration {
     pub mnemonic: String,
     pub platform_name: String,
@@ -405,14 +405,15 @@ pub struct Configuration {
 }
 
 /// An AspectDescriptor: the aspect class name and its parameters.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Aspect {
     pub name: String,
     pub parameters: Vec<(String, String)>,
 }
 
-/// One action as aquery describes it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// One action as aquery describes it (stored in an aquery snapshot,
+/// crate::aquery_snapshot).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActionRecord {
     /// The owner's label (Label.toString) and rule class.
     pub target: String,
@@ -476,9 +477,24 @@ pub struct ActionRecord {
 pub struct Dump {
     pub configurations: Vec<Configuration>,
     pub actions: Vec<ActionRecord>,
-    /// The planned actions the records' inputs are listed from
+    /// What the records' inputs are listed from
     /// ([`ActionRecord::listed_from`]).
-    pub nodes: std::sync::Arc<Vec<crate::scheduler::PlannedAction>>,
+    pub nodes: Listings,
+}
+
+/// What records listed from a planned action ([`ActionRecord::listed_from`])
+/// list their inputs from: the analysis's planned actions, or the listings
+/// an aquery snapshot stored for them (crate::aquery_snapshot).
+#[derive(Clone, Debug)]
+pub enum Listings {
+    Planned(std::sync::Arc<Vec<crate::scheduler::PlannedAction>>),
+    Stored(std::sync::Arc<crate::aquery_snapshot::StoredListings>),
+}
+
+impl Default for Listings {
+    fn default() -> Self {
+        Self::Planned(Default::default())
+    }
 }
 
 impl Dump {
@@ -488,23 +504,37 @@ impl Dump {
     }
 }
 
-/// `action` with its inputs listed from `nodes` ([`ActionRecord::listed_from`]).
+/// `action` with its inputs listed from `listings` ([`ActionRecord::listed_from`]).
 pub fn materialized<'a>(
-    nodes: &[crate::scheduler::PlannedAction],
+    listings: &Listings,
     action: &'a ActionRecord,
 ) -> std::borrow::Cow<'a, ActionRecord> {
-    let Some(node) = action.listed_from.and_then(|index| nodes.get(index)) else {
+    let Some(index) = action.listed_from else {
         return std::borrow::Cow::Borrowed(action);
+    };
+    let (inputs, input_order) = match listings {
+        Listings::Planned(nodes) => {
+            let Some(node) = nodes.get(index) else {
+                return std::borrow::Cow::Borrowed(action);
+            };
+            (
+                listed_inputs(node),
+                node.action
+                    .extra
+                    .aquery
+                    .as_ref()
+                    .and_then(|meta| meta.input_order_paths()),
+            )
+        }
+        Listings::Stored(stored) => match stored.listed(index) {
+            Some(listed) => listed,
+            None => return std::borrow::Cow::Borrowed(action),
+        },
     };
     let mut action = action.clone();
     action.listed_from = None;
-    action.inputs = listed_inputs(node);
-    action.input_order = node
-        .action
-        .extra
-        .aquery
-        .as_ref()
-        .and_then(|meta| meta.input_order_paths());
+    action.inputs = inputs;
+    action.input_order = input_order;
     std::borrow::Cow::Owned(action)
 }
 
@@ -1909,7 +1939,7 @@ mod tests {
         let dump = |action: ActionRecord| Dump {
             configurations: configurations.clone(),
             actions: vec![action],
-            nodes: std::sync::Arc::new(vec![node.clone()]),
+            nodes: Listings::Planned(std::sync::Arc::new(vec![node.clone()])),
         };
         let filters = Filters {
             inputs: vec![fancy_regex::Regex::new("gen\\.txt").unwrap()],

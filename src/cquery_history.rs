@@ -16,18 +16,60 @@ const MAX_ENTRY: u64 = 256 << 20;
 const MAX_INPUTS: u64 = 64 << 20;
 const MAX_EVENTS: u64 = 8 << 20;
 pub(super) const MAX_PLAN: u64 = 192 << 20;
-const KINDS: [Section; 4] = [
-    Section::Inputs,
-    Section::Events,
-    Section::Plan,
-    Section::Stats,
-];
+/// An aquery snapshot's described records (crate::aquery_snapshot), stored
+/// deflated block by block.
+const MAX_AQUERY: u64 = 512 << 20;
+const MAX_AQUERY_ENTRY: u64 = MAX_ENTRY + MAX_AQUERY;
+
+/// What a history entry holds: a configured graph (cquery), or the graph
+/// and the described actions of an aquery (crate::aquery_snapshot). Each
+/// keeps its own two slots per key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Family {
+    Cquery,
+    Aquery,
+}
+
+impl Family {
+    fn kinds(self) -> &'static [Section] {
+        match self {
+            Self::Cquery => &[
+                Section::Inputs,
+                Section::Events,
+                Section::Plan,
+                Section::Stats,
+            ],
+            Self::Aquery => &[
+                Section::Inputs,
+                Section::Events,
+                Section::Plan,
+                Section::Aquery,
+                Section::Stats,
+            ],
+        }
+    }
+
+    fn tag(self) -> &'static str {
+        match self {
+            Self::Cquery => "cq",
+            Self::Aquery => "aq",
+        }
+    }
+
+    fn max_entry(self) -> u64 {
+        match self {
+            Self::Cquery => MAX_ENTRY,
+            Self::Aquery => MAX_AQUERY_ENTRY,
+        }
+    }
+}
 
 fn limit(kind: Section) -> u64 {
     match kind {
         Section::Inputs => MAX_INPUTS,
         Section::Events => MAX_EVENTS,
         Section::Plan => MAX_PLAN,
+        Section::Aquery => MAX_AQUERY,
         Section::Stats => 32,
         // Future shared format sections (e.g. build's incremental index) are
         // not part of a configured graph.
@@ -36,22 +78,42 @@ fn limit(kind: Section) -> u64 {
     }
 }
 
+#[cfg(test)]
 fn path(cache: &Path, key: &Key, slot: usize) -> PathBuf {
-    store::directory(cache).join(format!("{}-cq{slot}.snap", key.short()))
+    path_family(cache, key, slot, Family::Cquery)
 }
 
+fn path_family(cache: &Path, key: &Key, slot: usize, family: Family) -> PathBuf {
+    store::directory(cache).join(format!("{}-{}{slot}.snap", key.short(), family.tag()))
+}
+
+#[cfg(test)]
 fn open(cache: &Path, key: &Key, slot: usize) -> Result<Option<store::Reader>, String> {
-    let Some(reader) = store::Reader::open_path_bounded(path(cache, key, slot), key, MAX_ENTRY)?
+    open_family(cache, key, slot, Family::Cquery)
+}
+
+fn open_family(
+    cache: &Path,
+    key: &Key,
+    slot: usize,
+    family: Family,
+) -> Result<Option<store::Reader>, String> {
+    let Some(reader) = store::Reader::open_path_bounded(
+        path_family(cache, key, slot, family),
+        key,
+        family.max_entry(),
+    )?
     else {
         return Ok(None);
     };
     // Exact, contiguous graph sections; reject duplicates/overlap/unknown
     // sections, and every section limit, before the first section allocation.
-    if reader.header.slots.len() != KINDS.len() {
+    let kinds = family.kinds();
+    if reader.header.slots.len() != kinds.len() {
         return Err("invalid configured graph sections".into());
     }
     let mut offset = format::HEADER_LEN as u64;
-    for (slot, kind) in reader.header.slots.iter().zip(KINDS) {
+    for (slot, &kind) in reader.header.slots.iter().zip(kinds) {
         if slot.kind != kind as u32
             || slot.offset != offset
             || slot.len > limit(kind)
@@ -68,11 +130,21 @@ fn open(cache: &Path, key: &Key, slot: usize) -> Result<Option<store::Reader>, S
 
 /// MRU first (mtime), then newest generation, then slot name. Both open FDs
 /// pin their generations; only headers are resident before sequential probing.
+#[cfg(test)]
 pub(super) fn candidates(cache: &Path, key: &Key) -> Vec<Result<store::Reader, String>> {
+    candidates_family(cache, key, Family::Cquery)
+}
+
+/// [`candidates`] of `family`.
+pub(super) fn candidates_family(
+    cache: &Path,
+    key: &Key,
+    family: Family,
+) -> Vec<Result<store::Reader, String>> {
     let mut readers = Vec::with_capacity(2);
     let mut errors = Vec::new();
     for slot in 0..2 {
-        match open(cache, key, slot) {
+        match open_family(cache, key, slot, family) {
             Ok(Some(reader)) => readers.push(reader),
             Ok(None) => {}
             Err(error) => errors.push(Err(error)),
@@ -101,7 +173,7 @@ pub(super) fn section(reader: &store::Reader, kind: Section) -> Result<Vec<u8>, 
 /// diagnostics and graph bytes. Stat fast-path hints/window times are not
 /// version identity: a checkout or verification can refresh those same inputs.
 /// This is only a write-dedup fingerprint; hits always run the full validator.
-fn version(inputs: &[u8], events: &[u8], plan: &[u8]) -> Result<[u8; 32], String> {
+fn version(inputs: &[u8], events: &[u8], plan: &[u8], extra: &[u8]) -> Result<[u8; 32], String> {
     let mut inputs = format::decode_inputs(inputs)?;
     inputs.recording.window_start_ns = 0;
     for (_, observation) in &mut inputs.recording.observations {
@@ -130,7 +202,7 @@ fn version(inputs: &[u8], events: &[u8], plan: &[u8]) -> Result<[u8; 32], String
     );
     let mut digest = blake3::Hasher::new();
     digest.update(b"cquery-history-version-v1");
-    for bytes in [normalized.as_slice(), events, plan] {
+    for bytes in [normalized.as_slice(), events, plan, extra] {
         digest.update(blake3::hash(bytes).as_bytes());
     }
     Ok(*digest.finalize().as_bytes())
@@ -189,11 +261,40 @@ pub(super) fn save(
     plan: Vec<u8>,
     verified: Option<&store::Reader>,
 ) -> Result<(), String> {
-    let sections = [
+    save_family(
+        cache,
+        key,
+        Family::Cquery,
+        inputs,
+        events,
+        plan,
+        None,
+        verified,
+    )
+}
+
+/// [`save`] of `family`; `extra` is an aquery entry's AQUERY section.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn save_family(
+    cache: &Path,
+    key: &Key,
+    family: Family,
+    inputs: Vec<u8>,
+    events: Vec<u8>,
+    plan: Vec<u8>,
+    extra: Option<Vec<u8>>,
+    verified: Option<&store::Reader>,
+) -> Result<(), String> {
+    let mut sections = vec![
         (Section::Inputs, inputs),
         (Section::Events, events),
         (Section::Plan, plan),
     ];
+    match (family, extra) {
+        (Family::Cquery, None) => {}
+        (Family::Aquery, Some(extra)) => sections.push((Section::Aquery, extra)),
+        _ => return Err("history entry sections do not match its family".into()),
+    }
     let mut total = format::HEADER_LEN as u64 + 32;
     for (kind, bytes) in &sections {
         if bytes.len() as u64 > limit(*kind) {
@@ -206,11 +307,16 @@ pub(super) fn save(
             .checked_add(bytes.len() as u64)
             .ok_or("configured graph size overflow")?;
     }
-    if total > MAX_ENTRY {
+    if total > family.max_entry() {
         return Err("configured graph entry exceeds size limit".into());
     }
     format::check_compressed_bounds(&sections[2].1, MAX_RAW)?;
-    let version = version(&sections[0].1, &sections[1].1, &sections[2].1)?;
+    let version = version(
+        &sections[0].1,
+        &sections[1].1,
+        &sections[2].1,
+        sections.get(3).map_or(&[][..], |(_, bytes)| bytes),
+    )?;
     fs::create_dir_all(store::directory(cache)).map_err(|e| e.to_string())?;
     let mut temporary = tempfile::Builder::new()
         .prefix(".tmp-cquery-")
@@ -247,8 +353,8 @@ pub(super) fn save(
     // Re-open under the publication lock: concurrent fresh analyses of A
     // replace A, never fill both slots with A and evict B.
     let slots = [
-        open(cache, key, 0).ok().flatten(),
-        open(cache, key, 1).ok().flatten(),
+        open_family(cache, key, 0, family).ok().flatten(),
+        open_family(cache, key, 1, family).ok().flatten(),
     ];
     let duplicate = slots.iter().position(|reader| {
         reader.as_ref().is_some_and(|reader| {
@@ -275,7 +381,7 @@ pub(super) fn save(
                     slots[1].as_ref().unwrap().modified() < slots[0].as_ref().unwrap().modified(),
                 )
             });
-        path(cache, key, slot)
+        path_family(cache, key, slot, family)
     };
     temporary.persist(destination).map_err(|e| e.to_string())?;
     // Both .snap slots participate in the SAME KEEP and byte budget. As for

@@ -77,16 +77,21 @@ pub enum Section {
     /// (crate::snapshot::derive, compressed like the plan); a hit never
     /// reads it.
     Derive = 6,
+    /// An aquery snapshot's described actions (crate::aquery_snapshot,
+    /// blobs deflated one by one); only in aquery history entries
+    /// (crate::cquery_state).
+    Aquery = 7,
 }
 
 impl Section {
-    pub const ALL: [Section; 6] = [
+    pub const ALL: [Section; 7] = [
         Section::Inputs,
         Section::Events,
         Section::Plan,
         Section::Stats,
         Section::Index,
         Section::Derive,
+        Section::Aquery,
     ];
 
     pub fn name(self) -> &'static str {
@@ -97,6 +102,7 @@ impl Section {
             Self::Stats => "STATS",
             Self::Index => "INDEX",
             Self::Derive => "DERIVE",
+            Self::Aquery => "AQUERY",
         }
     }
 }

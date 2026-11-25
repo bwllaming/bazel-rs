@@ -84,6 +84,10 @@ struct RecordJob {
     configuration: usize,
 }
 
+/// A configured target's (graph node's) planned actions to describe and its
+/// TestRunner records (`Engine::aquery_describe_snapshot`).
+type TargetJobs = (u32, (Vec<RecordJob>, Vec<ActionRecord>));
+
 /// The planned actions of an analysis not described yet: a query's are
 /// described once its expression selected their targets (only theirs are
 /// printed).
@@ -153,11 +157,46 @@ pub struct Analysis {
     /// The planned actions the records list their inputs from
     /// ([`ActionRecord::listed_from`]).
     nodes: Arc<Vec<PlannedAction>>,
+    /// An aquery snapshot hit's listings instead (crate::aquery_snapshot).
+    stored: Option<Arc<crate::aquery_snapshot::StoredListings>>,
     /// The actions not described yet ([`Engine::aquery_describe`]).
     pending: Option<Pending>,
 }
 
 impl Analysis {
+    /// The analysis an aquery snapshot hit prints from: the stored graph and
+    /// configurations, the selected targets' records and their listings
+    /// (crate::aquery_snapshot::Hit::load).
+    pub fn from_snapshot(
+        graph: cquery::Graph,
+        configurations: Vec<crate::aquery::Configuration>,
+        actions: Vec<(u32, ActionRecord)>,
+        listings: crate::aquery_snapshot::StoredListings,
+    ) -> Self {
+        Self {
+            graph,
+            configurations,
+            actions,
+            top_level: Vec::new(),
+            nodes: Arc::default(),
+            stored: Some(Arc::new(listings)),
+            pending: None,
+        }
+    }
+
+    /// What the records' inputs are listed from.
+    fn listings(&self) -> crate::aquery::Listings {
+        match &self.stored {
+            Some(stored) => crate::aquery::Listings::Stored(Arc::clone(stored)),
+            None => crate::aquery::Listings::Planned(Arc::clone(&self.nodes)),
+        }
+    }
+
+    /// The dump's configurations.
+    pub fn configurations(&self) -> &[crate::aquery::Configuration] {
+        &self.configurations
+    }
+
     /// The requested configured targets (crate::print_action).
     pub fn top_level(&self) -> &[TopLevel] {
         &self.top_level
@@ -166,9 +205,10 @@ impl Analysis {
     /// List every record's inputs now (crate::print_action reads them all
     /// at once; the aquery output lists one action's at a time).
     pub fn materialize(&mut self) {
+        let listings = self.listings();
         for (_, record) in &mut self.actions {
             if record.listed_from.is_some() {
-                *record = crate::aquery::materialized(&self.nodes, record).into_owned();
+                *record = crate::aquery::materialized(&listings, record).into_owned();
             }
         }
     }
@@ -226,7 +266,7 @@ impl Analysis {
         Dump {
             configurations: self.configurations.clone(),
             actions,
-            nodes: Arc::clone(&self.nodes),
+            nodes: self.listings(),
         }
     }
 }
@@ -536,6 +576,7 @@ impl Engine {
             actions: Vec::new(),
             top_level: capture.top_level.clone(),
             nodes: Arc::new(capture.nodes),
+            stored: None,
             pending: Some(Pending { jobs, tests }),
         })
     }
@@ -562,31 +603,10 @@ impl Engine {
         let display = display_form(graph);
         let platform_infos = self.aquery_platform_infos();
         let describe = |job: &RecordJob| -> Vec<(u32, ActionRecord)> {
-            let rule_class = match &graph.nodes[job.graph_node as usize].target {
-                crate::cquery_proto::Target::Rule(rule) => Some(rule.rule_class.clone()),
-                _ => None,
-            };
-            let display_target = display(&job.owner.key.label);
-            self.aquery_records(
-                &nodes[job.index],
-                job.index,
-                &job.owner,
-                rule_class,
-                job.configuration,
-                configurations,
-                &platform_infos,
-            )
-            .into_iter()
-            .map(|mut record| {
-                record.display_target = display_target.clone();
-                record.display_execution_platform = record
-                    .execution_platform
-                    .as_deref()
-                    .and_then(|platform| Label::parse_canonical(platform).ok())
-                    .map(|platform| display(&platform));
-                (job.graph_node, record)
-            })
-            .collect()
+            self.aquery_job_records(job, graph, nodes, configurations, &display, &platform_infos)
+                .into_iter()
+                .map(|record| (job.graph_node, record))
+                .collect()
         };
         let mut actions: Vec<(u32, ActionRecord)> =
             in_parallel(&jobs, self.loading_phase_threads, &describe)
@@ -604,6 +624,175 @@ impl Engine {
         }
         analysis.actions = actions;
         crate::perf_mark("aquery.records");
+    }
+
+    /// The records of one planned action (`job`), with its owner's rule
+    /// class and the display forms of its target and execution platform.
+    fn aquery_job_records(
+        &self,
+        job: &RecordJob,
+        graph: &cquery::Graph,
+        nodes: &[PlannedAction],
+        configurations: &[crate::aquery::Configuration],
+        display: &(dyn Fn(&Label) -> String + Sync),
+        platform_infos: &HashMap<Label, Arc<crate::platforms::PlatformInfo>>,
+    ) -> Vec<ActionRecord> {
+        let rule_class = match &graph.nodes[job.graph_node as usize].target {
+            crate::cquery_proto::Target::Rule(rule) => Some(rule.rule_class.clone()),
+            _ => None,
+        };
+        let display_target = display(&job.owner.key.label);
+        let mut records = self.aquery_records(
+            &nodes[job.index],
+            job.index,
+            &job.owner,
+            rule_class,
+            job.configuration,
+            configurations,
+            platform_infos,
+        );
+        for record in &mut records {
+            record.display_target = display_target.clone();
+            record.display_execution_platform = record
+                .execution_platform
+                .as_deref()
+                .and_then(|platform| Label::parse_canonical(platform).ok())
+                .map(|platform| display(&platform));
+        }
+        records
+    }
+
+    /// [`Self::aquery_describe`] of every planned action of `analysis`, for
+    /// its aquery snapshot (crate::aquery_snapshot): the records of all of
+    /// them, encoded by configured target in blocks, while the records of
+    /// the `selected` targets' (all without) stay in the analysis for this
+    /// command's output, exactly as `aquery_describe` leaves them (each
+    /// target's records in the same order; the dump lists by target).
+    /// Blocks describe and encode on several threads, so the described
+    /// records of the whole universe are never held at once.
+    pub fn aquery_describe_snapshot(
+        &self,
+        analysis: &mut Analysis,
+        selected: Option<&BTreeSet<u32>>,
+    ) -> Result<crate::aquery_snapshot::Records, String> {
+        use crate::aquery_snapshot::{GroupTable, Records, StoredRecord, Unit};
+        let Some(Pending { jobs, tests }) = analysis.pending.take() else {
+            return Err("aquery snapshot: the analysis was described already".into());
+        };
+        let wanted =
+            |graph_node: u32| selected.is_none_or(|selected| selected.contains(&graph_node));
+        // Per configured target: its planned actions in plan order, then its
+        // TestRunner records (the order `actions` gives each target).
+        let mut by_node: BTreeMap<u32, (Vec<RecordJob>, Vec<ActionRecord>)> = BTreeMap::new();
+        for job in jobs {
+            by_node.entry(job.graph_node).or_default().0.push(job);
+        }
+        for (node, record) in tests {
+            by_node.entry(node).or_default().1.push(record);
+        }
+        let units: Vec<TargetJobs> = by_node.into_iter().collect();
+        let nodes = &analysis.nodes;
+        let mut table = GroupTable::default();
+        for (_, (jobs, _)) in &units {
+            for job in jobs {
+                table.note(&nodes[job.index]);
+            }
+        }
+        let mut blocks: Vec<&[TargetJobs]> = Vec::new();
+        let mut start = 0;
+        let mut size = 0;
+        for (index, (_, (jobs, tests))) in units.iter().enumerate() {
+            size += jobs.len() + tests.len();
+            if size >= crate::aquery_snapshot::BLOCK || index + 1 == units.len() {
+                blocks.push(&units[start..=index]);
+                start = index + 1;
+                size = 0;
+            }
+        }
+        let graph = &analysis.graph;
+        let configurations = &analysis.configurations;
+        let display = display_form(graph);
+        let platform_infos = self.aquery_platform_infos();
+        let parity = cfg!(debug_assertions) || parity_verify();
+        type Described = Result<(Vec<u8>, Vec<(u32, ActionRecord)>), String>;
+        let describe = |block: &&[TargetJobs]| -> Described {
+            let mut kept = Vec::new();
+            let mut stored: Vec<Unit> = Vec::with_capacity(block.len());
+            for (node, (jobs, tests)) in block.iter() {
+                let mut records = Vec::new();
+                for job in jobs {
+                    for record in self.aquery_job_records(
+                        job,
+                        graph,
+                        nodes,
+                        configurations,
+                        &display,
+                        &platform_infos,
+                    ) {
+                        let listing = match record.listed_from {
+                            Some(index) => {
+                                let listing = table.listing(&nodes[index]).ok_or_else(|| {
+                                    "aquery snapshot: a shared input group was not noted".to_owned()
+                                })?;
+                                if parity
+                                    && table.expand(&listing).as_deref()
+                                        != Some(&crate::aquery::listed_inputs(&nodes[index])[..])
+                                {
+                                    return Err(format!(
+                                        "internal error: aquery snapshot: the stored listing of {} differs from its planned action's",
+                                        nodes[index].action.id
+                                    ));
+                                }
+                                Some(listing)
+                            }
+                            None => None,
+                        };
+                        records.push((record, listing));
+                    }
+                }
+                records.extend(tests.iter().map(|record| (record.clone(), None)));
+                if wanted(*node) {
+                    kept.extend(records.iter().map(|(record, _)| (*node, record.clone())));
+                }
+                stored.push((
+                    *node,
+                    records
+                        .into_iter()
+                        .map(|(mut record, listing)| {
+                            record.listed_from = None;
+                            StoredRecord { record, listing }
+                        })
+                        .collect(),
+                ));
+            }
+            Ok((crate::aquery_snapshot::encode_block(&stored)?, kept))
+        };
+        let described = in_parallel(&blocks, self.loading_phase_threads, &describe);
+        drop(display);
+        let mut records = Records::default();
+        records.push_groups(&table)?;
+        let mut actions = Vec::new();
+        for (block, result) in blocks.iter().zip(described) {
+            let (encoded, kept) = result?;
+            let (Some((first, _)), Some((last, _))) = (block.first(), block.last()) else {
+                continue;
+            };
+            records.push_block(*first, *last, &encoded);
+            actions.extend(kept);
+        }
+        if crate::plan_timings::enabled() {
+            eprintln!(
+                "PERF-AQUERY snapshot units={} blocks={} groups={} bytes={} records={}",
+                units.len(),
+                records.blocks.len(),
+                records.group_count,
+                records.bytes.len(),
+                actions.len()
+            );
+        }
+        analysis.actions = actions;
+        crate::perf_mark("aquery.records");
+        Ok(records)
     }
 
     /// The execution platform of an action: its exec group's, a native
@@ -743,9 +932,8 @@ impl Engine {
                 .inputs
                 .iter()
                 .find(|(_, destination)| destination.as_os_str() == template.as_os_str())
-                // snapshot-unrecorded: aquery's description of a template's text;
-                // aquery never saves or replays an analysis snapshot.
-                .and_then(|(source, _)| std::fs::read(&**source).ok())
+                // Recorded: an aquery snapshot prints the text it read.
+                .and_then(|(source, _)| crate::observed_fs::read(&**source).ok())
                 .map(|bytes| internal_string(&bytes))
                 .unwrap_or_else(|| format!("ARTIFACT: {exec}"));
             (exec, content)

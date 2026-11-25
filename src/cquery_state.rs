@@ -165,6 +165,252 @@ pub fn start(
     })
 }
 
+/// Whether an option only presents an aquery's result (crate::aquery::Options):
+/// the formatters' options, the expression's (its selection and filters run
+/// over the stored graph and records on a hit) and the universe's (the key's
+/// targets). Everything else keys the aquery snapshot.
+fn aquery_presentation(option: &crate::bazelrc::Unit) -> bool {
+    let name = option.option.text.split('=').next().unwrap_or_default();
+    let name = name
+        .strip_prefix("--no")
+        .map_or(name.trim_start_matches('-'), |rest| rest);
+    matches!(
+        name,
+        "output"
+            | "output_file"
+            | "query_file"
+            | "universe_scope"
+            | "implicit_deps"
+            | "tool_deps"
+            | "include_aspects"
+            | "include_commandline"
+            | "include_artifacts"
+            | "include_pruned_inputs"
+            | "include_param_files"
+            | "include_file_write_contents"
+            | "transitions"
+    ) || name.starts_with("proto:")
+        || name.starts_with("starlark:")
+        || name.starts_with("graph:")
+}
+
+/// The key of an aquery snapshot: G over the configured graph's analysis
+/// inputs (command `aquery-graph-v1`) without the presentation options, and
+/// every option G leaves out as execution-only (key::EXCLUDED: the test
+/// options key the TestRunner records an aquery describes) folded into the
+/// command.
+fn aquery_key(inputs: &key::Inputs<'_>) -> Option<(key::Key, snapshot::Mode)> {
+    let mode = snapshot::Mode::from_env();
+    if matches!(mode, snapshot::Mode::Off | snapshot::Mode::Record) || key::test_hook().is_some() {
+        return None;
+    }
+    let _ = std::fs::create_dir_all(store::directory(inputs.cache));
+    let Ok(binary) = snapshot::exe_id::binary_id(&store::root(inputs.cache)) else {
+        return None;
+    };
+    let options: Vec<crate::bazelrc::Unit> = inputs
+        .options
+        .iter()
+        .filter(|unit| !aquery_presentation(unit))
+        .cloned()
+        .collect();
+    let execution_only: Vec<(&str, Option<&str>)> = options
+        .iter()
+        .filter(|unit| key::excluded(&unit.option.text))
+        .map(|unit| {
+            (
+                unit.option.text.as_str(),
+                unit.value.as_ref().map(|value| value.text.as_str()),
+            )
+        })
+        .collect();
+    let digest = blake3::hash(&postcard::to_stdvec(&execution_only).ok()?);
+    let command = format!("aquery-graph-v1:{}", digest.to_hex());
+    let filtered = key::Inputs {
+        command: &command,
+        options: &options,
+        ..*inputs
+    };
+    Some((key::compute(&filtered, binary), mode))
+}
+
+/// An aquery's snapshot session (docs/AQUERY.md "Snapshot"): the recording
+/// window of a miss, saved with the analysis's described records.
+pub struct AquerySession {
+    cache: PathBuf,
+    key: key::Key,
+    capture: Option<snapshot::capture::Capture>,
+    verify: Option<(crate::aquery_snapshot::Hit, store::Reader)>,
+}
+
+pub struct AqueryStarted {
+    pub hit: Option<crate::aquery_snapshot::Hit>,
+    pub session: Option<AquerySession>,
+}
+
+/// An aquery's lookup before any loading, like [`start`]: the hit's saved
+/// diagnostics are printed; a miss (or `BAZEL_RS_SNAPSHOT=verify`) opens
+/// the recording window.
+pub fn start_aquery(
+    inputs: key::Inputs<'_>,
+    replay: snapshot::hit::ReplayInputs,
+    publication_repositories: crate::repository_publication::Factory<'_>,
+) -> Result<AqueryStarted, String> {
+    let Some((key, mode)) = aquery_key(&inputs) else {
+        return Ok(AqueryStarted {
+            hit: None,
+            session: None,
+        });
+    };
+    let found = read_family(
+        inputs.cache,
+        &key,
+        history::Family::Aquery,
+        &replay,
+        Validation::Ordinary(publication_repositories),
+        &decode_aquery,
+    )?;
+    let verify = match found {
+        Some((hit, reader, events)) if mode != snapshot::Mode::Verify => {
+            use std::io::Write;
+            std::io::stderr()
+                .lock()
+                .write_all(&crate::ui::filtered(&events))
+                .map_err(|e| e.to_string())?;
+            reader.touch();
+            explain_aquery("hit");
+            return Ok(AqueryStarted {
+                hit: Some(hit),
+                session: None,
+            });
+        }
+        Some((hit, reader, _)) => Some((hit, reader)),
+        None => None,
+    };
+    if !crate::observed_fs::open_window() {
+        return Ok(AqueryStarted {
+            hit: None,
+            session: None,
+        });
+    }
+    snapshot::replay::install();
+    let capture = snapshot::capture::start(snapshot::capture::Mode::Tee).ok();
+    Ok(AqueryStarted {
+        hit: None,
+        session: Some(AquerySession {
+            cache: inputs.cache.to_owned(),
+            key,
+            capture,
+            verify,
+        }),
+    })
+}
+
+impl AquerySession {
+    /// Close the window and save the analysis: its configured graph, the
+    /// dump's configurations and every action's records
+    /// (Engine::aquery_describe_snapshot). Under verify, a hit that differs
+    /// from them is removed and the command fails.
+    pub fn finish(
+        mut self,
+        graph: &Graph,
+        configurations: &[crate::aquery::Configuration],
+        records: crate::aquery_snapshot::Records,
+        registry: &crate::registry_session::SessionHandle,
+    ) -> Result<(), String> {
+        // Only the described records (computed now) belong to this payload:
+        // a map_each or build-info callback is never run by a hit.
+        crate::observed_fs::settle_plan_taints([]);
+        crate::observed_fs::close_window();
+        let window = self
+            .capture
+            .take()
+            .map(|capture| capture.stop(std::time::Duration::from_secs(2)));
+        if let Some((expected, reader)) = &self.verify
+            && (expected.plan.graph != *graph
+                || expected.plan.configurations != configurations
+                || expected.plan.group_count != records.group_count
+                || expected.plan.groups != records.groups
+                || expected.plan.blocks != records.blocks
+                || expected.records != records.bytes)
+        {
+            history::remove(&self.cache, reader)?;
+            return Err(
+                "aquery snapshot verification mismatch; stale generation invalidated".into(),
+            );
+        }
+        let save = || -> Result<(), String> {
+            let window = window.ok_or("stderr capture unavailable")?;
+            if !window.complete || window.overflowed || window.ended_early {
+                return Err("incomplete stderr capture".into());
+            }
+            let events = format::encode_events(&window.bytes);
+            if let Some(registry) = registry.session()
+                && (registry.updated_lockfile().is_some()
+                    || registry.updated_hidden_lockfile().is_some())
+            {
+                return Err("lockfile write pending".into());
+            }
+            if let Some(registry) = registry.session() {
+                registry.note_hidden_lockfile();
+            }
+            let recorder = crate::observed_fs::recorder().ok_or("no input observations")?;
+            if !recorder.taints().is_empty() {
+                return Err(format!("tainted analysis: {:?}", recorder.taints()));
+            }
+            let capture = snapshot::replay::global().ok_or("no repository replay recorder")?;
+            let replay_records = capture.records();
+            let tables = capture.tables();
+            if !replay_records.is_empty() && tables.is_none() {
+                return Err("repository replay lacks pinned tables".into());
+            }
+            let recording = snapshot::validate::Policy::current().select_owned(recorder.take());
+            let inputs = format::encode_inputs(&recording, &replay_records, tables.as_ref(), false);
+            crate::perf_mark("aquery.snapshot_encode_begin");
+            let plan = encode_graph(&crate::aquery_snapshot::PlanRef {
+                graph,
+                configurations,
+                group_count: records.group_count,
+                groups: &records.groups,
+                blocks: &records.blocks,
+            })?;
+            crate::perf_mark("aquery.snapshot_compressed");
+            history::save_family(
+                &self.cache,
+                &self.key,
+                history::Family::Aquery,
+                inputs,
+                events,
+                plan,
+                Some(records.bytes),
+                self.verify.as_ref().map(|(_, reader)| reader),
+            )?;
+            crate::perf_mark("aquery.snapshot_saved");
+            explain_aquery("saved");
+            Ok(())
+        };
+        if let Err(error) = save() {
+            explain_aquery(&format!("not saved: {error}"));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for AquerySession {
+    fn drop(&mut self) {
+        crate::observed_fs::close_window();
+        if let Some(capture) = self.capture.take() {
+            capture.stop(std::time::Duration::from_secs(2));
+        }
+    }
+}
+
+fn explain_aquery(text: &str) {
+    if snapshot::explain() {
+        snapshot::diag::line_fmt(format_args!("bazel-rs-aquery-snapshot: {text}"));
+    }
+}
+
 /// Explicit experimental profile: open recording but do not inspect history
 /// until ordinary loading has sealed its results. Never fall back to replay.
 pub fn begin(
@@ -276,13 +522,34 @@ fn read(
     replay: &snapshot::hit::ReplayInputs,
     validation: Validation<'_>,
 ) -> Result<Option<(Graph, store::Reader, Vec<u8>)>, String> {
+    read_family(
+        cache,
+        key,
+        history::Family::Cquery,
+        replay,
+        validation,
+        &decode_graph,
+    )
+}
+
+/// [`read`] of a history `family`, its payload decoded by `decode`.
+fn read_family<T>(
+    cache: &Path,
+    key: &key::Key,
+    family: history::Family,
+    replay: &snapshot::hit::ReplayInputs,
+    validation: Validation<'_>,
+    decode: &dyn Fn(&store::Reader) -> Result<T, String>,
+) -> Result<Option<(T, store::Reader, Vec<u8>)>, String> {
     let mut reason = "no configured graph snapshot".to_owned();
-    for candidate in history::candidates(cache, key) {
+    for candidate in history::candidates_family(cache, key, family) {
         let result = candidate.and_then(|reader| {
             match validation {
-                Validation::Ordinary(factory) => read_ordinary_candidate(&reader, replay, factory),
+                Validation::Ordinary(factory) => {
+                    read_ordinary_candidate(&reader, replay, factory, decode)
+                }
                 Validation::Current(current, prefix, cut) => {
-                    read_candidate(&reader, replay, current, prefix, cut)
+                    read_candidate(&reader, replay, current, prefix, cut, decode)
                 }
             }
             .map(|(graph, events)| (graph, reader, events))
@@ -298,17 +565,21 @@ fn read(
         // Candidate INPUTS, replay heaps, and any corrupt graph are dropped
         // before probing the next generation. No diagnostics have been emitted.
     }
-    explain(&format!("miss: {reason}"));
+    match family {
+        history::Family::Cquery => explain(&format!("miss: {reason}")),
+        history::Family::Aquery => explain_aquery(&format!("miss: {reason}")),
+    }
     Ok(None)
 }
 
-fn read_candidate(
+fn read_candidate<T>(
     reader: &store::Reader,
     replay: &snapshot::hit::ReplayInputs,
     current: &crate::repository::CurrentRefresh,
     current_prefix: &[u8],
     root_cut: Option<RootCut>,
-) -> Result<(Graph, Vec<u8>), String> {
+    decode: &dyn Fn(&store::Reader) -> Result<T, String>,
+) -> Result<(T, Vec<u8>), String> {
     let _version = history::section(reader, format::Section::Stats)?;
     let mut inputs = format::decode_inputs(&history::section(reader, format::Section::Inputs)?)?;
     if inputs.workspace_status {
@@ -328,7 +599,7 @@ fn read_candidate(
         &environment,
         &agreement,
     )?;
-    let graph = decode_graph(reader)?;
+    let graph = decode(reader)?;
     current.accept(
         &inputs.replay,
         &inputs.recording,
@@ -341,11 +612,12 @@ fn read_candidate(
 
 /// The installed ordinary validation/replay/adoption contract. This function is
 /// reached only by the early default checkpoint, never after a current prefix.
-fn read_ordinary_candidate(
+fn read_ordinary_candidate<T>(
     reader: &store::Reader,
     replay: &snapshot::hit::ReplayInputs,
     publication_repositories: crate::repository_publication::Factory<'_>,
-) -> Result<(Graph, Vec<u8>), String> {
+    decode: &dyn Fn(&store::Reader) -> Result<T, String>,
+) -> Result<(T, Vec<u8>), String> {
     let _version = history::section(reader, format::Section::Stats)?;
     let mut inputs = format::decode_inputs(&history::section(reader, format::Section::Inputs)?)?;
     if inputs.workspace_status {
@@ -378,7 +650,7 @@ fn read_ordinary_candidate(
         None
     };
     let events = format::decode_events(&history::section(reader, format::Section::Events)?)?;
-    let graph = decode_graph(reader)?;
+    let graph = decode(reader)?;
     if let Some((prepared, recording)) = adoption {
         prepared.commit(publication_repositories, &recording, &environment)?;
     }
@@ -389,6 +661,24 @@ fn decode_graph(reader: &store::Reader) -> Result<Graph, String> {
     let bytes = history::section(reader, format::Section::Plan)?;
     let graph: Graph =
         postcard::from_bytes(&bytes).map_err(|e| format!("configured graph decode: {e}"))?;
+    check_graph(graph)
+}
+
+/// An aquery entry's PLAN (the graph and the record index) and AQUERY
+/// sections (crate::aquery_snapshot), indices checked.
+fn decode_aquery(reader: &store::Reader) -> Result<crate::aquery_snapshot::Hit, String> {
+    let bytes = history::section(reader, format::Section::Plan)?;
+    let mut plan: crate::aquery_snapshot::Plan =
+        postcard::from_bytes(&bytes).map_err(|e| format!("aquery snapshot decode: {e}"))?;
+    drop(bytes);
+    plan.graph = check_graph(plan.graph)?;
+    let records = history::section(reader, format::Section::Aquery)?;
+    let hit = crate::aquery_snapshot::Hit { plan, records };
+    hit.check()?;
+    Ok(hit)
+}
+
+fn check_graph(graph: Graph) -> Result<Graph, String> {
     for node in &graph.nodes {
         if node
             .configuration
@@ -1023,7 +1313,8 @@ mod tests {
         repositories.enable_current_loading();
         repositories.validate_root_module().unwrap();
         let current = crate::repository::CurrentRefresh::seal(repositories, true);
-        let error = read_candidate(&reader, &replay, &current, b"", None).unwrap_err();
+        let error =
+            read_candidate(&reader, &replay, &current, b"", None, &decode_graph).unwrap_err();
         assert!(
             error.contains("invalid configured graph pattern index"),
             "{error}"

@@ -295,14 +295,20 @@ fn count_actions(bytes: &[u8], delimited: bool) -> usize {
 #[test]
 fn aquery_fast_paths_list_what_the_sequential_path_lists() {
     let ws = Workspace::new();
+    // Every run analyzes (an aquery snapshot hit would print the first
+    // run's records whatever the path).
     let sequential: &[(&str, &str)] = &[
         ("BAZEL_RS_NO_COMMIT_AHEAD", "1"),
         ("BAZEL_RS_NO_WORKER_DELTAS", "1"),
         ("BAZEL_RS_EVAL_FROZEN_PREPARES", "0"),
+        ("BAZEL_RS_SNAPSHOT", "off"),
     ];
     let fast: &[&[(&str, &str)]] = &[
-        &[],
-        &[("BAZEL_RS_EVAL_FROZEN_PREPARES", "all")],
+        &[("BAZEL_RS_SNAPSHOT", "off")],
+        &[
+            ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all"),
+            ("BAZEL_RS_SNAPSHOT", "off"),
+        ],
         &[
             ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all"),
             ("BAZEL_RS_EVAL_JITTER", "300"),
@@ -340,6 +346,141 @@ fn aquery_fast_paths_list_what_the_sequential_path_lists() {
             assert!(run(env) == expected, "{format} {env:?}: differs");
         }
     }
+}
+
+/// An aquery snapshot (docs/AQUERY.md "Snapshot"): the first aquery of a
+/// universe saves its configured graph and every action's records; a
+/// repeated aquery of the same universe and options prints from them —
+/// whatever its expression over that universe, output format, filters and
+/// include flags — exactly what a cold aquery (`BAZEL_RS_SNAPSHOT=off`)
+/// prints, stdout and stderr. A changed BUILD file or template misses;
+/// verify mode agrees with the hit.
+#[test]
+fn aquery_snapshot_hit_prints_what_a_cold_aquery_prints() {
+    let ws = Workspace::new();
+    let explain = [("BAZEL_RS_SNAPSHOT_EXPLAIN", "1")];
+    let noted = |notes: &str, what: &str| {
+        notes
+            .lines()
+            .any(|line| line.strip_prefix("bazel-rs-aquery-snapshot: ") == Some(what))
+    };
+    let missed = |notes: &str| {
+        notes
+            .lines()
+            .any(|line| line.starts_with("bazel-rs-aquery-snapshot: miss: "))
+    };
+    let run = |args: &[&str], env: &[(&str, &str)]| {
+        let output = ws.command_with("aquery", args, env);
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let (notes, rest): (Vec<&str>, Vec<&str>) = stderr
+            .lines()
+            .partition(|line| line.starts_with("bazel-rs-aquery-snapshot: "));
+        (
+            output.status.code(),
+            output.stdout,
+            rest.join("\n"),
+            notes.join("\n"),
+        )
+    };
+    // (The first aquery writes the lockfile: not saved.)
+    let first = run(&["deps(//pkg:all)", "--include_aspects"], &explain);
+    assert_eq!(first.0, Some(0), "{}", first.2);
+    assert!(
+        noted(&first.3, "not saved: lockfile write pending"),
+        "{}",
+        first.3
+    );
+    let second = run(&["deps(//pkg:all)", "--include_aspects"], &explain);
+    assert!(noted(&second.3, "saved"), "{}", second.3);
+    // Expressions over the one universe (`//pkg:all`).
+    let expressions = [
+        "deps(//pkg:all)",
+        "kind(\"genrule\", deps(//pkg:all))",
+        "mnemonic(\"Genrule|FileWrite\", deps(//pkg:all))",
+        "inputs(\".*in.txt\", outputs(\".*\\.txt\", deps(//pkg:all)))",
+    ];
+    let formats = [
+        "text",
+        "summary",
+        "commands",
+        "proto",
+        "streamed_proto",
+        "textproto",
+        "jsonproto",
+    ];
+    let flag_sets: [&[&str]; 4] = [
+        &[],
+        &["--include_aspects"],
+        &[
+            "--include_aspects",
+            "--include_param_files",
+            "--include_file_write_contents",
+        ],
+        &[
+            "--noinclude_commandline",
+            "--noinclude_artifacts",
+            "--noimplicit_deps",
+            "--notool_deps",
+        ],
+    ];
+    let mut hits = 0;
+    for (e, expression) in expressions.into_iter().enumerate() {
+        for (f, format) in formats.into_iter().enumerate() {
+            // Every flag set in every format, over the expressions.
+            {
+                let flags = flag_sets[(e + f) % flag_sets.len()];
+                let output = format!("--output={format}");
+                let mut args = vec![expression, output.as_str()];
+                args.extend_from_slice(flags);
+                let cold = run(&args, &[("BAZEL_RS_SNAPSHOT", "off")]);
+                let warm = run(&args, &explain);
+                assert!(noted(&warm.3, "hit"), "{args:?}: {}", warm.3);
+                hits += 1;
+                assert_eq!(cold.0, warm.0, "{args:?}: {}", warm.2);
+                assert!(cold.1 == warm.1, "{args:?}: stdout differs");
+                assert_eq!(cold.2, warm.2, "{args:?}: stderr differs");
+            }
+        }
+    }
+    assert_eq!(hits, expressions.len() * formats.len());
+    // A changed template misses (aquery prints its text); so does a BUILD
+    // file. Each miss saves anew and prints what a cold aquery prints.
+    let args = ["deps(//pkg:all)", "--include_aspects"];
+    for (path, edit) in [
+        ("pkg/t.tmpl", "changed {X}\n"),
+        ("pkg/BUILD", "\n# edited\n"),
+    ] {
+        let file = ws.0.path().join(path);
+        let mut text = fs::read_to_string(&file).unwrap();
+        text.push_str(edit);
+        fs::write(&file, text).unwrap();
+        let warm = run(&args, &explain);
+        assert!(missed(&warm.3), "{path}: {}", warm.3);
+        assert!(noted(&warm.3, "saved"), "{path}: {}", warm.3);
+        let cold = run(&args, &[("BAZEL_RS_SNAPSHOT", "off")]);
+        assert!(cold.1 == warm.1, "{path}: stdout differs");
+        if path.ends_with(".tmpl") {
+            assert!(
+                String::from_utf8_lossy(&warm.1).contains("changed {X}"),
+                "{path}"
+            );
+        }
+        let again = run(&args, &explain);
+        assert!(noted(&again.3, "hit"), "{path}: {}", again.3);
+        assert!(again.1 == cold.1, "{path}: stdout differs");
+    }
+    // Verify mode analyzes beside the hit and agrees with it.
+    let verified = run(
+        &args,
+        &[
+            ("BAZEL_RS_SNAPSHOT", "verify"),
+            ("BAZEL_RS_SNAPSHOT_EXPLAIN", "1"),
+        ],
+    );
+    assert_eq!(verified.0, Some(0), "{}", verified.2);
+    assert!(!verified.2.contains("mismatch"), "{}", verified.2);
+    let cold = run(&args, &[("BAZEL_RS_SNAPSHOT", "off")]);
+    assert!(verified.1 == cold.1, "verify: stdout differs");
 }
 
 #[test]

@@ -560,14 +560,20 @@ consumer = rule(
 /// the fast one forced on these small walks (BAZEL_RS_EVAL_FROZEN_PREPARES=all).
 #[test]
 fn aquery_fast_paths_list_what_the_sequential_path_lists() {
+    // Every run analyzes (an aquery snapshot hit would print the first
+    // run's records whatever the path).
     let sequential: &[(&str, &str)] = &[
         ("BAZEL_RS_NO_COMMIT_AHEAD", "1"),
         ("BAZEL_RS_NO_WORKER_DELTAS", "1"),
         ("BAZEL_RS_EVAL_FROZEN_PREPARES", "0"),
+        ("BAZEL_RS_SNAPSHOT", "off"),
     ];
     let fast: &[&[(&str, &str)]] = &[
-        &[],
-        &[("BAZEL_RS_EVAL_FROZEN_PREPARES", "all")],
+        &[("BAZEL_RS_SNAPSHOT", "off")],
+        &[
+            ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all"),
+            ("BAZEL_RS_SNAPSHOT", "off"),
+        ],
         &[
             ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all"),
             ("BAZEL_RS_EVAL_JITTER", "300"),

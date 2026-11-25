@@ -1110,6 +1110,63 @@ fn run() -> Result<(), String> {
             }
         }
     }
+    // An aquery's snapshot (docs/AQUERY.md "Snapshot"): the configured
+    // graph and every action's description of its universe, keyed like the
+    // configured graph's (not print_action: it lists every input and
+    // prints the requested targets' files).
+    let mut aquery_session = None;
+    if let Some((expression, filters)) = aquery_expression.as_ref().filter(|_| !print_action) {
+        let patterns = aquery_options.universe(expression);
+        let relative = relative_directory(&root, &cwd)?;
+        let allow_yanked = std::env::var("BZLMOD_ALLOW_YANKED_VERSIONS").ok();
+        let started = bazel_rs::cquery_state::start_aquery(
+            bazel_rs::snapshot::key::Inputs {
+                command: "aquery",
+                workspace: &root,
+                cache: &cache,
+                cwd: &cwd,
+                relative_directory: &relative,
+                current_package: &current_package,
+                startup: &line.startup_args,
+                options: &options.priority,
+                targets: &patterns,
+                allow_yanked: allow_yanked.as_deref(),
+                full_validation: bazel_rs::repository_store::verify_mode()
+                    == bazel_rs::repository_store::VerifyMode::Full,
+            },
+            bazel_rs::snapshot::hit::ReplayInputs {
+                options: resolver_options.clone(),
+                environment: repository_environment.clone(),
+                downloads_enabled: repository_downloads_enabled,
+            },
+            &|| {
+                let mut options = resolver_options.clone();
+                options.registry_session = open_registry_session()?;
+                Ok(
+                    bazel_rs::repository::RepositorySet::with_options(root.clone(), options)
+                        .with_source_cache(cache.join("repositories"))
+                        .with_repository_downloads_enabled(false)
+                        .with_repository_environment(repository_environment.clone()),
+                )
+            },
+        )?;
+        aquery_session = started.session;
+        if let Some(hit) = started.hit {
+            return aquery_hit(
+                hit,
+                expression,
+                filters,
+                &aquery_options,
+                &relative,
+                loading_threads_for_report(
+                    &command,
+                    loading_phase_threads,
+                    &query_options,
+                    memory_limit_mb,
+                ),
+            );
+        }
+    }
     match snapshot_mode {
         bazel_rs::snapshot::Mode::Record => {
             snapshot.record = bazel_rs::snapshot::record::start(
@@ -1501,19 +1558,32 @@ fn run() -> Result<(), String> {
             warn(&warning);
         }
         // Only the selected targets' actions are printed: only theirs are
-        // described (all of them for --print_action).
+        // described (all of them for --print_action), unless the snapshot
+        // saves every action's description.
         let selection = (!print_action).then(|| {
             aquery_selection(&analysis, &expression, &aquery_options, &relative_directory)
         });
-        engine.aquery_describe(
-            &mut analysis,
-            selection
-                .as_ref()
-                .and_then(|selected| selected.as_ref().ok()),
-        );
+        let selected = selection
+            .as_ref()
+            .and_then(|selected| selected.as_ref().ok());
+        let records = match &aquery_session {
+            Some(_) => Some(engine.aquery_describe_snapshot(&mut analysis, selected)?),
+            None => {
+                engine.aquery_describe(&mut analysis, selected);
+                None
+            }
+        };
         drop(std::mem::ManuallyDrop::into_inner(engine));
         bazel_rs::perf_mark("aquery.engine_dropped");
         lockfile_gate.open();
+        if let (Some(session), Some(records)) = (aquery_session, records) {
+            session.finish(
+                &analysis.graph,
+                analysis.configurations(),
+                records,
+                &_lockfile_writer.0,
+            )?;
+        }
         bazel_rs::observed_fs::close_window();
         if print_action {
             let mnemonics = PRINT_ACTION_MNEMONICS
@@ -3468,6 +3538,48 @@ fn aquery_selection(
         relative,
         &mut std::collections::BTreeMap::new(),
     )
+}
+
+/// An aquery snapshot hit (docs/AQUERY.md "Snapshot"): the expression's
+/// selection over the stored configured graph, the selected targets'
+/// stored records, written like a cold aquery's.
+fn aquery_hit(
+    hit: bazel_rs::aquery_snapshot::Hit,
+    expression: &bazel_rs::query_language::Expr,
+    filters: &bazel_rs::aquery::Filters,
+    options: &bazel_rs::aquery::Options,
+    relative: &str,
+    threads: usize,
+) -> Result<(), String> {
+    bazel_rs::perf_mark("aquery.snapshot_hit");
+    let stripped = bazel_rs::aquery::strip_filters(expression).map_err(|error| {
+        format!(
+            "Error doing post analysis query: Evaluation of query \"{expression}\" failed: {error}"
+        )
+    })?;
+    let selected = hit.plan.graph.evaluate(
+        &stripped,
+        &options.query,
+        relative,
+        &mut std::collections::BTreeMap::new(),
+    )?;
+    let (actions, listings) = hit.load(&selected, threads)?;
+    let bazel_rs::aquery_snapshot::Hit { plan, records } = hit;
+    drop(records);
+    let analysis = bazel_rs::engine::aquery::Analysis::from_snapshot(
+        plan.graph,
+        plan.configurations,
+        actions,
+        listings,
+    );
+    bazel_rs::perf_mark("aquery.snapshot_loaded");
+    let printed = aquery_output(&analysis, &selected, filters, options)?;
+    bazel_rs::perf_mark("aquery.written");
+    if !printed {
+        // crate::aquery::interrupted.
+        fail_with(8, "build interrupted");
+    }
+    Ok(())
 }
 
 fn aquery_output(
