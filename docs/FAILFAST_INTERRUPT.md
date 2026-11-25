@@ -91,8 +91,13 @@ normally (its result is kept, like genuine's completed actions).
 
 ## Divergences
 
-- Output tree: bazel-rs runs every spawn in a private execution root and
-  publishes only what completed, so an interrupted standalone spawn leaves no
-  partial output in `bazel-bin` (genuine's ran in the execroot and leave
-  theirs), and the interrupted worker action's parameter file is not there.
+- Output tree (deliberate): bazel-rs runs every spawn in a private
+  execution root and publishes only what completed, so an interrupted
+  standalone spawn leaves no partial output in `bazel-bin` (genuine's ran in
+  the execroot and leave theirs), and the interrupted worker action's
+  parameter file is not there. Matching would mean publishing what an
+  interrupted action left behind — partial, unverified files no rerun reads
+  (genuine deletes an action's outputs before running it again) — into the
+  output tree that otherwise holds only completed results; no build or test
+  outcome depends on them (assessed on parity-small, 2026-11-25).
 - A remote test spawn is not interrupted (its call runs to its end).
