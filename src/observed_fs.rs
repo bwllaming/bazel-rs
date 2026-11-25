@@ -98,6 +98,20 @@ static RECORDING: AtomicBool = AtomicBool::new(false);
 static RECORDER: OnceLock<Recorder> = OnceLock::new();
 /// The window is a verify shadow ([`mark_shadow_window`]).
 static SHADOW: AtomicBool = AtomicBool::new(false);
+/// A tree's INTEGRITY record keeps only what the per-tree policy keeps
+/// ([`keep_per_tree_entries`]).
+static PER_TREE_ENTRIES: AtomicBool = AtomicBool::new(false);
+
+/// Record of each verified repository tree only the INTEGRITY entries the
+/// per-tree policy saves (its root, manifest and directories,
+/// crate::snapshot::validate::is_per_tree_entry) and its symlinks (which
+/// decide the observations it keeps below a tree), not one per file: for a
+/// window whose recording is saved under that policy and read by nothing
+/// else (an aquery snapshot's, crate::cquery_state; ~/code's
+/// kind(cc_.*) universe walks 453k entries, 68k saved).
+pub fn keep_per_tree_entries() {
+    PER_TREE_ENTRIES.store(true, Ordering::SeqCst);
+}
 
 thread_local! {
     static PRIVATE_RECORDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -1490,6 +1504,13 @@ impl Recorder {
                     format!("INTEGRITY {}: {error}", escape(path.as_os_str())),
                 ),
             }
+        }
+        if PER_TREE_ENTRIES.load(Ordering::Relaxed) {
+            entries.retain(|entry| {
+                entry.path == root
+                    || manifest.is_some_and(|manifest| entry.path == manifest)
+                    || matches!(entry.state, Ok((FileKind::Dir | FileKind::Symlink, _)))
+            });
         }
         entries.sort_by(|a, b| a.path.cmp(&b.path));
         RepositoryRecord {

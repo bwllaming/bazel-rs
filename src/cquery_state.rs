@@ -290,6 +290,11 @@ pub fn start_aquery(
     // Verify mode also checks the stored listings against the planned
     // actions' (the hit's comparison sees only stored forms).
     crate::aquery::set_parity_checks(mode == snapshot::Mode::Verify);
+    // The window's recording is saved under the per-tree policy and read by
+    // nothing else: trees keep only the entries it saves.
+    if snapshot::validate::Policy::current() == snapshot::validate::Policy::PerTree {
+        crate::observed_fs::keep_per_tree_entries();
+    }
     if !crate::observed_fs::open_window() {
         return Ok(AqueryStarted {
             hit: None,
