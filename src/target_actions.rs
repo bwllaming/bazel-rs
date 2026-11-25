@@ -110,7 +110,14 @@ impl ActionView {
                     action.extra.mnemonic.clone()
                 },
                 None,
-                Content::Text(native_string(&write.content)),
+                // ParameterFileWriteAction.getStarlarkContent (:186-197):
+                // none when it has (tree artifact) inputs, whose contents
+                // analysis does not know.
+                if registered.inputs.is_empty() {
+                    Content::Text(native_string(&write.content))
+                } else {
+                    Content::None
+                },
                 None,
             )
         } else if let Some(substitutions) = template {

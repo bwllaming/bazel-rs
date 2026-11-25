@@ -293,6 +293,7 @@ pub fn parse(
     argv: &[String],
     env: BTreeMap<String, OsString>,
     execution_info: &BTreeMap<String, String>,
+    path_mapped: bool,
 ) -> Result<WorkerConfig, ParseError> {
     let options = options();
     let failure = |reason: &str| ParseError {
@@ -363,10 +364,15 @@ pub fn parse(
             });
         }
     };
-    // WorkerParser.createWorkerKey (no dynamic execution, no path mapping).
+    // WorkerParser.createWorkerKey (no dynamic execution): a path-mapped
+    // spawn (crate::path_mapping, Spawns.usesPathMapping) must be sandboxed.
     let should_multiplex =
         options.multiplex && requirement(execution_info, "supports-multiplex-workers");
-    let (sandboxed, multiplex) = if should_multiplex {
+    let can_sandbox_multiplex = options.multiplex_sandboxing
+        && requirement(execution_info, "supports-multiplex-sandboxing");
+    let (sandboxed, multiplex) = if path_mapped {
+        (true, should_multiplex && can_sandbox_multiplex)
+    } else if should_multiplex {
         (
             options.multiplex_sandboxing
                 && requirement(execution_info, "supports-multiplex-sandboxing"),
@@ -1307,16 +1313,21 @@ mod tests {
             &strings(&["tool", "-x", "@p", "--flagfile=q", "@@e"]),
             BTreeMap::new(),
             &info,
+            false,
         )
         .unwrap();
         assert_eq!(
             config.key.args,
             strings(&["tool", "-x", "--persistent_worker"])
         );
+        // A path-mapped spawn's worker is sandboxed (WorkerParser
+        // .createWorkerKey: mustSandbox).
+        let mapped = parse("M", &strings(&["tool", "@p"]), BTreeMap::new(), &info, true).unwrap();
+        assert!(mapped.key.sandboxed);
         // The legacy pattern does not exclude @@ (expansion keeps it literal).
         assert_eq!(config.flag_files, strings(&["@p", "--flagfile=q", "@@e"]));
         assert_eq!(config.key.protocol, Protocol::Proto);
-        let error = parse("M", &strings(&["tool", "a"]), BTreeMap::new(), &info)
+        let error = parse("M", &strings(&["tool", "a"]), BTreeMap::new(), &info, false)
             .err()
             .unwrap();
         assert!(!error.environmental);

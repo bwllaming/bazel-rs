@@ -639,8 +639,17 @@ pub fn action_key(
             path_mapped,
         } => {
             fp.string(SPAWN_GUID);
-            for part in *command_lines {
+            for (index, part) in command_lines.iter().enumerate() {
                 match part {
+                    // The executable path (SingletonCommandLine with
+                    // hasExecutablePath, AbstractCommandLine.addToFingerprint
+                    // over PathMapper.forActionKey): FOR_FINGERPRINTING of a
+                    // path-mapped spawn's (crate::path_mapping).
+                    CommandLinePart::Flat(arguments)
+                        if *path_mapped && index == 0 && arguments.len() == 1 =>
+                    {
+                        fp.string(&crate::path_mapping::fingerprint_executable(&arguments[0]));
+                    }
                     CommandLinePart::Flat(arguments) => {
                         for argument in arguments {
                             fp.string(argument);

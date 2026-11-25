@@ -581,6 +581,19 @@ pub fn resolve(
     execution_info: &BTreeSet<String>,
     worker: bool,
 ) -> Result<Strategy, String> {
+    resolve_mapped(mnemonic, execution_info, worker, false)
+}
+
+/// [`resolve`] of a spawn that may be path-mapped (crate::path_mapping,
+/// Spawns.usesPathMapping): LocalSpawnRunner.canExec rejects it (its
+/// paths need a separate execution root), so `standalone` is skipped and
+/// the error says why (SpawnStrategyResolver.java:77-96).
+pub fn resolve_mapped(
+    mnemonic: &str,
+    execution_info: &BTreeSet<String>,
+    worker: bool,
+    path_mapped: bool,
+) -> Result<Strategy, String> {
     let list = strategies(mnemonic)?;
     let sandboxable = !execution_info.contains("no-sandbox")
         && !execution_info.contains("nosandbox")
@@ -592,6 +605,7 @@ pub fn resolve(
         && !execution_info.contains("no-remote-exec");
     for strategy in &list {
         match strategy {
+            Strategy::Standalone if path_mapped => continue,
             Strategy::Standalone | Strategy::ProcessWrapper => return Ok(*strategy),
             Strategy::Sandboxed if sandboxable && supported() => return Ok(*strategy),
             Strategy::Worker if worker => return Ok(*strategy),
@@ -600,10 +614,15 @@ pub fn resolve(
         }
     }
     Err(format!(
-        "{mnemonic} spawn cannot be executed with any of the available strategies: [{}]. Your \
+        "{mnemonic} spawn{} cannot be executed with any of the available strategies: [{}]. Your \
          --spawn_strategy, --genrule_strategy, --strategy and/or \
          --allowed_strategies_by_exec_platform flags are probably too strict. Visit \
          https://github.com/bazelbuild/bazel/issues/7480 for advice.",
+        if path_mapped {
+            ", which requires sandboxing due to path mapping,"
+        } else {
+            ""
+        },
         list.iter()
             .map(|strategy| strategy.identifier())
             .collect::<Vec<_>>()

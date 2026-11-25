@@ -134,6 +134,7 @@ pub(super) fn run(
             .collect();
         let view = PreparedAction {
             inputs,
+            mapped: false,
             origins: BTreeMap::new(),
             outputs: prepared.outputs.clone(),
             key: prepared.key.clone(),
@@ -267,6 +268,7 @@ pub(super) fn run(
             log_spawn(
                 &attempt,
                 &view,
+                &attempt,
                 execroot,
                 runner,
                 result.status.code().unwrap_or(1),
@@ -371,6 +373,7 @@ fn run_worker(
         &arguments(attempt),
         environment,
         &attempt.extra.execution_info,
+        false,
     )
     .map_err(|error| {
         if error.environmental {

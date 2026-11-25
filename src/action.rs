@@ -3434,6 +3434,11 @@ fn read_source_directory(root: &Path, cache: Option<&Path>) -> Result<SourceDire
 
 struct PreparedAction {
     inputs: BTreeMap<PathBuf, Staged>,
+    /// The spawn runs path-mapped (crate::path_mapping): its effective
+    /// output paths mode is STRIP and no two of its inputs (or an input and
+    /// an output) from different configurations map to one path with
+    /// different contents ([`mapped_spawn`] is what executes).
+    mapped: bool,
     /// Absolute input paths by destination (the first mapping of a
     /// duplicated destination): symlink outputs point at them. Only
     /// transforms ([`run_transform`] and their keys) read them: empty for
@@ -4305,7 +4310,7 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
     match (&action.write, &action.program, &action.extra.transform) {
         (Some(write), _, _) => {
             frame(&mut hash, b"write");
-            frame(&mut hash, &write.content);
+            frame(&mut hash, written_content(action, write));
             frame(&mut hash, &[u8::from(write.executable)]);
         }
         (
@@ -4548,13 +4553,190 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
             &postcard::to_stdvec(java).map_err(|e| e.to_string())?,
         );
     }
+    // StrippingPathMapper.isPathStrippable with the inputs' metadata: a
+    // spawn whose effective output paths mode is STRIP runs mapped unless
+    // its inputs collide (crate::path_mapping). Only mapped spawns frame
+    // this block (every other key is unchanged): the mapped command line;
+    // the mapped layout is a function of the framed destinations.
+    let mapped = action.write.is_none()
+        && extra.transform.is_none()
+        && path_mapping_effective(action)
+        && strippable(&inputs, &outputs);
+    if mapped {
+        let mapping = extra
+            .path_mapping
+            .as_deref()
+            .expect("an effective path mapping");
+        frame(&mut hash, b"path-mapping-strip");
+        frame(&mut hash, crate::path_mapping::GUID.as_bytes());
+        let argv = mapped_arguments(action);
+        frame_count(&mut hash, argv.len());
+        for argument in &argv {
+            frame(&mut hash, argument.as_bytes());
+        }
+        let params = mapped_param_files(action);
+        frame_count(&mut hash, params.len());
+        for (path, content) in &params {
+            frame(&mut hash, path.as_os_str().as_bytes());
+            frame(&mut hash, content);
+        }
+        if let Some(error) = &mapping.error {
+            frame(&mut hash, b"error");
+            frame(&mut hash, error.as_bytes());
+        }
+    }
     let key = hex(&hash.finalize());
     Ok(PreparedAction {
         inputs,
+        mapped,
         origins,
         outputs,
         key,
     })
+}
+
+/// The bytes a write action writes: a ParameterFileWriteAction of a
+/// mapped Args writes its mapped command line (crate::path_mapping).
+fn written_content<'a>(action: &'a Action, write: &'a WriteAction) -> &'a [u8] {
+    action
+        .extra
+        .path_mapping
+        .as_ref()
+        .and_then(|mapping| mapping.write_content.as_deref())
+        .unwrap_or(&write.content)
+}
+
+/// StrippingPathMapper.isPathStrippable over the staged inputs (by
+/// destination) and the outputs: two inputs from different configurations
+/// with one root-relative path must have equal contents; an output may
+/// not share its root-relative path with an input (it has no metadata
+/// yet).
+fn strippable(inputs: &BTreeMap<PathBuf, Staged>, outputs: &[PathBuf]) -> bool {
+    let mut seen: HashMap<&str, (&Path, Option<&Staged>)> = HashMap::new();
+    let entries = inputs
+        .iter()
+        .map(|(path, staged)| (path.as_path(), Some(staged)))
+        .chain(outputs.iter().map(|path| (path.as_path(), None)));
+    for (path, staged) in entries {
+        let Some(text) = path.to_str() else {
+            continue;
+        };
+        let Some(key) = crate::path_mapping::collision_key(text) else {
+            continue;
+        };
+        match seen.entry(key) {
+            hash_map::Entry::Vacant(slot) => {
+                slot.insert((path, staged));
+            }
+            hash_map::Entry::Occupied(previous) => {
+                let (previous_path, previous_staged) = *previous.get();
+                if previous_path == path {
+                    continue;
+                }
+                let same = match (previous_staged, staged) {
+                    (Some(Staged::File(a)), Some(Staged::File(b))) => a.digest == b.digest,
+                    (Some(a), Some(b)) => a == b,
+                    _ => false,
+                };
+                if !same {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// The parameter files of a mapped spawn: its mapped command line's, then
+/// the action's other parameter-file-like inputs (a tool's empty runfiles)
+/// at their mapped paths.
+fn mapped_param_files(action: &Action) -> Vec<(PathBuf, Vec<u8>)> {
+    let Some(mapping) = &action.extra.path_mapping else {
+        return action.extra.param_files.clone();
+    };
+    let mut files = mapping.param_files.clone();
+    files.extend(
+        action
+            .extra
+            .param_files
+            .iter()
+            .skip(mapping.replaces)
+            .map(|(path, content)| {
+                (
+                    crate::path_mapping::strip_path(path).into_owned(),
+                    content.clone(),
+                )
+            }),
+    );
+    files
+}
+
+/// The spawn a mapped action executes (crate::path_mapping; Spawn with a
+/// StrippingPathMapper): the mapped program, arguments and parameter
+/// files; its inputs staged at, and its outputs produced at, their mapped
+/// paths (SpawnInputExpander, SandboxHelpers.getOutputs), from which they
+/// are published at their own ([`execute_with_remote`]). Colliding inputs
+/// have equal contents ([`strippable`]): one of them is staged.
+fn mapped_spawn(
+    action: &Action,
+    prepared: &PreparedAction,
+) -> Result<(Action, PreparedAction), String> {
+    let mapping = action
+        .extra
+        .path_mapping
+        .as_deref()
+        .expect("a mapped spawn has its mapping");
+    if let Some(error) = &mapping.error {
+        return Err(format!("action '{}' failed: {error}", action.id));
+    }
+    let map = |path: &Path| crate::path_mapping::strip_path(path).into_owned();
+    let map_set = |paths: &BTreeSet<PathBuf>| paths.iter().map(|path| map(path)).collect();
+    let mut spawn = action.clone();
+    spawn.program = mapping.program.clone().or_else(|| action.program.clone());
+    if let Some(arguments) = &mapping.arguments {
+        spawn.arguments = arguments.clone();
+    }
+    spawn.extra.param_files = mapped_param_files(action);
+    let mut seen = std::collections::HashSet::new();
+    spawn.inputs = action
+        .inputs
+        .iter()
+        .map(|(source, destination)| (source.clone(), SharedPath::from(map(destination))))
+        .filter(|(_, destination)| seen.insert(destination.clone()))
+        .collect();
+    spawn.outputs = action.outputs.iter().map(|path| map(path)).collect();
+    spawn.extra.tree_outputs = map_set(&action.extra.tree_outputs);
+    spawn.extra.symlink_outputs = map_set(&action.extra.symlink_outputs);
+    spawn.extra.symlink_inputs = map_set(&action.extra.symlink_inputs);
+    spawn.extra.tree_inputs = map_set(&action.extra.tree_inputs);
+    spawn.extra.source_directories = map_set(&action.extra.source_directories);
+    spawn.extra.constant_metadata = action
+        .extra
+        .constant_metadata
+        .iter()
+        .map(|path| map(path))
+        .collect();
+    spawn.extra.path_mapping = None;
+    let mut inputs = BTreeMap::new();
+    for (path, staged) in &prepared.inputs {
+        inputs.entry(map(path)).or_insert_with(|| staged.clone());
+    }
+    let mut origins = BTreeMap::new();
+    for (path, origin) in &prepared.origins {
+        origins.entry(map(path)).or_insert_with(|| origin.clone());
+    }
+    let mut outputs: Vec<PathBuf> = prepared.outputs.iter().map(|path| map(path)).collect();
+    outputs.sort();
+    Ok((
+        spawn,
+        PreparedAction {
+            inputs,
+            mapped: true,
+            origins,
+            outputs,
+            key: prepared.key.clone(),
+        },
+    ))
 }
 
 fn ensure_directory(path: &Path) -> Result<(), String> {
@@ -7581,10 +7763,14 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
 /// inputs (sorted by exec path, directories expanded), declared and actual
 /// outputs (read from the execution root before publication), runner and
 /// exit code.
+/// `action` is the executed spawn (a mapped action's mapped spawn, whose
+/// argv and inputs the log shows), `real` the action: the log lists its
+/// outputs at their own paths (crate::path_mapping).
 #[allow(clippy::too_many_arguments)]
 fn log_spawn(
     action: &Action,
     prepared: &PreparedAction,
+    real: &Action,
     execroot: &Path,
     runner: &str,
     exit_code: i32,
@@ -7657,13 +7843,14 @@ fn log_spawn(
             .map(|(name, value)| (name, value.to_string_lossy().into_owned()))
             .collect(),
         inputs,
-        listed_outputs: action.outputs.iter().map(|path| text(path)).collect(),
-        actual_outputs: action
+        listed_outputs: real.outputs.iter().map(|path| text(path)).collect(),
+        actual_outputs: real
             .outputs
             .iter()
-            .map(|name| {
+            .zip(&action.outputs)
+            .map(|(name, produced)| {
                 let exec = text(name);
-                let files = crate::exec_log::output_files(&exec, &execroot.join(name));
+                let files = crate::exec_log::output_files(&exec, &execroot.join(produced));
                 (exec, files)
             })
             .collect(),
@@ -8418,7 +8605,29 @@ pub fn execute_with_remote(
     count_check(0, &mut clock);
     let prepared = prepare(action, existing.as_deref())?;
     count_check(1, &mut clock);
-    let (inputs, outputs, key) = (&prepared.inputs, &prepared.outputs, &prepared.key);
+    // The spawn that executes (crate::path_mapping): the action itself, or
+    // its path-mapped spawn, whose inputs are staged and whose outputs are
+    // produced at mapped paths; the entry publishes the outputs at their
+    // own paths ([`mapped_spawn`]).
+    let mapped_view = if prepared.mapped {
+        Some(mapped_spawn(action, &prepared)?)
+    } else {
+        None
+    };
+    let (spawn, spawn_prepared) = match &mapped_view {
+        Some((spawn, prepared)) => (spawn, prepared),
+        None => (action, &prepared),
+    };
+    // Where the spawn produces an output of the action.
+    let spawn_path = |name: &Path| -> PathBuf {
+        if prepared.mapped {
+            crate::path_mapping::strip_path(name).into_owned()
+        } else {
+            name.to_path_buf()
+        }
+    };
+    let (outputs, key) = (&prepared.outputs, &prepared.key);
+    let inputs = &spawn_prepared.inputs;
     let directories = ensure_cache(cache_root)?;
     let CacheDirectories {
         root,
@@ -8567,8 +8776,13 @@ pub fn execute_with_remote(
         );
     let early_strategy = match module {
         Some(module) if process && module.executor().is_some() => Some(
-            crate::sandbox::resolve(&action.extra.mnemonic, &execution_info, can_worker)
-                .map_err(|error| format!("action '{}': {error}", action.id))?,
+            crate::sandbox::resolve_mapped(
+                &action.extra.mnemonic,
+                &execution_info,
+                can_worker,
+                prepared.mapped,
+            )
+            .map_err(|error| format!("action '{}': {error}", action.id))?,
         ),
         _ => None,
     };
@@ -8625,7 +8839,7 @@ pub fn execute_with_remote(
         None => Vec::new(),
     };
     let remote_spec = match remote {
-        Some(_) => match remote_action(action, &prepared, output_paths, &platform) {
+        Some(_) => match remote_action(spawn, spawn_prepared, output_paths, &platform) {
             Ok(spec) => Some(spec),
             Err(reason) => {
                 crate::remote_cache::warn(&crate::remote_cache::CacheError::Other(format!(
@@ -8643,14 +8857,14 @@ pub fn execute_with_remote(
     // `--remote_local_fallback` after a failed remote execution.
     let mut fallback = false;
     if remote_exec && let (Some(remote), Some((spec, blobs))) = (remote, &remote_spec) {
-        match run_remotely(remote, action, spec, blobs, &execroot)? {
+        match run_remotely(remote, spawn, spec, blobs, &execroot)? {
             RemoteRun::Done(done) => remote_hit = Some(done),
             RemoteRun::Fallback => fallback = true,
         }
     } else if let (Some(remote), Some((spec, _))) = (remote, &remote_spec)
         && read.any()
     {
-        let declared = declared_outputs(action)?;
+        let declared = declared_outputs(spawn)?;
         let stay_remote = |index: usize| {
             crate::remote_outputs::may_stay_remote(&action.id, index, &action.outputs[index])
         };
@@ -8710,11 +8924,24 @@ pub fn execute_with_remote(
         // A failed remote spawn falls back to
         // `--remote_local_fallback_strategy`, `local` (standalone).
         let strategy = match early_strategy {
+            // A path-mapped spawn cannot run unsandboxed in the execution
+            // root (LocalSpawnRunner.canExec).
+            _ if fallback && prepared.mapped => {
+                return Err(format!(
+                    "action '{}': {} spawn, which requires sandboxing due to path mapping, cannot fall back to local execution",
+                    action.id, action.extra.mnemonic
+                ));
+            }
             _ if fallback => crate::sandbox::Strategy::Standalone,
             Some(strategy) => strategy,
             None if java_strategy.is_some() => java_strategy.expect("checked Java strategy"),
-            None => crate::sandbox::resolve(&action.extra.mnemonic, &execution_info, can_worker)
-                .map_err(|error| format!("action '{}': {error}", action.id))?,
+            None => crate::sandbox::resolve_mapped(
+                &action.extra.mnemonic,
+                &execution_info,
+                can_worker,
+                prepared.mapped,
+            )
+            .map_err(|error| format!("action '{}': {error}", action.id))?,
         };
         if strategy == crate::sandbox::Strategy::Worker && java_strategy.is_none() {
             // WorkerParser.compute: the worker key's environment is the
@@ -8723,9 +8950,10 @@ pub fn execute_with_remote(
             environment.insert("TMPDIR".into(), tmp.clone().into_os_string());
             let config = crate::worker::parse(
                 &action.extra.mnemonic,
-                &arguments(action),
+                &arguments(spawn),
                 environment,
                 &action.extra.execution_info,
+                prepared.mapped,
             )
             .map_err(|error| {
                 if error.environmental {
@@ -8826,16 +9054,17 @@ pub fn execute_with_remote(
     if worker.as_ref().is_some_and(|(lease, _)| !lease.sandboxed()) {
         stage_producer_siblings(root, inputs, &execroot)?;
     }
-    for (name, content) in &action.extra.param_files {
+    for (name, content) in &spawn.extra.param_files {
         write_file(&execroot.join(name), content, 0)?;
     }
     for name in outputs {
-        if let Some(parent) = execroot.join(name).parent() {
+        let produced = execroot.join(spawn_path(name));
+        if let Some(parent) = produced.parent() {
             ensure_directory(parent)?;
         }
         // Bazel creates tree artifact directories before execution.
         if action.extra.tree_outputs.contains(name) {
-            ensure_directory(&execroot.join(name))?;
+            ensure_directory(&produced)?;
         }
     }
     let started = SystemTime::now();
@@ -8855,7 +9084,7 @@ pub fn execute_with_remote(
     if let Some(write) = &action.write {
         write_executable_file(
             &execroot.join(&outputs[0]),
-            &write.content,
+            written_content(action, write),
             if write.executable { 0o111 } else { 0 },
         )?;
     } else if let Some(transform) = &action.extra.transform {
@@ -8884,7 +9113,7 @@ pub fn execute_with_remote(
         // The downloaded (verified) outputs take the place of the process's;
         // they are published below like executed outputs.
         for (name, output) in action.outputs.iter().zip(&hit.outputs) {
-            write_downloaded(&execroot.join(name), output)?;
+            write_downloaded(&execroot.join(spawn_path(name)), output)?;
         }
         replay_logs(action, &hit.stdout, &hit.stderr);
         if crate::exec_log::active() {
@@ -8892,8 +9121,9 @@ pub fn execute_with_remote(
             // hit", RemoteSpawnRunner's "remote" (a server-side cached
             // result is a cache hit of the remote runner).
             log_spawn(
+                spawn,
+                spawn_prepared,
                 action,
-                &prepared,
                 &execroot,
                 if hit.cached && hit.disk {
                     "disk cache hit"
@@ -8978,12 +9208,12 @@ pub fn execute_with_remote(
         // flag files expanded into a WorkRequest, the response's output is
         // the spawn's stderr (`response.getOutputBytes().writeTo(outErr
         // .getErrorStream())`), its exit code the spawn's.
-        report_subcommand(action, &execroot, "worker");
+        report_subcommand(spawn, &execroot, "worker");
         crate::progress::spawn_started(crate::progress::Strategy::Worker);
         runner = Some("worker");
-        let request_inputs = worker_request_inputs(inputs, &action.extra.param_files);
+        let request_inputs = worker_request_inputs(inputs, &spawn.extra.param_files);
         let read = |path: &str| -> Option<io::Result<Vec<u8>>> {
-            declared_input(inputs, &action.extra.param_files, Path::new(path))
+            declared_input(inputs, &spawn.extra.param_files, Path::new(path))
                 .then(|| fs::read(execroot.join(path)))
         };
         check_interrupt(action)?;
@@ -9007,8 +9237,9 @@ pub fn execute_with_remote(
         check_staged(&staged, &execroot).map_err(|e| format!("action '{}': {e}", action.id))?;
         if crate::exec_log::active() {
             log_spawn(
+                spawn,
+                spawn_prepared,
                 action,
-                &prepared,
                 &execroot,
                 "worker",
                 response.exit_code,
@@ -9020,7 +9251,7 @@ pub fn execute_with_remote(
         if response.exit_code != 0 {
             // WorkerSpawnRunner: the response's output is the spawn's stderr.
             return Err(crate::action_console::spawn_failure(
-                action,
+                spawn,
                 response.exit_code,
                 &execroot,
                 false,
@@ -9036,13 +9267,13 @@ pub fn execute_with_remote(
         let stderr_path = work.0.join("stderr.log");
         let stdout = create_log(&stdout_path)?;
         let stderr = create_log(&stderr_path)?;
-        let argv = arguments(action);
+        let argv = arguments(spawn);
         let (strategy, execution_info) = spawn_strategy
             .take()
             .expect("a process spawn resolved its strategy");
         sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
         runner = Some(strategy.runner_name());
-        report_subcommand(action, &execroot, strategy.runner_name());
+        report_subcommand(spawn, &execroot, strategy.runner_name());
         crate::progress::spawn_started(match strategy {
             crate::sandbox::Strategy::Sandboxed => crate::sandbox::sandboxed_progress(),
             crate::sandbox::Strategy::ProcessWrapper => {
@@ -9163,8 +9394,9 @@ pub fn execute_with_remote(
         }
         if crate::exec_log::active() {
             log_spawn(
+                spawn,
+                spawn_prepared,
                 action,
-                &prepared,
                 &execroot,
                 match strategy {
                     crate::sandbox::Strategy::Sandboxed
@@ -9190,7 +9422,7 @@ pub fn execute_with_remote(
             );
             let debug = sandboxed && crate::sandbox::debug();
             let reported = crate::action_console::spawn_failure(
-                action,
+                spawn,
                 crate::action_console::raw_exit(status),
                 &execroot,
                 sandbox_strategy && !crate::sandbox::debug(),
@@ -9243,7 +9475,7 @@ pub fn execute_with_remote(
             .filter(|name| !action.extra.tree_outputs.contains(*name))
         {
             // publish_file checks and normalizes it again.
-            let path = execroot.join(name);
+            let path = execroot.join(spawn_path(name));
             if regular_file(&path, None).is_ok() {
                 let _ = set_mode(&path, OUTPUT_MODE);
             }
@@ -9261,7 +9493,11 @@ pub fn execute_with_remote(
                 };
                 (
                     name,
-                    walk_tree(&execroot.join(name), Some(root), TreeRead::Output(output)),
+                    walk_tree(
+                        &execroot.join(spawn_path(name)),
+                        Some(root),
+                        TreeRead::Output(output),
+                    ),
                 )
             })
             .collect();
@@ -9303,7 +9539,7 @@ pub fn execute_with_remote(
         && remote.is_some_and(|_| remote_write(remote_exec, fallback, write).any())
     {
         for name in &action.extra.tree_outputs {
-            let tree = tree_upload(&execroot.join(name)).unwrap_or_else(|error| {
+            let tree = tree_upload(&execroot.join(spawn_path(name))).unwrap_or_else(|error| {
                 crate::remote_cache::warn(&crate::remote_cache::CacheError::Other(error));
                 None
             });
@@ -9324,7 +9560,7 @@ pub fn execute_with_remote(
             !remote_only.contains_key(*name) && !action.extra.symlink_outputs.contains(*name)
         })
         .filter(|name| {
-            fs::symlink_metadata(execroot.join(name))
+            fs::symlink_metadata(execroot.join(spawn_path(name)))
                 .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
         })
         .map(|name| (name, action.extra.tree_outputs.contains(name)))
@@ -9335,7 +9571,7 @@ pub fn execute_with_remote(
         ));
     }
     for name in outputs {
-        let source = execroot.join(name);
+        let source = execroot.join(spawn_path(name));
         let target = completed.join("outputs").join(name);
         let tree_output = action.extra.tree_outputs.contains(name);
         let mut publish = || -> Result<Output, String> {
@@ -9541,7 +9777,10 @@ pub fn execute_with_remote(
                             .map_err(|e| io_error("cannot read output", &path, e))?,
                     ))
                 };
-                Ok(output.map(|output| (crate::remote_cache::path_string(name), output)))
+                // The spawn's output path (the mapped one of a mapped spawn,
+                // RemotePathResolver.createMapped).
+                Ok(output
+                    .map(|output| (crate::remote_cache::path_string(&spawn_path(name)), output)))
             })
             .collect::<Result<Option<Vec<_>>, String>>()?;
         // RemoteExecutionService.reportUploadError: every upload failure,

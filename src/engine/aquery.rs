@@ -967,6 +967,11 @@ impl Engine {
                         action.extra.mnemonic.clone()
                     };
                     record.param_file = Some(param.arguments.to_vec());
+                    // ParameterFileWriteAction.getExecutionInfo (:140-145).
+                    if param.path_mapped {
+                        record.execution_info =
+                            vec![(crate::path_mapping::REQUIREMENT.to_owned(), String::new())];
+                    }
                     record.action_key = crate::aquery_key::action_key(
                         &KeyKind::ParamFileWrite {
                             file_type: param.file_type,

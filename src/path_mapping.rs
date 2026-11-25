@@ -114,18 +114,33 @@ pub fn strip_path(path: &std::path::Path) -> Cow<'_, std::path::Path> {
 /// `hasExecutablePath`: a File's exec path, or a string executable that is
 /// a normalized path), `None` when the mapping leaves it unchanged.
 pub fn map_executable(program: &str) -> Option<String> {
-    let normalized = !program.contains("//")
-        && !program.ends_with('/')
-        && program
-            .split('/')
-            .all(|segment| segment != "." && segment != "..");
-    if !normalized {
+    if !normalized(program) {
         return None;
     }
     match strip(program) {
         Cow::Owned(mapped) => Some(mapped),
         Cow::Borrowed(_) => None,
     }
+}
+
+/// [`fingerprint`] of an executable path (a normalized path only, like
+/// [`map_executable`]).
+pub fn fingerprint_executable(program: &str) -> Cow<'_, str> {
+    if normalized(program) {
+        fingerprint(program)
+    } else {
+        Cow::Borrowed(program)
+    }
+}
+
+/// PathFragment.create(path).getPathString() equals `path` (no empty, `.`
+/// or `..` segment, no trailing separator).
+fn normalized(path: &str) -> bool {
+    !path.contains("//")
+        && !path.ends_with('/')
+        && path
+            .split('/')
+            .all(|segment| segment != "." && segment != "..")
 }
 
 /// PathMapperConstants.FOR_FINGERPRINTING: the mapper of the action key of
