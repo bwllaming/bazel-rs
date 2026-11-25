@@ -107,10 +107,7 @@ impl Workspace {
                 if !path.exists() {
                     continue;
                 }
-                let exec = format!(
-                    "bazel-out/{}/{rest}",
-                    config.file_name().to_string_lossy()
-                );
+                let exec = format!("bazel-out/{}/{rest}", config.file_name().to_string_lossy());
                 if path.is_dir() {
                     let mut files = Vec::new();
                     walk(&path, &path, &mut files);
@@ -177,10 +174,7 @@ fn mapped_spawns(log: &Path) -> Vec<Value> {
                     .unwrap()
                     .iter()
                     .map(|input| {
-                        Value::from(vec![
-                            input["path"].clone(),
-                            input["digest"]["hash"].clone(),
-                        ])
+                        Value::from(vec![input["path"].clone(), input["digest"]["hash"].clone()])
                     })
                     .collect(),
             );
