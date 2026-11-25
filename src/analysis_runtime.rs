@@ -616,6 +616,25 @@ impl Context {
                 .modifiers
                 .as_ref()
                 .map(|modifiers| modifiers.to_vec());
+            // A native process action of a `strip` configuration (Javac,
+            // Turbine, JavaResourceJar, C++ compiles, ...): Bazel maps its
+            // own command line when it supports path mapping, which the
+            // native profile does not model; such a spawn fails explicitly
+            // when it would run mapped (crate::action::mapped_spawn) instead
+            // of running with unmapped paths.
+            if self.path_mapping.strip && extra.path_mapping.is_none() {
+                extra.path_mapping = Some(Box::new(crate::action::PathMapping {
+                    error: Some(format!(
+                        "path mapping (--experimental_output_paths=strip) of the native {} action is not modelled in the native profile",
+                        if extra.mnemonic.is_empty() {
+                            "Action"
+                        } else {
+                            extra.mnemonic.as_str()
+                        }
+                    )),
+                    ..Default::default()
+                }));
+            }
         }
         let mut action = Action {
             id: format!("{}#{}", self.action_owner, actions.len()),
