@@ -389,27 +389,38 @@ save), `Engine::aquery_describe_snapshot` (src/engine/aquery.rs).
   are the same). Under `--verify_repo_tampering` (full policy) every entry
   is recorded, as for builds.
 
-~/code (non-LTO fast builds, 3 alternating rounds, load 13-26 from other
+~/code (non-LTO fast builds, 3 alternating rounds, load 15-27 from other
 work; output byte-identical in every run; a cold run of this branch is a
 miss that saves):
 
-| command | before | miss (saves) | `BAZEL_RS_SNAPSHOT=off` | hit | hit peak RSS |
-|---|---|---|---|---|---|
-| `aquery 'kind("cc_.*", //src/...)'` (175,608 actions, 411 printed) | 46.6-50.0 s, 8.5 GB | 53.8-58.0 s, 8.9 GB | 45.8 s | 1.4-1.7 s | 1.9 GB |
-| `aquery 'deps(//src/python/tools/...)'` (2,613 actions, 437 MB of text) | 5.0-5.8 s | 5.4-5.8 s | 5.2 s | 1.7-2.5 s (0.3 s before the formatter) | 0.2 GB |
+| command | before | miss (saves) | `BAZEL_RS_SNAPSHOT=off` | hit |
+|---|---|---|---|---|
+| `aquery 'kind("cc_.*", //src/...)'` (175,608 actions, 411 printed) | 47.8-49.0 s, 8,463-8,465 MiB | 52.9-54.3 s, 8,757-8,773 MiB | 47.9 s, 8,487 MiB | 1.5-1.6 s, 1,629-1,642 MiB |
+| `aquery 'deps(//src/python/tools/...)'` (2,613 actions, 437 MB of text) | 5.3 s, 1,048-1,079 MiB | 5.6-5.7 s, 1,093-1,102 MiB | 5.0 s | 1.7-1.8 s (0.3 s before the formatter), 210-218 MiB |
 
-A miss costs ~7 s more than before on kind(cc_.*): ~5 s of analysis under
-the recording window (observed_fs, the same cost as a cquery miss; +0.4 GB
-peak for its observations) and ~2.5 s after it: group table 0.6 s,
-describing and encoding the universe 0.7 s, the window's inputs 0.8 s, the
-graph's frames 0.6 s, the write 0.2 s (describing the universe is
-streamed: no peak over the analysis's). `BAZEL_RS_SNAPSHOT=off` is the
-path before, unchanged. The kind(cc_.*) snapshot is 83 MB: PLAN ~35 MB
-(the graph, as a cquery snapshot of the universe) and AQUERY 47.7 MB (137 MB
-before the per-block string tables); the Python one 4 MB. A kind(cc_.*)
-hit: validation 0.56 s, the graph's inflate 0.1 s and chunked postcard
-decode 0.4 s (on 8 threads; 1.15 s decoded whole), the selected blocks
-0.03 s, the output 0.12 s.
+A miss costs ~5 s more than before on kind(cc_.*): ~2.5 s of analysis
+under the recording window (observed_fs, as a cquery miss) and ~2.5 s
+after it: group table 0.6 s, describing and encoding the universe 0.8 s,
+the window's inputs 0.7 s, the graph's frames 0.3 s, the write 0.2 s.
+`BAZEL_RS_SNAPSHOT=off` is the path before, unchanged.
+
+The miss's peak (~300 MiB over before) is set during the analysis
+(`plan.tail.walked`), by the window's observations: 607k of them on
+kind(cc_.*) (296k paths), of which 557k lie inside verified repository
+trees and are dropped at the save by the per-tree policy — during the
+window they also detect a path observed twice with different outcomes
+(an unstable read taints the save), so they are not dropped earlier. After
+the analysis nothing exceeds it (the described universe is streamed, the
+graph's node chunks deflated as serialized, the group table keyed by a
+digest). Before the window kept only the per-tree INTEGRITY entries the
+peak was ~100 MiB higher.
+
+The kind(cc_.*) snapshot is 82 MB: PLAN ~34 MB (the graph, as a cquery
+snapshot of the universe; its node chunks deflated) and AQUERY 47.7 MB
+(137 MB before the per-block string tables); the Python one 4 MB. A
+kind(cc_.*) hit: validation 0.56 s, the graph's inflate and chunked decode
+0.5 s (on 8 threads, one chunk inflated at a time per thread; 1.15 s
+decoded whole), the selected blocks 0.03 s, the output 0.12 s.
 
 ## `genquery`
 
