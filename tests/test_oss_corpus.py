@@ -37,6 +37,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(p["test_targets"], ["//..."])
         self.assertEqual(p["subdir"], "")
         self.assertEqual(p["phases"], list(oc.PHASES))
+        self.assertEqual(p["test_flags"], [])
+        self.assertIsNone(p["test_timeout"])
 
     def test_rejects_short_commit_private_host_duplicates_and_bad_phase(self):
         bad = [
@@ -44,6 +46,7 @@ class ConfigTests(unittest.TestCase):
             [{"name": "a", "git": "https://example.com/x/a", "commit": SHA}],
             [{"name": "a", "git": "https://github.com/x/a", "commit": SHA}] * 2,
             [{"name": "a", "git": "https://github.com/x/a", "commit": SHA, "phases": ["fly"]}],
+            [{"name": "a", "git": "https://github.com/x/a", "commit": SHA, "test_timeout": 0}],
         ]
         for projects in bad:
             path = write_config(projects)

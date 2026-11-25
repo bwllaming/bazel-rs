@@ -86,6 +86,12 @@ def load_config(path):
         p.setdefault("flags", [])
         p.setdefault("targets", ["//..."])
         p.setdefault("test_targets", p["targets"])
+        # Extra flags of the `test` phase only (e.g. rules_kotlin's
+        # --local_test_jobs=4, B53) and its own cap in seconds.
+        p.setdefault("test_flags", [])
+        p.setdefault("test_timeout", None)
+        if p["test_timeout"] is not None and not (isinstance(p["test_timeout"], int) and p["test_timeout"] > 0):
+            raise ValueError(f"{p['name']}: test_timeout must be a positive number of seconds")
         p.setdefault("phases", list(PHASES))
         for ph in p["phases"]:
             if ph not in PHASES:
@@ -538,11 +544,11 @@ class ProjectRun:
             apply_edits(self.p, self.ws(tool), self.state(tool))
             os.makedirs(os.path.join(self.state(tool), "logs"), exist_ok=True)
 
-    def run(self, tool, phase, command, flags, targets, batch=True, tag=None):
+    def run(self, tool, phase, command, flags, targets, batch=True, tag=None, timeout=None):
         argv = tool_argv(tool, self.bins[tool], self.state(tool), command, flags, targets, batch)
         log = os.path.join(self.state(tool), "logs", tag or phase)
         print(f"  [{self.p['name']}] {tool} {tag or phase}: {' '.join(argv[1:])}", flush=True)
-        rec = run_cmd(argv, self.ws(tool), self.env(tool), log, self.args.timeout, self.state(tool))
+        rec = run_cmd(argv, self.ws(tool), self.env(tool), log, timeout or self.args.timeout, self.state(tool))
         rec["log"] = log
         if tag != "server2":
             print(f"    exit={rec['exit']} wall={rec['wall']}s rss={fmt_mb(rec)}MB", flush=True)
@@ -606,7 +612,8 @@ class ProjectRun:
             elif phase == "test":
                 sts = {}
                 for tool in TOOLS:
-                    rec = self.run(tool, phase, "test", ["--keep_going"] + flags, self.p["test_targets"])
+                    rec = self.run(tool, phase, "test", ["--keep_going"] + flags + self.p["test_flags"],
+                                   self.p["test_targets"], timeout=self.p["test_timeout"])
                     text = ""
                     for ext in (".out", ".err"):
                         with open(rec["log"] + ext, encoding="utf-8", errors="replace") as fh:
