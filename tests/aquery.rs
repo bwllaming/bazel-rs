@@ -398,6 +398,8 @@ fn aquery_snapshot_hit_prints_what_a_cold_aquery_prints() {
         "kind(\"genrule\", deps(//pkg:all))",
         "mnemonic(\"Genrule|FileWrite\", deps(//pkg:all))",
         "inputs(\".*in.txt\", outputs(\".*\\.txt\", deps(//pkg:all)))",
+        // Fails at evaluation (after the analysis): the same error.
+        "kind(\"(\", deps(//pkg:all))",
     ];
     let formats = [
         "text",
@@ -437,6 +439,14 @@ fn aquery_snapshot_hit_prints_what_a_cold_aquery_prints() {
                 assert!(noted(&warm.3, "hit"), "{args:?}: {}", warm.3);
                 hits += 1;
                 assert_eq!(cold.0, warm.0, "{args:?}: {}", warm.2);
+                if expression.starts_with("kind(\"(") {
+                    assert_ne!(warm.0, Some(0), "{args:?}: {}", warm.2);
+                    assert!(
+                        warm.2.contains("invalid query regex"),
+                        "{args:?}: {}",
+                        warm.2
+                    );
+                }
                 assert!(cold.1 == warm.1, "{args:?}: stdout differs");
                 assert_eq!(cold.2, warm.2, "{args:?}: stderr differs");
             }
