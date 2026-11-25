@@ -26,6 +26,9 @@ and module source/provenance files remain unchanged.
 | rules_license 1.0.0 | `rules_license-1.0.0.tar.gz` | https://github.com/bazelbuild/rules_license/releases/download/1.0.0/rules_license-1.0.0.tar.gz | `26d4021f6898e23b82ef953078389dd49ac2b5618ac564ade4ef87cced147b38` | 35,903 |
 | bazel_features 1.42.1 | `bazel_features-v1.42.1.tar.gz` | https://github.com/bazel-contrib/bazel_features/releases/download/v1.42.1/bazel_features-v1.42.1.tar.gz | `8189bac9a6bf9cc155a854c4cbebfebf58b9ca7a2d0a67645f7d0c1f83c523ac` | 18,078 |
 | rules_python 1.7.0 | `rules_python-1.7.0.tar.gz` | https://github.com/bazel-contrib/rules_python/releases/download/1.7.0/rules_python-1.7.0.tar.gz | `f609f341d6e9090b981b3f45324d05a819fd7a5a56434f849c761971ce2c47da` | 1,007,915 |
+| buildozer 8.5.1 | `buildozer-v8.5.1.tar.gz` | https://github.com/fmeum/buildozer/releases/download/v8.5.1/buildozer-v8.5.1.tar.gz | `bd0786e0f8b6aed8c35898b4c06f64ba853d61d7c8361edb5a8d43c6ea37f5c6` | 8,300 |
+| pybind11_bazel 2.12.0 | `pybind11_bazel-2.12.0.zip` | https://github.com/pybind/pybind11_bazel/releases/download/v2.12.0/pybind11_bazel-2.12.0.zip | `a58c25c5fe063a70057fa20cb8e15f3bda19b1030305bcb533af1e45f36a4a55` | 8,385 |
+| stardoc 0.7.2 | `stardoc-0.7.2.tar.gz` | https://github.com/bazelbuild/stardoc/releases/download/0.7.2/stardoc-0.7.2.tar.gz | `0e1ed4a98f26e718776bd64d053d02bb34d98572ccd03d6ba355112a1205706b` | 34,769 |
 
 bazel_skylib 1.8.2 is the already vendored
 `tests/fixtures/build_settings/bazel-skylib-1.8.2.tar.gz` (sha256
@@ -34,13 +37,25 @@ registry's pin as well).
 
 Acquisition: copied from existing bazel-rs repository-cache blobs on the
 development host whose SHA-256 equals the registry SRI (no download).
+buildozer, pybind11_bazel and stardoc (parity-small, 2026-11-25): downloaded
+once with curl from their source.json URLs, SHA-256 checked against the
+registry SRI. They, googletest, rules_apple and rules_jvm_external are
+materialized by `mod`, which (like genuine's BazelModuleInspectorFunction)
+evaluates every module extension of the graph: @bazel_tools' buildozer
+binary, rules_apple's, googletest's and pybind11_bazel's extensions and
+rules_jvm_external's maven extension (which reads a lock file in stardoc).
 
 ## The test archive mirror (not vendored)
 
 The tests that resolve every registered toolchain of the full closure
 also materialize apple_support 2.5.2, protobuf 33.4, rules_cc 0.2.17,
 rules_java 9.1.0, rules_kotlin 1.9.6 (23 MB), rules_shell 0.6.1 and
-rules_swift 3.1.2: about 30 MB, not vendored. `seed_module_archives` takes
+rules_swift 3.1.2, and `mod` googletest 1.17.0 (885,595 bytes, sha256
+`65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c`),
+rules_apple 4.1.0 (2,435,126, `20152b14d9a420afc15ace905c02fd6425ddceb084630f3f043b287adf0fcdbd`)
+and rules_jvm_external 6.7 (4,738,304,
+`a1e351607f04fed296ba33c4977d3fe2a615ed50df7896676b67aac993c53c18`): about
+38 MB, not vendored. `seed_module_archives` takes
 them from a shared mirror instead, `<target dir>/tmp/module-archive-mirror/<sha256>`
 (`CARGO_TARGET_TMPDIR`; `BAZEL_RS_TEST_ARCHIVE_MIRROR` names another
 directory): a missing blob is downloaded ONCE with curl, verified against the
@@ -55,7 +70,7 @@ download cache, so bazel-rs never reaches the network in these tests. Offline
 with an empty mirror the test fails before bazel-rs runs, naming the
 archive, every URL tried and the sha256 to put there. Each new target
 directory (a worker's `CARGO_TARGET_DIR`) fills its mirror on its first full
-suite run (~30 MB); copy a filled mirror directory to skip that.
+suite run (~38 MB); copy a filled mirror directory to skip that.
 
 ## No test reaches the network
 

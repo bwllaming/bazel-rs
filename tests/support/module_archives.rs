@@ -39,8 +39,16 @@ const MODULE_ARCHIVES: &[(&str, &str)] = &[
         "tests/fixtures/build_settings/bazel-skylib-1.8.2.tar.gz",
     ),
     (
+        "buildozer@8.5.1",
+        "tests/fixtures/module_archives/buildozer-v8.5.1.tar.gz",
+    ),
+    (
         "platforms@1.0.0",
         "tests/fixtures/module_archives/platforms-1.0.0.tar.gz",
+    ),
+    (
+        "pybind11_bazel@2.12.0",
+        "tests/fixtures/module_archives/pybind11_bazel-2.12.0.zip",
     ),
     (
         "rules_license@1.0.0",
@@ -50,25 +58,39 @@ const MODULE_ARCHIVES: &[(&str, &str)] = &[
         "rules_python@1.7.0",
         "tests/fixtures/module_archives/rules_python-1.7.0.tar.gz",
     ),
+    (
+        "stardoc@0.7.2",
+        "tests/fixtures/module_archives/stardoc-0.7.2.tar.gz",
+    ),
 ];
 
 /// The source archives a build that resolves every registered toolchain of
-/// the builtin closure materializes (the offline registry's pins; the large
+/// the builtin closure materializes, plus the modules whose extensions only
+/// `mod` evaluates (with every other extension of the graph,
+/// BazelModuleInspectorFunction): buildozer, googletest, pybind11_bazel,
+/// rules_apple, rules_jvm_external and stardoc (rules_jvm_external's maven
+/// extension reads its lock file) (the offline registry's pins; the large
 /// ones come from the test archive mirror).
 #[allow(dead_code)]
 const TOOLCHAIN_CLOSURE_ARCHIVES: &[&str] = &[
     "apple_support@2.5.2",
     "bazel_features@1.42.1",
     "bazel_skylib@1.8.2",
+    "buildozer@8.5.1",
+    "googletest@1.17.0",
     "platforms@1.0.0",
     "protobuf@33.4",
+    "pybind11_bazel@2.12.0",
+    "rules_apple@4.1.0",
     "rules_cc@0.2.17",
     "rules_java@9.1.0",
+    "rules_jvm_external@6.7",
     "rules_kotlin@1.9.6",
     "rules_license@1.0.0",
     "rules_python@1.7.0",
     "rules_shell@0.6.1",
     "rules_swift@3.1.2",
+    "stardoc@0.7.2",
 ];
 
 /// The commands that take `--registry` and resolve the built-in modules:
@@ -266,7 +288,7 @@ fn seed_verified_module_file(
     }
 }
 
-/// The test archive mirror: the module archives too large to vendor (31 MB
+/// The test archive mirror: the module archives too large to vendor (38 MB
 /// of rules_kotlin, rules_swift, protobuf, ...; README of
 /// tests/fixtures/module_archives), downloaded once per target directory and
 /// shared by every test run after it. `BAZEL_RS_TEST_ARCHIVE_MIRROR` names

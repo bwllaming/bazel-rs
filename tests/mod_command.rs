@@ -10,6 +10,7 @@
 
 use serde_json::Value;
 include!("support/temp_root.rs");
+include!("support/module_archives.rs");
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -46,6 +47,9 @@ impl Workspace {
         for part in ["registry", "sources", "ws"] {
             copy_tree(&fixture().join(part), &root.join(part));
         }
+        // Every subcommand evaluates every extension of the graph: the
+        // built-in closure's archives, offline (tests/support/module_archives.rs).
+        seed_module_archives(&root.join("cache"), TOOLCHAIN_CLOSURE_ARCHIVES);
         Self {
             _directory: directory,
             root,

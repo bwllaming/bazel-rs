@@ -292,9 +292,6 @@ fn module_failures_match_bazel() {
         copy(&fixture.join("cases").join(case), &ws);
         let cache = temp.path().join(format!("cache-{case}"));
         seed_module_archives(&cache, TOOLCHAIN_CLOSURE_ARCHIVES);
-        // `mod` evaluates every extension of the graph: @bazel_tools'
-        // buildozer_binary and rules_apple's need their modules.
-        seed_module_archives(&cache, &["buildozer@8.5.1", "rules_apple@4.1.0"]);
         // A case's `extra_args` follow the command's (genuine.tsv's ARGS do
         // not show them).
         let extra = ws.join("extra_args");

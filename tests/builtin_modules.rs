@@ -3,6 +3,7 @@
 use bazel_rs::module_graph::{self, BuiltinProfile, ModuleSource, ResolverOptions};
 include!("support/temp_root.rs");
 include!("support/exit_codes.rs");
+include!("support/module_archives.rs");
 use bazel_rs::repository::RepositorySet;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -52,6 +53,8 @@ fn run(root: &Path, command: &str, arguments: &[&str]) -> Output {
         ))
         .args(arguments)
         .current_dir(root)
+        // `mod` evaluates every extension of the graph (offline archives).
+        .seeded_archives()
         .output()
         .unwrap()
 }
@@ -339,8 +342,8 @@ fn missing_registry_metadata_is_an_error_not_a_reduced_builtin_graph() {
 fn graph_command_presents_the_genuine_builtin_closure() {
     // `mod graph` uses the built-in modules by default like Bazel 9.3; with
     // --include_builtin its JSON is the genuine capture of each case
-    // (cases/*/graph.json), byte for byte. Nothing is materialized: the
-    // graph needs no extension's repositories.
+    // (cases/*/graph.json), byte for byte. Like genuine, it evaluates every
+    // extension first (from the seeded archives).
     let expected: Value =
         serde_json::from_slice(&fs::read(fixtures().join("expectations.json")).unwrap()).unwrap();
     for case in expected["cases"].as_array().unwrap() {
