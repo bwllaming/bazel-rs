@@ -146,6 +146,7 @@ tests/fixtures/nobuild/workspace
 tests/fixtures/output_labels/workspace
 tests/fixtures/output_to_genfiles/workspace
 tests/fixtures/package_errors/workspace
+tests/fixtures/path_mapping/workspace
 tests/fixtures/persistent_workers/workspace
 tests/fixtures/pre_platforms_flags/workspace
 tests/fixtures/print_locations/workspace

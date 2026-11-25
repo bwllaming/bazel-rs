@@ -1,0 +1,37 @@
+load(":defs.bzl", "both", "coll", "flavor", "gen", "pm_mod_test", "pm_test", "pw", "tool", "tree", "use")
+
+flavor(name = "flavor", build_setting_default = "none")
+
+gen(name = "g")
+
+gen(name = "gf", flavored = True)
+
+tree(name = "tr")
+
+tool(name = "tool", data = ["data.txt"])
+
+use(name = "u", srcs = [":g", "src.txt"], trees = [":tr"])
+
+use(name = "u_noreq", srcs = [":g", "src.txt"], literal = True, req = False)
+
+use(name = "u_lit", srcs = [":g", "src.txt"], literal = True)
+
+both(name = "a", deps = [":u"], flavor = "a")
+
+both(name = "b", deps = [":u"], flavor = "b")
+
+coll(name = "coll_same", a = [":g"], b = [":g"])
+
+coll(name = "coll_diff", a = [":gf"], b = [":gf"])
+
+pm_test(name = "t", targets = [":u", ":u_noreq", ":u_lit", ":coll_same", ":coll_diff"])
+
+pw(name = "pw", srcs = [":g", "src.txt"])
+
+pw(name = "pw_tree", srcs = [":g"], trees = [":tr"])
+
+pw(name = "pw_noreq", srcs = [":g", "src.txt"], req = False)
+
+pm_test(name = "t_pw", targets = [":pw", ":pw_tree", ":pw_noreq"])
+
+pm_mod_test(name = "t_mod", targets = [":u_noreq", ":pw_noreq"])

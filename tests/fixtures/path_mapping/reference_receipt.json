@@ -1,0 +1,413 @@
+{
+ "schema": "path-mapping-reference-receipt/v1",
+ "fixture": "path_mapping",
+ "purpose": "--experimental_output_paths=strip (PathMappers, StrippingPathMapper): mapped command lines in Target.actions and aquery (File arguments, map_each over File.path/dirname/root, the executable, parameter files, tree artifacts), the collision fallback (same and different contents), mapped execution (inputs staged and outputs produced at bazel-out/cfg paths, published at their own), the action keys (FOR_FINGERPRINTING, the mapper GUID), one disk cache entry for two configurations, ParameterFileWriteAction contents, --modify_execution_info set by a transition, the sandboxing requirement",
+ "reference": {
+  "binary": "bazel-9.3.1-linux-x86_64",
+  "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch>",
+  "command_flags": "<command> --noshow_progress --color=no --curses=no <argv>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; one workspace and output base, the cases in order"
+ },
+ "cases": {
+  "local_strategy": {
+   "argv": [
+    "build",
+    "--experimental_output_paths=strip",
+    "--spawn_strategy=local",
+    "//pkg:coll_same"
+   ],
+   "kind": "message",
+   "exit_code": 1,
+   "message": "Coll spawn, which requires sandboxing due to path mapping, cannot be executed with any of the available strategies: [standalone]. Your --spawn_strategy, --genrule_strategy, --strategy and/or --allowed_strategies_by_exec_platform flags are probably too strict. Visit https://github.com/bazelbuild/bazel/issues/7480 for advice."
+  },
+  "analysis": {
+   "argv": [
+    "test",
+    "//pkg:t",
+    "//pkg:t_pw",
+    "//pkg:t_mod"
+   ],
+   "kind": "debug",
+   "exit_code": 0,
+   "debug": [
+    "FileWrite None \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\\npkg/src.txt\\n'--dir=bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg'\\n'--dir=pkg'\\n\" [] [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/pw.params\"] {}",
+    "FileWrite None None [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/tr.d\"] [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/pw_tree.params\"] {}",
+    "FileWrite None \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\\npkg/src.txt\\n'--dir=bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg'\\n'--dir=pkg'\\n\" [] [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/pw_noreq.params\"] {}",
+    "MyMnemonic [\"bazel-out/cfg/bin/pkg/tool.sh\", \"bazel-out/cfg/bin/pkg/u_noreq.out\", \"bazel-out/cfg/bin/pkg/u_noreq.outdir\", \"bazel-out/cfg/bin/pkg/g.txt\", \"pkg/src.txt\", \"-Ibazel-out/cfg/bin/pkg/g.txt\", \"--dir=bazel-out/cfg/bin/pkg\", \"--dir=pkg\", \"bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/g.txt|pkg/g.txt\", \"|pkg/src.txt|pkg/src.txt\", \"literal=bazel-out/k8-fastbuild-ST-18df6b7d1111/bin/pkg/g.txt\", \"bazel-out/cfg/bin/pkg/g.txt\", \"pkg/src.txt\"] None [\"bazel-out/k8-fastbuild-ST-18df6b7d1111/bin/pkg/g.txt\", \"pkg/src.txt\", \"bazel-out/k8-opt-exec-ST-b15358c44881/bin/pkg/tool.sh\", \"bazel-out/k8-opt-exec-ST-b15358c44881/bin/pkg/tool.sh.runfiles\"] [\"bazel-out/k8-fastbuild-ST-18df6b7d1111/bin/pkg/u_noreq.out\", \"bazel-out/k8-fastbuild-ST-18df6b7d1111/bin/pkg/u_noreq.outdir\"] {\"OUTPATH\": \"bazel-out/k8-fastbuild-ST-18df6b7d1111/bin/pkg/u_noreq.out\"}",
+    "FileWrite None \"bazel-out/k8-fastbuild-ST-18df6b7d1111/bin/pkg/g.txt\\npkg/src.txt\\n'--dir=bazel-out/k8-fastbuild-ST-18df6b7d1111/bin/pkg'\\n'--dir=pkg'\\n\" [] [\"bazel-out/k8-fastbuild-ST-18df6b7d1111/bin/pkg/pw_noreq.params\"] {}",
+    "MyMnemonic [\"bazel-out/cfg/bin/pkg/tool.sh\", \"bazel-out/cfg/bin/pkg/u.out\", \"bazel-out/cfg/bin/pkg/u.outdir\", \"bazel-out/cfg/bin/pkg/g.txt\", \"pkg/src.txt\", \"-Ibazel-out/cfg/bin/pkg/g.txt\", \"--dir=bazel-out/cfg/bin/pkg\", \"--dir=pkg\", \"bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/g.txt|pkg/g.txt\", \"|pkg/src.txt|pkg/src.txt\", \"bazel-out/cfg/bin/pkg/tr.d\", \"--tree=bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/tr.d|pkg/tr.d\", \"bazel-out/cfg/bin/pkg/g.txt\", \"pkg/src.txt\"] None [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\", \"pkg/src.txt\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/tr.d\", \"bazel-out/k8-opt-exec-ST-4ae4cb3b1650/bin/pkg/tool.sh\", \"bazel-out/k8-opt-exec-ST-4ae4cb3b1650/bin/pkg/tool.sh.runfiles\"] [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u.out\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u.outdir\"] {}",
+    "MyMnemonic [\"bazel-out/k8-opt-exec-ST-4ae4cb3b1650/bin/pkg/tool.sh\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u_noreq.out\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u_noreq.outdir\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\", \"pkg/src.txt\", \"-Ibazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\", \"--dir=bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg\", \"--dir=pkg\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin|bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt|pkg/g.txt\", \"|pkg/src.txt|pkg/src.txt\", \"literal=bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\", \"pkg/src.txt\"] None [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\", \"pkg/src.txt\", \"bazel-out/k8-opt-exec-ST-4ae4cb3b1650/bin/pkg/tool.sh\", \"bazel-out/k8-opt-exec-ST-4ae4cb3b1650/bin/pkg/tool.sh.runfiles\"] [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u_noreq.out\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u_noreq.outdir\"] {\"OUTPATH\": \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u_noreq.out\"}",
+    "MyMnemonic [\"bazel-out/cfg/bin/pkg/tool.sh\", \"bazel-out/cfg/bin/pkg/u_lit.out\", \"bazel-out/cfg/bin/pkg/u_lit.outdir\", \"bazel-out/cfg/bin/pkg/g.txt\", \"pkg/src.txt\", \"-Ibazel-out/cfg/bin/pkg/g.txt\", \"--dir=bazel-out/cfg/bin/pkg\", \"--dir=pkg\", \"bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/g.txt|pkg/g.txt\", \"|pkg/src.txt|pkg/src.txt\", \"literal=bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\", \"bazel-out/cfg/bin/pkg/g.txt\", \"pkg/src.txt\"] None [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\", \"pkg/src.txt\", \"bazel-out/k8-opt-exec-ST-4ae4cb3b1650/bin/pkg/tool.sh\", \"bazel-out/k8-opt-exec-ST-4ae4cb3b1650/bin/pkg/tool.sh.runfiles\"] [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u_lit.out\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u_lit.outdir\"] {\"OUTPATH\": \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u_lit.out\"}",
+    "Coll [\"/bin/bash\", \"-c\", \"o=$1; shift; echo \\\"$@\\\" > $o; cat \\\"$@\\\" >> $o\", \"\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/coll_same.out\", \"bazel-out/k8-fastbuild-ST-7e676d6c1fdf/bin/pkg/g.txt\", \"bazel-out/k8-fastbuild-ST-1bcb453f55ad/bin/pkg/g.txt\"] None [\"bazel-out/k8-fastbuild-ST-7e676d6c1fdf/bin/pkg/g.txt\", \"bazel-out/k8-fastbuild-ST-1bcb453f55ad/bin/pkg/g.txt\"] [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/coll_same.out\"] {}",
+    "Coll [\"/bin/bash\", \"-c\", \"o=$1; shift; echo \\\"$@\\\" > $o; cat \\\"$@\\\" >> $o\", \"\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/coll_diff.out\", \"bazel-out/k8-fastbuild-ST-7e676d6c1fdf/bin/pkg/gf.txt\", \"bazel-out/k8-fastbuild-ST-1bcb453f55ad/bin/pkg/gf.txt\"] None [\"bazel-out/k8-fastbuild-ST-7e676d6c1fdf/bin/pkg/gf.txt\", \"bazel-out/k8-fastbuild-ST-1bcb453f55ad/bin/pkg/gf.txt\"] [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/coll_diff.out\"] {}"
+   ]
+  },
+  "build_a": {
+   "argv": [
+    "build",
+    "--experimental_output_paths=strip",
+    "--disk_cache=<DISK_CACHE>",
+    "--execution_log_json_file=<LOG>",
+    "//pkg:a"
+   ],
+   "kind": "outputs",
+   "exit_code": 0,
+   "outputs": {
+    "bazel-out/k8-fastbuild-ST-9bbb821748d3/bin/pkg/u.out": "tool bazel-out/cfg/bin/pkg/tool.sh\nargv bazel-out/cfg/bin/pkg/g.txt pkg/src.txt -Ibazel-out/cfg/bin/pkg/g.txt --dir=bazel-out/cfg/bin/pkg --dir=pkg bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/g.txt|pkg/g.txt |pkg/src.txt|pkg/src.txt bazel-out/cfg/bin/pkg/tr.d/a.txt bazel-out/cfg/bin/pkg/tr.d/sub/b.txt --tree=bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/tr.d/a.txt|pkg/tr.d/a.txt --tree=bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/tr.d/sub/b.txt|pkg/tr.d/sub/b.txt @bazel-out/cfg/bin/pkg/u.out-0.params\ndata\nfile bazel-out/cfg/bin/pkg/g.txt:\ngen\nfile pkg/src.txt:\nsrc\nfile bazel-out/cfg/bin/pkg/tr.d/a.txt:\na\nfile bazel-out/cfg/bin/pkg/tr.d/sub/b.txt:\nb\nparams:\nbazel-out/cfg/bin/pkg/g.txt\npkg/src.txt\nOUTPATH=\nbazel-out\nbazel-out/cfg\nbazel-out/cfg/bin\nbazel-out/cfg/bin/pkg\n",
+    "bazel-out/k8-fastbuild-ST-9bbb821748d3/bin/pkg/u.outdir": "x/y.txt: inner\n"
+   },
+   "summary": "INFO: 9 processes: 7 internal, 2 processwrapper-sandbox.",
+   "spawns": [
+    {
+     "commandArgs": [
+      "bazel-out/cfg/bin/pkg/tool.sh",
+      "bazel-out/cfg/bin/pkg/u.out",
+      "bazel-out/cfg/bin/pkg/u.outdir",
+      "bazel-out/cfg/bin/pkg/g.txt",
+      "pkg/src.txt",
+      "-Ibazel-out/cfg/bin/pkg/g.txt",
+      "--dir=bazel-out/cfg/bin/pkg",
+      "--dir=pkg",
+      "bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/g.txt|pkg/g.txt",
+      "|pkg/src.txt|pkg/src.txt",
+      "bazel-out/cfg/bin/pkg/tr.d/a.txt",
+      "bazel-out/cfg/bin/pkg/tr.d/sub/b.txt",
+      "--tree=bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/tr.d/a.txt|pkg/tr.d/a.txt",
+      "--tree=bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/tr.d/sub/b.txt|pkg/tr.d/sub/b.txt",
+      "@bazel-out/cfg/bin/pkg/u.out-0.params"
+     ],
+     "listedOutputs": [
+      "bazel-out/k8-fastbuild-ST-9bbb821748d3/bin/pkg/u.out",
+      "bazel-out/k8-fastbuild-ST-9bbb821748d3/bin/pkg/u.outdir"
+     ],
+     "runner": "processwrapper-sandbox",
+     "digest": "10ff0369d378d69d94c9166eeba2b72af9ad177c9f6001e1266974ee2560cbdd",
+     "inputs": [
+      [
+       "bazel-out/cfg/bin/pkg/g.txt",
+       "f2905ed55c2d9d4e4673686dd1027bd336f3265b4dcea36eca188fafa8f764ba"
+      ],
+      [
+       "bazel-out/cfg/bin/pkg/tool.sh",
+       "1a91fe95694c69a3d38fa3caa9afdea7cc8f5d7371ff863ca6d3bc9c7d3a4cde"
+      ],
+      [
+       "bazel-out/cfg/bin/pkg/tool.sh.runfiles/_main/pkg/data.txt",
+       "6667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f"
+      ],
+      [
+       "bazel-out/cfg/bin/pkg/tool.sh.runfiles/_main/pkg/tool.sh",
+       "1a91fe95694c69a3d38fa3caa9afdea7cc8f5d7371ff863ca6d3bc9c7d3a4cde"
+      ],
+      [
+       "bazel-out/cfg/bin/pkg/tool.sh.runfiles/_repo_mapping",
+       "25b71f1495e61dcfd669216434fbe69fcc0be5cb7642d0037ee804eeebfd1527"
+      ],
+      [
+       "bazel-out/cfg/bin/pkg/tr.d/a.txt",
+       "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7"
+      ],
+      [
+       "bazel-out/cfg/bin/pkg/tr.d/sub/b.txt",
+       "0263829989b6fd954f72baaf2fc64bc2e2f01d692d4de72986ea808f6e99813f"
+      ],
+      [
+       "bazel-out/cfg/bin/pkg/u.out-0.params",
+       "d16131457f1dd4edbf127cada30baccaaacd821e89a68273d1628b484e7db7c2"
+      ],
+      [
+       "pkg/src.txt",
+       "ef8aed55fba64258003f3479ff60a060ddb8301d170110a0d2dfa0ce4ea04eb3"
+      ]
+     ]
+    }
+   ]
+  },
+  "build_b": {
+   "argv": [
+    "build",
+    "--experimental_output_paths=strip",
+    "--disk_cache=<DISK_CACHE>",
+    "--execution_log_json_file=<LOG>",
+    "//pkg:b"
+   ],
+   "kind": "outputs",
+   "exit_code": 0,
+   "outputs": {
+    "bazel-out/k8-fastbuild-ST-46bd9f961ad3/bin/pkg/u.out": "tool bazel-out/cfg/bin/pkg/tool.sh\nargv bazel-out/cfg/bin/pkg/g.txt pkg/src.txt -Ibazel-out/cfg/bin/pkg/g.txt --dir=bazel-out/cfg/bin/pkg --dir=pkg bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/g.txt|pkg/g.txt |pkg/src.txt|pkg/src.txt bazel-out/cfg/bin/pkg/tr.d/a.txt bazel-out/cfg/bin/pkg/tr.d/sub/b.txt --tree=bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/tr.d/a.txt|pkg/tr.d/a.txt --tree=bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/tr.d/sub/b.txt|pkg/tr.d/sub/b.txt @bazel-out/cfg/bin/pkg/u.out-0.params\ndata\nfile bazel-out/cfg/bin/pkg/g.txt:\ngen\nfile pkg/src.txt:\nsrc\nfile bazel-out/cfg/bin/pkg/tr.d/a.txt:\na\nfile bazel-out/cfg/bin/pkg/tr.d/sub/b.txt:\nb\nparams:\nbazel-out/cfg/bin/pkg/g.txt\npkg/src.txt\nOUTPATH=\nbazel-out\nbazel-out/cfg\nbazel-out/cfg/bin\nbazel-out/cfg/bin/pkg\n",
+    "bazel-out/k8-fastbuild-ST-9bbb821748d3/bin/pkg/u.out": "tool bazel-out/cfg/bin/pkg/tool.sh\nargv bazel-out/cfg/bin/pkg/g.txt pkg/src.txt -Ibazel-out/cfg/bin/pkg/g.txt --dir=bazel-out/cfg/bin/pkg --dir=pkg bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/g.txt|pkg/g.txt |pkg/src.txt|pkg/src.txt bazel-out/cfg/bin/pkg/tr.d/a.txt bazel-out/cfg/bin/pkg/tr.d/sub/b.txt --tree=bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/tr.d/a.txt|pkg/tr.d/a.txt --tree=bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/tr.d/sub/b.txt|pkg/tr.d/sub/b.txt @bazel-out/cfg/bin/pkg/u.out-0.params\ndata\nfile bazel-out/cfg/bin/pkg/g.txt:\ngen\nfile pkg/src.txt:\nsrc\nfile bazel-out/cfg/bin/pkg/tr.d/a.txt:\na\nfile bazel-out/cfg/bin/pkg/tr.d/sub/b.txt:\nb\nparams:\nbazel-out/cfg/bin/pkg/g.txt\npkg/src.txt\nOUTPATH=\nbazel-out\nbazel-out/cfg\nbazel-out/cfg/bin\nbazel-out/cfg/bin/pkg\n",
+    "bazel-out/k8-fastbuild-ST-46bd9f961ad3/bin/pkg/u.outdir": "x/y.txt: inner\n",
+    "bazel-out/k8-fastbuild-ST-9bbb821748d3/bin/pkg/u.outdir": "x/y.txt: inner\n"
+   },
+   "summary": "INFO: 9 processes: 1 disk cache hit, 7 internal, 1 processwrapper-sandbox.",
+   "spawns": [
+    {
+     "commandArgs": [
+      "bazel-out/cfg/bin/pkg/tool.sh",
+      "bazel-out/cfg/bin/pkg/u.out",
+      "bazel-out/cfg/bin/pkg/u.outdir",
+      "bazel-out/cfg/bin/pkg/g.txt",
+      "pkg/src.txt",
+      "-Ibazel-out/cfg/bin/pkg/g.txt",
+      "--dir=bazel-out/cfg/bin/pkg",
+      "--dir=pkg",
+      "bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/g.txt|pkg/g.txt",
+      "|pkg/src.txt|pkg/src.txt",
+      "bazel-out/cfg/bin/pkg/tr.d/a.txt",
+      "bazel-out/cfg/bin/pkg/tr.d/sub/b.txt",
+      "--tree=bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/tr.d/a.txt|pkg/tr.d/a.txt",
+      "--tree=bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/tr.d/sub/b.txt|pkg/tr.d/sub/b.txt",
+      "@bazel-out/cfg/bin/pkg/u.out-0.params"
+     ],
+     "listedOutputs": [
+      "bazel-out/k8-fastbuild-ST-46bd9f961ad3/bin/pkg/u.out",
+      "bazel-out/k8-fastbuild-ST-46bd9f961ad3/bin/pkg/u.outdir"
+     ],
+     "runner": "disk cache hit",
+     "digest": "10ff0369d378d69d94c9166eeba2b72af9ad177c9f6001e1266974ee2560cbdd",
+     "inputs": [
+      [
+       "bazel-out/cfg/bin/pkg/g.txt",
+       "f2905ed55c2d9d4e4673686dd1027bd336f3265b4dcea36eca188fafa8f764ba"
+      ],
+      [
+       "bazel-out/cfg/bin/pkg/tool.sh",
+       "1a91fe95694c69a3d38fa3caa9afdea7cc8f5d7371ff863ca6d3bc9c7d3a4cde"
+      ],
+      [
+       "bazel-out/cfg/bin/pkg/tool.sh.runfiles/_main/pkg/data.txt",
+       "6667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f"
+      ],
+      [
+       "bazel-out/cfg/bin/pkg/tool.sh.runfiles/_main/pkg/tool.sh",
+       "1a91fe95694c69a3d38fa3caa9afdea7cc8f5d7371ff863ca6d3bc9c7d3a4cde"
+      ],
+      [
+       "bazel-out/cfg/bin/pkg/tool.sh.runfiles/_repo_mapping",
+       "25b71f1495e61dcfd669216434fbe69fcc0be5cb7642d0037ee804eeebfd1527"
+      ],
+      [
+       "bazel-out/cfg/bin/pkg/tr.d/a.txt",
+       "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7"
+      ],
+      [
+       "bazel-out/cfg/bin/pkg/tr.d/sub/b.txt",
+       "0263829989b6fd954f72baaf2fc64bc2e2f01d692d4de72986ea808f6e99813f"
+      ],
+      [
+       "bazel-out/cfg/bin/pkg/u.out-0.params",
+       "d16131457f1dd4edbf127cada30baccaaacd821e89a68273d1628b484e7db7c2"
+      ],
+      [
+       "pkg/src.txt",
+       "ef8aed55fba64258003f3479ff60a060ddb8301d170110a0d2dfa0ce4ea04eb3"
+      ]
+     ]
+    }
+   ]
+  },
+  "collisions": {
+   "argv": [
+    "build",
+    "--experimental_output_paths=strip",
+    "//pkg:coll_same",
+    "//pkg:coll_diff"
+   ],
+   "kind": "outputs",
+   "exit_code": 0,
+   "outputs": {
+    "bazel-out/k8-fastbuild/bin/pkg/coll_same.out": "bazel-out/cfg/bin/pkg/g.txt bazel-out/cfg/bin/pkg/g.txt\ngen\ngen\n",
+    "bazel-out/k8-fastbuild/bin/pkg/coll_diff.out": "bazel-out/k8-fastbuild-ST-9bbb821748d3/bin/pkg/gf.txt bazel-out/k8-fastbuild-ST-46bd9f961ad3/bin/pkg/gf.txt\ngen a\ngen b\n"
+   },
+   "summary": "INFO: 7 processes: 5 internal, 2 processwrapper-sandbox."
+  },
+  "param_writes": {
+   "argv": [
+    "build",
+    "--experimental_output_paths=strip",
+    "//pkg:pw",
+    "//pkg:pw_tree",
+    "//pkg:pw_noreq"
+   ],
+   "kind": "outputs",
+   "exit_code": 0,
+   "outputs": {
+    "bazel-out/k8-fastbuild/bin/pkg/pw.params": "bazel-out/cfg/bin/pkg/g.txt\npkg/src.txt\n'--dir=bazel-out/cfg/bin/pkg'\n'--dir=pkg'\n",
+    "bazel-out/k8-fastbuild/bin/pkg/pw_tree.params": "bazel-out/cfg/bin/pkg/g.txt\n'--dir=bazel-out/cfg/bin/pkg'\nbazel-out/cfg/bin/pkg/tr.d/a.txt\nbazel-out/cfg/bin/pkg/tr.d/sub/b.txt\n",
+    "bazel-out/k8-fastbuild/bin/pkg/pw_noreq.params": "bazel-out/k8-fastbuild/bin/pkg/g.txt\npkg/src.txt\n'--dir=bazel-out/k8-fastbuild/bin/pkg'\n'--dir=pkg'\n"
+   },
+   "summary": "INFO: 5 processes: 4 internal, 1 processwrapper-sandbox."
+  },
+  "aquery": {
+   "argv": [
+    "aquery",
+    "--experimental_output_paths=strip",
+    "mnemonic(\"MyMnemonic|Coll|FileWrite\", deps(//pkg:a) + //pkg:coll_same + //pkg:coll_diff + //pkg:u_noreq + //pkg:u_lit + //pkg:pw + //pkg:pw_tree + //pkg:pw_noreq)"
+   ],
+   "kind": "aquery",
+   "exit_code": 0,
+   "aquery": [
+    "action 'MyMnemonic pkg/u.out'",
+    "  Mnemonic: MyMnemonic",
+    "  Target: //pkg:u",
+    "  Configuration: k8-fastbuild-ST-9bbb821748d3",
+    "  Execution platform: @@platforms//host:host",
+    "  ActionKey: 3d48ffa4a76b692d3b391dd94748618b6edb75874bc44aaedec023f1da870ca5",
+    "  Inputs: [bazel-out/k8-fastbuild-ST-9bbb821748d3/bin/pkg/g.txt, bazel-out/k8-fastbuild-ST-9bbb821748d3/bin/pkg/tr.d, bazel-out/k8-opt-exec-ST-9bbb821748d3/bin/pkg/tool.sh, bazel-out/k8-opt-exec-ST-9bbb821748d3/bin/pkg/tool.sh.runfiles, pkg/src.txt]",
+    "  Outputs: [bazel-out/k8-fastbuild-ST-9bbb821748d3/bin/pkg/u.out, bazel-out/k8-fastbuild-ST-9bbb821748d3/bin/pkg/u.outdir (TreeArtifact)]",
+    "  Command Line: (exec bazel-out/cfg/bin/pkg/tool.sh \\",
+    "    bazel-out/cfg/bin/pkg/u.out \\",
+    "    bazel-out/cfg/bin/pkg/u.outdir \\",
+    "    bazel-out/cfg/bin/pkg/g.txt \\",
+    "    pkg/src.txt \\",
+    "    -Ibazel-out/cfg/bin/pkg/g.txt \\",
+    "    '--dir=bazel-out/cfg/bin/pkg' \\",
+    "    '--dir=pkg' \\",
+    "    'bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/g.txt|pkg/g.txt' \\",
+    "    '|pkg/src.txt|pkg/src.txt' \\",
+    "    bazel-out/cfg/bin/pkg/tr.d \\",
+    "    '--tree=bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/tr.d|pkg/tr.d' \\",
+    "    bazel-out/cfg/bin/pkg/g.txt \\",
+    "    pkg/src.txt)",
+    "# Execution platform: @@platforms//host:host",
+    "  ExecutionInfo: {supports-path-mapping: ''}",
+    "",
+    "action 'Writing file pkg/g.txt'",
+    "  Mnemonic: FileWrite",
+    "  Target: //pkg:g",
+    "  Configuration: k8-fastbuild-ST-9bbb821748d3",
+    "  Execution platform: @@platforms//host:host",
+    "  ActionKey: a1cb57ade685fcd622e6a139887f68f7cb1c357adab9d38fe7148ec2f40fe0d8",
+    "  Inputs: []",
+    "  Outputs: [bazel-out/k8-fastbuild-ST-9bbb821748d3/bin/pkg/g.txt]",
+    "  IsExecutable: false",
+    "",
+    "action 'Writing script pkg/tool.sh [for tool]'",
+    "  Mnemonic: FileWrite",
+    "  Target: //pkg:tool",
+    "  Configuration: k8-opt-exec-ST-9bbb821748d3",
+    "  Execution platform: @@platforms//host:host",
+    "  ActionKey: 928c9da6a96be43b84ea21fc415756d1750b7f1d72765eb11bde62b7384d5e24",
+    "  Inputs: []",
+    "  Outputs: [bazel-out/k8-opt-exec-ST-9bbb821748d3/bin/pkg/tool.sh]",
+    "  IsExecutable: true",
+    "",
+    "action 'Coll pkg/coll_same.out'",
+    "  Mnemonic: Coll",
+    "  Target: //pkg:coll_same",
+    "  Configuration: k8-fastbuild",
+    "  Execution platform: @@platforms//host:host",
+    "  ActionKey: 9e303ededc22f293a21b82c5b9f1e3434d830c78a2a05cf19f9bdf1c304ce5b5",
+    "  Inputs: [bazel-out/k8-fastbuild-ST-46bd9f961ad3/bin/pkg/g.txt, bazel-out/k8-fastbuild-ST-9bbb821748d3/bin/pkg/g.txt]",
+    "  Outputs: [bazel-out/k8-fastbuild/bin/pkg/coll_same.out]",
+    "  Command Line: (exec /bin/bash \\",
+    "    -c \\",
+    "    'o=$1; shift; echo \"$@\" > $o; cat \"$@\" >> $o' \\",
+    "    '' \\",
+    "    bazel-out/k8-fastbuild/bin/pkg/coll_same.out \\",
+    "    bazel-out/k8-fastbuild-ST-9bbb821748d3/bin/pkg/g.txt \\",
+    "    bazel-out/k8-fastbuild-ST-46bd9f961ad3/bin/pkg/g.txt)",
+    "# Execution platform: @@platforms//host:host",
+    "  ExecutionInfo: {supports-path-mapping: ''}",
+    "",
+    "action 'Coll pkg/coll_diff.out'",
+    "  Mnemonic: Coll",
+    "  Target: //pkg:coll_diff",
+    "  Configuration: k8-fastbuild",
+    "  Execution platform: @@platforms//host:host",
+    "  ActionKey: bf80df31e49615fc6ed99980a72dd5a0c2dc0efa4ec319400e6aa995ffa57efb",
+    "  Inputs: [bazel-out/k8-fastbuild-ST-46bd9f961ad3/bin/pkg/gf.txt, bazel-out/k8-fastbuild-ST-9bbb821748d3/bin/pkg/gf.txt]",
+    "  Outputs: [bazel-out/k8-fastbuild/bin/pkg/coll_diff.out]",
+    "  Command Line: (exec /bin/bash \\",
+    "    -c \\",
+    "    'o=$1; shift; echo \"$@\" > $o; cat \"$@\" >> $o' \\",
+    "    '' \\",
+    "    bazel-out/k8-fastbuild/bin/pkg/coll_diff.out \\",
+    "    bazel-out/k8-fastbuild-ST-9bbb821748d3/bin/pkg/gf.txt \\",
+    "    bazel-out/k8-fastbuild-ST-46bd9f961ad3/bin/pkg/gf.txt)",
+    "# Execution platform: @@platforms//host:host",
+    "  ExecutionInfo: {supports-path-mapping: ''}",
+    "",
+    "action 'MyMnemonic pkg/u_noreq.out'",
+    "  Mnemonic: MyMnemonic",
+    "  Target: //pkg:u_noreq",
+    "  Configuration: k8-fastbuild",
+    "  Execution platform: @@platforms//host:host",
+    "  ActionKey: 96129763d21236e4d27fd030bcb64fe79f53e00c09d8a1ef96207b0b754c87c6",
+    "  Inputs: [bazel-out/k8-fastbuild/bin/pkg/g.txt, bazel-out/k8-opt-exec/bin/pkg/tool.sh, bazel-out/k8-opt-exec/bin/pkg/tool.sh.runfiles, pkg/src.txt]",
+    "  Outputs: [bazel-out/k8-fastbuild/bin/pkg/u_noreq.out, bazel-out/k8-fastbuild/bin/pkg/u_noreq.outdir (TreeArtifact)]",
+    "  Environment: [OUTPATH=bazel-out/k8-fastbuild/bin/pkg/u_noreq.out]",
+    "  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \\",
+    "    bazel-out/k8-fastbuild/bin/pkg/u_noreq.out \\",
+    "    bazel-out/k8-fastbuild/bin/pkg/u_noreq.outdir \\",
+    "    bazel-out/k8-fastbuild/bin/pkg/g.txt \\",
+    "    pkg/src.txt \\",
+    "    -Ibazel-out/k8-fastbuild/bin/pkg/g.txt \\",
+    "    '--dir=bazel-out/k8-fastbuild/bin/pkg' \\",
+    "    '--dir=pkg' \\",
+    "    'bazel-out/k8-fastbuild/bin|bazel-out/k8-fastbuild/bin/pkg/g.txt|pkg/g.txt' \\",
+    "    '|pkg/src.txt|pkg/src.txt' \\",
+    "    'literal=bazel-out/k8-fastbuild/bin/pkg/g.txt' \\",
+    "    bazel-out/k8-fastbuild/bin/pkg/g.txt \\",
+    "    pkg/src.txt)",
+    "# Execution platform: @@platforms//host:host",
+    "",
+    "action 'MyMnemonic pkg/u_lit.out'",
+    "  Mnemonic: MyMnemonic",
+    "  Target: //pkg:u_lit",
+    "  Configuration: k8-fastbuild",
+    "  Execution platform: @@platforms//host:host",
+    "  ActionKey: c1d441e2a06654b79b9654f842fa1db5869c9a929d15bd33e4c7358852adf684",
+    "  Inputs: [bazel-out/k8-fastbuild/bin/pkg/g.txt, bazel-out/k8-opt-exec/bin/pkg/tool.sh, bazel-out/k8-opt-exec/bin/pkg/tool.sh.runfiles, pkg/src.txt]",
+    "  Outputs: [bazel-out/k8-fastbuild/bin/pkg/u_lit.out, bazel-out/k8-fastbuild/bin/pkg/u_lit.outdir (TreeArtifact)]",
+    "  Environment: [OUTPATH=bazel-out/k8-fastbuild/bin/pkg/u_lit.out]",
+    "  Command Line: (exec bazel-out/cfg/bin/pkg/tool.sh \\",
+    "    bazel-out/cfg/bin/pkg/u_lit.out \\",
+    "    bazel-out/cfg/bin/pkg/u_lit.outdir \\",
+    "    bazel-out/cfg/bin/pkg/g.txt \\",
+    "    pkg/src.txt \\",
+    "    -Ibazel-out/cfg/bin/pkg/g.txt \\",
+    "    '--dir=bazel-out/cfg/bin/pkg' \\",
+    "    '--dir=pkg' \\",
+    "    'bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/g.txt|pkg/g.txt' \\",
+    "    '|pkg/src.txt|pkg/src.txt' \\",
+    "    'literal=bazel-out/k8-fastbuild/bin/pkg/g.txt' \\",
+    "    bazel-out/cfg/bin/pkg/g.txt \\",
+    "    pkg/src.txt)",
+    "# Execution platform: @@platforms//host:host",
+    "  ExecutionInfo: {supports-path-mapping: ''}",
+    "",
+    "action 'Writing file pkg/pw.params'",
+    "  Mnemonic: FileWrite",
+    "  Target: //pkg:pw",
+    "  Configuration: k8-fastbuild",
+    "  Execution platform: @@platforms//host:host",
+    "  ActionKey: 375cffd33e14244107ee9c24bce50e7e6e5d8f9ec111a878f4e4b246250abc2f",
+    "  Inputs: []",
+    "  Outputs: [bazel-out/k8-fastbuild/bin/pkg/pw.params]",
+    "  ExecutionInfo: {supports-path-mapping: ''}",
+    "",
+    "action 'Writing file pkg/pw_tree.params'",
+    "  Mnemonic: FileWrite",
+    "  Target: //pkg:pw_tree",
+    "  Configuration: k8-fastbuild",
+    "  Execution platform: @@platforms//host:host",
+    "  ActionKey: bb98d545811bc0e20358a2bb1551c7b376471561ab920e245360265c22139d6e",
+    "  Inputs: [bazel-out/k8-fastbuild/bin/pkg/tr.d]",
+    "  Outputs: [bazel-out/k8-fastbuild/bin/pkg/pw_tree.params]",
+    "  ExecutionInfo: {supports-path-mapping: ''}",
+    "",
+    "action 'Writing file pkg/pw_noreq.params'",
+    "  Mnemonic: FileWrite",
+    "  Target: //pkg:pw_noreq",
+    "  Configuration: k8-fastbuild",
+    "  Execution platform: @@platforms//host:host",
+    "  ActionKey: c66227e022f5a9955459dbb838dbe7e661565776bcde88bc21381e1c7cd95da1",
+    "  Inputs: []",
+    "  Outputs: [bazel-out/k8-fastbuild/bin/pkg/pw_noreq.params]",
+    ""
+   ]
+  }
+ }
+}
