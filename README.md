@@ -8,7 +8,7 @@ reuses a content-addressed cache and a saved analysis snapshot.
 bazel-rs builds, tests, runs and queries a large private Go/TypeScript/Python
 monorepo (`bwllaming/code`, referred to as `~/code` in these docs) and runs its
 CI. The remaining differences from Bazel are listed in PLAN.md and docs/ROADMAP.md.
-Linux (x86-64 and arm64) only.
+Runs on Linux (x86-64 and arm64) and macOS on Apple silicon (arm64).
 
 bazel-rs is not affiliated with, endorsed by or sponsored by Google or the
 Bazel project. "Bazel" is a trademark of Google LLC. See NOTICE for the parts
@@ -29,8 +29,8 @@ Rust **1.99.0**, rustfmt, Clippy, rust-analyzer and rust-src are pinned in
 the official rustup-init SHA256 and does not change shell startup files. `.envrc`
 only sets paths and variables; entering the directory does not run installers.
 Dependencies are locked in `Cargo.lock`. The pinned interpreter is preserved as
-a [licensed, provenance-tracked source tree](docs/STARLARK_VENDOR.md). Linux is the
-supported execution host.
+a [licensed, provenance-tracked source tree](docs/STARLARK_VENDOR.md). Linux and
+macOS arm64 are supported execution hosts (docs/MACOS.md).
 After a release build, direnv also exposes `bazel-rs` on PATH. It never installs
 a `bazel` alias or replaces the main repo's launcher.
 
@@ -68,26 +68,31 @@ affected.
 
 ## Releases and license
 
-Linux x86_64 and Linux arm64 (aarch64) binaries are published as GitHub
-releases of the public repository `bwllaming/bazel-rs`
+Linux x86_64, Linux arm64 (aarch64) and macOS arm64 binaries are published as
+GitHub releases of the public repository `bwllaming/bazel-rs`
 (`https://github.com/bwllaming/bazel-rs/releases/download/v<version>/<archive>`,
-no authentication needed): static
+no authentication needed; `releases/latest` points at the newest): static
 `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` builds that run on
-any distribution and a `x86_64-unknown-linux-gnu` build that needs the glibc it
-was built against (glibc ≥ 2.39: built on Ubuntu 24.04) (each release's notes give the checksums, requirements and
-install steps; from 0.2.0 on, arm64 after 0.2.0).
+any distribution, a `x86_64-unknown-linux-gnu` build that needs the glibc it
+was built against (glibc ≥ 2.39: built on Ubuntu 24.04), and, from 0.5.0 on, an
+`aarch64-apple-darwin` build for macOS on Apple silicon (ad-hoc signed, not
+notarized: a `curl` download runs as is, a browser download needs
+`xattr -d com.apple.quarantine bazel-rs`). Each release's notes give the
+checksums (also in its `SHA256SUMS`), requirements and install steps.
 
-Platform support: Linux x86_64 and Linux aarch64 (4, 16 or 64 KiB pages), and
-macOS arm64 (docs/MACOS.md). Each
-binary embeds Bazel 9.3.1's `@bazel_tools` of its own platform
-(`resources/bazel_tools/<platform>/`, from the official
-`bazel-9.3.1-linux-x86_64` / `bazel-9.3.1-linux-arm64` release) and reports its
-host like genuine Bazel on that platform: `ctx.os.arch` `amd64` / `aarch64`,
+Platform support: Linux x86_64, Linux aarch64 (4, 16 or 64 KiB pages) and
+macOS arm64 (docs/MACOS.md). Each binary embeds Bazel 9.3.1's `@bazel_tools` of
+its own platform (`resources/bazel_tools/<platform>/`, from the official
+`bazel-9.3.1-linux-x86_64` / `bazel-9.3.1-linux-arm64` / `bazel-9.3.1-darwin-arm64`
+release) and reports its host like genuine Bazel on that platform: `ctx.os.arch`
+`amd64` / `aarch64`, `@platforms//os:linux` / `@platforms//os:osx`,
 `@platforms//cpu:x86_64` / `@platforms//cpu:aarch64`, output roots
-`bazel-out/k8-*` / `bazel-out/aarch64-*` (docs/HOST_OS.md). Other systems
-than macOS on Apple silicon (`aarch64-apple-darwin`, docs/MACOS.md: genuine's
-processwrapper-sandbox semantics, no darwin-sandbox yet) — Windows, Intel Macs —
-are not supported yet; the release tooling has room for more targets
+`bazel-out/k8-*` / `bazel-out/aarch64-*` / `bazel-out/darwin_arm64-*`
+(docs/HOST_OS.md). On macOS, actions run under Bazel's darwin-sandbox
+(sandbox-exec) when it works, else processwrapper-sandbox semantics; CI
+compares bazel-rs with Bazel 9.3.1 darwin-arm64 on every run (docs/MACOS.md
+lists what differs, e.g. apple_support's own C++ toolchain is not covered yet).
+Other systems — Windows, Intel Macs — are not supported yet; the release tooling has room for more targets
 (docs/RELEASING.md). Install the
 `bazel-rs` binary anywhere on PATH and run it from a workspace like Bazel
 (`bazel-rs build //...`); it does not replace `bazel` or Bazelisk. Releases are
@@ -303,8 +308,9 @@ scope in [`docs/capabilities.json`](docs/capabilities.json).
 
 ### Execution and cache limitations
 
-**Trusted BUILD files and commands only. Actions execute sandboxed by default
-on Linux** — like Bazel 9.3's default `sandboxed` strategy
+**Trusted BUILD files and commands only. Actions execute sandboxed by default**
+(on macOS through Bazel's darwin-sandbox, docs/MACOS.md; on Linux as follows)
+— like Bazel 9.3's default `sandboxed` strategy
 ([`docs/SANDBOX.md`](docs/SANDBOX.md)): a Landlock ruleset denies every
 write outside the sandbox's writable paths (the action execroot, `TMPDIR`,
 `/tmp`, `/dev/shm`, `--sandbox_writable_path` entries), so out-of-sandbox
