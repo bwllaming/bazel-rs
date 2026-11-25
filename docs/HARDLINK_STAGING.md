@@ -556,7 +556,9 @@ inputs are created). Native execution roots now do the same
 (`src/action/reuse.rs`): while a scheduler executes a graph on a cache
 (`StashScope`), the execution root of a successful local process action
 (standalone, processwrapper-sandbox, the Landlock sandbox; not the namespace
-sandbox, not workers, Java or `--sandbox_debug`) is stashed with what staging
+sandbox, not workers, Java or `--sandbox_debug`; a sandboxed spawn's source
+directory input is a symlink that is made again, docs/SOURCE_DIRECTORIES.md)
+is stashed with what staging
 placed in it (`Placed`: a repository tree link's text, a store hardlink's
 store file and inode state), and the next action of its mnemonic takes one —
 its owner's latest, else its package's, else the latest. `reconcile` walks

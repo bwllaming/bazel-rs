@@ -55,6 +55,16 @@ fn owner_of(id: &str) -> (&str, &str) {
 /// entries removed (crate::action `report_staging`).
 pub(super) static COUNTS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 
+/// `PERF-STAGE reuse` misses: no stash of the mnemonic to take, a
+/// reconciliation that failed (the stash was removed), a stash refused by
+/// [`put`] (the scope ended or enough are stashed; its other entries could
+/// not be removed).
+pub(super) static MISSES: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+pub(super) const MISS_EMPTY: usize = 0;
+pub(super) const MISS_RECONCILE: usize = 1;
+pub(super) const MISS_PUT_REFUSED: usize = 2;
+pub(super) const MISS_PUT_ENTRIES: usize = 3;
+
 /// The kept entries of a reconciled execution root, by destination.
 pub(super) type Kept = FxHashMap<PathBuf, Placed>;
 
@@ -165,7 +175,13 @@ impl Drop for StashScope {
 /// (the likeliest to hold the same inputs).
 pub(super) fn take(cache_root: &Path, mnemonic: &str, id: &str) -> Option<Stash> {
     let mut stashes = stashes().lock().unwrap_or_else(|e| e.into_inner());
-    let list = stashes.get_mut(&(cache_root.to_path_buf(), mnemonic.to_owned()))?;
+    let Some(list) = stashes.get_mut(&(cache_root.to_path_buf(), mnemonic.to_owned())) else {
+        MISSES[MISS_EMPTY].fetch_add(1, Ordering::Relaxed);
+        return None;
+    };
+    if list.is_empty() {
+        MISSES[MISS_EMPTY].fetch_add(1, Ordering::Relaxed);
+    }
     let (owner, package) = owner_of(id);
     let position = list
         .iter()
@@ -194,10 +210,12 @@ pub(super) fn put(
     }
     // Everything but the execution root goes (the logs, a sandbox's files).
     let Ok(entries) = fs::read_dir(work) else {
+        MISSES[MISS_PUT_ENTRIES].fetch_add(1, Ordering::Relaxed);
         return false;
     };
     for entry in entries {
         let Ok(entry) = entry else {
+            MISSES[MISS_PUT_ENTRIES].fetch_add(1, Ordering::Relaxed);
             return false;
         };
         if entry.file_name() == "execroot" {
@@ -209,6 +227,7 @@ pub(super) fn put(
             Err(error) => Err(error),
         };
         if removed.is_err() {
+            MISSES[MISS_PUT_ENTRIES].fetch_add(1, Ordering::Relaxed);
             return false;
         }
     }
@@ -231,12 +250,14 @@ pub(super) fn put(
     // stashes, so a stash pushed here while the count is positive is one
     // that end removes, and none is pushed after it.
     if !in_scope(cache_root) {
+        MISSES[MISS_PUT_REFUSED].fetch_add(1, Ordering::Relaxed);
         return false;
     }
     let list = stashes
         .entry((cache_root.to_path_buf(), mnemonic.to_owned()))
         .or_default();
     if list.len() >= MAX_PER_MNEMONIC {
+        MISSES[MISS_PUT_REFUSED].fetch_add(1, Ordering::Relaxed);
         return false;
     }
     list.push(Stash {
@@ -256,11 +277,15 @@ enum Wanted {
 
 /// What staging places for `inputs` (crate::action `stage_inputs`), by
 /// destination; the store file of each hardlink by its distinct-inode
-/// ordinal, computed in staging's order.
+/// ordinal, computed in staging's order. A source directory staged as a
+/// symlink to it (`link_source_directories`) places no file: whatever is
+/// at its destination goes (staging links it again), and nothing below
+/// that symlink is ever looked at.
 fn wanted(
     cas: &Path,
     root: &Path,
     inputs: &BTreeMap<PathBuf, Staged>,
+    link_source_directories: bool,
 ) -> FxHashMap<PathBuf, Wanted> {
     fn file<'a>(
         (cas, root): (&Path, &Path),
@@ -297,6 +322,7 @@ fn wanted(
                     );
                 }
             }
+            Staged::SourceDirectory(_) if link_source_directories => {}
             Staged::SourceDirectory(directory) => {
                 for (path, input) in &directory.files {
                     file(
@@ -323,9 +349,10 @@ pub(super) fn reconcile(
     cas: &Path,
     root: &Path,
     inputs: &BTreeMap<PathBuf, Staged>,
+    link_source_directories: bool,
 ) -> io::Result<Kept> {
     let mode = directory_mode().ok_or_else(|| io::Error::other("no directory mode"))?;
-    let wanted = wanted(cas, root, inputs);
+    let wanted = wanted(cas, root, inputs, link_source_directories);
     // Every directory an input file lies below.
     let mut needed: FxHashSet<PathBuf> = FxHashSet::default();
     for destination in wanted.keys() {

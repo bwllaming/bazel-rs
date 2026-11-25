@@ -5766,8 +5766,10 @@ pub fn report_staging() {
         micros as f64 / 1e6
     ));
     let [reused, kept, removed] = reuse::COUNTS.each_ref().map(|n| n.load(Ordering::Relaxed));
+    let [empty, failed, refused, entries] =
+        reuse::MISSES.each_ref().map(|n| n.load(Ordering::Relaxed));
     crate::snapshot::diag::line_fmt(format_args!(
-        "PERF-STAGE reuse roots={reused} kept={kept} removed={removed}"
+        "PERF-STAGE reuse roots={reused} kept={kept} removed={removed} misses: empty={empty} reconcile={failed} put_refused={refused} put_entries={entries}"
     ));
     let parts = STAGING_PARTS
         .each_ref()
@@ -9009,7 +9011,6 @@ pub fn execute_with_remote(
             ))
         );
     let reusable = process
-        && !link_source_directories
         && worker.is_none()
         && remote_hit.is_none()
         && java_strategy.is_none()
@@ -9032,7 +9033,14 @@ pub fn execute_with_remote(
         let mut clock = std::time::Instant::now();
         let stashed = stash.work.clone();
         let stashed_execroot = stashed.join("execroot");
-        match reuse::reconcile(stash, &stashed_execroot, cas, root, inputs) {
+        match reuse::reconcile(
+            stash,
+            &stashed_execroot,
+            cas,
+            root,
+            inputs,
+            link_source_directories,
+        ) {
             Ok(reconciled) => {
                 // The fresh work directory goes (empty but its execroot).
                 work = WorkDir(stashed);
@@ -9040,6 +9048,7 @@ pub fn execute_with_remote(
                 kept = Some(reconciled);
             }
             Err(_) => {
+                reuse::MISSES[reuse::MISS_RECONCILE].fetch_add(1, Ordering::Relaxed);
                 let _ = remove_directory(&stashed);
             }
         }

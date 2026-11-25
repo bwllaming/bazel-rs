@@ -469,3 +469,82 @@ fn changes_inside_run_the_consumers_again() {
 fn declared_divergences_reproduce() {
     check_group("declared");
 }
+
+/// Reused execution roots (docs/HARDLINK_STAGING.md "Execution-root
+/// reuse") with a source directory input: one `Genrule` after another in
+/// one reused root, alternating unsandboxed spawns (the directory staged
+/// as a real directory of read-only files, where they leave a file of
+/// their own) and sandboxed ones (a symlink to the directory, B40). Each
+/// sees its own staging exactly — never the previous action's directory,
+/// link or leftovers — and the roots are reused.
+#[test]
+fn reused_execution_roots_switch_between_linked_and_staged_directories() {
+    let ws = Workspace::new();
+    let sandboxed = "test -L $(location dir) && test ! -e $(location dir)/stale";
+    let local = "test -d $(location dir) && test ! -L $(location dir) \\
+                 && test ! -e $(location dir)/stale && touch $(location dir)/stale";
+    let rule = |name: &str, previous: Option<&str>, check: &str, tags: &str| {
+        let srcs = match previous {
+            Some(previous) => format!("['dir', ':{previous}']"),
+            None => "['dir']".to_owned(),
+        };
+        format!(
+            "genrule(name = '{name}', srcs = {srcs}, outs = ['{name}.out'], tags = [{tags}], \\
+             cmd = '{check} && cat $(location dir)/a.txt > $@')\n"
+        )
+    };
+    let mut build = String::new();
+    build += &rule("reuse_local1", None, local, "'no-sandbox'");
+    build += &rule("reuse_local2", Some("reuse_local1"), local, "'no-sandbox'");
+    build += &rule("reuse_sandboxed1", Some("reuse_local2"), sandboxed, "");
+    build += &rule("reuse_sandboxed2", Some("reuse_sandboxed1"), sandboxed, "");
+    build += &rule(
+        "reuse_local3",
+        Some("reuse_sandboxed2"),
+        local,
+        "'no-sandbox'",
+    );
+    build += &rule("reuse_sandboxed3", Some("reuse_local3"), sandboxed, "");
+    let package = ws.path().join("pkg/BUILD.bazel");
+    let original = fs::read_to_string(&package).unwrap();
+    fs::write(&package, original + &build).unwrap();
+    let registry = format!(
+        "--registry=file://{}/tests/fixtures/builtin_modules/registry",
+        manifest().display()
+    );
+    let output = Command::new("timeout")
+        .args(["--kill-after=5s", "300s", env!("CARGO_BIN_EXE_bazel-rs")])
+        .args([
+            "--ignore_all_rc_files",
+            "--cache-dir=private-cache",
+            "build",
+        ])
+        .args(["--experimental-builtin-modules", &registry])
+        .args(["--jobs=1", "//pkg:reuse_sandboxed3"])
+        .current_dir(ws.path())
+        .env("BAZEL_RS_TIMING", "1")
+        .seeded_archives()
+        .output()
+        .unwrap();
+    let stderr = ws.stderr(&output);
+    assert!(output.status.success(), "{stderr}");
+    let roots: u64 = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("PERF-STAGE reuse roots="))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|count| count.parse().ok())
+        .unwrap_or_else(|| panic!("no PERF-STAGE reuse line: {stderr}"));
+    assert!(roots >= 5, "{roots} roots reused: {stderr}");
+    assert!(!ws.path().join("pkg/dir/stale").exists());
+    for name in [
+        "reuse_local1",
+        "reuse_local2",
+        "reuse_sandboxed1",
+        "reuse_sandboxed2",
+        "reuse_local3",
+        "reuse_sandboxed3",
+    ] {
+        let out = ws.path().join(format!("bazel-bin/pkg/{name}.out"));
+        assert_eq!(fs::read_to_string(&out).unwrap(), "a\n", "{name}");
+    }
+}

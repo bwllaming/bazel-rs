@@ -132,8 +132,12 @@ the spawn).
   `lib/`, as genuine's. The spawn reads the live directory, so the
   directory is read again in full after the spawn (not from the per-process
   memo, like a test's live sources) and a change while it ran fails the
-  action (`source directory P changed while it was being staged`); such an
-  execution root is never stashed for reuse. Actions with
+  action (`source directory P changed while it was being staged`). A
+  reused execution root (docs/HARDLINK_STAGING.md "Execution-root reuse")
+  keeps nothing at the link's path: whatever a stashed root holds there (a
+  staged directory, a link) goes and the link is made again (until
+  openroad-cpu such roots were never stashed, which left OpenROAD's
+  compiles — the clang resource directory is one — without reuse). Actions with
   source directory inputs frame `source-directories-linked`, so results
   staged the old way miss once. **Declared divergence (`view_local`):** a
   standalone (`local`) spawn and a worker stage it like a tree artifact
