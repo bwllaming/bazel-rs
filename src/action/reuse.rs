@@ -26,6 +26,7 @@
 //! `BAZEL_RS_REUSE_EXECROOTS=0` turns reuse off.
 
 use super::*;
+use std::ffi::OsString;
 
 /// What staging placed at one destination of a stashed execution root.
 pub(super) enum Placed {
@@ -36,11 +37,203 @@ pub(super) enum Placed {
     Blob { blob: PathBuf, state: InodeState },
 }
 
+/// A directory of an execution root as staging left it: its inode and
+/// change time.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DirectoryState {
+    inode: u64,
+    ctime: (i64, i64),
+}
+
+impl DirectoryState {
+    #[cfg_attr(not(target_os = "linux"), allow(clippy::useless_conversion))]
+    fn of(stat: &rustix::fs::Stat) -> Self {
+        DirectoryState {
+            inode: stat.st_ino,
+            ctime: (
+                stat.st_ctime,
+                i64::try_from(stat.st_ctime_nsec).unwrap_or(i64::MAX),
+            ),
+        }
+    }
+}
+
+/// The directories of a staged execution root as staging left them
+/// ([`record`]), by path relative to the root (`""` the root itself): the
+/// state [`reconcile`] compares, and for most of them the exact listing.
+#[derive(Default)]
+pub(super) struct Recorded {
+    states: FxHashMap<PathBuf, DirectoryState>,
+    /// The entries (name, type) of the recorded directories in which
+    /// staging made nothing but the placed files and the directories above
+    /// them, the directories it creates for trees and source directories
+    /// included: a directory found unchanged lists exactly these.
+    listings: FxHashMap<PathBuf, Vec<(OsString, rustix::fs::FileType)>>,
+}
+
+/// Records the directories of `execroot` as staging `inputs` left them
+/// (`staged`: the files it placed), right after staging and before
+/// anything else changes the root (parameter files, output directories,
+/// the process). A directory's change time moves with every entry
+/// created, removed or renamed in it (link, symlink, unlink, rename,
+/// mkdir, rmdir), so one found in the recorded state again (inode and
+/// change time) holds exactly the entries it held here: no kept link was
+/// replaced and none of its files is another inode. Change times come from
+/// the kernel's coarse clock (CLOCK_REALTIME_COARSE, which `current_time`
+/// reads; finer multigrain stamps are never below it), so a change made in
+/// the tick in which a directory was last changed could leave its change
+/// time as it is: only directories whose change time is below the coarse
+/// clock read after them are recorded — any later change stamps a later
+/// time. The others are listed and verified entry by entry as before.
+pub(super) fn record(
+    execroot: &Path,
+    staged: &[StagedFile],
+    inputs: &BTreeMap<PathBuf, Staged>,
+    link_source_directories: bool,
+) -> Recorded {
+    use rustix::fs::{AtFlags, FileType, statat};
+    let Ok(root) = open_directory_at(None, execroot) else {
+        return Recorded::default();
+    };
+    // Every directory staging made or kept: those above a placed file, the
+    // ones it creates for trees and source directories (empty ones too),
+    // and those above a link it makes; and the directories holding an
+    // entry it makes besides files and directories (those links), which
+    // are listed again.
+    let mut directories: FxHashSet<&Path> = FxHashSet::default();
+    directories.insert(Path::new(""));
+    fn add<'a>(directories: &mut FxHashSet<&'a Path>, directory: &'a Path) {
+        let mut next = Some(directory);
+        while let Some(directory) = next.filter(|directory| !directory.as_os_str().is_empty()) {
+            if !directories.insert(directory) {
+                break;
+            }
+            next = directory.parent();
+        }
+    }
+    let mut owned: Vec<PathBuf> = Vec::new();
+    let mut unlisted: FxHashSet<PathBuf> = FxHashSet::default();
+    for file in staged {
+        if let Some(parent) = file.destination.parent() {
+            add(&mut directories, parent);
+        }
+    }
+    for (name, input) in inputs {
+        match input {
+            Staged::File(_) => {}
+            Staged::Tree(tree) => {
+                owned.push(name.clone());
+                owned.extend(
+                    tree.directories
+                        .iter()
+                        .map(|directory| name.join(directory)),
+                );
+            }
+            Staged::Symlink(_) => {
+                if let Some(parent) = name.parent() {
+                    owned.push(parent.to_path_buf());
+                    unlisted.insert(parent.to_path_buf());
+                }
+            }
+            Staged::SourceDirectory(_) if link_source_directories => {
+                if let Some(parent) = name.parent() {
+                    owned.push(parent.to_path_buf());
+                    unlisted.insert(parent.to_path_buf());
+                }
+            }
+            Staged::SourceDirectory(directory) => {
+                owned.push(name.clone());
+                owned.extend(
+                    directory
+                        .directories
+                        .iter()
+                        .map(|directory| name.join(directory)),
+                );
+                for link in directory.dangling.keys() {
+                    if let Some(parent) = name.join(link).parent() {
+                        unlisted.insert(parent.to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+    for directory in &owned {
+        add(&mut directories, directory);
+    }
+    let mut states = FxHashMap::default();
+    for directory in &directories {
+        let stat = if directory.as_os_str().is_empty() {
+            rustix::fs::fstat(&root)
+        } else {
+            statat(&root, *directory, AtFlags::SYMLINK_NOFOLLOW)
+        };
+        if let Ok(stat) = stat
+            && FileType::from_raw_mode(stat.st_mode) == FileType::Directory
+        {
+            states.insert(directory.to_path_buf(), DirectoryState::of(&stat));
+        }
+    }
+    match coarse_now() {
+        Some(now) => states.retain(|_, state| state.ctime < now),
+        None => states.clear(),
+    }
+    let mut listings: FxHashMap<PathBuf, Vec<(OsString, FileType)>> = FxHashMap::default();
+    let mut entry = |path: &Path, kind: FileType| {
+        if let (Some(parent), Some(name)) = (path.parent(), path.file_name())
+            && states.contains_key(parent)
+            && !unlisted.contains(parent)
+        {
+            listings
+                .entry(parent.to_path_buf())
+                .or_default()
+                .push((name.to_os_string(), kind));
+        }
+    };
+    for directory in &directories {
+        if !directory.as_os_str().is_empty() {
+            entry(directory, FileType::Directory);
+        }
+    }
+    for file in staged {
+        let kind = match file.tree_link {
+            Some(_) => FileType::Symlink,
+            None => FileType::RegularFile,
+        };
+        entry(&file.destination, kind);
+    }
+    // A recorded directory with nothing in it lists nothing.
+    for directory in states.keys() {
+        if !unlisted.contains(directory) && !listings.contains_key(directory) {
+            listings.insert(directory.clone(), Vec::new());
+        }
+    }
+    Recorded { states, listings }
+}
+
+/// The clock file change times are stamped from (Linux: the coarse real
+/// time clock); None elsewhere (nothing is trusted then).
+#[cfg(target_os = "linux")]
+#[allow(clippy::useless_conversion)]
+fn coarse_now() -> Option<(i64, i64)> {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::RealtimeCoarse);
+    Some((
+        i64::try_from(now.tv_sec).ok()?,
+        i64::try_from(now.tv_nsec).ok()?,
+    ))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn coarse_now() -> Option<(i64, i64)> {
+    None
+}
+
 /// A stashed work directory (its `execroot/`) and what staging placed in
 /// its execution root, by destination.
 pub(super) struct Stash {
     pub(super) work: PathBuf,
     placed: FxHashMap<PathBuf, Placed>,
+    /// Its directories as staging left them ([`record`]).
+    recorded: Recorded,
     /// The action's owner (its id up to `#`: the target or aspect).
     owner: String,
 }
@@ -60,6 +253,10 @@ pub(super) static COUNTS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 /// [`put`] (the scope ended or enough are stashed; its other entries could
 /// not be removed).
 pub(super) static MISSES: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+
+/// `PERF-STAGE reuse` directories: reconciled, of those trusted
+/// ([`Context::unchanged`]).
+pub(super) static DIRECTORIES: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 pub(super) const MISS_EMPTY: usize = 0;
 pub(super) const MISS_RECONCILE: usize = 1;
 pub(super) const MISS_PUT_REFUSED: usize = 2;
@@ -204,6 +401,7 @@ pub(super) fn put(
     id: &str,
     work: &Path,
     staged: &[StagedFile],
+    recorded: Recorded,
 ) -> bool {
     if !enabled(cache_root) {
         return false;
@@ -263,6 +461,7 @@ pub(super) fn put(
     list.push(Stash {
         work: work.to_path_buf(),
         placed,
+        recorded,
         owner: owner_of(id).0.to_owned(),
     });
     true
@@ -352,6 +551,7 @@ pub(super) fn reconcile(
     link_source_directories: bool,
 ) -> io::Result<Kept> {
     let mode = directory_mode().ok_or_else(|| io::Error::other("no directory mode"))?;
+    let mut clock = std::time::Instant::now();
     let wanted = wanted(cas, root, inputs, link_source_directories);
     // Every directory an input file lies below.
     let mut needed: FxHashSet<PathBuf> = FxHashSet::default();
@@ -364,18 +564,23 @@ pub(super) fn reconcile(
             parent = directory.parent();
         }
     }
+    staging_part(PART_RECONCILE_PLAN, &mut clock);
     let mut placed = stash.placed;
     let mut kept = Kept::default();
     let directory = open_directory_at(None, execroot)?;
+    let context = Context {
+        wanted: &wanted,
+        needed: &needed,
+        mode,
+        recorded: &stash.recorded,
+    };
+    let trusted = context.unchanged(Path::new(""), &rustix::fs::fstat(&directory)?);
     reconcile_directory(
         &directory,
         execroot,
         Path::new(""),
-        &Context {
-            wanted: &wanted,
-            needed: &needed,
-            mode,
-        },
+        &context,
+        trusted,
         &mut placed,
         &mut kept,
     )?;
@@ -388,7 +593,42 @@ struct Context<'a> {
     wanted: &'a FxHashMap<PathBuf, Wanted>,
     needed: &'a FxHashSet<PathBuf>,
     mode: u32,
+    recorded: &'a Recorded,
 }
+
+impl Context<'_> {
+    /// Whether the directory at `path` (inspected: `stat`) is in the state
+    /// [`record`] recorded: its entries are the ones staging left.
+    fn unchanged(&self, path: &Path, stat: &rustix::fs::Stat) -> bool {
+        self.recorded
+            .states
+            .get(path)
+            .is_some_and(|state| *state == DirectoryState::of(stat))
+    }
+
+    /// The entries of the open `directory`.
+    fn read(
+        &self,
+        directory: &std::os::fd::OwnedFd,
+    ) -> io::Result<Vec<(OsString, rustix::fs::FileType)>> {
+        let mut names = Vec::new();
+        for entry in rustix::fs::Dir::read_from(directory)? {
+            let entry = entry?;
+            let name = entry.file_name().to_bytes();
+            if name == b"." || name == b".." {
+                continue;
+            }
+            names.push((
+                std::ffi::OsStr::from_bytes(name).to_os_string(),
+                entry.file_type(),
+            ));
+        }
+        Ok(names)
+    }
+}
+
+/// `PERF-STAGE reuse` directories whose recorded listing was used.
+pub(super) static LISTED: AtomicU64 = AtomicU64::new(0);
 
 fn open_directory_at(
     parent: Option<&std::os::fd::OwnedFd>,
@@ -421,67 +661,127 @@ fn stat_state(stat: &rustix::fs::Stat) -> InodeState {
     }
 }
 
+/// A directory being reconciled: the execution root's descriptor and the
+/// directory's path relative to it; the directory itself is opened only
+/// when it is read (listed, or an entry inspected) — on an overlay
+/// filesystem opening a directory costs about ten `stat`s of a path.
+struct At<'a> {
+    root: &'a std::os::fd::OwnedFd,
+    relative: &'a Path,
+    opened: Option<std::os::fd::OwnedFd>,
+}
+
+impl At<'_> {
+    /// The directory's descriptor, opened without following a link.
+    fn fd(&mut self) -> io::Result<&std::os::fd::OwnedFd> {
+        if self.relative.as_os_str().is_empty() {
+            return Ok(self.root);
+        }
+        if self.opened.is_none() {
+            self.opened = Some(open_directory_at(Some(self.root), self.relative)?);
+        }
+        Ok(self.opened.as_ref().expect("opened above"))
+    }
+
+    /// `name` in the directory, for a call relative to [`Self::base`]: the
+    /// name itself in an opened directory (or the root), else its path
+    /// relative to the root.
+    fn name(&self, name: &std::ffi::OsStr) -> PathBuf {
+        if self.relative.as_os_str().is_empty() || self.opened.is_some() {
+            PathBuf::from(name)
+        } else {
+            self.relative.join(name)
+        }
+    }
+
+    /// The descriptor [`Self::name`]'s paths are relative to.
+    fn base(&self) -> &std::os::fd::OwnedFd {
+        self.opened.as_ref().unwrap_or(self.root)
+    }
+}
+
+/// Reconciles the directory `relative` to the root (`absolute`), whose
+/// state is `stat`. `trusted`: it is in the state staging recorded
+/// ([`Context::unchanged`]), so each entry staging placed is still that
+/// very link or inode — its recorded listing stands for reading it, a kept
+/// link's text is not read again and a kept file is not inspected here
+/// (staging inspects its store file, the same inode, crate::action
+/// `stage_file`); subdirectories are inspected by path.
 fn reconcile_directory(
-    directory: &std::os::fd::OwnedFd,
+    root: &std::os::fd::OwnedFd,
     absolute: &Path,
     relative: &Path,
     context: &Context<'_>,
+    trusted: bool,
     placed: &mut FxHashMap<PathBuf, Placed>,
     kept: &mut Kept,
 ) -> io::Result<()> {
-    use rustix::fs::{AtFlags, Dir, FileType, readlinkat, statat, unlinkat};
-    let mut names = Vec::new();
-    {
-        for entry in Dir::read_from(directory)? {
-            let entry = entry?;
-            let name = entry.file_name().to_bytes();
-            if name == b"." || name == b".." {
-                continue;
-            }
-            names.push((
-                std::ffi::OsStr::from_bytes(name).to_os_string(),
-                entry.file_type(),
-            ));
-        }
+    use rustix::fs::{AtFlags, FileType, readlinkat, statat, unlinkat};
+    DIRECTORIES[0].fetch_add(1, Ordering::Relaxed);
+    if trusted {
+        DIRECTORIES[1].fetch_add(1, Ordering::Relaxed);
     }
-    for (name, kind) in names {
+    let mut at = At {
+        root,
+        relative,
+        opened: None,
+    };
+    let entries = match trusted
+        .then(|| context.recorded.listings.get(relative))
+        .flatten()
+    {
+        Some(listing) => {
+            LISTED.fetch_add(1, Ordering::Relaxed);
+            listing.clone()
+        }
+        None => context.read(at.fd()?)?,
+    };
+    for (name, kind) in entries {
         let path = relative.join(&name);
-        // A symlink's type is all it needs from the directory listing; a
-        // file's state and a directory's mode take a stat.
-        let stat = match kind {
-            FileType::Symlink => None,
-            _ => Some(statat(directory, &name, AtFlags::SYMLINK_NOFOLLOW)?),
-        };
-        let kind = match (kind, &stat) {
-            (FileType::Unknown, Some(stat)) => FileType::from_raw_mode(stat.st_mode),
-            (kind, _) => kind,
+        // The listing's type, else a stat's.
+        let kind = match kind {
+            FileType::Unknown => {
+                FileType::from_raw_mode(statat(at.fd()?, &name, AtFlags::SYMLINK_NOFOLLOW)?.st_mode)
+            }
+            kind => kind,
         };
         let keep = match (kind, placed.remove(&path), context.wanted.get(&path)) {
             (FileType::Symlink, Some(Placed::TreeLink(target)), Some(Wanted::TreeLink(wanted)))
                 if target == *wanted =>
             {
-                let text = readlinkat(directory, &name, Vec::new())?;
-                (text.as_bytes() == wanted.as_os_str().as_bytes())
-                    .then_some(Placed::TreeLink(target))
+                let same = trusted || {
+                    let text = readlinkat(at.fd()?, &name, Vec::new())?;
+                    text.as_bytes() == wanted.as_os_str().as_bytes()
+                };
+                same.then_some(Placed::TreeLink(target))
             }
             (
                 FileType::RegularFile,
                 Some(Placed::Blob { blob, state }),
                 Some(Wanted::Blob(wanted)),
-            ) if blob == *wanted && stat_matches(stat.as_ref(), &state) => {
+            ) if blob == *wanted
+                && (trusted
+                    || stat_matches(
+                        Some(&statat(at.fd()?, &name, AtFlags::SYMLINK_NOFOLLOW)?),
+                        &state,
+                    )) =>
+            {
                 Some(Placed::Blob { blob, state })
             }
             (FileType::Directory, _, _) if context.needed.contains(&path) => {
-                if stat
-                    .as_ref()
-                    .is_some_and(|stat| crate::platform::stat_mode(stat) & 0o7777 == context.mode)
+                // Inspected without following a link: its type, mode and
+                // change time.
+                let stat = statat(at.base(), at.name(&name), AtFlags::SYMLINK_NOFOLLOW)?;
+                if FileType::from_raw_mode(stat.st_mode) == FileType::Directory
+                    && crate::platform::stat_mode(&stat) & 0o7777 == context.mode
                 {
-                    let child = open_directory_at(Some(directory), Path::new(&name))?;
+                    let trusted = context.unchanged(&path, &stat);
                     reconcile_directory(
-                        &child,
+                        root,
                         &absolute.join(&name),
                         &path,
                         context,
+                        trusted,
                         placed,
                         kept,
                     )?;
@@ -502,7 +802,7 @@ fn reconcile_directory(
             }
             None => {
                 COUNTS[2].fetch_add(1, Ordering::Relaxed);
-                unlinkat(directory, &name, AtFlags::empty())?;
+                unlinkat(at.base(), at.name(&name), AtFlags::empty())?;
             }
         }
     }
@@ -526,7 +826,8 @@ mod tests {
             fs::create_dir_all(work.join("execroot")).unwrap();
             let scope = StashScope::enter(&cache);
             let put = std::thread::scope(|threads| {
-                let putting = threads.spawn(|| put(&cache, "Race", "//p:t#0", &work, &[]));
+                let putting = threads
+                    .spawn(|| put(&cache, "Race", "//p:t#0", &work, &[], Recorded::default()));
                 drop(scope);
                 putting.join().unwrap()
             });

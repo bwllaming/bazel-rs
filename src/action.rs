@@ -5211,9 +5211,14 @@ fn copy_verified(source: &Path, target: &Path, expected: Sha256Digest) -> Result
 /// ([`remember_owned`]): its name is its content, and this process forgets
 /// it whenever it removes or replaces the blob.
 fn blob_valid(blob: &Path, input: &Input) -> Result<bool, String> {
+    Ok(blob_metadata(blob, input)?.is_some())
+}
+
+/// [`blob_valid`] with the valid blob's metadata (its one inspection).
+fn blob_metadata(blob: &Path, input: &Input) -> Result<Option<fs::Metadata>, String> {
     let metadata = match store_metadata(blob) {
         Ok(metadata) => metadata,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(io_error("cannot inspect", blob, e)),
     };
     let intact = metadata.is_file()
@@ -5233,8 +5238,9 @@ fn blob_valid(blob: &Path, input: &Input) -> Result<bool, String> {
     if !intact {
         forget_produced(blob);
         remove_stale(blob)?;
+        return Ok(None);
     }
-    Ok(intact)
+    Ok(Some(metadata))
 }
 
 /// Whether `path` lies in the repository store below the canonical cache
@@ -5598,13 +5604,26 @@ fn stage_file<'a>(
     // A reused execution root's link of the same store file in the state it
     // was staged in (reuse::reconcile): kept when that store file is valid
     // and still that inode — what linking it now would give.
+    // The kept link and the store file are one inode, so the store file's
+    // state (inspected once, also to validate it) is the link's: it must
+    // be the state staged and checked before (reuse::reconcile may trust a
+    // kept entry without inspecting it).
     if let Some(reuse::Placed::Blob { blob, state }) = kept {
-        let ensured = match ordinal {
-            0 => ensure_blob(cas, input, root)?,
-            ordinal => ensure_copy(cas, input, root, ordinal)?,
+        let current = match ordinal {
+            0 => {
+                let ensured = blob_path(cas, input);
+                blob_metadata(&ensured, input)?.map(|metadata| (ensured, metadata))
+            }
+            ordinal => {
+                let ensured = ensure_copy(cas, input, root, ordinal)?;
+                store_metadata(&ensured)
+                    .ok()
+                    .map(|metadata| (ensured, metadata))
+            }
         };
-        if ensured == *blob
-            && store_metadata(&ensured).is_ok_and(|metadata| metadata.ino() == state.inode)
+        if let Some((ensured, metadata)) = current
+            && ensured == *blob
+            && inode_state(&metadata) == *state
         {
             staging_part(PART_BLOB_ENSURE, &mut clock);
             staged.push(StagedFile {
@@ -5733,7 +5752,7 @@ static STAGING: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 /// directories, the repository tree links (link, inspection), the store
 /// blobs (ensure, link, inspection), the inspection after the process and
 /// the execution root's removal.
-static STAGING_PARTS: [AtomicU64; 9] = [const { AtomicU64::new(0) }; 9];
+static STAGING_PARTS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
 const PART_DIRECTORIES: usize = 0;
 const PART_TREE_LINK: usize = 1;
 const PART_TREE_INSPECT: usize = 2;
@@ -5743,6 +5762,11 @@ const PART_BLOB_INSPECT: usize = 5;
 const PART_CHECK: usize = 6;
 const PART_REMOVE: usize = 7;
 const PART_RECONCILE: usize = 8;
+/// Of a reused root's reconciliation: what staging places now (by
+/// destination, and the directories above).
+const PART_RECONCILE_PLAN: usize = 9;
+/// Recording a staged root's directories (reuse::record).
+const PART_RECORD: usize = 10;
 
 /// Adds the time since `clock` to staging part `part`, and resets `clock`.
 fn staging_part(part: usize, clock: &mut std::time::Instant) {
@@ -5768,15 +5792,29 @@ pub fn report_staging() {
     let [reused, kept, removed] = reuse::COUNTS.each_ref().map(|n| n.load(Ordering::Relaxed));
     let [empty, failed, refused, entries] =
         reuse::MISSES.each_ref().map(|n| n.load(Ordering::Relaxed));
+    let [directories, trusted] = reuse::DIRECTORIES
+        .each_ref()
+        .map(|n| n.load(Ordering::Relaxed));
+    let listed = reuse::LISTED.load(Ordering::Relaxed);
     crate::snapshot::diag::line_fmt(format_args!(
-        "PERF-STAGE reuse roots={reused} kept={kept} removed={removed} misses: empty={empty} reconcile={failed} put_refused={refused} put_entries={entries}"
+        "PERF-STAGE reuse roots={reused} kept={kept} removed={removed} directories={directories} trusted={trusted} listed={listed} misses: empty={empty} reconcile={failed} put_refused={refused} put_entries={entries}"
     ));
     let parts = STAGING_PARTS
         .each_ref()
         .map(|n| n.load(Ordering::Relaxed) as f64 / 1e6);
     crate::snapshot::diag::line_fmt(format_args!(
-        "PERF-STAGE parts directories={:.3}s tree_link={:.3}s tree_inspect={:.3}s blob_ensure={:.3}s blob_link={:.3}s blob_inspect={:.3}s check={:.3}s remove={:.3}s reconcile={:.3}s",
-        parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], parts[7], parts[8]
+        "PERF-STAGE parts directories={:.3}s tree_link={:.3}s tree_inspect={:.3}s blob_ensure={:.3}s blob_link={:.3}s blob_inspect={:.3}s check={:.3}s remove={:.3}s reconcile={:.3}s (plan={:.3}s) record={:.3}s",
+        parts[0],
+        parts[1],
+        parts[2],
+        parts[3],
+        parts[4],
+        parts[5],
+        parts[6],
+        parts[7],
+        parts[8],
+        parts[9],
+        parts[10]
     ));
     let [setup, prepare, lock, check, hits, misses] =
         CHECKS.each_ref().map(|n| n.load(Ordering::Relaxed));
@@ -9067,6 +9105,17 @@ pub fn execute_with_remote(
         Vec::new()
     };
     drop(kept);
+    // The directories as staging left them, before anything else in the
+    // root changes (reuse::record): the next reconciliation trusts the
+    // entries of those that did not change.
+    let recorded = if reusable {
+        let mut clock = std::time::Instant::now();
+        let recorded = reuse::record(&execroot, &staged, inputs, link_source_directories);
+        staging_part(PART_RECORD, &mut clock);
+        recorded
+    } else {
+        reuse::Recorded::default()
+    };
     if worker.as_ref().is_some_and(|(lease, _)| !lease.sandboxed()) {
         stage_producer_siblings(root, inputs, &execroot)?;
     }
@@ -9838,6 +9887,7 @@ pub fn execute_with_remote(
             &action.id,
             &path,
             &staged,
+            recorded,
         ) {
             let mut clock = std::time::Instant::now();
             let _ = remove_directory(&path);
@@ -10053,6 +10103,88 @@ mod tests {
         // The scope's end removes the stashed roots.
         let work = work_directories(&cache.join("work"));
         assert!(work.is_empty(), "{work:?}");
+    }
+
+    /// Reused roots trust the directories found as staging recorded them
+    /// (reuse::record): their recorded listings stand for reading them and
+    /// kept entries are not inspected one by one, yet each action still
+    /// sees exactly its inputs — also after a process replaced an input,
+    /// left a file beside one or removed one (its directory changed).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reused_roots_trust_only_unchanged_directories() {
+        let fixture = Fixture::new();
+        let cache = fixture.cache();
+        let source = |name: &str, content: &str| -> SharedPath {
+            let path = fixture.0.join(name);
+            fs::write(&path, content).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+            path.into()
+        };
+        let (a, b, c) = (
+            source("a", "alpha\n"),
+            source("b", "beta\n"),
+            source("c", "gamma\n"),
+        );
+        let action = |id: &str, command: &str| Action {
+            id: id.into(),
+            command: command.into(),
+            inputs: vec![
+                (a.clone(), PathBuf::from("src/x/a").into()),
+                (b.clone(), PathBuf::from("src/y/b").into()),
+                (c.clone(), PathBuf::from("src/c").into()),
+            ],
+            outputs: vec![PathBuf::from(format!("out/{id}"))],
+            shell_strict: true,
+            execution_info: BTreeSet::from(["no-sandbox".to_owned()]),
+            extra: ActionExtra {
+                mnemonic: "Trust".into(),
+                ..ActionExtra::default()
+            },
+            ..Default::default()
+        };
+        let listed = reuse::LISTED.load(Ordering::Relaxed);
+        let _scope = StashScope::enter(&cache);
+        // Each command waits past the coarse clock's tick, so the change
+        // times its staging left are older than the next record.
+        let check = "sleep 0.05; cat src/x/a src/y/b src/c > out/";
+        let first = execute(&cache, &action("first", &format!("{check}first"))).unwrap();
+        let second = execute(
+            &cache,
+            &action(
+                "second",
+                &format!(
+                    "{check}second; ls -A src src/x src/y >> out/second; \
+                     rm -f src/y/b; echo forged > src/y/b; touch src/x/junk"
+                ),
+            ),
+        )
+        .unwrap();
+        // `src/y/b` replaced and `src/x/junk` left: those directories are
+        // read again, the forged file and the junk go; `src` is trusted
+        // (staging the second root changed nothing in it, so its change
+        // time is the first staging's, older than the second's record).
+        let third = execute(
+            &cache,
+            &action(
+                "third",
+                &format!("{check}third; ls -A src src/x src/y >> out/third"),
+            ),
+        )
+        .unwrap();
+        assert!(reuse::LISTED.load(Ordering::Relaxed) > listed);
+        let expected = "alpha\nbeta\ngamma\n";
+        assert_eq!(fs::read_to_string(&first.outputs[0]).unwrap(), expected);
+        let listing = "src:\nc\nx\ny\n\nsrc/x:\na\n\nsrc/y:\nb\n";
+        assert_eq!(
+            fs::read_to_string(&second.outputs[0]).unwrap(),
+            format!("{expected}{listing}")
+        );
+        assert_eq!(
+            fs::read_to_string(&third.outputs[0]).unwrap(),
+            format!("{expected}{listing}")
+        );
+        drop(_scope);
     }
 
     /// The work directories in `work` (not the owner files, claim_work).
