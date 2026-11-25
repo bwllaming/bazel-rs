@@ -526,7 +526,16 @@ fn build_event_streams_match_the_genuine_streams_structurally() {
             continue;
         }
         let ws = Workspace::new();
-        let output = ws.run(args, &[]);
+        // action_failure: genuine built //pkg:a before //pkg:broken failed.
+        // Both are instant, and the failure interrupts the actions in flight
+        // (docs/FAILFAST_INTERRUPT.md), so which one wins is a race; one job
+        // runs //pkg:a first (the ready order). The flag is invisible to the
+        // structural form (optionsParsed and the command line's sections).
+        let mut args = args.to_vec();
+        if *name == "action_failure" {
+            args.insert(1, "--jobs=1");
+        }
+        let output = ws.run(&args, &[]);
         assert_eq!(
             output.status.code(),
             Some(expected_exit(name)),
