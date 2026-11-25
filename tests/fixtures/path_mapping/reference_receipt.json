@@ -31,12 +31,12 @@
    "kind": "debug",
    "exit_code": 0,
    "debug": [
-    "FileWrite None \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\\npkg/src.txt\\n'--dir=bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg'\\n'--dir=pkg'\\n\" [] [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/pw.params\"] {}",
-    "FileWrite None None [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/tr.d\"] [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/pw_tree.params\"] {}",
-    "FileWrite None \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\\npkg/src.txt\\n'--dir=bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg'\\n'--dir=pkg'\\n\" [] [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/pw_noreq.params\"] {}",
     "MyMnemonic [\"bazel-out/cfg/bin/pkg/tool.sh\", \"bazel-out/cfg/bin/pkg/u_noreq.out\", \"bazel-out/cfg/bin/pkg/u_noreq.outdir\", \"bazel-out/cfg/bin/pkg/g.txt\", \"pkg/src.txt\", \"-Ibazel-out/cfg/bin/pkg/g.txt\", \"--dir=bazel-out/cfg/bin/pkg\", \"--dir=pkg\", \"bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/g.txt|pkg/g.txt\", \"|pkg/src.txt|pkg/src.txt\", \"literal=bazel-out/k8-fastbuild-ST-18df6b7d1111/bin/pkg/g.txt\", \"bazel-out/cfg/bin/pkg/g.txt\", \"pkg/src.txt\"] None [\"bazel-out/k8-fastbuild-ST-18df6b7d1111/bin/pkg/g.txt\", \"pkg/src.txt\", \"bazel-out/k8-opt-exec-ST-b15358c44881/bin/pkg/tool.sh\", \"bazel-out/k8-opt-exec-ST-b15358c44881/bin/pkg/tool.sh.runfiles\"] [\"bazel-out/k8-fastbuild-ST-18df6b7d1111/bin/pkg/u_noreq.out\", \"bazel-out/k8-fastbuild-ST-18df6b7d1111/bin/pkg/u_noreq.outdir\"] {\"OUTPATH\": \"bazel-out/k8-fastbuild-ST-18df6b7d1111/bin/pkg/u_noreq.out\"}",
     "FileWrite None \"bazel-out/k8-fastbuild-ST-18df6b7d1111/bin/pkg/g.txt\\npkg/src.txt\\n'--dir=bazel-out/k8-fastbuild-ST-18df6b7d1111/bin/pkg'\\n'--dir=pkg'\\n\" [] [\"bazel-out/k8-fastbuild-ST-18df6b7d1111/bin/pkg/pw_noreq.params\"] {}",
     "MyMnemonic [\"bazel-out/cfg/bin/pkg/tool.sh\", \"bazel-out/cfg/bin/pkg/u.out\", \"bazel-out/cfg/bin/pkg/u.outdir\", \"bazel-out/cfg/bin/pkg/g.txt\", \"pkg/src.txt\", \"-Ibazel-out/cfg/bin/pkg/g.txt\", \"--dir=bazel-out/cfg/bin/pkg\", \"--dir=pkg\", \"bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/g.txt|pkg/g.txt\", \"|pkg/src.txt|pkg/src.txt\", \"bazel-out/cfg/bin/pkg/tr.d\", \"--tree=bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/tr.d|pkg/tr.d\", \"bazel-out/cfg/bin/pkg/g.txt\", \"pkg/src.txt\"] None [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\", \"pkg/src.txt\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/tr.d\", \"bazel-out/k8-opt-exec-ST-4ae4cb3b1650/bin/pkg/tool.sh\", \"bazel-out/k8-opt-exec-ST-4ae4cb3b1650/bin/pkg/tool.sh.runfiles\"] [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u.out\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u.outdir\"] {}",
+    "FileWrite None \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\\npkg/src.txt\\n'--dir=bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg'\\n'--dir=pkg'\\n\" [] [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/pw.params\"] {}",
+    "FileWrite None None [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/tr.d\"] [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/pw_tree.params\"] {}",
+    "FileWrite None \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\\npkg/src.txt\\n'--dir=bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg'\\n'--dir=pkg'\\n\" [] [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/pw_noreq.params\"] {}",
     "MyMnemonic [\"bazel-out/k8-opt-exec-ST-4ae4cb3b1650/bin/pkg/tool.sh\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u_noreq.out\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u_noreq.outdir\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\", \"pkg/src.txt\", \"-Ibazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\", \"--dir=bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg\", \"--dir=pkg\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin|bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt|pkg/g.txt\", \"|pkg/src.txt|pkg/src.txt\", \"literal=bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\", \"pkg/src.txt\"] None [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\", \"pkg/src.txt\", \"bazel-out/k8-opt-exec-ST-4ae4cb3b1650/bin/pkg/tool.sh\", \"bazel-out/k8-opt-exec-ST-4ae4cb3b1650/bin/pkg/tool.sh.runfiles\"] [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u_noreq.out\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u_noreq.outdir\"] {\"OUTPATH\": \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u_noreq.out\"}",
     "MyMnemonic [\"bazel-out/cfg/bin/pkg/tool.sh\", \"bazel-out/cfg/bin/pkg/u_lit.out\", \"bazel-out/cfg/bin/pkg/u_lit.outdir\", \"bazel-out/cfg/bin/pkg/g.txt\", \"pkg/src.txt\", \"-Ibazel-out/cfg/bin/pkg/g.txt\", \"--dir=bazel-out/cfg/bin/pkg\", \"--dir=pkg\", \"bazel-out/cfg/bin|bazel-out/cfg/bin/pkg/g.txt|pkg/g.txt\", \"|pkg/src.txt|pkg/src.txt\", \"literal=bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\", \"bazel-out/cfg/bin/pkg/g.txt\", \"pkg/src.txt\"] None [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/g.txt\", \"pkg/src.txt\", \"bazel-out/k8-opt-exec-ST-4ae4cb3b1650/bin/pkg/tool.sh\", \"bazel-out/k8-opt-exec-ST-4ae4cb3b1650/bin/pkg/tool.sh.runfiles\"] [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u_lit.out\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u_lit.outdir\"] {\"OUTPATH\": \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/u_lit.out\"}",
     "Coll [\"/bin/bash\", \"-c\", \"o=$1; shift; echo \\\"$@\\\" > $o; cat \\\"$@\\\" >> $o\", \"\", \"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/coll_same.out\", \"bazel-out/k8-fastbuild-ST-7e676d6c1fdf/bin/pkg/g.txt\", \"bazel-out/k8-fastbuild-ST-1bcb453f55ad/bin/pkg/g.txt\"] None [\"bazel-out/k8-fastbuild-ST-7e676d6c1fdf/bin/pkg/g.txt\", \"bazel-out/k8-fastbuild-ST-1bcb453f55ad/bin/pkg/g.txt\"] [\"bazel-out/k8-fastbuild-ST-0695294e3b4b/bin/pkg/coll_same.out\"] {}",
@@ -408,6 +408,33 @@
     "  Outputs: [bazel-out/k8-fastbuild/bin/pkg/pw_noreq.params]",
     ""
    ]
+  },
+  "modify_same_empty": {
+   "argv": [
+    "build",
+    "//pkg:mod_empty",
+    "//pkg:u_noreq"
+   ],
+   "kind": "outputs",
+   "exit_code": 0,
+   "outputs": {
+    "bazel-out/k8-fastbuild/bin/pkg/u_noreq.out": "tool bazel-out/k8-opt-exec/bin/pkg/tool.sh\nargv bazel-out/k8-fastbuild/bin/pkg/g.txt pkg/src.txt -Ibazel-out/k8-fastbuild/bin/pkg/g.txt --dir=bazel-out/k8-fastbuild/bin/pkg --dir=pkg bazel-out/k8-fastbuild/bin|bazel-out/k8-fastbuild/bin/pkg/g.txt|pkg/g.txt |pkg/src.txt|pkg/src.txt literal=bazel-out/k8-fastbuild/bin/pkg/g.txt @bazel-out/k8-fastbuild/bin/pkg/u_noreq.out-0.params\ndata\nfile bazel-out/k8-fastbuild/bin/pkg/g.txt:\ngen\nfile pkg/src.txt:\nsrc\nparams:\nbazel-out/k8-fastbuild/bin/pkg/g.txt\npkg/src.txt\nOUTPATH=bazel-out/k8-fastbuild/bin/pkg/u_noreq.out\nbazel-out\nbazel-out/k8-fastbuild\nbazel-out/k8-fastbuild/bin\nbazel-out/k8-fastbuild/bin/pkg\nbazel-out/k8-opt-exec\nbazel-out/k8-opt-exec/bin\nbazel-out/k8-opt-exec/bin/pkg\n"
+   },
+   "summary": "INFO: 8 processes: 7 internal, 1 processwrapper-sandbox."
+  },
+  "modify_same_value": {
+   "argv": [
+    "build",
+    "--modify_execution_info=MyMnemonic=+x",
+    "//pkg:mod_cmd",
+    "//pkg:u_noreq"
+   ],
+   "kind": "outputs",
+   "exit_code": 0,
+   "outputs": {
+    "bazel-out/k8-fastbuild/bin/pkg/u_noreq.out": "tool bazel-out/k8-opt-exec/bin/pkg/tool.sh\nargv bazel-out/k8-fastbuild/bin/pkg/g.txt pkg/src.txt -Ibazel-out/k8-fastbuild/bin/pkg/g.txt --dir=bazel-out/k8-fastbuild/bin/pkg --dir=pkg bazel-out/k8-fastbuild/bin|bazel-out/k8-fastbuild/bin/pkg/g.txt|pkg/g.txt |pkg/src.txt|pkg/src.txt literal=bazel-out/k8-fastbuild/bin/pkg/g.txt @bazel-out/k8-fastbuild/bin/pkg/u_noreq.out-0.params\ndata\nfile bazel-out/k8-fastbuild/bin/pkg/g.txt:\ngen\nfile pkg/src.txt:\nsrc\nparams:\nbazel-out/k8-fastbuild/bin/pkg/g.txt\npkg/src.txt\nOUTPATH=bazel-out/k8-fastbuild/bin/pkg/u_noreq.out\nbazel-out\nbazel-out/k8-fastbuild\nbazel-out/k8-fastbuild/bin\nbazel-out/k8-fastbuild/bin/pkg\nbazel-out/k8-opt-exec\nbazel-out/k8-opt-exec/bin\nbazel-out/k8-opt-exec/bin/pkg\n"
+   },
+   "summary": "INFO: 2 processes: 6 action cache hit, 1 internal, 1 processwrapper-sandbox."
   }
  }
 }

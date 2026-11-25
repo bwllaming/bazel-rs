@@ -485,7 +485,7 @@ pub struct ActionExtra {
     /// when a Starlark transition set them (NativeOptions
     /// ::modify_execution_info): the planned request's finalize applies
     /// them instead of the command line's (crate::execution_options).
-    pub execution_info_modifiers: Option<Vec<String>>,
+    pub execution_info_modifiers: Option<Arc<[String]>>,
 }
 
 /// The path-mapped command line of a spawn (CommandLines.expand with a

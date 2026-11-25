@@ -147,6 +147,7 @@ fn output_patterns(case: &str) -> &'static [&'static str] {
             "*/bin/pkg/pw_tree.params",
             "*/bin/pkg/pw_noreq.params",
         ],
+        "modify_same_empty" | "modify_same_value" => &["*/bin/pkg/u_noreq.out"],
         other => panic!("no outputs for {other}"),
     }
 }

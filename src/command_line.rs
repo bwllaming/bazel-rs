@@ -175,14 +175,22 @@ pub(crate) struct DeferredVector {
     /// mapper may not be callable once analysis is over. Never persisted.
     #[serde(skip)]
     pub noop: Option<NoopMapping>,
-    /// The items of the path-mapped command line (crate::path_mapping),
-    /// when they differ from [`Self::items`]: the non-directory values
-    /// with derived Files at their stripped paths and map_each results
-    /// computed under the mapping. Directory items are the same.
-    pub mapped_items: Option<Vec<Item>>,
+    /// The path-mapped view (crate::path_mapping) when it differs; boxed,
+    /// so a vector without path mapping costs one pointer.
+    pub mapped: Option<Box<MappedVector>>,
+}
+
+/// The path-mapped view of a [`DeferredVector`].
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct MappedVector {
+    /// The items of the path-mapped command line, when they differ from
+    /// [`DeferredVector::items`]: the non-directory values with derived
+    /// Files at their stripped paths and map_each results computed under
+    /// the mapping. Directory items are the same.
+    pub items: Option<Vec<Item>>,
     /// The first error of a map_each called under path mapping at
     /// analysis: a mapped command line fails with it.
-    pub mapped_error: Option<String>,
+    pub error: Option<String>,
 }
 
 /// The NoopExpander mapping of a deferred vector's directory items, in
@@ -288,11 +296,12 @@ pub(crate) enum Group {
     Strings(Vec<String>),
     Deferred(Arc<DeferredVector>),
     /// A group whose values differ under path mapping (crate::path_mapping):
-    /// the unmapped values, then the mapped ones.
-    Mapped(Vec<String>, Vec<String>),
+    /// the unmapped values, then the mapped ones (boxed: a Group stays 24
+    /// bytes for every configuration without path mapping).
+    Mapped(Box<(Vec<String>, Vec<String>)>),
     /// A group whose map_each failed under path mapping: the unmapped
     /// values, and the error a mapped command line fails with.
-    MappedError(Vec<String>, String),
+    MappedError(Box<(Vec<String>, String)>),
 }
 
 /// One CommandLines part: a run of literal strings, or one Args object.
@@ -545,7 +554,11 @@ fn expand_deferred(
 fn mapping_view(vector: &DeferredVector, mapped: bool) -> (&[Item], crate::path_mapping::Mode) {
     if mapped {
         (
-            vector.mapped_items.as_deref().unwrap_or(&vector.items),
+            vector
+                .mapped
+                .as_ref()
+                .and_then(|mapped| mapped.items.as_deref())
+                .unwrap_or(&vector.items),
             crate::path_mapping::Mode::Strip,
         )
     } else {
@@ -583,21 +596,29 @@ pub(crate) fn expand_groups_with(
     for group in groups {
         let strings = match group {
             Group::Strings(strings) => strings.clone(),
-            Group::Mapped(plain, stripped) => {
+            Group::Mapped(pair) => {
+                let (plain, stripped) = &**pair;
                 if mapped {
                     stripped.clone()
                 } else {
                     plain.clone()
                 }
             }
-            Group::MappedError(plain, error) => {
+            Group::MappedError(pair) => {
+                let (plain, error) = &**pair;
                 if mapped {
                     return Err(error.clone());
                 }
                 plain.clone()
             }
-            Group::Deferred(vector) if mapped && vector.mapped_error.is_some() => {
-                return Err(vector.mapped_error.clone().unwrap_or_default());
+            Group::Deferred(vector)
+                if mapped
+                    && let Some(error) = vector
+                        .mapped
+                        .as_ref()
+                        .and_then(|mapped| mapped.error.as_ref()) =>
+            {
+                return Err(error.clone());
             }
             Group::Deferred(vector) => match trees {
                 Some(trees) => expand_deferred(vector, trees, mapped)?,
@@ -969,5 +990,20 @@ mod tests {
         let (arguments, files) = spec.expand(None).unwrap();
         assert_eq!(arguments, ["@o-0.params", "pos", "x"]);
         assert_eq!(files[0].1, b"--a=b c\n--flag\n");
+    }
+}
+
+/// Path mapping's per-value overhead for configurations without it
+/// (crate::path_mapping): a Group stays 24 bytes (the mapped variants are
+/// boxed), a DeferredVector holds one more pointer (its boxed mapped view)
+/// and an ActionExtra 24 more bytes (the boxed PathMapping and the
+/// transition-set modifiers' `Option<Arc<[String]>>`).
+#[cfg(all(test, target_pointer_width = "64"))]
+mod sizes {
+    #[test]
+    fn path_mapping_adds_little_to_unmapped_values() {
+        assert_eq!(std::mem::size_of::<super::Group>(), 24);
+        assert_eq!(std::mem::size_of::<super::DeferredVector>(), 288);
+        assert_eq!(std::mem::size_of::<crate::action::ActionExtra>(), 440);
     }
 }

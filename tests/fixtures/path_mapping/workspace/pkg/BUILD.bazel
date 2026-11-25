@@ -1,4 +1,4 @@
-load(":defs.bzl", "both", "coll", "flavor", "gen", "pm_mod_test", "pm_test", "pw", "tool", "tree", "use")
+load(":defs.bzl", "both", "coll", "flavor", "forward_mod_cmd", "forward_mod_empty", "gen", "pm_mod_test", "pm_test", "pw", "tool", "tree", "use")
 
 flavor(name = "flavor", build_setting_default = "none")
 
@@ -35,3 +35,9 @@ pw(name = "pw_noreq", srcs = [":g", "src.txt"], req = False)
 pm_test(name = "t_pw", targets = [":pw", ":pw_tree", ":pw_noreq"])
 
 pm_mod_test(name = "t_mod", targets = [":u_noreq", ":pw_noreq"])
+
+# A transition setting --modify_execution_info to the command line's value
+# is the same configuration (no second u_noreq action).
+forward_mod_empty(name = "mod_empty", deps = [":u_noreq"])
+
+forward_mod_cmd(name = "mod_cmd", deps = [":u_noreq"])

@@ -24,7 +24,14 @@ option. `--modify_execution_info` written by a Starlark transition (protobuf's
 configuration's value (`NativeOptions::modify_execution_info`, the exec
 transition copies it, ExecutionTransitionFactory.java:261-262; its ST- hash
 form is each ExecutionInfoModifier's AutoValue `toString`); without a
-transition the command line's applies to every spawn as before.
+transition the command line's applies to every spawn as before. A
+transition writing the command line's own value (`[]` without
+`--modify_execution_info`) keeps the configuration: no second
+configuration with the same output directory (the fixture's
+`modify_same_*` cases). The option strings feed every configuration's
+option view: cquery's `--output=proto/jsonproto/textproto` configuration
+lists a `modify_execution_info` row (`[]` at the default), as genuine's
+does.
 
 ## Which actions are mapped
 
@@ -121,9 +128,13 @@ are the configuration (its identity covers both options) and this command's
 
 ## Not modelled (explicit)
 
-- Native process actions that support path mapping — Javac, Turbine
-  (JavacTurbine) and JavaResourceJar always do — fail explicitly when they
-  would run mapped (`path mapping (--experimental_output_paths=strip) of the
+- Every native process action of a `strip` configuration (registered by
+  native code rather than `ctx.actions.run`/`run_shell`: Javac, Turbine
+  (JavacTurbine) and JavaResourceJar, which always support path mapping,
+  but also CppCompile, Genrule, ... once `supports-path-mapping` reaches
+  them, e.g. through a rule tag or a blanket
+  `--modify_execution_info=.*=+supports-path-mapping`) fails explicitly when
+  it would run mapped (`path mapping (--experimental_output_paths=strip) of the
   native Javac action is not modelled in the native profile`): their
   command lines (JavaCompileAction's flag mapping, the `.jdeps` rewriting
   back to unmapped paths) are native. Their `Target.actions` and aquery

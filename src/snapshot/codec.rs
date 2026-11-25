@@ -2064,8 +2064,7 @@ mod tests {
             map_each: map_each.map(crate::command_line::Mapper::frozen),
             expander: false,
             noop: None,
-            mapped_items: None,
-            mapped_error: None,
+            mapped: None,
         }))
     }
 
@@ -2149,7 +2148,7 @@ mod tests {
                     error: Some("map_each failed".into()),
                     write_content: Some(vec![0, 1]),
                 })),
-                execution_info_modifiers: Some(vec!["Genrule=+x".into()]),
+                execution_info_modifiers: Some(vec!["Genrule=+x".to_owned()].into()),
             },
             shell_pad: true,
             executable_file: false,
@@ -2658,8 +2657,7 @@ mod tests {
                         map_each: None,
                         expander: true,
                         noop: None,
-                        mapped_items: None,
-                        mapped_error: None,
+                        mapped: None,
                     }))],
                     flag_per_line: false,
                     file_type: ParamFileType::Unquoted,

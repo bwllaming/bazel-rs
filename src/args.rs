@@ -89,10 +89,10 @@ pub(crate) fn add_strings(args: &Args, values: Vec<String>) -> anyhow::Result<()
         // separately; the expanded strings here cannot tell them apart, so
         // a mapped CppLink (rules_cc's opt-in `cpp_link_path_mapping`
         // feature) fails explicitly instead (crate::path_mapping).
-        return args.push(Group::MappedError(
+        return args.push(Group::MappedError(Box::new((
             values,
             "path mapping of a cc_internal.get_link_args command line is not modelled in the native profile".to_owned(),
-        ));
+        ))));
     }
     args.push(Group::Strings(values))
 }
@@ -1013,8 +1013,12 @@ fn vector_group<'v>(
             map_each,
             expander,
             noop,
-            mapped_items,
-            mapped_error,
+            mapped: (mapped_items.is_some() || mapped_error.is_some()).then(|| {
+                Box::new(crate::command_line::MappedVector {
+                    items: mapped_items,
+                    error: mapped_error,
+                })
+            }),
         }))));
     }
     let flatten = |items: Vec<Item>| -> Vec<String> {
@@ -1029,13 +1033,13 @@ fn vector_group<'v>(
     let values =
         crate::command_line::assemble(&shape, flatten(items)).map_err(anyhow::Error::msg)?;
     if let Some(error) = mapped_error {
-        return Ok(Some(Group::MappedError(values, error)));
+        return Ok(Some(Group::MappedError(Box::new((values, error)))));
     }
     if let Some(mapped) = mapped_items {
         let mapped =
             crate::command_line::assemble(&shape, flatten(mapped)).map_err(anyhow::Error::msg)?;
         if mapped != values {
-            return Ok(Some(Group::Mapped(values, mapped)));
+            return Ok(Some(Group::Mapped(Box::new((values, mapped)))));
         }
     }
     Ok(Some(Group::Strings(values)))
@@ -1098,7 +1102,7 @@ fn args_methods(builder: &mut MethodsBuilder) {
                 let mut stripped = values.clone();
                 *stripped.last_mut().expect("the value") =
                     formatted(format.into_option(), &mapped)?;
-                builder.push(Group::Mapped(values, stripped))?;
+                builder.push(Group::Mapped(Box::new((values, stripped))))?;
             }
             None => builder.push(Group::Strings(values))?,
         }

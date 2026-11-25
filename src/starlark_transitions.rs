@@ -2500,7 +2500,13 @@ fn convert_native(
                 }
                 _ => return Err(invalid()),
             };
-            native.modify_execution_info = Some(values);
+            // The command line's own value is the configuration without a
+            // transition-set value: one configuration, as in Bazel (its
+            // BuildOptions compare the converted ExecutionInfoModifier lists).
+            native.modify_execution_info =
+                (crate::execution_options::modifier_strings(Some(&values))
+                    != crate::execution_options::modifier_strings(None))
+                .then_some(values);
         }
         // CoreOptions.instrumentationFilter (RegexFilterConverter): a string
         // converts; the configuration keeps the text as given (its

@@ -70,6 +70,14 @@ CASES = [
         "outputs",
     ),
     ("aquery", ["aquery", "--experimental_output_paths=strip", AQUERY], "aquery"),
+    # A transition writing --modify_execution_info's command-line value
+    # (none, or the same strings) keeps the configuration.
+    ("modify_same_empty", ["build", "//pkg:mod_empty", "//pkg:u_noreq"], "outputs"),
+    (
+        "modify_same_value",
+        ["build", "--modify_execution_info=MyMnemonic=+x", "//pkg:mod_cmd", "//pkg:u_noreq"],
+        "outputs",
+    ),
 ]
 
 # The outputs each build case reads (glob below the output tree).
@@ -78,6 +86,8 @@ OUTPUTS = {
     "build_b": ["*/bin/pkg/u.out", "*/bin/pkg/u.outdir"],
     "collisions": ["*/bin/pkg/coll_same.out", "*/bin/pkg/coll_diff.out"],
     "param_writes": ["*/bin/pkg/pw.params", "*/bin/pkg/pw_tree.params", "*/bin/pkg/pw_noreq.params"],
+    "modify_same_empty": ["*/bin/pkg/u_noreq.out"],
+    "modify_same_value": ["*/bin/pkg/u_noreq.out"],
 }
 
 

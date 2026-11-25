@@ -170,3 +170,24 @@ _strip_mod = analysis_test_transition(settings = {
 })
 
 pm_mod_test = rule(_t_impl, analysis_test = True, attrs = {"targets": attr.label_list(cfg = _strip_mod)})
+
+def _mod_empty(settings, attr):
+    return {"//command_line_option:modify_execution_info": []}
+
+def _mod_cmd(settings, attr):
+    return {"//command_line_option:modify_execution_info": ["MyMnemonic=+x"]}
+
+def _forward_impl(ctx):
+    return [DefaultInfo(files = depset(transitive = [d[DefaultInfo].files for d in ctx.attr.deps]))]
+
+forward_mod_empty = rule(_forward_impl, attrs = {"deps": attr.label_list(cfg = transition(
+    implementation = _mod_empty,
+    inputs = [],
+    outputs = ["//command_line_option:modify_execution_info"],
+))})
+
+forward_mod_cmd = rule(_forward_impl, attrs = {"deps": attr.label_list(cfg = transition(
+    implementation = _mod_cmd,
+    inputs = [],
+    outputs = ["//command_line_option:modify_execution_info"],
+))})

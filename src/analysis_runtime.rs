@@ -611,11 +611,7 @@ impl Context {
         // transition set it: the finalize applies it to the spawn
         // (crate::execution_options).
         if write.is_none() && extra.transform.is_none() {
-            extra.execution_info_modifiers = self
-                .path_mapping
-                .modifiers
-                .as_ref()
-                .map(|modifiers| modifiers.to_vec());
+            extra.execution_info_modifiers = self.path_mapping.modifiers.clone();
             // A native process action of a `strip` configuration (Javac,
             // Turbine, JavaResourceJar, C++ compiles, ...): Bazel maps its
             // own command line when it supports path mapping, which the
