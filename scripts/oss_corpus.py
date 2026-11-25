@@ -60,6 +60,8 @@ TEST_STATUS_RE = re.compile(
     r"^(?P<label>(?:@@?[\w.~+-]*)?//\S*)\s+(?:\(cached\)\s+)?"
     r"(?P<status>PASSED|FAILED TO BUILD|FAILED|TIMEOUT|FLAKY|NO STATUS|SKIPPED|INCOMPLETE)\b"
 )
+TEST_LOG_START_RE = re.compile(r"^=+ Test output for \S+:$")
+TEST_LOG_END_RE = re.compile(r"^={40,}$")
 PARAMS_RE = re.compile(r"-\d+\.params$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
@@ -132,10 +134,24 @@ def tool_argv(tool, binary, state, command, flags, targets, batch=True):
 
 
 def parse_test_statuses(text):
-    """{label: status} from the test summary lines of a `test` run."""
+    """{label: status} from the test summary lines of a `test` run. Lines
+    inside a printed test log (`--test_output=all|errors`: from `====...
+    Test output for //x:` to the closing `=====...` line) are skipped: a
+    nested Bazel's own test summary there (rules_kotlin's integration tests)
+    is not the outer run's, and whether it is printed depends on the log's
+    size (`--experimental_ui_max_stdouterr_bytes`)."""
     out = {}
+    depth = 0  # printed logs nest: a nested Bazel prints its own tests' logs
     for line in ANSI_RE.sub("", text).splitlines():
-        m = TEST_STATUS_RE.match(line.strip())
+        s = line.strip()
+        if TEST_LOG_START_RE.match(s):
+            depth += 1
+            continue
+        if depth:
+            if TEST_LOG_END_RE.match(s):
+                depth -= 1
+            continue
+        m = TEST_STATUS_RE.match(s)
         if m:
             out[m.group("label")] = m.group("status")
     return out

@@ -100,6 +100,20 @@ class ParseTests(unittest.TestCase):
             "//b:t4": "FAILED TO BUILD", "@@repo+//c:t5": "NO STATUS", "//d:t6": "SKIPPED",
         })
 
+    def test_test_statuses_skip_printed_logs_and_nested_summaries(self):
+        bar = "=" * 80
+        text = (
+            "==================== Test output for //examples:it_test:\n"
+            "Running nested bazel\n"
+            "==================== Test output for //app:inner_test:\n"
+            "ok\n"
+            f"{bar}\n"
+            "//app:inner_test                      PASSED in 0.2s\n"
+            f"{bar}\n"
+            "//examples:it_test                    PASSED in 159.8s\n"
+        )
+        self.assertEqual(oc.parse_test_statuses(text), {"//examples:it_test": "PASSED"})
+
     def test_query_labels(self):
         self.assertEqual(oc.parse_query_labels("//b:x\n//a:y\n\nLoading: 3\n//a:y\n@r//:z\n"),
                          ["//a:y", "//b:x", "@r//:z"])
