@@ -67,10 +67,21 @@ struct Registry {
 }
 
 /// One execution graph's failure flag and the spawns it stops.
-#[derive(Default)]
 pub struct Interrupt {
     flag: AtomicBool,
     registry: Mutex<Registry>,
+    /// [`GRACE`] (shorter in tests).
+    grace: Duration,
+}
+
+impl Default for Interrupt {
+    fn default() -> Self {
+        Self {
+            flag: AtomicBool::new(false),
+            registry: Mutex::new(Registry::default()),
+            grace: GRACE,
+        }
+    }
 }
 
 impl std::fmt::Debug for Interrupt {
@@ -122,10 +133,11 @@ impl Interrupt {
 
     fn start_timer(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
+        let grace = self.grace;
         let started = std::thread::Builder::new()
             .name("interrupt-grace".into())
             .spawn(move || {
-                std::thread::sleep(GRACE);
+                std::thread::sleep(grace);
                 if let Some(interrupt) = weak.upgrade() {
                     interrupt.escalate();
                 }
@@ -267,6 +279,35 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(10));
         // A second fire does nothing.
         interrupt.fire();
+    }
+
+    /// A graceful stop: SIGTERM first (ignored here), SIGKILL once the
+    /// grace period ended.
+    #[test]
+    fn graceful_stops_escalate_after_the_grace_period() {
+        use std::os::unix::process::CommandExt;
+        let interrupt = Arc::new(Interrupt {
+            grace: Duration::from_millis(500),
+            ..Interrupt::default()
+        });
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "trap '' TERM; while :; do sleep 0.05; done"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        // The shell has installed its trap.
+        std::thread::sleep(Duration::from_millis(200));
+        let registration = interrupt.register(Stopper::group(child.id()), Stop::Graceful);
+        let started = Instant::now();
+        interrupt.fire();
+        assert!(registration.interrupted());
+        std::thread::sleep(Duration::from_millis(200));
+        // The TERM sleep children die; the shell ignores it.
+        assert!(child.try_wait().unwrap().is_none());
+        let status = child.wait().unwrap();
+        assert!(!status.success());
+        assert!(started.elapsed() >= Duration::from_millis(500));
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 
     #[test]
