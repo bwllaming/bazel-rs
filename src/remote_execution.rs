@@ -637,23 +637,35 @@ fn operation_response(operation: &Operation) -> Result<Option<ExecuteResponse>, 
 /// over with Execute. Calls carry no deadline (RemoteGrpcServiceConfig
 /// covers the cache services only), are retried by the RemoteRetrier
 /// (`--remote_retries`, GRPC_RESULT_CLASSIFIER) and refreshed once when
-/// UNAUTHENTICATED (Utils.refreshIfUnauthenticated).
+/// UNAUTHENTICATED (Utils.refreshIfUnauthenticated). Once `cancel` is set
+/// (the interrupt of a failed build, crate::interrupt) the call ends at once
+/// and the error is [`crate::interrupt::interrupted`].
 pub fn execute(
     endpoint: &GrpcCache,
     request: &[u8],
     action_id: &str,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<ExecuteResponse, ExecError> {
     let mut name = String::new();
     let mut wait = false;
+    let cancelled =
+        || cancel.is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::Acquire));
     let attempt = |name: &mut String, wait: &mut bool| -> Result<ExecuteResponse, ExecError> {
         let mut backoff = endpoint.backoff();
         loop {
             let result: Result<ExecuteResponse, ExecError> = (|| loop {
-                if let Some(response) = operation_stream(endpoint, request, action_id, name, wait)?
+                if let Some(response) =
+                    operation_stream(endpoint, request, action_id, cancel, name, wait)?
                 {
                     return Ok(response);
                 }
+                if cancelled() {
+                    return Err(ExecError::Io(crate::interrupt::interrupted(action_id)));
+                }
             })();
+            if cancelled() && result.is_err() {
+                return Err(ExecError::Io(crate::interrupt::interrupted(action_id)));
+            }
             match result {
                 Err(error) if error.transient_call() => match backoff.next_delay() {
                     Some(delay) => std::thread::sleep(delay),
@@ -680,6 +692,7 @@ fn operation_stream(
     endpoint: &GrpcCache,
     request: &[u8],
     action_id: &str,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
     name: &mut String,
     wait: &mut bool,
 ) -> Result<Option<ExecuteResponse>, ExecError> {
@@ -691,7 +704,7 @@ fn operation_stream(
         ("Execute", request.to_vec())
     };
     let mut outcome: Option<Result<ExecuteResponse, ExecError>> = None;
-    let streamed = endpoint.operation_stream(method, body, action_id, &mut |message| {
+    let streamed = endpoint.operation_stream(method, body, action_id, cancel, &mut |message| {
         // The rest of the stream is drained, its errors ignored.
         if outcome.is_some() {
             return Ok(());

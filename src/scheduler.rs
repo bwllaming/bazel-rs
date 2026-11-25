@@ -2,9 +2,11 @@
 //!
 //! Graph structure is checked before any action (or cache I/O). A failed or
 //! panicking worker stops new scheduling; all in-flight workers are joined.
-//! Cancellation does not kill processes: an already-running command, including
-//! one blocked forever, must finish before this call can return. The action
-//! executor's unsandboxed-command and cache trust limitations still apply.
+//! Without `--keep_going` the first failure also interrupts the actions in
+//! flight (crate::interrupt): their spawns are stopped like genuine's
+//! interrupted LocalSpawnRunner's, and an interrupted action reports, caches
+//! and publishes nothing (it completes as skipped). The action executor's
+//! unsandboxed-command and cache trust limitations still apply.
 //!
 //! `bazel test` adds its test actions to the same graph as leaves
 //! ([`Leaves`], [`execute_graph_with_leaves`]): a test action has no outputs
@@ -948,6 +950,10 @@ pub fn execute_graph_with_leaves(
 pub struct KeepGoingOutcome {
     pub results: BTreeMap<String, ActionResult>,
     pub errors: BTreeMap<String, String>,
+    /// How many actions the first failure interrupted while they executed
+    /// (crate::interrupt; never under `--keep_going`): Bazel posts their
+    /// ActionCompletionEvent, so the summary counts them as internal.
+    pub interrupted: usize,
 }
 
 /// [`execute_graph_with_leaves`] under `--keep_going` (docs/KEEP_GOING.md;
@@ -1064,8 +1070,13 @@ enum Work {
 }
 
 /// A finished job: `None` when it was skipped because a failure had been
-/// published before it started.
-type Completion = (String, Option<Result<ActionResult, String>>);
+/// published before it started, or interrupted by it
+/// ([`Completion::interrupted`]).
+struct Completion {
+    id: String,
+    outcome: Option<Result<ActionResult, String>>,
+    interrupted: bool,
+}
 
 /// A finished unit of work: an action's completion, or a leaf's (with the
 /// message of a panic it raised).
@@ -1089,11 +1100,13 @@ fn run_leaf(
     leaves: &Leaves<'_>,
     leaf: usize,
     inputs: &LeafInputs,
-    failed: &AtomicBool,
+    failed: &crate::interrupt::Interrupt,
 ) -> Option<String> {
-    let outcome = catch_unwind(AssertUnwindSafe(|| (leaves.run)(leaf, inputs, failed)));
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        (leaves.run)(leaf, inputs, failed.flag())
+    }));
     outcome.err().map(|payload| {
-        failed.store(true, Ordering::Release);
+        failed.flag().store(true, Ordering::Release);
         format!("worker panicked: {}", panic_message(&*payload))
     })
 }
@@ -1104,7 +1117,7 @@ fn run_leaf(
 fn run_job<F>(
     job: Job,
     cache: &Path,
-    failed: &Arc<AtomicBool>,
+    failed: &Arc<crate::interrupt::Interrupt>,
     keep_going: bool,
     execute: &F,
 ) -> Completion
@@ -1118,9 +1131,13 @@ where
     } = job;
     // A failure can arrive while this job waits for its worker. Do not
     // invoke another action in that case.
-    if failed.load(Ordering::Acquire) {
+    if failed.is_set() {
         crate::progress::action_done();
-        return (id, None);
+        return Completion {
+            id,
+            outcome: None,
+            interrupted: false,
+        };
     }
     // The progress display's (or plain lines') running-action slot (None
     // when both are off).
@@ -1184,7 +1201,10 @@ where
             list_empty_files(&mut node.action, &groups);
         }
         let clock = std::time::Instant::now();
-        if node.action.extra.java_compile.is_some() {
+        // Without --keep_going the first failure interrupts the spawn
+        // (crate::interrupt); a Java compilation also stops between its
+        // attempts on any failure of the graph.
+        if !keep_going || node.action.extra.java_compile.is_some() {
             node.action.execution_cancel = Some(Arc::clone(failed));
         }
         let mut result = execute(cache, &node.action)?;
@@ -1212,6 +1232,21 @@ where
         Ok(result)
     }))
     .unwrap_or_else(|payload| Err(format!("worker panicked: {}", panic_message(&*payload))));
+    // Stopped by the interrupt of the failed build (crate::interrupt): no
+    // result, no event, no error of its own — like a job skipped before it
+    // started (an interrupted action posts no ActionExecutedEvent).
+    let interrupted = result
+        .as_ref()
+        .is_err_and(|error| crate::interrupt::is_interrupted(error));
+    if interrupted {
+        drop(running);
+        crate::progress::action_done();
+        return Completion {
+            id,
+            outcome: None,
+            interrupted: true,
+        };
+    }
     if let Some((started, start_time, dependencies)) = traced {
         let cache_hit = result.as_ref().is_ok_and(|result| result.cache_hit);
         crate::profile::action_done(&node.action, dependencies, started, cache_hit);
@@ -1226,10 +1261,15 @@ where
     crate::progress::action_done();
     if result.is_err() && !keep_going {
         // Publish cancellation before sending, so another ready node cannot
-        // slip through behind a queued failure.
-        failed.store(true, Ordering::Release);
+        // slip through behind a queued failure, and stop the spawns in
+        // flight (crate::interrupt).
+        failed.fire();
     }
-    (id, Some(result))
+    Completion {
+        id,
+        outcome: Some(result),
+        interrupted: false,
+    }
 }
 
 // The worker seam allows concurrency/lifecycle tests without sleeps or shell
@@ -1352,8 +1392,9 @@ fn execute_with_leaves<F>(
 where
     F: Fn(&Path, &Action) -> Result<ActionResult, String> + Sync,
 {
-    let KeepGoingOutcome { results, errors } =
-        execute_outcome(cache, nodes, jobs, execute, leaves, false)?;
+    let KeepGoingOutcome {
+        results, errors, ..
+    } = execute_outcome(cache, nodes, jobs, execute, leaves, false)?;
     if errors.is_empty() {
         Ok(results)
     } else {
@@ -1388,12 +1429,13 @@ where
     // Infrastructure failures (worker spawn, panics) of a keep-going run.
     let mut fatal: Vec<String> = Vec::new();
     let mut lane = LeafState::new(leaves, &graph, keep_going)?;
-    let failed = Arc::new(AtomicBool::new(false));
+    let failed = crate::interrupt::Interrupt::new();
     let mut results: BTreeMap<String, Arc<ActionResult>> = BTreeMap::new();
     let mut errors = BTreeMap::new();
     // --keep_going: the actions that failed or never run because of a
     // failure ([`Graph::failed`]).
     let mut doomed: BTreeSet<String> = BTreeSet::new();
+    let mut interrupted = 0;
     let (job_sender, job_receiver) = mpsc::channel::<Work>();
     let job_receiver = Mutex::new(job_receiver);
     let (done_sender, done_receiver) = mpsc::channel::<Done>();
@@ -1402,7 +1444,7 @@ where
         let mut workers = 0;
         let mut running = BTreeSet::new();
         loop {
-            while running.len() + lane.running < jobs && !failed.load(Ordering::Acquire) {
+            while running.len() + lane.running < jobs && !failed.is_set() {
                 // A ready leaf first: a test starts as soon as its inputs
                 // exist (it holds no action back: nothing reads its outputs).
                 let leaf = lane.next();
@@ -1449,7 +1491,11 @@ where
                     match spawn {
                         Ok(_) => workers += 1,
                         Err(error) => {
-                            failed.store(true, Ordering::Release);
+                            if keep_going {
+                                failed.flag().store(true, Ordering::Release);
+                            } else {
+                                failed.fire();
+                            }
                             let key = match (&id, leaf) {
                                 (Some(id), _) => id.clone(),
                                 (None, leaf) => format!("test action {}", leaf.unwrap_or(0)),
@@ -1500,8 +1546,13 @@ where
             // Every dispatched job sends one completion, including caught
             // panics and jobs skipped on cancellation.
             match done_receiver.recv().expect("workers send completion") {
-                Done::Action((id, outcome)) => {
+                Done::Action(Completion {
+                    id,
+                    outcome,
+                    interrupted: stopped,
+                }) => {
                     assert!(running.remove(&id), "completion from a running job");
+                    interrupted += usize::from(stopped);
                     match outcome {
                         Some(Ok(result)) => {
                             results.insert(id.clone(), Arc::new(result));
@@ -1521,7 +1572,7 @@ where
                         Some(Err(error)) => {
                             if keep_going && error.starts_with("worker panicked: ") {
                                 fatal.push(format!("action '{id}': {error}"));
-                                failed.store(true, Ordering::Release);
+                                failed.flag().store(true, Ordering::Release);
                             }
                             if keep_going {
                                 graph.failed(&id, &mut doomed);
@@ -1541,6 +1592,12 @@ where
                     }
                 }
             }
+            // A leaf's failure (a `--notest_keep_going` abort, a panic) sets
+            // the flag itself: the spawns in flight are stopped now
+            // (crate::interrupt; once).
+            if !keep_going && failed.is_set() {
+                failed.fire();
+            }
         }
         // Idle workers see the closed channel and exit; the scope joins them.
         job_sender.take();
@@ -1557,6 +1614,7 @@ where
             })
             .collect(),
         errors,
+        interrupted,
     })
 }
 
@@ -2050,6 +2108,27 @@ mod tests {
         assert_eq!(outcome.results.keys().collect::<Vec<_>>(), ["z-queued"]);
         assert_eq!(outcome.errors.keys().collect::<Vec<_>>(), ["a-fail"]);
         assert!(outcome.errors["a-fail"].contains("intentional-failure"));
+        assert!(!marker.exists());
+    }
+
+    /// Without --keep_going the first failure interrupts the spawns in
+    /// flight (crate::interrupt): the graph returns at once, with the
+    /// failure alone; the interrupted action counts as interrupted and
+    /// leaves no result.
+    #[test]
+    fn failure_interrupts_running_spawns() {
+        let fixture = Fixture::new();
+        let marker = fixture.0.join("sleeper-finished");
+        let mut bad = node("a-fail");
+        bad.action.command = "sleep 0.5; echo intentional-failure >&2; exit 7".into();
+        let mut sleeper = node("b-sleeper");
+        sleeper.action.command = format!("sleep 30; touch '{}'; echo > out", marker.display());
+        let started = std::time::Instant::now();
+        let outcome = execute_graph_outcome(&fixture.cache(), vec![bad, sleeper], 2).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(20));
+        assert_eq!(outcome.errors.keys().collect::<Vec<_>>(), ["a-fail"]);
+        assert!(outcome.results.is_empty());
+        assert_eq!(outcome.interrupted, 1);
         assert!(!marker.exists());
     }
 

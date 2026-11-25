@@ -429,6 +429,38 @@ fn trees_symlinks_and_failures_come_back() {
     );
 }
 
+/// Without --keep_going a local failure interrupts a remote execution in
+/// flight (crate::interrupt): the Execute call is cancelled, the command
+/// ends right after the failure and reports only the failing action
+/// (tests/fixtures/failfast_interrupt for the local spawns).
+#[test]
+fn a_failure_interrupts_remote_executions_in_flight() {
+    let ws = Workspace::new();
+    ws.file(
+        "pkg/BUILD.bazel",
+        &format!(
+            "{BUILD}genrule(name = \"slow_remote\", outs = [\"slow_remote.txt\"], cmd = \"sleep 20.0734; echo > $@\")\n\
+             genrule(name = \"fails_local\", outs = [\"fails_local.txt\"], cmd = \"sleep 1; echo local-failure >&2; exit 3\", tags = [\"no-remote\"])\n"
+        ),
+    );
+    let server = executor();
+    let flag = format!("--remote_executor={}", server.url());
+    let started = std::time::Instant::now();
+    let failed = ws.run(
+        "c1",
+        &["build", &flag, "//pkg:slow_remote", "//pkg:fails_local"],
+    );
+    let elapsed = started.elapsed();
+    let text = stderr(&failed);
+    assert_eq!(failed.status.code(), Some(1), "{text}");
+    assert!(text.contains("local-failure"), "{text}");
+    assert!(!text.contains("slow_remote failed"), "{text}");
+    assert!(
+        elapsed < std::time::Duration::from_secs(15),
+        "took {elapsed:?}: {text}"
+    );
+}
+
 #[test]
 fn streams_reconnect_retry_and_report_failures() {
     let ws = Workspace::new();

@@ -4,7 +4,8 @@
 (runtime/KeepGoingOption.java); `query` already did (docs/QUERY.md).
 `--nokeep_going` (the default) is unchanged: the first loading, analysis or
 execution failure fails the command with the native `bazel-rs: <error>`
-report and exit 1.
+report and exit 1; a failed action also interrupts the actions in flight
+(docs/FAILFAST_INTERRUPT.md).
 
 Under `--keep_going` every failure fails exactly what depends on it, and
 everything else is analyzed, built and tested, like Bazel 9.3:

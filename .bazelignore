@@ -101,6 +101,7 @@ tests/fixtures/ext_repo_mapping/workspace
 tests/fixtures/external_locations/workspace
 tests/fixtures/extra_execution_platforms/module_registrations
 tests/fixtures/extra_execution_platforms/workspace
+tests/fixtures/failfast_interrupt/workspace
 tests/fixtures/filegroup_data/workspace
 tests/fixtures/filegroup_output_group/workspace
 tests/fixtures/genquery/ws

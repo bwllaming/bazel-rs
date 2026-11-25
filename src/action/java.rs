@@ -7,7 +7,7 @@ fn cancelled(action: &Action) -> Result<(), String> {
     if action
         .execution_cancel
         .as_ref()
-        .is_some_and(|flag| flag.load(Ordering::Acquire))
+        .is_some_and(|interrupt| interrupt.is_set())
     {
         Err(format!(
             "action '{}' cancelled between Java compilation attempts",
@@ -400,7 +400,19 @@ fn run_worker(
         declared_input(&view.inputs, &attempt.extra.param_files, Path::new(path))
             .then(|| fs::read(worker_root.join(path)))
     };
-    let response = lease.execute(&config.flag_files, &read, request_inputs);
+    check_interrupt(attempt)?;
+    let response = lease.execute(
+        &config.flag_files,
+        &read,
+        request_inputs,
+        attempt.execution_cancel.as_ref(),
+    );
+    if response
+        .as_ref()
+        .is_err_and(|error| crate::interrupt::is_interrupted(error))
+    {
+        return Err(crate::interrupt::interrupted(&attempt.id));
+    }
     crate::sandbox::count(crate::sandbox::Strategy::Worker);
     let response = response.map_err(|error| format!("action '{}' failed: {error}", attempt.id))?;
     check_staged(&staged, &worker_root).map_err(|e| format!("action '{}': {e}", attempt.id))?;
@@ -484,13 +496,12 @@ fn spawn(
         .stderr(Stdio::from(stderr));
     let started = SystemTime::now();
     let clock = std::time::Instant::now();
+    check_interrupt(action)?;
     let mut child = crate::fd_budget::retry(|| retry_spawn(|| launch.start(), std::thread::sleep))
         .map_err(|e| format!("cannot execute action '{}': {e}", action.id))?;
     // The command holds the logs' only descriptors (see the generic spawn).
     drop(launch);
-    let status = child
-        .wait()
-        .map_err(|e| format!("cannot wait for action '{}': {e}", action.id))?;
+    let status = wait_spawn(action, &mut child, strategy)?;
     crate::sandbox::count(strategy);
     let stdout = reopen_log(&stdout_path)
         .and_then(|mut file| log_tail(&mut file))
@@ -717,14 +728,14 @@ if [ "$CASE" = second_fallback ]; then printf '\050\001' >> out/result.jdeps; fi
     #[test]
     fn cancellation_between_attempts_prevents_fallback_and_publication() {
         let mut f = Fixture::new("cancel");
-        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = crate::interrupt::Interrupt::new();
         f.action.execution_cancel = Some(flag.clone());
         let result = std::thread::scope(|scope| {
             let dir = f.dir.path();
             scope.spawn(|| {
                 for _ in 0..200 {
                     if dir.join("trace").exists() {
-                        flag.store(true, Ordering::Release);
+                        flag.flag().store(true, Ordering::Release);
                         fs::write(dir.join("release"), "").unwrap();
                         return;
                     }

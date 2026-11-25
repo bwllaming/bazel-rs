@@ -668,6 +668,8 @@ pub enum WorkerFailure {
     NoResponse,
     /// An unparseable response: the recorded bytes and the parse error.
     Unparseable { recorded: String, error: String },
+    /// The interrupt of a failed build killed the worker (crate::interrupt).
+    Interrupted,
 }
 
 /// A started worker process.
@@ -790,13 +792,43 @@ impl Worker {
     }
 
     /// Sends one request and reads its response.
-    fn exchange(&mut self, request: &WorkRequest) -> Result<WorkResponse, WorkerFailure> {
+    fn exchange(
+        &mut self,
+        request: &WorkRequest,
+        interrupt: Option<&Arc<crate::interrupt::Interrupt>>,
+    ) -> Result<WorkResponse, WorkerFailure> {
         if self.process.is_none() {
             self.start().map_err(WorkerFailure::Start)?;
         }
         let protocol = self.key.protocol;
         let process = self.process.as_mut().expect("started");
         self.in_flight = true;
+        // The interrupt of a failed build kills the worker while it works
+        // on the request (WorkerSpawnRunner: an interrupted non-sandboxed
+        // worker is destroyed, its response never read); the read below
+        // then ends. The process is not reaped while registered.
+        let registration = interrupt.map(|interrupt| {
+            interrupt.register(
+                crate::process_wrapper::Stopper::group(process.child.id()),
+                crate::interrupt::Stop::Abrupt,
+            )
+        });
+        let result = Self::request_response(process, protocol, request);
+        if registration.is_some_and(|registration| registration.interrupted()) {
+            return Err(WorkerFailure::Interrupted);
+        }
+        if result.is_ok() {
+            self.in_flight = false;
+        }
+        result
+    }
+
+    /// Writes `request` and reads its response from `process`.
+    fn request_response(
+        process: &mut Process,
+        protocol: Protocol,
+        request: &WorkRequest,
+    ) -> Result<WorkResponse, WorkerFailure> {
         let bytes = match protocol {
             Protocol::Proto => request.encode_delimited(),
             Protocol::Json => request.encode_json(),
@@ -814,10 +846,7 @@ impl Worker {
             Protocol::Json => read_json(&mut process.stdout, &mut recorded),
         };
         match read {
-            Ok(response) => {
-                self.in_flight = false;
-                Ok(response)
-            }
+            Ok(response) => Ok(response),
             Err(None) => Err(WorkerFailure::NoResponse),
             Err(Some(error)) => {
                 // RecordingInputStream.readRemaining: what the worker wrote
@@ -987,6 +1016,7 @@ impl WorkerFailure {
     fn message(&self, mnemonic: &str, log: &Path) -> String {
         match self {
             WorkerFailure::Start(error) => error.clone(),
+            WorkerFailure::Interrupted => crate::interrupt::interrupted(""),
             WorkerFailure::Request(error) => format!(
                 "Worker process quit or closed its stdin stream when we tried to send a \
                  WorkRequest:\n\n---8<---8<--- Exception details ---8<---8<---\n\
@@ -1076,11 +1106,15 @@ impl Lease {
     /// multiplex key and the verbosity under `--worker_verbose`), and reads
     /// the response. A failure invalidates the worker (it is destroyed when
     /// the lease ends) and returns genuine's message.
+    /// Killed by `interrupt` (the build failed meanwhile), the worker is
+    /// destroyed and the error is [`crate::interrupt::interrupted`] (of an
+    /// unnamed action).
     pub fn execute(
         &mut self,
         flag_files: &[String],
         read: &dyn Fn(&str) -> Option<io::Result<Vec<u8>>>,
         inputs: Vec<(String, String)>,
+        interrupt: Option<&Arc<crate::interrupt::Interrupt>>,
     ) -> Result<WorkResponse, String> {
         let mut arguments = Vec::new();
         for flag_file in flag_files {
@@ -1098,7 +1132,7 @@ impl Lease {
             verbosity: if options().verbose { VERBOSE_LEVEL } else { 0 },
         };
         let worker = self.worker.as_mut().expect("leased");
-        match worker.exchange(&request) {
+        match worker.exchange(&request, interrupt) {
             Ok(response) if response.was_cancelled => {
                 worker.in_flight = true;
                 Err(format!(
@@ -1107,6 +1141,10 @@ impl Lease {
                 ))
             }
             Ok(response) => Ok(response),
+            Err(WorkerFailure::Interrupted) => {
+                worker.in_flight = true;
+                Err(crate::interrupt::interrupted(""))
+            }
             Err(failure) => {
                 worker.in_flight = true;
                 if !matches!(failure, WorkerFailure::Start(_)) {

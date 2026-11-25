@@ -1,0 +1,107 @@
+{
+ "bazel": "9.3.1 (bazel-9.3.1-linux-x86_64, --batch --ignore_all_rc_files, a fresh --output_user_root per case; linux-sandbox unavailable on the capture host: processwrapper-sandbox)",
+ "command": "python3 tests/fixtures/failfast_interrupt/capture.py --bazel <bazel-9.3.1> --scratch <dir>",
+ "notes": [
+  "Genuine interrupts the actions in flight at the first failure without --keep_going: every case ends within a second of the ERROR line, no sleeper, test or worker process survives, nothing is written to the disk cache, the interrupted actions count as internal processes (their ActionCompletionEvent) and the rerun executes the sleeper again.",
+  "Declared divergence (bin_pkg): bazel-rs publishes only what completed into the output tree, so bazel-bin/pkg has no partial outputs of interrupted standalone spawns (genuine's ran in the execroot), no parameter file of the interrupted worker action and no empty package directory.",
+  "Known gap (test case): after a failed build action `bazel-rs test` prints neither the build summary lines (`Use --verbose_failures`, `INFO: N processes`, `Build did NOT complete successfully`) nor publishes the completed actions' outputs; unrelated to the interrupt (also without a running test)."
+ ],
+ "rows": [
+  {
+   "bin_pkg": {},
+   "case": "build",
+   "console": [
+    "ERROR: <WS>/pkg/BUILD.bazel:12:8: Executing genrule //pkg:fail failed: (Exit 1): bash failed: error executing Genrule command (from genrule rule target //pkg:fail) /bin/bash -c 'source external/bazel_tools/tools/genrule/genrule-setup.sh; sleep 1; echo failing-now >&2; exit 1'",
+    "Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging",
+    "failing-now",
+    "Use --verbose_failures to see the command lines of failed build steps.",
+    "INFO: 5 processes: 5 internal.",
+    "ERROR: Build did NOT complete successfully"
+   ],
+   "disk_cache_files": 0,
+   "exit_code": 1,
+   "prompt": true,
+   "stdout": [],
+   "survivors": []
+  },
+  {
+   "bin_pkg": {
+    "sleeper0.txt": "partial\ndone\n"
+   },
+   "case": "rerun",
+   "console": [
+    "Target //pkg:sleeper0 up-to-date:",
+    "  bazel-bin/pkg/sleeper0.txt",
+    "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox."
+   ],
+   "disk_cache_files": 4,
+   "exit_code": 0,
+   "prompt": true,
+   "stdout": [],
+   "survivors": []
+  },
+  {
+   "bin_pkg": {
+    "sleeper0.txt": "partial\n",
+    "sleeper1.txt": "partial\n",
+    "sleeper2.txt": "partial\n"
+   },
+   "case": "standalone",
+   "console": [
+    "ERROR: <WS>/pkg/BUILD.bazel:12:8: Executing genrule //pkg:fail failed: (Exit 1): bash failed: error executing Genrule command (from genrule rule target //pkg:fail) /bin/bash -c 'source external/bazel_tools/tools/genrule/genrule-setup.sh; sleep 1; echo failing-now >&2; exit 1'",
+    "failing-now",
+    "Use --verbose_failures to see the command lines of failed build steps.",
+    "INFO: 5 processes: 5 internal.",
+    "ERROR: Build did NOT complete successfully"
+   ],
+   "disk_cache_files": 0,
+   "exit_code": 1,
+   "prompt": true,
+   "stdout": [],
+   "survivors": []
+  },
+  {
+   "bin_pkg": {
+    "slow_test.sh": "#!/bin/sh\nsleep 15.0732\nexit 0\n",
+    "slow_test.sh.repo_mapping": ",failfast_interrupt,_main\n",
+    "slow_test.sh.runfiles_manifest": "_main/pkg/slow_test.sh /tmp/opencode/w/failfast-cap-genuine/root-test/9b9a8c4327431abc0ba97d35a1cc5d6d/execroot/_main/bazel-out/k8-fastbuild/bin/pkg/slow_test.sh\n_repo_mapping /tmp/opencode/w/failfast-cap-genuine/root-test/9b9a8c4327431abc0ba97d35a1cc5d6d/execroot/_main/bazel-out/k8-fastbuild/bin/pkg/slow_test.sh.repo_mapping\n"
+   },
+   "case": "test",
+   "console": [
+    "ERROR: <WS>/pkg/BUILD.bazel:19:8: Executing genrule //pkg:fail_late failed: (Exit 1): bash failed: error executing Genrule command (from genrule rule target //pkg:fail_late) /bin/bash -c 'source external/bazel_tools/tools/genrule/genrule-setup.sh; sleep 8; echo failing-now >&2; exit 1'",
+    "Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging",
+    "failing-now",
+    "Use --verbose_failures to see the command lines of failed build steps.",
+    "INFO: 8 processes: 8 internal.",
+    "ERROR: Build did NOT complete successfully"
+   ],
+   "disk_cache_files": 0,
+   "exit_code": 1,
+   "prompt": true,
+   "stdout": [
+    "//pkg:slow_test                                                       NO STATUS",
+    "Executed 0 out of 1 test: 1 was skipped."
+   ],
+   "survivors": []
+  },
+  {
+   "bin_pkg": {
+    "slow_work.out-0.params": "bazel-out/k8-fastbuild/bin/pkg/slow_work.out\n"
+   },
+   "case": "worker",
+   "console": [
+    "ERROR: <WS>/pkg/BUILD.bazel:12:8: Executing genrule //pkg:fail failed: (Exit 1): bash failed: error executing Genrule command (from genrule rule target //pkg:fail) /bin/bash -c 'source external/bazel_tools/tools/genrule/genrule-setup.sh; sleep 1; echo failing-now >&2; exit 1'",
+    "Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging",
+    "failing-now",
+    "Use --verbose_failures to see the command lines of failed build steps.",
+    "INFO: 3 processes: 3 internal.",
+    "ERROR: Build did NOT complete successfully"
+   ],
+   "disk_cache_files": 0,
+   "exit_code": 1,
+   "prompt": true,
+   "stdout": [],
+   "survivors": []
+  }
+ ]
+}

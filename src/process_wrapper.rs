@@ -402,6 +402,20 @@ impl Spawned {
         self.child.stderr.take()
     }
 
+    /// A handle that stops this spawn from another thread while this one
+    /// waits for it (crate::interrupt); None once it has ended.
+    pub fn stopper(&self) -> Option<Stopper> {
+        if self.status.is_some() {
+            return None;
+        }
+        match &self.control {
+            Some(control) => control.stream.try_clone().ok().map(|stream| Stopper {
+                target: StopTarget::Supervisor(stream),
+            }),
+            None => Some(Stopper::group(self.child.id())),
+        }
+    }
+
     /// SIGTERM to the command's process group (a test timeout; the
     /// process-wrapper's graceful kill, process-tools.cc:93-107).
     pub fn terminate(&mut self) {
@@ -517,6 +531,52 @@ impl Spawned {
         let status = self.child.wait()?;
         self.status = Some(status);
         Ok(Some(status))
+    }
+}
+
+/// Stops a running spawn from another thread than the one waiting for it
+/// ([`Spawned::stopper`]; crate::interrupt): through the supervisor's control
+/// channel (the `T` and `K` commands), or by signalling a process group
+/// directly (a spawn started without supervisor, a persistent worker).
+pub struct Stopper {
+    target: StopTarget,
+}
+
+enum StopTarget {
+    Supervisor(UnixStream),
+    Group(u32),
+}
+
+impl Stopper {
+    /// The process group led by `group` (a process this one started, not
+    /// reaped while the stopper can be used).
+    pub fn group(group: u32) -> Self {
+        Self {
+            target: StopTarget::Group(group),
+        }
+    }
+
+    /// SIGTERM to the command's process group.
+    pub fn terminate(&mut self) {
+        self.send(b'T', Signal::TERM);
+    }
+
+    /// SIGKILL to the command and its process group; the supervisor kills
+    /// what the command left once it is gone.
+    pub fn kill(&mut self) {
+        self.send(b'K', Signal::KILL);
+    }
+
+    fn send(&mut self, command: u8, signal: Signal) {
+        match &mut self.target {
+            // A supervisor that is gone cannot be told anything (EPIPE).
+            StopTarget::Supervisor(stream) => {
+                let _ = stream.write_all(&[command]);
+            }
+            StopTarget::Group(group) => {
+                let _ = crate::git_process::signal_group(*group, signal);
+            }
+        }
     }
 }
 

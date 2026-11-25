@@ -822,9 +822,40 @@ impl Channel {
         requests: &mut dyn Iterator<Item = Vec<u8>>,
         on_message: &mut dyn FnMut(Bytes) -> Result<(), Status>,
     ) -> Result<bool, Status> {
+        self.run_cancellable(call, requests, None, on_message)
+    }
+
+    /// [`Channel::run`] that ends early, with a local CANCELLED status, once
+    /// `cancel` is set (looked at every 50 ms): the call's stream is dropped,
+    /// which resets it (RST_STREAM CANCEL, like a cancelled gRPC context).
+    fn run_cancellable(
+        &self,
+        call: &Call<'_>,
+        requests: &mut dyn Iterator<Item = Vec<u8>>,
+        cancel: Option<&AtomicBool>,
+        on_message: &mut dyn FnMut(Bytes) -> Result<(), Status>,
+    ) -> Result<bool, Status> {
         let exchange = self.exchange(call, requests, on_message);
         let exchange: Pin<&mut dyn Future<Output = Result<bool, Status>>> =
             std::pin::pin!(exchange);
+        if let Some(cancel) = cancel {
+            let mut exchange = exchange;
+            return self.runtime.block_on(async {
+                let mut tick = tokio::time::interval(Duration::from_millis(50));
+                poll_fn(|cx| {
+                    if let Poll::Ready(result) = exchange.as_mut().poll(cx) {
+                        return Poll::Ready(result);
+                    }
+                    while tick.poll_tick(cx).is_ready() {
+                        if cancel.load(Ordering::Acquire) {
+                            return Poll::Ready(Err(Status::new(Code::Cancelled, "cancelled")));
+                        }
+                    }
+                    Poll::Pending
+                })
+                .await
+            });
+        }
         match call.timeout {
             None => self.runtime.block_on(exchange),
             Some(timeout) => self
@@ -865,6 +896,20 @@ impl Channel {
         on_message: &mut dyn FnMut(Bytes) -> Result<(), Status>,
     ) -> Result<(), Status> {
         self.run(call, &mut std::iter::once(request), on_message)
+            .map(|_| ())
+    }
+
+    /// [`Channel::server_streaming`] without deadline that `cancel` ends
+    /// early with a CANCELLED status (an interrupted Execute call,
+    /// crate::interrupt).
+    pub fn server_streaming_cancellable(
+        &self,
+        call: &Call<'_>,
+        request: Vec<u8>,
+        cancel: Option<&AtomicBool>,
+        on_message: &mut dyn FnMut(Bytes) -> Result<(), Status>,
+    ) -> Result<(), Status> {
+        self.run_cancellable(call, &mut std::iter::once(request), cancel, on_message)
             .map(|_| ())
     }
 

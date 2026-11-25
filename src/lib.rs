@@ -100,6 +100,7 @@ pub mod info;
 mod instrumented_files;
 pub mod internal_error;
 pub mod interner;
+pub mod interrupt;
 mod java_actions;
 mod java_classpath;
 pub mod java_compile;

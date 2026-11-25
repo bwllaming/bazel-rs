@@ -694,17 +694,19 @@ impl GrpcCache {
         method: &str,
         request: Vec<u8>,
         action_id: &str,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
         on_message: &mut dyn FnMut(bytes::Bytes) -> Result<(), Status>,
     ) -> Result<(), Status> {
         let metadata = self.metadata(EXECUTION, action_id)?;
         let path = format!("/{EXECUTION}/{method}");
-        self.channel.server_streaming(
+        self.channel.server_streaming_cancellable(
             &Call {
                 path: &path,
                 metadata: &metadata,
                 timeout: None,
             },
             request,
+            cancel,
             on_message,
         )
     }

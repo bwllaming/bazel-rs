@@ -874,6 +874,7 @@ fn execute_tests(
                 Some(&leaves),
             )?,
             errors: BTreeMap::new(),
+            interrupted: 0,
         }
     };
     // --notest_keep_going under --nokeep_going: a test that did not pass
@@ -1059,7 +1060,11 @@ pub fn execute_with_tests(
             })
             .map(|node| node.action.id.clone())
             .collect();
-        let scheduler::KeepGoingOutcome { results, errors } = match tests {
+        let scheduler::KeepGoingOutcome {
+            results,
+            errors,
+            interrupted,
+        } = match tests {
             Some(session) => execute_tests(
                 options,
                 nodes,
@@ -1099,6 +1104,12 @@ pub fn execute_with_tests(
                 Some(runner) => crate::spawn_stats::action_completed(&[runner]),
                 None => crate::spawn_stats::action_completed(&[]),
             }
+        }
+        // An action the failure interrupted completed without a spawn
+        // result too (SkyframeActionExecutor's ActionCompletionEvent in its
+        // `finally`): internal.
+        for _ in 0..interrupted {
+            crate::spawn_stats::action_completed(&[]);
         }
         crate::perf_mark("execute.graph");
         // `$(bazel-rs info bazel-bin)/...` names the built files

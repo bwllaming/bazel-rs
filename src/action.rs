@@ -228,10 +228,12 @@ pub struct Action {
     /// crate::remote_execution::platform_properties). Not part of the
     /// native key.
     pub remote_platform: crate::remote_execution::SpawnPlatform,
-    /// Invocation-local cancellation at Java attempt boundaries. Never keyed
-    /// or persisted; the scheduler installs its existing failure flag.
+    /// Invocation-local interrupt of the execution graph (crate::interrupt):
+    /// without `--keep_going` the first failure stops this action's spawns;
+    /// a Java compilation also stops between its attempts. Never keyed or
+    /// persisted; the scheduler installs its failure interrupt.
     #[serde(skip)]
-    pub execution_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    pub execution_cancel: Option<Arc<crate::interrupt::Interrupt>>,
 }
 
 /// The process argv, exactly as Bazel's spawn has it
@@ -6443,6 +6445,51 @@ fn retry_spawn<T>(
     }
 }
 
+/// How the interrupt of a failed build stops a spawn of `strategy`
+/// (crate::interrupt): the namespace sandbox like linux-sandbox (SIGTERM,
+/// SIGKILL after the grace period), every other local spawn like the
+/// process-wrapper (SIGKILL at once; the darwin sandbox runs under it).
+fn interrupt_stop(strategy: crate::sandbox::Strategy) -> crate::interrupt::Stop {
+    if strategy == crate::sandbox::Strategy::Sandboxed
+        && crate::sandbox::backend() == crate::sandbox::Backend::Namespaces
+    {
+        crate::interrupt::Stop::Graceful
+    } else {
+        crate::interrupt::Stop::Abrupt
+    }
+}
+
+/// The interrupt of a failed build happened (crate::interrupt): a spawn of
+/// `action` does not start.
+fn check_interrupt(action: &Action) -> Result<(), String> {
+    match &action.execution_cancel {
+        Some(interrupt) if interrupt.is_set() => Err(crate::interrupt::interrupted(&action.id)),
+        _ => Ok(()),
+    }
+}
+
+/// Waits for `action`'s spawn, which the interrupt of a failed build stops
+/// meanwhile (crate::interrupt): then whatever it ended with is no result,
+/// and the error is [`crate::interrupt::interrupted`].
+fn wait_spawn(
+    action: &Action,
+    child: &mut crate::process_wrapper::Spawned,
+    strategy: crate::sandbox::Strategy,
+) -> Result<std::process::ExitStatus, String> {
+    let registration = action.execution_cancel.as_ref().and_then(|interrupt| {
+        child
+            .stopper()
+            .map(|stopper| interrupt.register(stopper, interrupt_stop(strategy)))
+    });
+    let status = child
+        .wait()
+        .map_err(|e| format!("cannot wait for action '{}': {e}", action.id))?;
+    if registration.is_some_and(|registration| registration.interrupted()) {
+        return Err(crate::interrupt::interrupted(&action.id));
+    }
+    Ok(status)
+}
+
 /// StringUtilities.replaceAllLiteral (util/StringUtilities.java:70-88) on
 /// internal bytes: non-overlapping, left to right; an empty key is a no-op.
 fn replace_all_literal(input: &[u8], literal: &[u8], replacement: &[u8]) -> Vec<u8> {
@@ -7971,7 +8018,10 @@ fn missing_mandatory(
 /// mandatory). A failure falls back to local execution with
 /// `--remote_local_fallback` (never for an execution timeout), else is
 /// [`RemoteSpawn::Failed`]; `Err` is a credential helper or capability
-/// failure, which never falls back.
+/// failure, which never falls back. `cancel` is the interrupt of a failed
+/// build (crate::interrupt): the Execute call ends, the error is
+/// [`crate::interrupt::interrupted`].
+#[allow(clippy::too_many_arguments)]
 pub fn remote_spawn(
     remote: &crate::remote_cache::RemoteCache,
     spec: &crate::remote_cache::RemoteAction,
@@ -7980,6 +8030,7 @@ pub fn remote_spawn(
     cacheable: bool,
     mandatory: bool,
     stay_remote: &dyn Fn(usize) -> bool,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<RemoteSpawn, String> {
     use crate::remote_cache::CacheError;
     use crate::remote_execution::ExecError;
@@ -8088,7 +8139,7 @@ pub fn remote_spawn(
                 key,
                 !use_cached,
             );
-            let response = crate::remote_execution::execute(executor, &request, &key.hash)
+            let response = crate::remote_execution::execute(executor, &request, &key.hash, cancel)
                 .map_err(|error| match error.retry_delay() {
                     Some(delay) => Failed::Retry(error, delay),
                     None => Failed::Final(error),
@@ -8131,6 +8182,13 @@ pub fn remote_spawn(
                 Err(error) => Err(Failed::Final(ExecError::Io(error.to_string()))),
             }
         })();
+        // Interrupted (the build failed meanwhile, crate::interrupt): no
+        // retry, no local fallback, no failure of its own.
+        if attempt.is_err()
+            && cancel.is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::Acquire))
+        {
+            return Err(crate::interrupt::interrupted(""));
+        }
         match attempt {
             Ok((result, cached)) => {
                 if cached {
@@ -8172,6 +8230,10 @@ fn run_remotely(
         remote_policy(action).0,
         true,
         &stay_remote,
+        action
+            .execution_cancel
+            .as_ref()
+            .map(|interrupt| interrupt.flag()),
     )? {
         RemoteSpawn::Fallback => Ok(RemoteRun::Fallback),
         RemoteSpawn::Failed(message) => Err(format!("{failure} failed: {message}")),
@@ -8826,7 +8888,21 @@ pub fn execute_with_remote(
             declared_input(inputs, &action.extra.param_files, Path::new(path))
                 .then(|| fs::read(execroot.join(path)))
         };
-        let response = lease.execute(flag_files, &read, request_inputs);
+        check_interrupt(action)?;
+        let response = lease.execute(
+            flag_files,
+            &read,
+            request_inputs,
+            action.execution_cancel.as_ref(),
+        );
+        // An interrupted request (the build failed meanwhile) is neither
+        // counted nor reported.
+        if response
+            .as_ref()
+            .is_err_and(|error| crate::interrupt::is_interrupted(error))
+        {
+            return Err(crate::interrupt::interrupted(&action.id));
+        }
         crate::sandbox::count(crate::sandbox::Strategy::Worker);
         let response =
             response.map_err(|error| format!("action '{}' failed: {error}", action.id))?;
@@ -8931,6 +9007,8 @@ pub fn execute_with_remote(
             .stderr(Stdio::from(stderr));
         // A start that failed did not run the command: retried after
         // descriptor exhaustion (crate::fd_budget) as after ETXTBSY.
+        // No spawn starts once the build failed (crate::interrupt).
+        check_interrupt(action)?;
         let mut child =
             crate::fd_budget::retry(|| retry_spawn(|| launch.start(), std::thread::sleep))
                 .map_err(|e| format!("cannot execute action '{}': {e}", action.id))?;
@@ -8938,9 +9016,9 @@ pub fn execute_with_remote(
         // spawn costs this process no descriptor for them (like Bazel's
         // server, whose subprocess opens its redirections itself).
         drop(launch);
-        let status = child
-            .wait()
-            .map_err(|e| format!("cannot wait for action '{}': {e}", action.id))?;
+        // An interrupted spawn (the build failed meanwhile) is neither
+        // counted nor reported; its work directory goes with `work`.
+        let status = wait_spawn(action, &mut child, strategy)?;
         crate::sandbox::count(strategy);
         if remote_spec.is_some() {
             logs = (

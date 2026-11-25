@@ -2529,9 +2529,17 @@ impl Runner<'_> {
         let mut spec = spec;
         spec.cacheable = cacheable;
         let action = crate::remote_cache::remote_action_of(&spec)?;
-        crate::action::remote_spawn(remote, &action, blobs, declared, cacheable, false, &|_| {
-            false
-        })
+        // A remote test is not interrupted (it reports once it ended).
+        crate::action::remote_spawn(
+            remote,
+            &action,
+            blobs,
+            declared,
+            cacheable,
+            false,
+            &|_| false,
+            None,
+        )
     }
 
     /// The common SpawnSpec fields of a test action's spawns on the remote

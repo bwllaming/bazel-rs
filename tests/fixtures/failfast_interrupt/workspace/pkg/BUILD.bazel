@@ -1,0 +1,37 @@
+load(":defs.bzl", "slow_test", "slow_work")
+
+# Long-running actions, each leaving a partial output before it sleeps; the
+# odd sleep length names their processes (`pgrep -f 'sleep 15.0731'`).
+[genrule(
+    name = "sleeper%d" % i,
+    outs = ["sleeper%d.txt" % i],
+    cmd = "echo partial > $@; sleep 15.0731; echo done >> $@",
+) for i in range(3)]
+
+# The build's first (and only) failure, about a second in.
+genrule(
+    name = "fail",
+    outs = ["fail.txt"],
+    cmd = "sleep 1; echo failing-now >&2; exit 1",
+)
+
+# The test case's failure: late enough for the test to be running.
+genrule(
+    name = "fail_late",
+    outs = ["fail_late.txt"],
+    cmd = "sleep 8; echo failing-now >&2; exit 1",
+)
+
+# Never starts: its input is a sleeper's output.
+genrule(
+    name = "after",
+    srcs = [":sleeper0"],
+    outs = ["after.txt"],
+    cmd = "cp $< $@",
+)
+
+# A test that runs as long as the sleepers.
+slow_test(name = "slow_test")
+
+# A persistent worker's request that runs as long as the sleepers.
+slow_work(name = "slow_work")
