@@ -644,21 +644,7 @@ fn open_directory_at(
 
 /// Whether `stat` shows the file in `state`.
 fn stat_matches(stat: Option<&rustix::fs::Stat>, state: &InodeState) -> bool {
-    stat.is_some_and(|stat| stat_state(stat) == *state)
-}
-
-/// The state [`inode_state`] gives for `stat`.
-#[cfg_attr(not(target_os = "linux"), allow(clippy::useless_conversion))]
-fn stat_state(stat: &rustix::fs::Stat) -> InodeState {
-    InodeState {
-        inode: stat.st_ino,
-        size: u64::try_from(stat.st_size).unwrap_or(u64::MAX),
-        mtime: (
-            stat.st_mtime,
-            i64::try_from(stat.st_mtime_nsec).unwrap_or(i64::MAX),
-        ),
-        mode: crate::platform::stat_mode(stat) & 0o7777,
-    }
+    stat.is_some_and(|stat| stat_inode_state(stat).0 == *state)
 }
 
 /// A directory being reconciled: the execution root's descriptor and the

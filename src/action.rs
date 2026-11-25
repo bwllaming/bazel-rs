@@ -1300,6 +1300,64 @@ impl<T: Default> Shards<T> {
     }
 }
 
+/// A repository tree file as this process verified it at staging
+/// ([`stage_tree_link`]): its state, change time and the digest it was
+/// found to hold.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct VerifiedTreeFile {
+    state: InodeState,
+    ctime: (i64, i64),
+    digest: Sha256Digest,
+}
+
+/// Repository tree files verified at staging in a settled state (their
+/// modification and change times older than the racy margin of
+/// [`settled`]), by path: later stagings of the file take that state
+/// instead of inspecting it again, and the check after the process
+/// ([`check_staged`]) compares the file's state and change time with it — a
+/// file changed in any way since (also rewritten in place with its size
+/// and modification time restored: its change time moves) fails the
+/// action, unless its content is still the keyed one. An entry goes when a
+/// check finds its file in another state.
+fn verified_tree_files() -> &'static Shards<FxHashMap<PathBuf, VerifiedTreeFile>> {
+    static MEMO: OnceLock<Shards<FxHashMap<PathBuf, VerifiedTreeFile>>> = OnceLock::new();
+    MEMO.get_or_init(Shards::new)
+}
+
+fn verified_tree_file(path: &Path) -> Option<VerifiedTreeFile> {
+    verified_tree_files()
+        .of(path)
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(path)
+        .copied()
+}
+
+fn remember_tree_file(path: &Path, verified: VerifiedTreeFile) {
+    let mut memo = verified_tree_files()
+        .of(path)
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
+    if memo.len() >= FILE_MEMO_LIMIT / SHARDS {
+        memo.clear();
+    }
+    memo.insert(path.to_path_buf(), verified);
+}
+
+fn forget_tree_file(path: &Path) {
+    let shard = verified_tree_files().of(path);
+    if shard
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(path)
+    {
+        shard
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(path);
+    }
+}
+
 /// Whether `bytes` spell a plain absolute path: a leading `/`, no empty
 /// component (`//`), no `.` component and no trailing separator — exactly
 /// the absolute paths that `Path::components` rebuilds byte for byte (`..`
@@ -4792,7 +4850,20 @@ thread_local! {
 /// after the process ([`check_staged`]); outside staging, or when the
 /// directory cannot be opened, the path is inspected as before.
 fn tree_file_metadata(path: &Path) -> io::Result<(fs::Metadata, Option<Arc<TreeDirectory>>)> {
-    let directory = match (path.parent(), path.file_name()) {
+    match tree_directory(path) {
+        Some(directory) => {
+            let metadata = metadata_at(&directory, path)?;
+            Ok((metadata, Some(directory)))
+        }
+        None => Ok((fs::symlink_metadata(path)?, None)),
+    }
+}
+
+/// The directory of tree file `path`, opened once per staging
+/// ([`tree_file_metadata`]); None outside staging or when it cannot be
+/// opened.
+fn tree_directory(path: &Path) -> Option<Arc<TreeDirectory>> {
+    match (path.parent(), path.file_name()) {
         (Some(parent), Some(_)) if !parent.as_os_str().is_empty() => {
             TREE_DIRECTORIES.with(|directories| {
                 let mut directories = directories.borrow_mut();
@@ -4813,13 +4884,6 @@ fn tree_file_metadata(path: &Path) -> io::Result<(fs::Metadata, Option<Arc<TreeD
             })
         }
         _ => None,
-    };
-    match directory {
-        Some(directory) => {
-            let metadata = metadata_at(&directory, path)?;
-            Ok((metadata, Some(directory)))
-        }
-        None => Ok((fs::symlink_metadata(path)?, None)),
     }
 }
 
@@ -5531,6 +5595,9 @@ struct StagedFile {
     /// mode in `state`); the file is never removed. `None` for a `cas/`
     /// blob, which a modification removes.
     tree_link: Option<Sha256Digest>,
+    /// A tree file's change time as staged (compared after the process);
+    /// unused for a blob, whose change time every link moves.
+    ctime: (i64, i64),
     /// The tree file's directory, opened once per staging
     /// ([`tree_file_metadata`]): its inspections after the process go
     /// through it too.
@@ -5631,6 +5698,7 @@ fn stage_file<'a>(
                 blob: ensured,
                 state: *state,
                 tree_link: None,
+                ctime: (0, 0),
                 tree_directory: None,
             });
             return Ok(());
@@ -5658,6 +5726,7 @@ fn stage_file<'a>(
         blob,
         state: inode_state(&metadata),
         tree_link: None,
+        ctime: (0, 0),
         tree_directory: None,
     });
     Ok(())
@@ -5704,6 +5773,27 @@ fn stage_tree_link(
             .map_err(|e| io_error("cannot link", &target, e))?;
         staging_part(PART_TREE_LINK, &mut clock);
     }
+    // Verified in a settled state before ([`verified_tree_files`]): that
+    // state is the staged one, and the check after the process compares
+    // the file with it, its change time included.
+    if let Some(verified) = verified_tree_file(&input.path)
+        && verified.digest == input.digest
+        && verified.state.size == input.size
+        && verified.state.mode == input.mode
+    {
+        TREE_VERIFIED_HITS.fetch_add(1, Ordering::Relaxed);
+        staged.push(StagedFile {
+            destination: destination.to_path_buf(),
+            blob: input.path.clone(),
+            state: verified.state,
+            tree_link: Some(input.digest),
+            ctime: verified.ctime,
+            tree_directory: tree_directory(&input.path),
+        });
+        staging_part(PART_TREE_INSPECT, &mut clock);
+        return Ok(());
+    }
+    let start = SystemTime::now();
     let (metadata, tree_directory) =
         tree_file_metadata(&input.path).map_err(|e| io_error("cannot inspect", &input.path, e))?;
     let changed = || {
@@ -5731,16 +5821,32 @@ fn stage_tree_link(
     if digest != input.digest {
         return Err(changed());
     }
+    let state = inode_state(&metadata);
+    let ctime = (metadata.ctime(), metadata.ctime_nsec());
+    if settled(&metadata, start, false) {
+        remember_tree_file(
+            &input.path,
+            VerifiedTreeFile {
+                state,
+                ctime,
+                digest,
+            },
+        );
+    }
     staging_part(PART_TREE_INSPECT, &mut clock);
     staged.push(StagedFile {
         destination: destination.to_path_buf(),
         blob: input.path.clone(),
-        state: inode_state(&metadata),
+        state,
         tree_link: Some(input.digest),
+        ctime,
         tree_directory,
     });
     Ok(())
 }
+
+/// Tree links staged from [`verified_tree_files`] (`PERF-STAGE staging`).
+static TREE_VERIFIED_HITS: AtomicU64 = AtomicU64::new(0);
 
 /// Staging totals of this process, reported under `BAZEL_RS_TIMING`
 /// ([`report_staging`]): calls of [`stage_inputs`], their summed wall time
@@ -5786,8 +5892,9 @@ pub fn report_staging() {
     }
     let [calls, micros, links, blobs] = STAGING.each_ref().map(|n| n.load(Ordering::Relaxed));
     crate::snapshot::diag::line_fmt(format_args!(
-        "PERF-STAGE staging {:.3}s calls={calls} tree_links={links} blobs={blobs}",
-        micros as f64 / 1e6
+        "PERF-STAGE staging {:.3}s calls={calls} tree_links={links} (verified before: {}) blobs={blobs}",
+        micros as f64 / 1e6,
+        TREE_VERIFIED_HITS.load(Ordering::Relaxed)
     ));
     let [reused, kept, removed] = reuse::COUNTS.each_ref().map(|n| n.load(Ordering::Relaxed));
     let [empty, failed, refused, entries] =
@@ -6146,14 +6253,17 @@ fn check_staged_untimed(staged: &[StagedFile], execroot: &Path) -> Result<(), St
                     last = Some((parent.to_path_buf(), opened));
                 }
                 match last.as_ref().and_then(|(_, directory)| directory.as_ref()) {
-                    Some(directory) => fd_metadata_at(directory, name).ok(),
-                    None => fs::symlink_metadata(execroot.join(destination)).ok(),
+                    Some(directory) => {
+                        rustix::fs::statat(directory, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+                            .ok()
+                    }
+                    None => rustix::fs::lstat(execroot.join(destination)).ok(),
                 }
             }
-            _ => fs::symlink_metadata(execroot.join(destination)).ok(),
+            _ => rustix::fs::lstat(execroot.join(destination)).ok(),
         };
         metadata
-            .map(|metadata| inode_state(&metadata))
+            .map(|stat| stat_inode_state(&stat).0)
             .filter(|state| state.inode == inode)
     };
     for file in staged {
@@ -6171,15 +6281,27 @@ fn check_staged_untimed(staged: &[StagedFile], execroot: &Path) -> Result<(), St
                 .or_insert_with(|| directory.current())
         });
         let changed = match file.tree_link {
+            // The same inode in the staged state with the staged change
+            // time is unchanged; another state of it is a modification; a
+            // change time alone (a tool hardlinked the file) or another
+            // file at the path (a republished tree) must still hold the
+            // keyed content. Either way the file is verified anew when it
+            // is staged next ([`verified_tree_files`]).
             Some(digest) => match match directory {
-                Some(directory) => metadata_at(directory, &file.blob)
-                    .ok()
-                    .map(|metadata| inode_state(&metadata))
-                    .filter(|state| state.inode == file.state.inode),
-                None => state(&file.blob),
-            } {
-                Some(current) => current != file.state,
-                None => !holds_keyed(&file.blob, digest, file.state.mode),
+                Some(directory) => tree_file_state_at(directory, &file.blob),
+                None => tree_file_state(&file.blob),
+            }
+            .filter(|(state, _)| state.inode == file.state.inode)
+            {
+                Some((current, ctime)) if current == file.state && ctime == file.ctime => false,
+                Some((current, _)) if current != file.state => {
+                    forget_tree_file(&file.blob);
+                    true
+                }
+                _ => {
+                    forget_tree_file(&file.blob);
+                    !holds_keyed(&file.blob, digest, file.state.mode)
+                }
             },
             None => {
                 let current = destination_state(&file.destination, file.state.inode)
@@ -6206,6 +6328,42 @@ fn check_staged_untimed(staged: &[StagedFile], execroot: &Path) -> Result<(), St
             .collect::<Vec<_>>()
             .join("\n"))
     }
+}
+
+/// The state and change time of the tree file `path` in its directory
+/// opened at staging: one `lstat` relative to it.
+fn tree_file_state_at(directory: &TreeDirectory, path: &Path) -> Option<(InodeState, (i64, i64))> {
+    let name = path.file_name()?;
+    rustix::fs::statat(&directory.fd, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+        .ok()
+        .map(|stat| stat_inode_state(&stat))
+}
+
+/// [`tree_file_state_at`] by path.
+fn tree_file_state(path: &Path) -> Option<(InodeState, (i64, i64))> {
+    rustix::fs::lstat(path)
+        .ok()
+        .map(|stat| stat_inode_state(&stat))
+}
+
+/// [`inode_state`] and the change time of a `stat`.
+#[cfg_attr(not(target_os = "linux"), allow(clippy::useless_conversion))]
+fn stat_inode_state(stat: &rustix::fs::Stat) -> (InodeState, (i64, i64)) {
+    (
+        InodeState {
+            inode: stat.st_ino,
+            size: u64::try_from(stat.st_size).unwrap_or(u64::MAX),
+            mtime: (
+                stat.st_mtime,
+                i64::try_from(stat.st_mtime_nsec).unwrap_or(i64::MAX),
+            ),
+            mode: crate::platform::stat_mode(stat) & 0o7777,
+        },
+        (
+            stat.st_ctime,
+            i64::try_from(stat.st_ctime_nsec).unwrap_or(i64::MAX),
+        ),
+    )
 }
 
 /// Whether `path` is a regular file with permission bits `mode` whose
@@ -10001,6 +10159,7 @@ mod tests {
                 blob: file.clone(),
                 state: inode_state(&metadata),
                 tree_link: Some(digest(b"keyed\n")),
+                ctime: (metadata.ctime(), metadata.ctime_nsec()),
                 tree_directory: directory,
             }]
         };
@@ -10021,6 +10180,79 @@ mod tests {
         fs::write(&file, b"keyed\n").unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
         assert!(check_staged(&staged, &execroot).is_ok());
+    }
+
+    /// A tree file verified before (verified_tree_files) is staged in that
+    /// state without being inspected; the check after the process compares
+    /// its change time too, so a rewrite in place that kept the size and
+    /// restored the modification time fails the action and drops the
+    /// entry (the next staging inspects the file and fails), while a mere
+    /// change of the change time with the keyed content (a tool
+    /// hardlinked the file) passes.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_verified_tree_file_changed_in_place_fails_the_check() {
+        let fixture = Fixture::new();
+        let file = fixture.0.join("tree/f.h");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, b"keyed\n").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
+        let metadata = fs::symlink_metadata(&file).unwrap();
+        let input = Input {
+            path: file.clone(),
+            digest: digest(b"keyed\n"),
+            size: 6,
+            executable: 0,
+            mode: 0o444,
+        };
+        let verified = VerifiedTreeFile {
+            state: inode_state(&metadata),
+            ctime: (metadata.ctime(), metadata.ctime_nsec()),
+            digest: input.digest,
+        };
+        let execroot = fixture.0.join("execroot");
+        fs::create_dir(&execroot).unwrap();
+        let stage = |name: &str| {
+            let _scope = EnsuredDirectories::enter();
+            let mut staged = Vec::new();
+            stage_tree_link(&input, &execroot, Path::new(name), &mut staged, None).map(|()| staged)
+        };
+        remember_tree_file(&file, verified);
+        let staged = stage("a").unwrap();
+        assert!(check_staged(&staged, &execroot).is_ok());
+        // A hardlink elsewhere: another change time, the keyed bytes.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::hard_link(&file, fixture.0.join("link")).unwrap();
+        assert!(check_staged(&staged, &execroot).is_ok());
+        assert!(verified_tree_file(&file).is_none());
+        // Verified again, then rewritten in place: same size, the
+        // modification time restored.
+        let metadata = fs::symlink_metadata(&file).unwrap();
+        remember_tree_file(
+            &file,
+            VerifiedTreeFile {
+                state: inode_state(&metadata),
+                ctime: (metadata.ctime(), metadata.ctime_nsec()),
+                digest: input.digest,
+            },
+        );
+        let staged = stage("b").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::write(&file, b"forged").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
+        fs::File::open(&file)
+            .unwrap()
+            .set_modified(metadata.modified().unwrap())
+            .unwrap();
+        let error = check_staged(&staged, &execroot).unwrap_err();
+        assert!(error.contains("b was modified"), "{error}");
+        assert!(verified_tree_file(&file).is_none());
+        let error = stage("c").err().unwrap();
+        assert!(
+            error.contains("changed while it was being staged"),
+            "{error}"
+        );
     }
 
     /// Execution-root reuse (reuse, docs/HARDLINK_STAGING.md): actions of
