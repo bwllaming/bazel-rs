@@ -364,21 +364,27 @@ save), `Engine::aquery_describe_snapshot` (src/engine/aquery.rs).
   are encoded as they are described and dropped, 16 threads, one block per
   task, so the described universe is never held at once.
 
-~/code (non-LTO fast builds, load 14-33 from other work, output
-byte-identical in every run):
+~/code (non-LTO fast builds, 3 alternating rounds, load 13-26 from other
+work; output byte-identical in every run; a cold run of this branch is a
+miss that saves):
 
-| command | cold (miss, saves) | warm (hit) | hit peak RSS |
-|---|---|---|---|
-| `aquery 'kind("cc_.*", //src/...)'` (175,608 actions, 411 printed) | 71.0 s before; 53-58 s with the save | 2.1-2.4 s | 1.8 GB |
-| `aquery 'deps(//src/python/tools/...)'` (2,613 actions, 437 MB text) | 5.7 s before; 5.6 s with the save | 1.6-1.8 s (0.3 s before the formatter) | 0.2 GB |
+| command | before | miss (saves) | `BAZEL_RS_SNAPSHOT=off` | hit | hit peak RSS |
+|---|---|---|---|---|---|
+| `aquery 'kind("cc_.*", //src/...)'` (175,608 actions, 411 printed) | 46.6-50.0 s, 8.5 GB | 53.8-58.0 s, 8.9 GB | 45.8 s | 1.4-1.7 s | 1.9 GB |
+| `aquery 'deps(//src/python/tools/...)'` (2,613 actions, 437 MB of text) | 5.0-5.8 s | 5.4-5.8 s | 5.2 s | 1.7-2.5 s (0.3 s before the formatter) | 0.2 GB |
 
-On the kind(cc_.*) miss the save adds ~2.6 s over describing the selected
-targets: group table 0.6 s, describing and encoding the universe 0.7 s,
-the window's inputs 0.8 s, the graph's frames 0.9 s, the write 0.2 s; peak
-RSS is the analysis's. Its snapshot is 83 MB: PLAN ~35 MB (the graph, as
-a cquery snapshot of the universe) and AQUERY 47.7 MB (before the per-block
-string tables 137 MB). A hit's 2.1 s: validation 0.56 s, the graph's
-postcard decode 1.15 s, the selected blocks and the output 0.15 s.
+A miss costs ~7 s more than before on kind(cc_.*): ~5 s of analysis under
+the recording window (observed_fs, the same cost as a cquery miss; +0.4 GB
+peak for its observations) and ~2.5 s after it: group table 0.6 s,
+describing and encoding the universe 0.7 s, the window's inputs 0.8 s, the
+graph's frames 0.6 s, the write 0.2 s (describing the universe is
+streamed: no peak over the analysis's). `BAZEL_RS_SNAPSHOT=off` is the
+path before, unchanged. The kind(cc_.*) snapshot is 83 MB: PLAN ~35 MB
+(the graph, as a cquery snapshot of the universe) and AQUERY 47.7 MB (137 MB
+before the per-block string tables); the Python one 4 MB. A kind(cc_.*)
+hit: validation 0.56 s, the graph's inflate 0.1 s and chunked postcard
+decode 0.4 s (on 8 threads; 1.15 s decoded whole), the selected blocks
+0.03 s, the output 0.12 s.
 
 ## `genquery`
 
