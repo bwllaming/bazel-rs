@@ -483,6 +483,55 @@ fn aquery_snapshot_hit_prints_what_a_cold_aquery_prints() {
     assert!(verified.1 == cold.1, "verify: stdout differs");
 }
 
+/// The test options key an aquery snapshot (a build's analysis snapshot
+/// leaves them out as execution-only): they decide the TestRunner records.
+#[test]
+fn aquery_snapshot_is_keyed_by_the_test_options() {
+    let ws = Workspace::of("test_runner");
+    let run = |args: &[&str], env: &[(&str, &str)]| {
+        let output = ws.command_with("aquery", args, env);
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        (
+            output.stdout,
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let explain = [("BAZEL_RS_SNAPSHOT_EXPLAIN", "1")];
+    let expression = "mnemonic(TestRunner, //pkg:all)";
+    // The first writes the lockfile, the second saves, the third hits.
+    for _ in 0..2 {
+        run(&[expression], &explain);
+    }
+    let (_, stderr) = run(&[expression], &explain);
+    assert!(stderr.contains("bazel-rs-aquery-snapshot: hit"), "{stderr}");
+    for flags in [
+        &["--runs_per_test=2"][..],
+        &["--test_arg=x"],
+        &["--test_sharding_strategy=forced=3"],
+        &["--test_timeout=7,60,900,3600"],
+    ] {
+        let mut args = vec![expression];
+        args.extend_from_slice(flags);
+        let (warm, stderr) = run(&args, &explain);
+        assert!(
+            stderr.contains("bazel-rs-aquery-snapshot: miss: "),
+            "{flags:?}: {stderr}"
+        );
+        let (cold, _) = run(&args, &[("BAZEL_RS_SNAPSHOT", "off")]);
+        assert!(warm == cold, "{flags:?}: stdout differs");
+        let (again, stderr) = run(&args, &explain);
+        assert!(
+            stderr.contains("bazel-rs-aquery-snapshot: hit"),
+            "{flags:?}: {stderr}"
+        );
+        assert!(again == cold, "{flags:?}: stdout differs");
+    }
+}
+
 #[test]
 fn aquery_matches_genuine_captures() {
     let ws = Workspace::new();

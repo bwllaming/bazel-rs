@@ -141,6 +141,10 @@ and does not replace the default warm path. See the
 [current-loading contract](CQUERY_CURRENT_LOADING.md) for accepted values and
 remaining scope/performance boundaries; this is a native control, not a Bazel flag.
 
+aquery keeps its own snapshots in the same store, with the same
+validation, history slots (`-aq0`/`-aq1`), lock and budget, and the
+described actions beside the graph (docs/AQUERY.md "Snapshot").
+
 Each existing analysis key retains **at most two** configured-graph versions.
 The fixed filenames are `<short-G>-cq0.snap` and `<short-G>-cq1.snap`; both
 headers contain the original full G and exact ELF identity. A checkout/revert

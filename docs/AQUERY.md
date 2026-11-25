@@ -50,7 +50,8 @@ bazel-rs aquery 'inputs(".*\.go", outputs(".*\.a", deps(//cmd:app)))' --output=s
   that read them; implies the command line), `--include_file_write_contents`,
   `--include_aspects`, `--include_pruned_inputs` (accepted; native inputs are
   never pruned). `--skyframe_state` fails explicitly: the native profile keeps
-  no analysis cache between commands.
+  no Skyframe state between commands (an aquery snapshot, "Snapshot" below,
+  holds one universe's described actions, not a server's action graph).
 * Options are inherited from `build` (rc groups `common`, `build`, `aquery`).
 
 ### Formats
@@ -293,9 +294,91 @@ format, aspects, param files, writes) and tests/shared_actions.rs (shared
 actions in two target orders: one owner each). `--keep_going` fails closed
 for configured queries on both paths.
 
-aquery has no analysis snapshot: a repeated aquery analyzes again (genuine
-answers it from its warm server). Its records list inputs from the planned
-actions, which no snapshot keeps.
+### Snapshot (aquery-snapshot, 2026-11-25)
+
+A repeated aquery of the same universe and options prints from a snapshot
+instead of analyzing again (genuine answers it from its warm server's
+Skyframe). Code: `src/aquery_snapshot.rs` (payload),
+`src/cquery_state.rs` (`start_aquery`, `AquerySession`: key, lookup,
+save), `Engine::aquery_describe_snapshot` (src/engine/aquery.rs).
+
+* **What it is.** The configured-graph snapshot of docs/CQUERY.md ("Reuse
+  and memory") with aquery's payload: the same recording window (opened
+  before the registry session and loading), validation of every recorded
+  observation, local repository replay, publication adoption, saved
+  diagnostics (EVENTS, printed once on a hit), the store-wide history lock
+  and garbage collection, `BAZEL_RS_SNAPSHOT=off|verify` and
+  `BAZEL_RS_SNAPSHOT_EXPLAIN=1` (`bazel-rs-aquery-snapshot:` lines). Two
+  slots per key, `<short-G>-aq0.snap` and `-aq1.snap`, beside cquery's
+  `-cq` slots (separate keys: they never mix).
+* **Key.** G (docs/ANALYSIS_SNAPSHOT.md) of command `aquery-graph-v1`, the
+  universe's target patterns (`--universe_scope`, else the expression's) and
+  every option but the presentation ones — `--output`, `--output_file`,
+  `--query_file`, `--universe_scope`, `--[no]implicit_deps`,
+  `--[no]tool_deps`, `--[no]include_aspects`, `--[no]include_commandline`,
+  `--[no]include_artifacts`, `--[no]include_pruned_inputs`,
+  `--[no]include_param_files`, `--[no]include_file_write_contents`,
+  `--transitions`, `--proto:*`, `--starlark:*`, `--graph:*`. The options G
+  leaves out for builds as execution-only (`snapshot::key::EXCLUDED`: the
+  test options decide the TestRunner records) are folded into the command
+  (a digest of them, in order). So the expression, its filters and the
+  output flags can change between hits over one universe; anything else is
+  a miss, and a miss saves anew. `print_action` (an aquery that lists every
+  input) never uses it.
+* **Payload.** PLAN: the configured graph, the dump's configurations and the
+  index of the records (postcard, the graph's deflated frames). AQUERY:
+  every planned action of the universe **described** at the save — its
+  `ActionRecord`s, computed by the code a cold aquery prints from — in
+  blocks of consecutive configured targets (about 256 actions each, a
+  target's records never split, in the dump's per-target order), each block
+  with its distinct strings once and deflated on its own; a record listed
+  from its planned action (`ActionRecord::listed_from`) stores that
+  listing as runs of its own inputs and references into a table of the
+  shared input groups (stored once, deflated in chunks of 32), expanded and
+  deduplicated like `aquery::listed_inputs` when written. A debug build
+  (and `BAZEL_RS_PARITY_VERIFY=1`) checks every stored listing's expansion
+  against the planned action's listing at the save.
+* **A hit** runs no loading, analysis, Starlark or description: the
+  expression's selection over the stored graph, then only the blocks
+  holding a selected target and the group chunks their listings reference
+  are inflated (on `--loading_phase_threads`, at most 16 threads), and the
+  formatters write as a cold aquery does (filters, `interrupted`, every
+  format and include flag). Output and diagnostics are byte-identical to
+  `BAZEL_RS_SNAPSHOT=off` (tests/aquery.rs
+  `aquery_snapshot_hit_prints_what_a_cold_aquery_prints`: every format and
+  include flag, filters, expressions over one universe, a changed template
+  and BUILD file, verify mode; `aquery_snapshot_is_keyed_by_the_test_options`).
+* **Soundness.** What a hit prints is a function of the analysis (the
+  window's recorded inputs, validated like cquery's) and of the template
+  sources aquery prints: those are read through `observed_fs` at the save
+  (READ observations, validated by content; before, an unrecorded read).
+  No client environment value reaches a description (inherited variables
+  stay names, as in genuine's aquery). Plan-dependent taints (map_each,
+  build-info callbacks) do not block the save: a hit never runs them, it
+  prints their descriptions computed at the save; every other taint does.
+  `BAZEL_RS_SNAPSHOT=verify` compares the fresh graph, configurations,
+  record index and AQUERY bytes with the hit and removes a mismatching
+  generation (the command fails).
+* **Miss cost.** The save describes the whole universe (a cold aquery
+  without it describes only the selected targets): the records of a block
+  are encoded as they are described and dropped, 16 threads, one block per
+  task, so the described universe is never held at once.
+
+~/code (non-LTO fast builds, load 14-33 from other work, output
+byte-identical in every run):
+
+| command | cold (miss, saves) | warm (hit) | hit peak RSS |
+|---|---|---|---|
+| `aquery 'kind("cc_.*", //src/...)'` (175,608 actions, 411 printed) | 71.0 s before; 53-58 s with the save | 2.1-2.4 s | 1.8 GB |
+| `aquery 'deps(//src/python/tools/...)'` (2,613 actions, 437 MB text) | 5.7 s before; 5.6 s with the save | 1.6-1.8 s (0.3 s before the formatter) | 0.2 GB |
+
+On the kind(cc_.*) miss the save adds ~2.6 s over describing the selected
+targets: group table 0.6 s, describing and encoding the universe 0.7 s,
+the window's inputs 0.8 s, the graph's frames 0.9 s, the write 0.2 s; peak
+RSS is the analysis's. Its snapshot is 83 MB: PLAN ~35 MB (the graph, as
+a cquery snapshot of the universe) and AQUERY 47.7 MB (before the per-block
+string tables 137 MB). A hit's 2.1 s: validation 0.56 s, the graph's
+postcard decode 1.15 s, the selected blocks and the output 0.15 s.
 
 ## `genquery`
 

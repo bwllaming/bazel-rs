@@ -649,8 +649,10 @@ fn read_ordinary_candidate<T>(
         }
         None
     };
+    crate::perf_mark("graph_snapshot.validated");
     let events = format::decode_events(&history::section(reader, format::Section::Events)?)?;
     let graph = decode(reader)?;
+    crate::perf_mark("graph_snapshot.decoded");
     if let Some((prepared, recording)) = adoption {
         prepared.commit(publication_repositories, &recording, &environment)?;
     }
@@ -668,6 +670,7 @@ fn decode_graph(reader: &store::Reader) -> Result<Graph, String> {
 /// sections (crate::aquery_snapshot), indices checked.
 fn decode_aquery(reader: &store::Reader) -> Result<crate::aquery_snapshot::Hit, String> {
     let bytes = history::section(reader, format::Section::Plan)?;
+    crate::perf_mark("aquery.snapshot_inflated");
     let mut plan: crate::aquery_snapshot::Plan =
         postcard::from_bytes(&bytes).map_err(|e| format!("aquery snapshot decode: {e}"))?;
     drop(bytes);
