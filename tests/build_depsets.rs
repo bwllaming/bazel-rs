@@ -14,6 +14,7 @@
 
 use std::fs;
 include!("support/temp_root.rs");
+include!("support/module_archives.rs");
 use std::path::Path;
 use std::process::Command;
 
@@ -49,11 +50,18 @@ fn depsets_in_build_files_convert_to_list_attributes() {
             .args(["--kill-after=5s", "120s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")
             .arg(format!("--cache-dir={}", cache.display()))
-            .arg("query");
+            .arg("query")
+            // The offline built-in registry and archives (no network).
+            .arg(builtin_registry_flag());
         if build {
             command.arg("--output=build");
         }
-        command.arg(pattern).current_dir(&ws).output().unwrap()
+        command
+            .arg(pattern)
+            .current_dir(&ws)
+            .seeded_archives()
+            .output()
+            .unwrap()
     };
     let workspace = fs::canonicalize(&ws).unwrap();
     let normalize = |text: &[u8]| {

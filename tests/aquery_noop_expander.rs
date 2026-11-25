@@ -16,6 +16,7 @@
 
 use std::fs;
 include!("support/temp_root.rs");
+include!("support/module_archives.rs");
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -37,8 +38,10 @@ fn a_failing_noop_expander_mapping_interrupts_only_an_aquery_printing_it() {
             .args(["--kill-after=5s", "300s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")
             .arg(format!("--cache-dir={}", cache.display()))
-            .args(args)
+            // The offline built-in registry and archives (no network).
+            .args(with_builtin_registry(args))
             .current_dir(&ws)
+            .seeded_archives()
             .output()
             .unwrap()
     };
