@@ -504,6 +504,23 @@ pub fn budget(directory: &Path, stored: u64) -> u64 {
     }
 }
 
+/// The store's byte [`budget`] now (what it holds counted in): an entry
+/// larger than it would be evicted by its own garbage collection, after
+/// evicting every other snapshot (crate::cquery_state's aquery entries).
+pub fn current_budget(cache: &Path) -> u64 {
+    let directory = directory(cache);
+    let stored = fs::read_dir(&directory)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(SUFFIX))
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(fs::Metadata::is_file)
+        .map(|metadata| metadata.len())
+        .sum::<u64>();
+    budget(&directory, stored)
+}
+
 /// Keep at most [`KEEP`] snapshots and the store's byte [`budget`], most
 /// recently used first; remove temporary files older than an hour. Returns
 /// the snapshots it removed (the event log names them, L2-W5h: an `absent`

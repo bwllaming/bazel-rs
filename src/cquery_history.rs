@@ -310,6 +310,17 @@ pub(super) fn save_family(
     if total > family.max_entry() {
         return Err("configured graph entry exceeds size limit".into());
     }
+    // An aquery entry shares the store's budget (and its LRU) with the build
+    // and cquery snapshots: one larger than the whole budget would evict
+    // all of them and then itself.
+    if family == Family::Aquery {
+        let budget = store::current_budget(cache);
+        if total > budget {
+            return Err(format!(
+                "aquery snapshot of {total} bytes exceeds the store's budget of {budget} bytes"
+            ));
+        }
+    }
     format::check_compressed_bounds(&sections[2].1, MAX_RAW)?;
     let version = version(
         &sections[0].1,
