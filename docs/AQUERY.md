@@ -362,7 +362,32 @@ save), `Engine::aquery_describe_snapshot` (src/engine/aquery.rs).
 * **Miss cost.** The save describes the whole universe (a cold aquery
   without it describes only the selected targets): the records of a block
   are encoded as they are described and dropped, 16 threads, one block per
-  task, so the described universe is never held at once.
+  task, so the described universe is never held at once. An expression
+  that fails to evaluate keeps no record for the output. A failure of the
+  save's description is not the command's: nothing is saved and the
+  selection is described as without a snapshot (a failed parity check,
+  below, still fails the command).
+* **Parity checks.** The listing order is implemented three times
+  (scheduler::PlannedAction::runs_listed with `aquery::listed_inputs`,
+  `GroupTable::listing`, `aquery::first_listed_input`/`listed_sources`);
+  every stored listing's expansion and every record's primary input are
+  checked against the planned action's at the save in debug builds, under
+  `BAZEL_RS_PARITY_VERIFY=1` and under `BAZEL_RS_SNAPSHOT=verify` (whose
+  comparison of the hit with the fresh analysis compares two stored forms
+  and could not see the listings drift); a difference fails the command.
+* **Budget.** aquery entries are `.snap` files of the store
+  (docs/ANALYSIS_SNAPSHOT.md "The store"): one LRU and one byte budget
+  (10 % of the free space, 512 MiB-4 GiB, 64 entries) with the build and
+  cquery snapshots, so a large aquery entry can evict build snapshots. An
+  entry larger than the store's current budget is not saved (it would
+  evict every snapshot, then itself). Each entry is bounded by 768 MiB
+  (PLAN 192 MiB, AQUERY 512 MiB).
+* **Window memory.** The window records of each verified repository tree
+  only the INTEGRITY entries the per-tree policy saves (root, manifest,
+  directories) and its symlinks (`observed_fs::keep_per_tree_entries`;
+  ~/code kind(cc_.*): 453k entries walked, 69k recorded; the saved INPUTS
+  are the same). Under `--verify_repo_tampering` (full policy) every entry
+  is recorded, as for builds.
 
 ~/code (non-LTO fast builds, 3 alternating rounds, load 13-26 from other
 work; output byte-identical in every run; a cold run of this branch is a

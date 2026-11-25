@@ -1265,7 +1265,13 @@ bworker 344 MB, ts 233 MB) evicted everything else — every first warm run of
 the survey missed on an eviction (`kind=evicted reason=bytes`). P3 also
 compresses the PLAN section (the table above), which shrinks the large
 snapshots about tenfold; the snapshots a verify mismatch set aside in `snapshots/mismatched/`
-are neither counted nor collected (their own bound: the 3 newest, L2-W5i). `exe.id` is a fixed 104-byte record (magic `BZRSEXID`, the stat key,
+are neither counted nor collected (their own bound: the 3 newest, L2-W5i).
+The cquery and aquery history slots (`-cq0`/`-cq1`, `-aq0`/`-aq1`,
+docs/CQUERY.md, docs/AQUERY.md "Snapshot") are `.snap` files of the same
+store: one LRU and one budget for all of them, so a large aquery entry
+(~/code `kind("cc_.*", //src/...)`: 83 MB) competes with the build
+snapshots; an aquery entry larger than the store's current budget is not
+saved. `exe.id` is a fixed 104-byte record (magic `BZRSEXID`, the stat key,
 the identity, a checksum).
 
 **P3 measured on ~/code** (release binary, private cache, update-mode recipe,
