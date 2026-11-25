@@ -580,6 +580,39 @@ genuine's reused sandboxes. The stashes are removed when the scope ends.
 while the cache's last scope ends re-checks the scope under the stashes'
 lock, so the end removes it or it is refused (`no_stash_outlives_the_last_scope`).
 
+**Directories recorded unchanged (openroad-cpu).** On the overlay filesystem
+every path component walked, `stat`, `readlink` and directory open goes
+through overlayfs' credential override, whose shared counter all cores
+contend for (16 threads: ~4 µs per one-component `fstatat`, ~13 µs per
+directory open or four-component `fstatat`, against 0.5 µs alone); an
+OpenROAD compile stages ~4,300 files in ~435 directories. Right after
+staging, `reuse::record` stats each directory staging made or kept (inode
+and change time) and keeps those whose change time is below
+CLOCK_REALTIME_COARSE read afterwards — the clock file times are stamped
+from, so any later change in such a directory stamps another time — with
+the exact listing of those holding nothing but placed files and the
+directories above them (directories holding a staged symlink — a linked
+source directory, an unresolved symlink input, a dangling link — are listed
+again). The next reconciliation stats each directory by path; one found in
+the recorded state holds exactly the entries it held then, so its recorded
+listing stands for reading it and its placed entries are kept without
+`readlinkat`/`stat` (a symlink's text cannot change in place; a kept file is
+the same inode, whose state staging checks through its store file — one
+inspection, which also validates the blob). Directories that changed are
+read and verified entry by entry as before (unit test
+`reused_roots_trust_only_unchanged_directories`).
+
+**Tree files verified once per process (openroad-cpu).** Staging inspected
+every repository tree file it linked, for every action (2.7 M inspections
+for one OpenROAD library). A tree file verified in a settled state (times
+older than the digest memo's racy margin) is remembered by path
+(`verified_tree_files`); later stagings take that state, and the check after
+the process compares the file's state *and change time* with it: another
+state fails the action, a change time alone (a tool hardlinked the file)
+re-checks the keyed content, and either drops the entry, so the next staging
+inspects the file again (`a_verified_tree_file_changed_in_place_fails_the_check`).
+The checks after the process use one `fstatat` per file.
+
 **Work directories of killed commands.** A command killed mid-build (or
 crashing) leaves its execution roots in `work/` — with reuse up to 64
 stashed ones per mnemonic, whose hardlinks keep store blobs alive past a
