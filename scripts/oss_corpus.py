@@ -25,7 +25,8 @@ bazel-rs: --cache-dir), HOME and TMPDIR, then runs the phases in order:
   query         `query //...` (label sets compared)
   build         `build --keep_going TARGETS` (outputs compared: the file list
                 of bazel-bin and the SHA-256 of a deterministic sample)
-  test          `test --keep_going TESTS` (per-target statuses compared)
+  test          `test --keep_going TESTS` (per-target statuses compared; a
+                project's `test_flags` and `test_timeout` apply to it only)
 
 Genuine runs with --batch except in `server`. Both tools read the project's
 own .bazelrc (--nohome_rc --nosystem_rc); every command runs under
