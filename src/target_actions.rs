@@ -369,7 +369,13 @@ fn starlark_argv(registered: &RegisteredAction) -> Vec<String> {
 /// not collide by path.
 fn analysis_mapped(registered: &RegisteredAction) -> bool {
     let action = &registered.action;
-    if action.extra.path_mapping.is_none() || action.extra.java_compile.is_some() {
+    // A mapping without its command line (a native action's explicit
+    // failure marker, a map_each failing under the mapping) shows the
+    // unmapped one.
+    let Some(mapping) = &action.extra.path_mapping else {
+        return false;
+    };
+    if mapping.error.is_some() || action.extra.java_compile.is_some() {
         return false;
     }
     let (requirements, tags) = crate::execution_options::modified(
