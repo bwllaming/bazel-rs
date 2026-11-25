@@ -430,7 +430,7 @@ still stops at startup (`strip`).
 | rules_scala-scala3 | DIFF | 22.6 / 18.5 | 3.1 / 0.1 / 0.2 | 11.7† / 11.6† | 1057 / 326 | 10, 2, 0, 0 | — | C5 |
 | aspect-bazel-examples | RS-FAIL³ | 144.3 / 148.8 | 7.0 / 0.7 / 0.5 | 83.3 / 97.0† | 2462 / 2083 | 156499, 2587, 3, 1 | FAILED:2 PASSED:32 / FAILED:1 FAILED TO BUILD:5 PASSED:25 | B78 |
 | bb-storage | **OK**³ | 151.0 / 138.9 | 5.5 / 0.3 / 0.2 | 57.1 / 68.2 | 2034 / 1306 | 4521, 0, 0, 0 | PASSED:36 / same | |
-| rules_java | RS-FAIL⁴ | 29.1 / 35.9† | 4.6 / 0.3 / 6.0† | 9.0 / 10.6† | 1882 / 1626 | 973, 62, 0, 0 | PASSED:321 / PASSED:305 | B67 (classpath, output paths, lint, coverage, aspect platform), B33 |
+| rules_java | RS-FAIL⁶ | 28.9 / 33.7† | 5.7 / 0.4 / 5.6† | 9.2 / 10.6† | 1850 / 1664 | 982, 53, 0, 0 | PASSED:321 / PASSED:308 | B67 (output paths, aspect platform), B33 |
 | rules_py | RS-FAIL² | 38.5 / 0.1† | 7.8 / 0.9 / 0.1† | 118.7 / 0.1† | 3923 / — | 0, 4004, 0, 0 | FAILED:2 PASSED:413 / 0 | B33 (`strip` at startup) |
 | rules_rust-proto | **OK**⁴ | 75.4 / 69.6 | 3.7 / 0.3 / 0.2 | 62.1 / 62.7 | 1585 / 776 | 402, 0, 0, 0 | PASSED:3 / same | |
 
@@ -607,6 +607,30 @@ ran beside it):
   left: bandit's report (C4) and a failed action's output (C5).
 - rules_java: unchanged (305 of 321 tests; the same 16, B67 and B33).
 
+### Rerun (parity-small, 2026-11-25)
+
+⁶ Rerun of rules_java with branch parity-small (`5f67d083`, a non-LTO
+release build), host load ~20:
+
+- rules_java: 308 of 321 tests (was 305). Fixed:
+  `test_dependency_artifacts_with_exports` (`--experimental_java_classpath`
+  is a configuration option; `javabuilder` gives the Javac action's
+  `--reduce_classpath_mode JAVABUILDER_REDUCED --deps_artifacts …`),
+  `test_java_binary_can_set_transitive_validation`
+  (`--experimental_run_android_lint_on_java_rules` is a configuration
+  option) and `test_coverage_uses_coverage_runner_for_main` (a test rule's
+  `java_common.compile` is not instrumented without
+  `--instrument_test_targets`). Left: the 12 `experimental_output_paths`
+  tests (B33) and `test_strict_java_deps_error` (rules_testing's
+  `testing_aspect` reads `ctx.var` where the target platform was not
+  resolved yet; aspect applications have no deferred-platform retry — the
+  retry would have to re-plan the application on the coordinator after
+  resolving the platform, also for applications analyzed on workers, so it
+  is left open). 3 more outputs in common (982; 53 genuine-only, the
+  analysis tests that do not analyze).
+
+Also on parity-small: B80 fixed (`mod` evaluates every extension).
+
 ### New bugs (second batch), with minimal repros
 
 Each repro is a workspace with `MODULE.bazel` = `module(name = "x")` plus the
@@ -743,6 +767,7 @@ rows lead the table.
 | B72 | fixed (corpus2-quick); 1 (aspect-bazel-examples) | native host budgets (100,000 nodes / 64 MiB weighted bytes) on module metadata Bazel bounds nowhere: the direct repository catalog (every direct repository's complete mapping is charged; a large root module exceeded it, and every load needing a repository mapping failed with `host preparation node limit exceeded`) and an extension-generated repository's recorded attributes (`repository @@…: host preparation node limit exceeded`). Both are unbounded now (depth and overflow still fail); the innate `use_repo_rule` group keeps its deliberate per-group profile |
 | B73 | fixed (corpus2-rest); every project with a broken MODULE.bazel; exit code only | a module resolution failure (a root or dependency MODULE.bazel that fails, a missing `include()`, a module no registry has, an unparsable MODULE.bazel.lock or, under `--lockfile_mode=error`, an old one or a missing registry checksum) exits 48 like Bazel (ExitCode.EXTERNAL_DEPS_ERROR) in every command that computes the main repository mapping, `fetch` included (it reported `Fetching some target dependencies failed`, exit 2); 37 in `mod` and for a `local_path_override` whose directory does not exist (the override repository's fetch failure); crate::exit_code::module_failure, genuine matrix tests/fixtures/module_failure_exit_codes |
 | B80 | fixed (parity-small); `mod` only | `mod graph` (and the other inspecting subcommands) evaluates every module extension in Bazel (BazelModuleInspectorFunction) and fails with `Results may be incomplete as N extension(s) failed.`, exit 2, when one fails (a failing implementation, a missing extension `.bzl`, an imported repository the extension does not generate); bazel-rs evaluated none for `mod graph` and exited 0. Every subcommand but `dump_repo_mapping` and `tidy` now evaluates (or reuses from the lockfile) every extension first, reports each failure and fails with exit 2 after its output (tests/fixtures/module_failure_exit_codes' `mod graph` rows pinned; docs/MOD_COMMAND.md) |
+| B81 | open (parity-small); no project | a REPO.bazel that exists but cannot be read (a directory, an unreadable file): genuine `build` reports `ERROR: error reading REPO.bazel file at <path>` with the failed build's summary (exit 1) and `query` `ERROR: Target parsing failed due to unexpected exception: error reading REPO.bazel file at <path>` (exit 7); bazel-rs prints the same message as `bazel-rs: …` without the summary and exits 1 for both (genuine 9.3.1 scratch capture). The message itself matches (no cause; bazel-rs names the cause of a descriptor exhaustion only, crate::workspace::repo_file_read_error) |
 | B74 | fixed (corpus2-quick); 1 (rules_foreign_cc-examples, meson) | `ctx.actions.declare_file("lib///introspect.json")` failed as an invalid target name; Bazel normalizes the path (PathFragment.create: empty and `.` segments, `..`) |
 | B75 | fixed (corpus2-quick); 1 (rules_py, behind B59's `strip`) | a list-typed attribute rejected a dict (bazel_env.bzl's `toolchain_targets = {}`); Type.ListType.convert takes any Iterable (a dict's keys, a set's elements) |
 | B76 | fixed (corpus2-quick); 1 (aspect-bazel-examples) | a glob exclusion with an empty segment (`exclude = ["dist/"]`) failed as an invalid pattern; Bazel never validates exclusions (UnixGlob.removeExcludes), such a pattern matches nothing |
@@ -757,7 +782,7 @@ rows lead the table.
 | B64 | fixed (corpus2-quick); 1 (rules_foreign_cc-examples) | `ctx.resolve_command`: CommandHelper over `tools`/`label_dict`, exec-path location expansion, Make variables, `/bin/bash -c` argv and the tools' inputs (docs/CTX_SURFACE.md) |
 | B65 | fixed (corpus2-quick); 1 (rules_ts-examples; 8 tests) | `Args` formats a bool as Java's Boolean.toString (`true`/`false`) on the command line and in the action key |
 | B66 | fixed (frozen-assert); 1 (grpc `query //...`) | query of packages loading a rules_python `pip.parse` hub (gRPC's, 6 Python versions) spun past the 20-minute cap; genuine 10 s. rules_python's `parse_simpleapi_html` walks pypi.org's 49 MB simple index with `find(x, cursor)` and slices, each a scan from the string's start in the vendored starlark: ASCII strings index in O(1) now (docs/STARLARK_VENDOR.md "ASCII strings"). gRPC `query --keep_going //...` with the extension evaluated: 12.8 s; `//src/python/grpcio_tests/tests/status:all` 11.4 s (genuine cold 25 s). The output then lacks 10 of genuine's 11,419 labels: the targets `examples/objective-c/BUILD` defines before its failing `objc_library` (a package with errors; genuine's `--keep_going` query keeps them; fixed on frozen-followups, docs/QUERY.md "Packages with errors") |
-| B67 | mostly fixed (corpus2-rest), 1 (rules_java; 37 analysis tests) | Starlark transitions on Java options: `experimental_strict_java_deps`, `java_header_compilation`, `use_ijars`, `java_deps`, `experimental_one_version_enforcement`, `one_version_enforcement_on_java_tests`, `incompatible_disallow_java_import_exports`, `java_launcher` and `host_java_launcher` are configuration options now (docs/CONFIGURATION.md; tests/fixtures/java_transition_options). Open: `experimental_java_classpath` (1 test; the native compile and header actions would have to take the classpath mode from the configuration), `experimental_output_paths` (12, B33's path-mapping gap), `experimental_run_android_lint_on_java_rules` (1), `java_common.compile` under coverage (1), and a testing aspect reading `ctx.var` in a configuration whose target platform was not resolved yet (`rule implementation needs the target platform`: aspect applications have no deferred-platform retry; 1 test, `test_strict_java_deps_error`) |
+| B67 | mostly fixed (corpus2-rest), 1 (rules_java; 13 analysis tests) | Starlark transitions on Java options: `experimental_strict_java_deps`, `java_header_compilation`, `use_ijars`, `java_deps`, `experimental_one_version_enforcement`, `one_version_enforcement_on_java_tests`, `incompatible_disallow_java_import_exports`, `java_launcher` and `host_java_launcher` are configuration options now (docs/CONFIGURATION.md; tests/fixtures/java_transition_options). `experimental_java_classpath` (the native Javac/JavacTurbine classpath modes) and `experimental_run_android_lint_on_java_rules` too, and `java_common.compile` under coverage instruments only what shouldInstrumentJar selects (parity-small; tests/fixtures/java_classpath_options). Open: `experimental_output_paths` (12, B33's path-mapping gap) and a testing aspect reading `ctx.var` in a configuration whose target platform was not resolved yet (`rule implementation needs the target platform`: aspect applications have no deferred-platform retry; 1 test, `test_strict_java_deps_error`) |
 | B68 | fixed (corpus2-quick); 1 (grpc) | `--compiler`/`--host_compiler` are configuration options (config_setting, transitions, the exec func `compiler = host_compiler`) |
 | B69 | fixed (corpus2-rest), 1 (bb-storage) | conflicting `.repo_mapping` actions for a rules_js `*_binary` used as a `js_run_binary` tool: the binary is analyzed in two exec configurations that differ only in `--platforms` (`@platforms//host` and the `--host_platform`, both `host` platforms naming their output directory `k8`), so both register `bazel-out/k8-opt-exec/.../purgecss.repo_mapping`; Bazel shares equal actions, its runfiles support's included. The runfiles support actions are keyed by output path and content now and shared when equal (`ActionKey::native`; tests/fixtures/shared_runfiles_support) |
 | B70 | fixed (corpus2-quick); 1 (rules_java; 1 test) | a Starlark rule's testonly violation under `--allow_analysis_failures` is an `AnalysisFailureInfo` cause with its other prerequisite errors |
