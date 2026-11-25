@@ -1571,8 +1571,26 @@ fn run() -> Result<(), String> {
         let selected = selection
             .as_ref()
             .and_then(|selected| selected.as_ref().ok());
+        // The snapshot's save describes every action; an expression that
+        // failed to evaluate prints none (keep no record for the output).
+        let nothing = std::collections::BTreeSet::new();
         let records = match &aquery_session {
-            Some(_) => Some(engine.aquery_describe_snapshot(&mut analysis, selected)?),
+            Some(_) => match engine
+                .aquery_describe_snapshot(&mut analysis, Some(selected.unwrap_or(&nothing)))
+            {
+                Ok(records) => Some(records),
+                // A failed internal check fails the command (debug builds,
+                // BAZEL_RS_PARITY_VERIFY=1, BAZEL_RS_SNAPSHOT=verify).
+                Err(error) if bazel_rs::aquery::parity_checked() => return Err(error),
+                // Otherwise no snapshot: the selection is described as
+                // without one.
+                Err(error) => {
+                    bazel_rs::cquery_state::explain_aquery(&format!("not saved: {error}"));
+                    aquery_session = None;
+                    engine.aquery_describe(&mut analysis, selected);
+                    None
+                }
+            },
             None => {
                 engine.aquery_describe(&mut analysis, selected);
                 None

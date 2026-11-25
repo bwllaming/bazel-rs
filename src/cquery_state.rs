@@ -287,6 +287,9 @@ pub fn start_aquery(
         Some((hit, reader, _)) => Some((hit, reader)),
         None => None,
     };
+    // Verify mode also checks the stored listings against the planned
+    // actions' (the hit's comparison sees only stored forms).
+    crate::aquery::set_parity_checks(mode == snapshot::Mode::Verify);
     if !crate::observed_fs::open_window() {
         return Ok(AqueryStarted {
             hit: None,
@@ -413,7 +416,7 @@ impl Drop for AquerySession {
     }
 }
 
-fn explain_aquery(text: &str) {
+pub fn explain_aquery(text: &str) {
     if snapshot::explain() {
         snapshot::diag::line_fmt(format_args!("bazel-rs-aquery-snapshot: {text}"));
     }

@@ -86,7 +86,7 @@ struct RecordJob {
 
 /// A configured target's (graph node's) planned actions to describe and its
 /// TestRunner records (`Engine::aquery_describe_snapshot`).
-type TargetJobs = (u32, (Vec<RecordJob>, Vec<ActionRecord>));
+type TargetJobs<'a> = (u32, (Vec<&'a RecordJob>, Vec<&'a ActionRecord>));
 
 /// The planned actions of an analysis not described yet: a query's are
 /// described once its expression selected their targets (only theirs are
@@ -682,20 +682,36 @@ impl Engine {
         analysis: &mut Analysis,
         selected: Option<&BTreeSet<u32>>,
     ) -> Result<crate::aquery_snapshot::Records, String> {
+        let (records, actions) = self.aquery_snapshot_records(analysis, selected)?;
+        // Described: the pending actions are the records now.
+        analysis.pending = None;
+        analysis.actions = actions;
+        crate::perf_mark("aquery.records");
+        Ok(records)
+    }
+
+    /// [`Self::aquery_describe_snapshot`]'s records and the selected
+    /// targets' ones, `analysis` untouched (an error leaves it to
+    /// [`Self::aquery_describe`]).
+    fn aquery_snapshot_records(
+        &self,
+        analysis: &Analysis,
+        selected: Option<&BTreeSet<u32>>,
+    ) -> Result<(crate::aquery_snapshot::Records, Vec<(u32, ActionRecord)>), String> {
         use crate::aquery_snapshot::{GroupTable, Records};
-        let Some(Pending { jobs, tests }) = analysis.pending.take() else {
+        let Some(Pending { jobs, tests }) = analysis.pending.as_ref() else {
             return Err("aquery snapshot: the analysis was described already".into());
         };
         let wanted =
             |graph_node: u32| selected.is_none_or(|selected| selected.contains(&graph_node));
         // Per configured target: its planned actions in plan order, then its
         // TestRunner records (the order `actions` gives each target).
-        let mut by_node: BTreeMap<u32, (Vec<RecordJob>, Vec<ActionRecord>)> = BTreeMap::new();
+        let mut by_node: BTreeMap<u32, (Vec<&RecordJob>, Vec<&ActionRecord>)> = BTreeMap::new();
         for job in jobs {
             by_node.entry(job.graph_node).or_default().0.push(job);
         }
         for (node, record) in tests {
-            by_node.entry(node).or_default().1.push(record);
+            by_node.entry(*node).or_default().1.push(record);
         }
         let units: Vec<TargetJobs> = by_node.into_iter().collect();
         let nodes = &analysis.nodes;
@@ -721,7 +737,7 @@ impl Engine {
         let configurations = &analysis.configurations;
         let display = display_form(graph);
         let platform_infos = self.aquery_platform_infos();
-        let parity = cfg!(debug_assertions) || parity_verify();
+        let parity = crate::aquery::parity_checked();
         type Described = Result<(Vec<u8>, Vec<(u32, ActionRecord)>), String>;
         let describe = |block: &&[TargetJobs]| -> Described {
             let mut kept = Vec::new();
@@ -765,7 +781,7 @@ impl Engine {
                 for record in tests {
                     encoder.push(record, None);
                     if keep {
-                        kept.push((*node, record.clone()));
+                        kept.push((*node, (*record).clone()));
                     }
                 }
             }
@@ -799,9 +815,7 @@ impl Engine {
                 actions.len()
             ));
         }
-        analysis.actions = actions;
-        crate::perf_mark("aquery.records");
-        Ok(records)
+        Ok((records, actions))
     }
 
     /// The execution platform of an action: its exec group's, a native

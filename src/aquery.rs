@@ -620,11 +620,24 @@ pub fn listed_sources(
         .chain(own[position..].iter())
 }
 
+static PARITY_CHECKS: AtomicBool = AtomicBool::new(false);
+
+/// Run the internal checks of aquery's derived values in this process (an
+/// aquery under `BAZEL_RS_SNAPSHOT=verify`, crate::cquery_state).
+pub fn set_parity_checks(on: bool) {
+    PARITY_CHECKS.store(on, Ordering::Relaxed);
+}
+
 /// Whether internal checks of aquery's derived values run (debug builds,
-/// `BAZEL_RS_PARITY_VERIFY=1`).
+/// `BAZEL_RS_PARITY_VERIFY=1`, an aquery snapshot's verify mode): the
+/// stored listings and primary inputs against the planned actions'
+/// (crate::aquery_snapshot; a hit's verification compares two stored forms
+/// and cannot see a listing that drifted from [`listed_inputs`]).
 pub fn parity_checked() -> bool {
-    // snapshot-unrecorded: a diagnostics check; it changes no result (it fails on a difference).
-    cfg!(debug_assertions) || std::env::var_os("BAZEL_RS_PARITY_VERIFY").is_some_and(|v| v == "1")
+    cfg!(debug_assertions)
+        || PARITY_CHECKS.load(Ordering::Relaxed)
+        // snapshot-unrecorded: a diagnostics check; it changes no result (it fails on a difference).
+        || std::env::var_os("BAZEL_RS_PARITY_VERIFY").is_some_and(|v| v == "1")
 }
 
 /// [`listed_inputs`] of a node whose shared runs are listed already
