@@ -99,16 +99,41 @@ fn mod_subcommands_match_genuine_bazel() {
     .unwrap();
     let workspace = Workspace::new();
     let fixture_text = workspace.root.display().to_string();
-    let mut failures = Vec::new();
-    for case in receipt["cases"].as_array().unwrap() {
-        let name = case["name"].as_str().unwrap();
-        let args: Vec<&str> = case["args"]
+    let cases = receipt["cases"].as_array().unwrap();
+    let case_args = |case: &Value| -> Vec<String> {
+        case["args"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|arg| arg.as_str().unwrap())
-            .collect();
-        let output = workspace.run(&args);
+            .map(|arg| arg.as_str().unwrap().to_owned())
+            .collect()
+    };
+    // Every subcommand evaluates every module extension of the graph (like
+    // genuine's BazelModuleInspectorFunction; `--lockfile_mode=off` reuses
+    // nothing): the commands run four at a time on the shared cache.
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let outputs: Vec<std::sync::Mutex<Option<std::process::Output>>> =
+        cases.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(case) = cases.get(index) else {
+                        break;
+                    };
+                    let args = case_args(case);
+                    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                    *outputs[index].lock().unwrap() = Some(workspace.run(&args));
+                }
+            });
+        }
+    });
+    let mut failures = Vec::new();
+    for (case, output) in cases.iter().zip(outputs) {
+        let name = case["name"].as_str().unwrap();
+        let args = case_args(case);
+        let output = output.into_inner().unwrap().unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout).replace(&fixture_text, "${FIXTURE}");
         let stderr = String::from_utf8_lossy(&output.stderr).replace(&fixture_text, "${FIXTURE}");
         let errors: Vec<&str> = stderr

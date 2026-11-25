@@ -285,12 +285,6 @@ fn module_failures_match_bazel() {
             fields.next().unwrap(),
             fields.next().unwrap(),
         );
-        // `mod graph` evaluates every extension in Bazel
-        // (BazelModuleInspectorFunction; exit 2 when one fails): not
-        // modelled natively (B80 of docs/OSS_CORPUS.md).
-        if args == "mod graph" && case.starts_with("ext_") {
-            continue;
-        }
         let expected: i32 = code.parse().unwrap();
         // A fresh copy per command (a success writes MODULE.bazel.lock).
         let ws = temp.path().join("ws");
@@ -298,6 +292,9 @@ fn module_failures_match_bazel() {
         copy(&fixture.join("cases").join(case), &ws);
         let cache = temp.path().join(format!("cache-{case}"));
         seed_module_archives(&cache, TOOLCHAIN_CLOSURE_ARCHIVES);
+        // `mod` evaluates every extension of the graph: @bazel_tools'
+        // buildozer_binary and rules_apple's need their modules.
+        seed_module_archives(&cache, &["buildozer@8.5.1", "rules_apple@4.1.0"]);
         // A case's `extra_args` follow the command's (genuine.tsv's ARGS do
         // not show them).
         let extra = ws.join("extra_args");

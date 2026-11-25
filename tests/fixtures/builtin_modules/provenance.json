@@ -1321,6 +1321,22 @@
       "source_json_integrity": "sha256-tpwn5kxKxQQ6PyVNiO8tg4O7+u/SCIGiTtW26xPUuBg=",
       "source_url": "https://bcr.bazel.build/modules/bazel_features/1.42.1/patches/module_dot_bazel_version.patch"
     },
+    "registry/modules/buildozer/8.5.1/patches/module_dot_bazel_version.patch": {
+      "acquisition": "downloaded from the public BCR (curl, 2026-11-25); SHA256 equals the mirrored source.json SRI",
+      "required_by": "genuine Bazel 9.3 `mod` evaluates every module extension of the graph (BazelModuleInspectorFunction): @bazel_tools' buildozer_binary and rules_apple's extensions load these selected builtin modules (tests/mod_command.rs, tests/exit_codes.rs module_failures_match_bazel)",
+      "sha256": "3264d826794ff8770d49e949ce16614800c73c5447d389aeb9f2b6bf569afa1d",
+      "size_bytes": 305,
+      "source_json_integrity": "sha256-MmTYJnlP+HcNSelJzhZhSADHPFRH04muufK2v1aa+h0=",
+      "source_url": "https://bcr.bazel.build/modules/buildozer/8.5.1/patches/module_dot_bazel_version.patch"
+    },
+    "registry/modules/rules_apple/4.1.0/patches/module_dot_bazel_version.patch": {
+      "acquisition": "downloaded from the public BCR (curl, 2026-11-25); SHA256 equals the mirrored source.json SRI",
+      "required_by": "genuine Bazel 9.3 `mod` evaluates every module extension of the graph (BazelModuleInspectorFunction): @bazel_tools' buildozer_binary and rules_apple's extensions load these selected builtin modules (tests/mod_command.rs, tests/exit_codes.rs module_failures_match_bazel)",
+      "sha256": "ed11f9a5883b0b7d9895811fda5c83e62807f273c621641dbf9484bae3f4d053",
+      "size_bytes": 316,
+      "source_json_integrity": "sha256-7RH5pYg7C32YlYEf2lyD5igH8nPGIWQdv5SEuuP00FM=",
+      "source_url": "https://bcr.bazel.build/modules/rules_apple/4.1.0/patches/module_dot_bazel_version.patch"
+    },
     "registry/modules/rules_cc/0.2.17/patches/module_dot_bazel_version.patch": {
       "acquisition": "offline copy of a genuine Bazel repository-cache CAS blob /home/coder/.cache/bazel/_bazel_coder/cache/repos/v1/content_addressable/sha256/a89845ad52cb03845e5c57eb74a50d1fb4bc34e377555ad6dc08d00b460bf799/file; SHA256 equals the mirrored source.json SRI",
       "required_by": "genuine Bazel 9.3 test-rule toolchain resolution fetches this selected builtin module (validate_run_environment_info rule-build test/test-missing)",

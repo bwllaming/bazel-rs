@@ -9,13 +9,12 @@
 //! (BazelModuleInspectorValue) is built from the resolver's un-pruned
 //! dependency graph ([`crate::module_graph::InspectedModule`]).
 //!
-//! Native difference: genuine evaluates every module extension of the graph
-//! for every graph subcommand (BazelModuleInspectorFunction.computExtensionRepos)
-//! even when nothing it prints needs it; native evaluates (or reuses from the
-//! lockfile) only the extensions whose generated repositories the output
-//! shows: `--extension_info=all`, `show_extension`, `show_repo` of a
-//! generated repository and `show_repo --all_repos`. Output is the same; an
-//! extension that fails is reported only when it is evaluated.
+//! Like genuine, every subcommand but `dump_repo_mapping` and `tidy`
+//! evaluates (or reuses from the lockfile) every module extension of the
+//! graph first (BazelModuleInspectorFunction.computExtensionRepos): each
+//! failure is reported, the failed extension generates no repositories, and
+//! the command fails with `Results may be incomplete as N extension(s)
+//! failed.` (exit 2) after printing its output.
 use crate::module_graph::{InspectedModule, ResolutionReason, compare_versions};
 use crate::repository::RepositorySet;
 use std::cmp::Ordering;
@@ -845,31 +844,18 @@ pub(crate) struct Context<'a> {
     pub repositories: &'a RepositorySet,
     pub inspector: Inspector,
     pub usages: Usages,
+    /// The generated repositories of every extension that evaluated
+    /// (BazelModuleInspectorValue.extensionToRepoInternalNames); a failed
+    /// extension has none.
+    pub extension_repos: BTreeMap<ExtensionId, BTreeSet<String>>,
+    /// The extensions that failed (BazelModuleInspectorValue.errors).
+    pub failed_extensions: usize,
 }
 
 impl Context<'_> {
-    /// The generated repositories of `id` (BazelModuleInspectorValue
-    /// .extensionToRepoInternalNames), evaluating the extension.
-    pub fn extension_repos(&self, id: &ExtensionId) -> Result<BTreeSet<String>, String> {
-        if id.is_innate() {
-            let mut names = BTreeSet::new();
-            if let Some(row) = self.usages.table.get(id) {
-                for usage in row.values() {
-                    for tag in &usage.tags {
-                        if let Some(name) = tag.attributes.get("name").and_then(|v| v.as_str()) {
-                            names.insert(name.to_owned());
-                        }
-                    }
-                }
-            }
-            return Ok(names);
-        }
-        Ok(self
-            .repositories
-            .extension_repository_names(&id.label, &id.name)?
-            .unwrap_or_default()
-            .into_iter()
-            .collect())
+    /// The generated repositories of `id` (empty when it failed).
+    pub fn extension_repos(&self, id: &ExtensionId) -> BTreeSet<String> {
+        self.extension_repos.get(id).cloned().unwrap_or_default()
     }
 
     /// The canonical name prefix of `id`'s repositories
@@ -905,6 +891,56 @@ impl Context<'_> {
         }
         None
     }
+}
+
+/// The generated repositories of `id`, evaluating the extension (or
+/// reusing its lockfile result).
+fn evaluate_extension(
+    repositories: &RepositorySet,
+    usages: &Usages,
+    id: &ExtensionId,
+) -> Result<BTreeSet<String>, String> {
+    if id.is_innate() {
+        let mut names = BTreeSet::new();
+        if let Some(row) = usages.table.get(id) {
+            for usage in row.values() {
+                for tag in &usage.tags {
+                    if let Some(name) = tag.attributes.get("name").and_then(|v| v.as_str()) {
+                        names.insert(name.to_owned());
+                    }
+                }
+            }
+        }
+        return Ok(names);
+    }
+    Ok(repositories
+        .extension_repository_names(&id.label, &id.name)?
+        .unwrap_or_default()
+        .into_iter()
+        .collect())
+}
+
+/// BazelModuleInspectorFunction.computExtensionRepos: evaluate every
+/// extension of the usage table, reporting each failure; the failed ones
+/// generate nothing.
+fn evaluate_extensions(
+    repositories: &RepositorySet,
+    usages: &Usages,
+) -> (BTreeMap<ExtensionId, BTreeSet<String>>, usize) {
+    let mut evaluated = BTreeMap::new();
+    let mut failed = 0;
+    for id in &usages.order {
+        match evaluate_extension(repositories, usages, id) {
+            Ok(names) => {
+                evaluated.insert(id.clone(), names);
+            }
+            Err(error) => {
+                crate::ui::note(&format!("ERROR: {error}"));
+                failed += 1;
+            }
+        }
+    }
+    (evaluated, failed)
 }
 
 /// Run `mod` on the invocation's repository set: `residue` begins with the
@@ -1055,12 +1091,30 @@ fn run_subcommand(
     }
     let inspector = Inspector::new(&graph.inspection, canonical);
     let usages = usages(graph, ignore_dev_dependencies).map_err(Failure::unknown)?;
+    let (extension_repos, failed_extensions) = evaluate_extensions(repositories, &usages);
     let context = Context {
         repositories,
         inspector,
         usages,
+        extension_repos,
+        failed_extensions,
     };
-    executor::run(&context, options, subcommand, args, out)
+    executor::run(&context, options, subcommand, args, out)?;
+    if context.failed_extensions > 0 {
+        return Err(Failure::new(
+            format!(
+                "Results may be incomplete as {} extension{} failed.",
+                context.failed_extensions,
+                if context.failed_extensions == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ),
+            Code::ErrorDuringGraphInspection,
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

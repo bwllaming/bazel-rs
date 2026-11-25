@@ -198,7 +198,7 @@ pub(crate) fn repos_to_show(
             );
         }
         for id in &context.usages.order {
-            let names = context.extension_repos(id).map_err(Failure::unknown)?;
+            let names = context.extension_repos(id);
             let Some(unique) = context.unique_name(id) else {
                 continue;
             };
@@ -355,10 +355,7 @@ pub(crate) fn show_extension(
         )));
     };
     let imports = imports.clone();
-    let repos = executor
-        .context
-        .extension_repos(id)
-        .map_err(|error| Failure::new(error, Code::ErrorDuringGraphInspection))?;
+    let repos = executor.context.extension_repos(id);
     for (repo, modules) in &imports {
         let modules: Vec<String> = modules.iter().map(ToString::to_string).collect();
         text.push_str(&format!(

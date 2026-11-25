@@ -53,18 +53,18 @@ contains it and formats every segment; the native fixups name MODULE.bazel
 only). Never run it on a checkout you must not
 modify: it writes the root MODULE.bazel.
 
+Every subcommand but `dump_repo_mapping` and `tidy` first evaluates (or
+reuses from the lockfile) every module extension of the graph, like genuine's
+BazelModuleInspectorFunction.computExtensionRepos: each failure is reported
+(native's own message text), the failed extension generates no repositories
+(`--extension_info=all` and `show_extension` show only its imports), and the
+command fails after its output with `Results may be incomplete as N
+extension(s) failed.` (exit 2; B80 of docs/OSS_CORPUS.md). An innate
+extension (`use_repo_rule`) generates its declared names without loading the
+rule's `.bzl` (genuine loads it, so a broken `.bzl` fails it there).
+
 ## Differences from genuine 9.3
 
-- Extension evaluation is demand-driven. Genuine evaluates every module
-  extension of the graph for every graph subcommand
-  (BazelModuleInspectorFunction.computExtensionRepos), only to know their
-  generated repositories; native evaluates (or reuses from the lockfile) only
-  the extensions whose repositories the output shows: `--extension_info=all`
-  (the extensions of the displayed modules), `show_extension`, `show_repo` of
-  a generated repository and `show_repo --all_repos`. The output is the same;
-  a failing extension is reported (`Results may be incomplete as N
-  extension(s) failed.`, exit 2) only when it is evaluated, and the lockfile
-  gains only the extensions that were evaluated.
 - `show_repo --output=streamed_proto|streamed_jsonproto` (Build.Repository
   protos with every rule attribute and its default) is not implemented:
   explicit error, exit 2.

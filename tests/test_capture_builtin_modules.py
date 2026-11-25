@@ -153,7 +153,7 @@ class CapturedFixtureIntegrityTests(unittest.TestCase):
 
     def test_supplemental_patches_are_exactly_the_source_json_pinned_genuine_files(self):
         counts = capture.verify_fixture(FIXTURE)
-        self.assertEqual(counts["registry_patch_count"], 7)
+        self.assertEqual(counts["registry_patch_count"], 9)
         provenance = json.loads((FIXTURE / "provenance.json").read_bytes())
         on_disk = sorted(str(p.relative_to(FIXTURE)) for p in (FIXTURE / "registry").rglob("patches/*"))
         self.assertEqual(sorted(provenance["registry_patches"]), on_disk)

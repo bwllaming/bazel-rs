@@ -37,6 +37,5 @@ messages differ).
   BAD_LOCKFILE: 48 (37 in `mod`). A file without a version is an old one,
   ignored in the default `--lockfile_mode=update`.
 - `mod graph` evaluates every extension (BazelModuleInspectorFunction) and
-  fails with `Results may be incomplete as N extension(s) failed.`, exit 2;
-  bazel-rs does not evaluate extensions for `mod graph` (B80): those five
-  lines are not pinned.
+  fails with `Results may be incomplete as N extension(s) failed.`, exit 2
+  (B80).

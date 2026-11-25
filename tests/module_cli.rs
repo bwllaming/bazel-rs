@@ -438,17 +438,32 @@ fn git_unknown_full_commit_reports_real_git_error_without_fallback() {
 }
 
 #[test]
-fn cli_graph_evaluates_extensions_only_for_shown_repositories() {
-    // docs/MOD_COMMAND.md: the graph never needs the extension's
-    // repositories with --extension_info=hidden; show_extension does.
+fn cli_graph_evaluates_every_extension() {
+    // docs/MOD_COMMAND.md: like genuine (BazelModuleInspectorFunction),
+    // every subcommand evaluates every extension first; a failing one is
+    // reported and the command fails after printing its output.
     let fixture =
         Fixture::new("module(name='root')\next = use_extension('//:missing.bzl', 'ext')\n");
-    let graph = fixture.graph(&["--extension_info=hidden"]);
-    assert_eq!(graph["dependencies"], json!([]));
+    let graph = fixture.run(&["--extension_info=hidden"]);
+    assert_eq!(graph.status.code(), Some(2));
+    let value: Value = serde_json::from_slice(&graph.stdout).unwrap();
+    assert_eq!(value["dependencies"], json!([]));
+    let stderr = String::from_utf8_lossy(&graph.stderr);
+    assert!(
+        stderr.contains("ERROR: Results may be incomplete as 1 extension failed."),
+        "{stderr}"
+    );
     let output = fixture.command(&["mod", "show_extension", "<root>//:missing.bzl%ext"]);
     assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("ERROR: "));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.starts_with("## @@//:missing.bzl%ext:\n\nFetched repositories:\n\n"),
+        "{stdout}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("ERROR: Results may be incomplete as 1 extension failed.")
+    );
 }
 
 #[test]
@@ -469,7 +484,9 @@ fn cli_selected_module_extension_usages_are_listed() {
     let fixture = Fixture::new("module(name='root')\nbazel_dep(name='a', version='1.0')\n");
     fixture.module("a", "1.0", "ext = use_extension('//:missing.bzl', 'ext')\n");
     let output = fixture.command(&["mod", "graph", "--extension_info=usages"]);
-    succeeded(&output);
+    // The extension's `.bzl` does not exist: the output is complete, the
+    // command fails (Results may be incomplete as 1 extension failed.).
+    assert_eq!(output.status.code(), Some(2));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         "<root> (root@_)\n└───a@1.0 \n\n"

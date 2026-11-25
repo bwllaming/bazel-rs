@@ -38,11 +38,13 @@ SDKs, copied repository caches, or replacement builtin MODULEs are bundled.
 count, and expected official lockfile hash when present.
 
 Supplemental registry patches (not lockfile inputs, so a capture never writes
-them): seven genuine `patches/*.patch` files for apple_support 2.5.2,
-bazel_features 1.42.1, rules_cc 0.2.17, rules_kotlin 1.9.6, rules_python 1.7.0,
-rules_shell 0.6.1 and rules_swift 3.1.2 (2,221 bytes). Genuine Bazel fetches
-these selected modules when analysis resolves the test toolchain type for a
-`test = True` rule; without the files a file-registry reference fails with
+them): nine genuine `patches/*.patch` files for apple_support 2.5.2,
+bazel_features 1.42.1, buildozer 8.5.1, rules_apple 4.1.0, rules_cc 0.2.17,
+rules_kotlin 1.9.6, rules_python 1.7.0, rules_shell 0.6.1 and rules_swift 3.1.2
+(2,842 bytes). Genuine Bazel fetches these selected modules when analysis
+resolves the test toolchain type for a `test = True` rule, and `mod` fetches
+buildozer and rules_apple to evaluate every module extension of the graph;
+without the files a file-registry reference fails with
 `Error downloading [file:///…/patches/module_dot_bazel_version.patch]`. Each was
 copied offline from an existing genuine Bazel repository-cache CAS blob whose
 SHA256 equals the mirrored `source.json` SRI; `provenance.json`

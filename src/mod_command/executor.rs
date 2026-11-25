@@ -727,8 +727,7 @@ fn strip_hint(message: &str) -> &str {
         .unwrap_or(message)
 }
 
-/// The formatter of `--output`, after evaluating the extensions whose
-/// generated repositories it shows.
+/// The formatter of `--output`.
 fn output(
     executor: &mut Executor<'_>,
     result: &ResultGraph,
@@ -742,29 +741,11 @@ fn output(
             .filter(|(_, imports)| !imports.is_empty())
             .map(|(id, _)| id.clone())
             .collect();
-        let mut failed = 0;
         for id in ids {
-            match executor.context.extension_repos(&id) {
-                Ok(names) => {
-                    executor.extension_repos.insert(id, names);
-                }
-                Err(error) => {
-                    crate::ui::note(&format!("ERROR: {error}"));
-                    failed += 1;
-                }
+            if let Some(names) = executor.context.extension_repos.get(&id) {
+                executor.extension_repos.insert(id, names.clone());
             }
         }
-        super::output::format(executor, result, out);
-        if failed > 0 {
-            return Err(Failure::new(
-                format!(
-                    "Results may be incomplete as {failed} extension{} failed.",
-                    if failed == 1 { "" } else { "s" }
-                ),
-                Code::ErrorDuringGraphInspection,
-            ));
-        }
-        return Ok(());
     }
     super::output::format(executor, result, out);
     Ok(())
