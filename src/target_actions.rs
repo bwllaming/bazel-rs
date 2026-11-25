@@ -305,7 +305,7 @@ pub(crate) fn runfiles_support_views(
 /// `--flag=value` lines stay single arguments.
 ///
 /// A Java compilation (JavaCompileAction.getArguments, :697-700) is its
-/// whole command line, the flags and the classpath, without the parameter
+/// whole command line, the flags and the full classpath line, without the parameter
 /// file JavaBuilder reads them from at execution. A command line deferred
 /// to execution (Args over tree artifacts) is expanded as genuine's
 /// analysis does without input metadata: directories stay their paths, or
@@ -324,6 +324,17 @@ fn starlark_argv(registered: &RegisteredAction) -> Vec<String> {
                     .map(|path| path.to_string_lossy().into_owned()),
             );
         }
+        // `--experimental_java_classpath=javabuilder`'s flags
+        // (JavaCompileAction.getFullClasspathLine).
+        argv.extend(
+            java.mode.full_classpath_flags(
+                &java
+                    .dependency_jdeps
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>(),
+            ),
+        );
         return argv;
     }
     let mut param_files = std::borrow::Cow::Borrowed(&action.extra.param_files);
