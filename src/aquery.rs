@@ -62,6 +62,10 @@ pub struct Meta {
     /// CommandAction.getArguments (CommandLines.allArguments: parameter
     /// file contents inline), interned.
     pub arguments: Option<InternedStrings>,
+    /// The same with the spawn's StrippingPathMapper (a `strip`
+    /// configuration's spawn, crate::path_mapping): aquery prints it when
+    /// the spawn is mapped and its inputs do not collide by path.
+    pub mapped_arguments: Option<InternedStrings>,
     /// A ParameterFileWriteAction (`ctx.actions.write` of an Args).
     pub param_write: Option<ParamWrite>,
     /// A RepoMappingManifestAction (`py_internal.create_repo_mapping_manifest`).
@@ -106,6 +110,10 @@ pub struct ParamWrite {
     pub file_type: &'static str,
     pub recipe: ArgsRecipe,
     pub arguments: InternedStrings,
+    /// Its effective output paths mode is STRIP (crate::path_mapping): its
+    /// execution info is `supports-path-mapping` and its key maps the
+    /// map_each results with FOR_FINGERPRINTING.
+    pub path_mapped: bool,
 }
 
 /// One shared copy of each distinct fixed environment (most spawns have

@@ -245,6 +245,9 @@ mod owned {
         pub retain_actions: bool,
         /// `ctx.super()` of an extending rule (rule(parent=...)).
         pub super_chain: RefCell<SuperChain>,
+        /// The configuration has `--experimental_output_paths=strip`: Args
+        /// and spawns record their path-mapped values (crate::path_mapping).
+        pub path_mapping: bool,
     }
 
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
@@ -1429,6 +1432,17 @@ fn register_spawn(
         .unwrap_or("Action %{output}")
         .replace("%{label}", &context.label.to_string())
         .replace("%{output}", crate::runfiles::root_relative(&outputs[0]));
+    // The path-mapped executable part (crate::path_mapping; CommandLines'
+    // SingletonCommandLine of the executable path): a program path is
+    // mapped, a shell command never.
+    let mapped_program = program
+        .as_deref()
+        .filter(|_| context.path_mapping)
+        .and_then(crate::path_mapping::map_executable);
+    let mapped_executable = context.path_mapping.then(|| match &mapped_program {
+        Some(mapped) => vec![mapped.clone()],
+        None => executable.clone(),
+    });
     let spec = CommandLineSpec {
         executable,
         parts,
@@ -1488,6 +1502,23 @@ fn register_spawn(
                 }
             }
         }
+        // SpawnAction.getArguments with the action's path mapper (aquery
+        // prints it when the inputs do not collide, crate::path_mapping).
+        let mapped_arguments = mapped_executable.as_ref().and_then(|executable| {
+            let mut mapped = executable.clone();
+            for part in &spec.parts {
+                mapped.extend(
+                    crate::command_line::expand_groups_with(
+                        &part.groups,
+                        part.flag_per_line,
+                        None,
+                        true,
+                    )
+                    .ok()?,
+                );
+            }
+            Some(mapped.into())
+        });
         // SpawnAction's fixed environment: the default shell environment's
         // variables, then the `env` dict's in insertion order.
         let order = env_order.unwrap_or_default();
@@ -1506,6 +1537,7 @@ fn register_spawn(
             environment: Some(crate::aquery::shared_environment(fixed)),
             command_lines: Some(command_lines),
             arguments: Some(bazel_arguments.into()),
+            mapped_arguments,
             expansion_error,
             // StarlarkActionFactory: the inputs, then the tools (a File
             // executable is one); aquery reads the first only.
@@ -1523,21 +1555,38 @@ fn register_spawn(
         })
     });
     let extra = ActionExtra { aquery, ..extra };
-    let (arguments, param_files, deferred) = if spec.deferred() {
+    let (arguments, param_files, deferred, path_mapping) = if spec.deferred() {
         if spec.deferred_map_each() {
             crate::observed_fs::taint(crate::observed_fs::Taint::MapEach, || {
                 format!("{} ({progress})", context.label)
             });
         }
+        // The mapped arguments are expanded with the unmapped ones, at
+        // execution (Deferred::apply).
+        let path_mapping = mapped_executable.is_some().then(|| {
+            Box::new(crate::action::PathMapping {
+                program: mapped_program.clone(),
+                ..Default::default()
+            })
+        });
         let deferred = Deferred::new(crate::scheduler::DeferredSpec::CommandLine {
             spec,
             progress,
             extra_param_files: Vec::new(),
+            mapped_executable,
         });
-        (Vec::new(), Vec::new(), Some(deferred))
+        (Vec::new(), Vec::new(), Some(deferred), path_mapping)
     } else {
         let (arguments, files) = spec.expand(None).map_err(anyhow::Error::msg)?;
-        (arguments, files, None)
+        let path_mapping = mapped_executable.map(|executable| {
+            Box::new(crate::action::PathMapping::of_expansion(
+                mapped_program.clone(),
+                &arguments,
+                files.len(),
+                spec.expand_mapped(None, &executable),
+            ))
+        });
+        (arguments, files, None, path_mapping)
     };
     let starlark_inputs = context
         .retain_actions
@@ -1553,6 +1602,7 @@ fn register_spawn(
             environment,
             extra: ActionExtra {
                 param_files,
+                path_mapping,
                 ..extra
             },
             shell_pad,
@@ -1779,7 +1829,11 @@ fn action_methods(builder: &mut MethodsBuilder) {
         // KNOWN_REFERENCE_DEFECT — INTENTIONAL_DIVERGENCE: expired-child
         // factories crash Bazel37. Reject safely, but permit live ancestors.
         let context = action_receiver(this, eval, true)?;
-        Ok(crate::args::alloc_args(eval.heap(), context.active.clone()))
+        Ok(crate::args::alloc_args_with(
+            eval.heap(),
+            context.active.clone(),
+            context.path_mapping,
+        ))
     }
     fn declare_file<'v>(
         this: Value<'v>,
@@ -1928,17 +1982,62 @@ fn action_methods(builder: &mut MethodsBuilder) {
                         file_type,
                         recipe,
                         arguments: expanded.unwrap_or_default().into(),
+                        path_mapped: false,
                     }),
                     expansion_error,
                     ..Default::default()
                 })
             });
         let directories = snapshot.directories();
+        // ParameterFileWriteAction.usePathStripping (:126-129): the
+        // effective output paths mode over the filtered requirements and
+        // tags with `--modify_execution_info` (crate::path_mapping); it
+        // writes the mapped command line when its paths do not collide
+        // (PathMappers.create in newDeterministicWriter).
+        let path_mapped = context.path_mapping && {
+            let requirements = match execution_requirements {
+                Some(value) if !value.is_none() => string_dict(value, "execution_requirements")?,
+                _ => BTreeMap::new(),
+            };
+            let mnemonic = mnemonic.as_deref().unwrap_or("FileWrite");
+            let (requirements, tags) = crate::execution_options::modified(
+                mnemonic,
+                &requirements,
+                &context.propagated_tags,
+            );
+            crate::path_mapping::effective(mnemonic, |key| {
+                requirements.contains_key(key) || tags.contains(key)
+            })
+        };
+        let write_mapped = path_mapped
+            && crate::path_mapping::strippable_by_paths(
+                directories
+                    .iter()
+                    .map(|file| file.path.as_str())
+                    .chain(std::iter::once(output.path.as_str())),
+            );
+        let aquery = aquery.map(|meta| {
+            let mut meta = Arc::unwrap_or_clone(meta);
+            if let Some(param) = meta.param_write.as_mut() {
+                param.path_mapped = path_mapped;
+            }
+            Arc::new(meta)
+        });
+        let mut path_mapping = None;
         let (content, deferred) = if directories.is_empty() {
-            (
-                crate::args::serialize_write_content_of(&snapshot).map_err(anyhow::Error::msg)?,
-                None,
-            )
+            let content =
+                crate::args::serialize_write_content_of(&snapshot).map_err(anyhow::Error::msg)?;
+            if write_mapped {
+                let mapped = crate::args::serialize_write_content_with(&snapshot, true)
+                    .map_err(anyhow::Error::msg)?;
+                if mapped != content {
+                    path_mapping = Some(Box::new(crate::action::PathMapping {
+                        write_content: Some(mapped),
+                        ..Default::default()
+                    }));
+                }
+            }
+            (content, None)
         } else {
             if crate::command_line::has_deferred_map_each(&snapshot.groups) {
                 crate::observed_fs::taint(crate::observed_fs::Taint::MapEach, || {
@@ -1948,6 +2047,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
             let deferred = Deferred::new(crate::scheduler::DeferredSpec::WriteArgs {
                 snapshot,
                 extra_param_files: Vec::new(),
+                mapped: write_mapped,
             });
             (Vec::new(), Some(deferred))
         };
@@ -1964,6 +2064,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
             environment: BTreeMap::new(),
             extra: ActionExtra {
                 aquery,
+                path_mapping,
                 ..write_extra()
             },
             shell_pad: false,
@@ -2841,6 +2942,7 @@ mod tests {
             rule_location: None,
             action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),
+            path_mapping: false,
             action_owner: "//:target".into(),
             declared: RefCell::new(Vec::new()),
             shareable: RefCell::new(BTreeSet::new()),
@@ -3196,6 +3298,7 @@ r=rule(implementation=_rule,subrules=[S])
             label: Label::parse_canonical("//:target").unwrap(),
             action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),
+            path_mapping: false,
             action_owner: "//:target".into(),
             declared: RefCell::new(Vec::new()),
             shareable: RefCell::new(BTreeSet::new()),

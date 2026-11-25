@@ -156,6 +156,9 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "incompatible_disallow_java_import_exports",
     "java_launcher",
     "host_java_launcher",
+    // CoreOptions.outputPathsMode: path mapping (crate::path_mapping; B33,
+    // protobuf's and rules_java's analysis tests).
+    "experimental_output_paths",
 ];
 
 /// Table-driven options (crate::configuration::VALUE_OPTIONS) read and
@@ -266,6 +269,10 @@ const GENERIC_VALUE_OPTIONS: &[(&str, &str)] = &[
     (
         "host_java_launcher",
         "rules.java.JavaOptions.hostJavaLauncher",
+    ),
+    (
+        "experimental_output_paths",
+        "analysis.config.CoreOptions.outputPathsMode",
     ),
 ];
 

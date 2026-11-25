@@ -64,6 +64,10 @@ pub(crate) enum DeferredSpec {
         /// files of a tool's runfiles tree, crate::engine).
         #[serde(with = "crate::snapshot::codec::path_contents")]
         extra_param_files: Vec<(PathBuf, Vec<u8>)>,
+        /// The path-mapped executable part of a spawn of a `strip`
+        /// configuration: the mapped command line is expanded too
+        /// (crate::path_mapping, the action's PathMapping).
+        mapped_executable: Option<Vec<String>>,
     },
     /// A ParameterFileWriteAction's Args content (StarlarkActionFactory.write):
     /// the written bytes in the Args' parameter file format.
@@ -71,6 +75,9 @@ pub(crate) enum DeferredSpec {
         snapshot: crate::args::ArgsSnapshot,
         #[serde(with = "crate::snapshot::codec::path_contents")]
         extra_param_files: Vec<(PathBuf, Vec<u8>)>,
+        /// The write's effective output paths mode is STRIP: the content
+        /// written is the mapped expansion (crate::path_mapping).
+        mapped: bool,
     },
 }
 
@@ -133,10 +140,28 @@ impl Deferred {
                 spec,
                 progress,
                 extra_param_files,
+                mapped_executable,
             } => {
                 let (arguments, param_files) = spec
                     .expand(Some(&lookup))
                     .map_err(|e| format!("{progress} failed: {e}"))?;
+                if let Some(executable) = mapped_executable {
+                    let program = action
+                        .extra
+                        .path_mapping
+                        .as_ref()
+                        .and_then(|mapping| mapping.program.clone());
+                    let mapped = spec
+                        .expand_mapped(Some(&lookup), executable)
+                        .map_err(|e| format!("{progress} failed: {e}"));
+                    action.extra.path_mapping =
+                        Some(Box::new(crate::action::PathMapping::of_expansion(
+                            program,
+                            &arguments,
+                            param_files.len(),
+                            mapped,
+                        )));
+                }
                 action.arguments = crate::interner::IStr::all(arguments);
                 action.extra.param_files = param_files;
                 action
@@ -147,11 +172,13 @@ impl Deferred {
             DeferredSpec::WriteArgs {
                 snapshot,
                 extra_param_files,
+                mapped,
             } => {
-                let arguments = crate::command_line::expand_groups(
+                let arguments = crate::command_line::expand_groups_with(
                     &snapshot.groups,
                     snapshot.flag_per_line,
                     Some(&lookup),
+                    *mapped,
                 )?;
                 if let Some(write) = action.write.as_mut() {
                     write.content =
@@ -2894,6 +2921,7 @@ mod tests {
             },
             progress: "Action out".into(),
             extra_param_files: Vec::new(),
+            mapped_executable: None,
         }));
         let grouped = vec![producer.clone(), plain, deferred];
         let first = execute_graph(&fixture.cache(), grouped.clone(), 2).unwrap();

@@ -175,6 +175,14 @@ pub(crate) struct DeferredVector {
     /// mapper may not be callable once analysis is over. Never persisted.
     #[serde(skip)]
     pub noop: Option<NoopMapping>,
+    /// The items of the path-mapped command line (crate::path_mapping),
+    /// when they differ from [`Self::items`]: the non-directory values
+    /// with derived Files at their stripped paths and map_each results
+    /// computed under the mapping. Directory items are the same.
+    pub mapped_items: Option<Vec<Item>>,
+    /// The first error of a map_each called under path mapping at
+    /// analysis: a mapped command line fails with it.
+    pub mapped_error: Option<String>,
 }
 
 /// The NoopExpander mapping of a deferred vector's directory items, in
@@ -185,6 +193,9 @@ pub(crate) struct DeferredVector {
 pub(crate) struct NoopMapping {
     pub strings: Vec<Vec<String>>,
     pub error: Option<String>,
+    /// The same mapping under path mapping (crate::path_mapping), when the
+    /// Args belongs to a `strip` configuration.
+    pub mapped: Option<Vec<Vec<String>>>,
 }
 
 /// The file listings a DirectoryExpander expands at execution time: each
@@ -276,6 +287,12 @@ fn directory_expander_methods(builder: &mut starlark::environment::MethodsBuilde
 pub(crate) enum Group {
     Strings(Vec<String>),
     Deferred(Arc<DeferredVector>),
+    /// A group whose values differ under path mapping (crate::path_mapping):
+    /// the unmapped values, then the mapped ones.
+    Mapped(Vec<String>, Vec<String>),
+    /// A group whose map_each failed under path mapping: the unmapped
+    /// values, and the error a mapped command line fails with.
+    MappedError(Vec<String>, String),
 }
 
 /// One CommandLines part: a run of literal strings, or one Args object.
@@ -399,6 +416,15 @@ fn call_mapper(
     mapper: &Mapper,
     file: Mapped,
     expander: Expander<'_>,
+    mode: crate::path_mapping::Mode,
+) -> Result<Vec<String>, String> {
+    crate::path_mapping::with_mode(mode, || call_mapper_unmapped(mapper, file, expander))
+}
+
+fn call_mapper_unmapped(
+    mapper: &Mapper,
+    file: Mapped,
+    expander: Expander<'_>,
 ) -> Result<Vec<String>, String> {
     let mapper = mapper.function()?;
     Module::with_temp_heap(|module| {
@@ -446,7 +472,11 @@ pub(crate) fn mapped_strings(mapped: starlark::values::Value<'_>) -> Result<Vec<
     }
 }
 
-fn expand_deferred(vector: &DeferredVector, trees: TreeLookup<'_>) -> Result<Vec<String>, String> {
+fn expand_deferred(
+    vector: &DeferredVector,
+    trees: TreeLookup<'_>,
+    mapped: bool,
+) -> Result<Vec<String>, String> {
     // The DirectoryExpander of a map_each that takes one lists the vector's
     // tree artifacts (FullExpander over the action's input metadata).
     let listings = if vector.expander {
@@ -470,30 +500,57 @@ fn expand_deferred(vector: &DeferredVector, trees: TreeLookup<'_>) -> Result<Vec
         None
     };
     let expander = listings.as_ref().map_or(Expander::None, Expander::Full);
+    let (items, mode) = mapping_view(vector, mapped);
+    let path = |path: &str| -> String {
+        if mapped {
+            crate::path_mapping::strip(path).into_owned()
+        } else {
+            path.to_owned()
+        }
+    };
     let mut values = Vec::new();
-    for item in &vector.items {
+    for item in items {
         match item {
             Item::Strings(strings) => values.extend(strings.iter().cloned()),
             Item::Directory(tree) => {
                 for relative in trees(tree)? {
                     let child = tree_child(tree, &relative);
                     match &vector.map_each {
-                        Some(mapper) => {
-                            values.extend(call_mapper(mapper, Mapped::Child(child), expander)?)
-                        }
-                        None => values.push(child.file.path.clone()),
+                        Some(mapper) => values.extend(call_mapper(
+                            mapper,
+                            Mapped::Child(child),
+                            expander,
+                            mode,
+                        )?),
+                        None => values.push(path(&child.file.path)),
                     }
                 }
             }
             Item::Unexpanded(tree) => match &vector.map_each {
-                Some(mapper) => {
-                    values.extend(call_mapper(mapper, Mapped::Tree(tree.clone()), expander)?)
-                }
-                None => values.push(tree.path.clone()),
+                Some(mapper) => values.extend(call_mapper(
+                    mapper,
+                    Mapped::Tree(tree.clone()),
+                    expander,
+                    mode,
+                )?),
+                None => values.push(path(&tree.path)),
             },
         }
     }
     assemble(&vector.shape, values)
+}
+
+/// The items of a deferred vector and the mapping mode its map_each runs
+/// under, unmapped or path-mapped (crate::path_mapping).
+fn mapping_view(vector: &DeferredVector, mapped: bool) -> (&[Item], crate::path_mapping::Mode) {
+    if mapped {
+        (
+            vector.mapped_items.as_deref().unwrap_or(&vector.items),
+            crate::path_mapping::Mode::Strip,
+        )
+    } else {
+        (&vector.items, crate::path_mapping::Mode::Off)
+    }
 }
 
 /// Expand the groups of one Args object, applying flag_per_line grouping:
@@ -504,12 +561,46 @@ pub(crate) fn expand_groups(
     flag_per_line: bool,
     trees: Option<TreeLookup<'_>>,
 ) -> Result<Vec<String>, String> {
+    expand_groups_with(groups, flag_per_line, trees, false)
+}
+
+/// [`expand_groups`] of the unmapped (`mapped` false) or the path-mapped
+/// command line (crate::path_mapping).
+pub(crate) fn expand_groups_with(
+    groups: &[Group],
+    flag_per_line: bool,
+    trees: Option<TreeLookup<'_>>,
+    mapped: bool,
+) -> Result<Vec<String>, String> {
+    let path = |path: &str| -> String {
+        if mapped {
+            crate::path_mapping::strip(path).into_owned()
+        } else {
+            path.to_owned()
+        }
+    };
     let mut result = Vec::new();
     for group in groups {
         let strings = match group {
             Group::Strings(strings) => strings.clone(),
+            Group::Mapped(plain, stripped) => {
+                if mapped {
+                    stripped.clone()
+                } else {
+                    plain.clone()
+                }
+            }
+            Group::MappedError(plain, error) => {
+                if mapped {
+                    return Err(error.clone());
+                }
+                plain.clone()
+            }
+            Group::Deferred(vector) if mapped && vector.mapped_error.is_some() => {
+                return Err(vector.mapped_error.clone().unwrap_or_default());
+            }
             Group::Deferred(vector) => match trees {
-                Some(trees) => expand_deferred(vector, trees)?,
+                Some(trees) => expand_deferred(vector, trees, mapped)?,
                 // Without input metadata Bazel does not expand directories
                 // (maybeExpandDirectories): a directory is its path, or what
                 // map_each maps it to with a NoopExpander
@@ -521,31 +612,37 @@ pub(crate) fn expand_groups(
                     } else {
                         Expander::None
                     };
+                    let (items, mode) = mapping_view(vector, mapped);
                     let mut values = Vec::new();
                     match &vector.noop {
                         Some(noop) => {
                             if let Some(error) = &noop.error {
                                 return Err(error.clone());
                             }
-                            let mut mapped = noop.strings.iter();
-                            for item in &vector.items {
+                            let noop_strings = if mapped {
+                                noop.mapped.as_ref().unwrap_or(&noop.strings)
+                            } else {
+                                &noop.strings
+                            };
+                            let mut mapped_strings = noop_strings.iter();
+                            for item in items {
                                 match item {
                                     Item::Strings(strings) => {
                                         values.extend(strings.iter().cloned())
                                     }
                                     Item::Directory(tree) | Item::Unexpanded(tree) => {
-                                        match (&vector.map_each, mapped.next()) {
+                                        match (&vector.map_each, mapped_strings.next()) {
                                             (Some(_), Some(strings)) => {
                                                 values.extend(strings.iter().cloned())
                                             }
-                                            _ => values.push(tree.path.clone()),
+                                            _ => values.push(path(&tree.path)),
                                         }
                                     }
                                 }
                             }
                         }
                         None => {
-                            for item in &vector.items {
+                            for item in items {
                                 match item {
                                     Item::Strings(strings) => {
                                         values.extend(strings.iter().cloned())
@@ -559,8 +656,9 @@ pub(crate) fn expand_groups(
                                                     mapper,
                                                     Mapped::Tree(tree.clone()),
                                                     expander,
+                                                    mode,
                                                 )?),
-                                            _ => values.push(tree.path.clone()),
+                                            _ => values.push(path(&tree.path)),
                                         }
                                     }
                                 }
@@ -604,7 +702,7 @@ pub(crate) fn has_deferred_map_each(groups: &[Group]) -> bool {
 pub(crate) fn deferred_mappers<'a>(groups: &'a [Group]) -> impl Iterator<Item = &'a Mapper> + 'a {
     groups.iter().filter_map(|group| match group {
         Group::Deferred(vector) => vector.map_each.as_ref(),
-        Group::Strings(_) => None,
+        Group::Strings(_) | Group::Mapped(..) | Group::MappedError(..) => None,
     })
 }
 
@@ -685,6 +783,25 @@ impl CommandLineSpec {
 
     /// CommandLines.expand (actions/CommandLines.java:89-153).
     pub(crate) fn expand(&self, trees: Option<TreeLookup<'_>>) -> Result<Expanded, String> {
+        self.expand_with(trees, None)
+    }
+
+    /// CommandLines.expand with a StrippingPathMapper (crate::path_mapping):
+    /// the mapped arguments (`executable` is the mapped executable part),
+    /// lengths and parameter files, at their mapped paths.
+    pub(crate) fn expand_mapped(
+        &self,
+        trees: Option<TreeLookup<'_>>,
+        executable: &[String],
+    ) -> Result<Expanded, String> {
+        self.expand_with(trees, Some(executable))
+    }
+
+    fn expand_with(
+        &self,
+        trees: Option<TreeLookup<'_>>,
+        mapped: Option<&[String]>,
+    ) -> Result<Expanded, String> {
         let parts = self.parts.len() + 1;
         let conservative = self.max_length as i64 - (parts * PARAM_FILE_ARG_LENGTH_ESTIMATE) as i64;
         let total = |arguments: &[String]| -> i64 {
@@ -693,11 +810,12 @@ impl CommandLineSpec {
                 .map(|argument| java_length(argument) as i64 + 1)
                 .sum()
         };
-        let mut length = total(&self.executable);
+        let mut length = total(mapped.unwrap_or(&self.executable));
         let mut arguments = Vec::new();
         let mut files = Vec::new();
         for part in &self.parts {
-            let chunk = expand_groups(&part.groups, part.flag_per_line, trees)?;
+            let chunk =
+                expand_groups_with(&part.groups, part.flag_per_line, trees, mapped.is_some())?;
             let Some(param) = &part.param else {
                 length += total(&chunk);
                 arguments.extend(chunk);
@@ -712,6 +830,12 @@ impl CommandLineSpec {
                 }
             }
             let path = format!("{}-{}.params", self.primary_output, files.len());
+            // `pathMapper.map(paramFileExecPath)` (CommandLines.java:126-128).
+            let path = if mapped.is_some() {
+                crate::path_mapping::strip(&path).into_owned()
+            } else {
+                path
+            };
             let flag = format(Some(&param.flag_format), &path)?;
             length += java_length(&flag) as i64 + 1;
             arguments.push(flag);

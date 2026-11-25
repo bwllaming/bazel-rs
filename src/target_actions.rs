@@ -313,6 +313,9 @@ pub(crate) fn runfiles_support_views(
 /// (StarlarkCustomCommandLine.java:577-595, crate::command_line::expand_groups).
 fn starlark_argv(registered: &RegisteredAction) -> Vec<String> {
     let action = &registered.action;
+    if analysis_mapped(registered) {
+        return mapped_starlark_argv(registered);
+    }
     let mut argv = crate::action::arguments(action);
     if let Some(java) = &action.extra.java_compile {
         argv.extend(java.flags.iter().cloned());
@@ -348,6 +351,75 @@ fn starlark_argv(registered: &RegisteredAction) -> Vec<String> {
             param_files = std::borrow::Cow::Owned(files);
         }
     }
+    inline_param_files(argv, &param_files)
+}
+
+/// Whether `Target.actions` shows the spawn's path-mapped argv
+/// (SpawnAction.getArguments: PathMappers.create without input metadata,
+/// crate::path_mapping): a spawn of a `strip` configuration whose effective
+/// output paths mode is STRIP (its requirements and rule tags with this
+/// command's `--modify_execution_info`) and whose inputs and outputs do
+/// not collide by path.
+fn analysis_mapped(registered: &RegisteredAction) -> bool {
+    let action = &registered.action;
+    if action.extra.path_mapping.is_none() || action.extra.java_compile.is_some() {
+        return false;
+    }
+    let (requirements, tags) = crate::execution_options::modified(
+        &action.extra.mnemonic,
+        &action.extra.execution_info,
+        &action.execution_info,
+    );
+    let effective = crate::path_mapping::effective(&action.extra.mnemonic, |key| {
+        requirements.contains_key(key) || tags.contains(key)
+    });
+    let inputs: &[File] = match &registered.starlark_inputs {
+        Some(inputs) => inputs,
+        None => &registered.inputs,
+    };
+    effective
+        && crate::path_mapping::strippable_by_paths(
+            inputs
+                .iter()
+                .chain(&registered.outputs)
+                .map(|file| file.path.as_str()),
+        )
+}
+
+/// [`starlark_argv`] of a mapped spawn: CommandLines.allArguments with the
+/// StrippingPathMapper (the mapped executable, arguments and parameter
+/// file contents).
+fn mapped_starlark_argv(registered: &RegisteredAction) -> Vec<String> {
+    let action = &registered.action;
+    let mapping = action
+        .extra
+        .path_mapping
+        .as_deref()
+        .expect("a mapped spawn has its mapping");
+    let mut argv = crate::action::mapped_arguments(action);
+    let mut param_files = std::borrow::Cow::Borrowed(&mapping.param_files);
+    if let Some(deferred) = &registered.deferred
+        && let crate::scheduler::DeferredSpec::CommandLine {
+            spec,
+            mapped_executable: Some(executable),
+            ..
+        } = &*deferred.0
+    {
+        // At analysis a deferred command line's arguments are empty.
+        if let Ok((arguments, files)) = spec.expand_mapped(None, executable) {
+            argv.extend(arguments);
+            param_files = std::borrow::Cow::Owned(files);
+        }
+    }
+    inline_param_files(argv, &param_files)
+}
+
+/// The arguments with each parameter file argument replaced by the
+/// file's lines.
+fn inline_param_files(
+    argv: Vec<String>,
+    param_files: &[(std::path::PathBuf, Vec<u8>)],
+) -> Vec<String> {
     if param_files.is_empty() {
         return argv;
     }

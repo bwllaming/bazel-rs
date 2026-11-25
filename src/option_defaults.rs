@@ -213,18 +213,11 @@ pub fn default_option(
 
 /// Why an option whose non-default values fail explicitly is not modelled,
 /// where that is worth saying (the command line and Starlark transitions).
+/// None at present: `--experimental_output_paths=strip` (B33) is modelled
+/// (crate::path_mapping).
 pub fn unmodelled_reason(name: &str) -> Option<&'static str> {
-    match name {
-        // PathMappers/StrippingPathMapper: an action with
-        // `supports-path-mapping` runs with `bazel-out/cfg/...` paths in
-        // its command line, inputs and outputs (and shows them in
-        // `Target.actions` and aquery); running it unmapped would change
-        // what it writes (B33).
-        "experimental_output_paths" => Some(
-            "path mapping (`strip`: actions supporting it run with `bazel-out/cfg/...` paths) is not modelled",
-        ),
-        _ => None,
-    }
+    let _ = name;
+    None
 }
 
 #[cfg(test)]
@@ -258,17 +251,6 @@ mod tests {
         assert_eq!(
             error,
             "unsupported option \"--experimental_remote_mark_tool_inputs\"; options are never silently ignored"
-        );
-        // B33: path mapping is named.
-        assert_eq!(
-            default_option("build", "--experimental_output_paths=strip", None, "")
-                .unwrap()
-                .unwrap_err(),
-            "unsupported option \"--experimental_output_paths=strip\": path mapping (`strip`: actions supporting it run with `bazel-out/cfg/...` paths) is not modelled; options are never silently ignored"
-        );
-        assert_eq!(
-            default_option("build", "--experimental_output_paths=off", None, ""),
-            Some(Ok(false))
         );
         // An integer default with a separate value.
         assert_eq!(

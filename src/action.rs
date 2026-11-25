@@ -240,8 +240,16 @@ pub struct Action {
 /// (BashCommandConstructor.asExecArgv, SpawnAction.Builder.setShellCommand):
 /// the remote cache key's `Command.arguments` and the executed argv.
 pub fn arguments(action: &Action) -> Vec<String> {
+    let mut argv = executable_part(action, action.program.as_ref());
+    argv.extend(action.arguments.iter().map(|argument| argument.to_string()));
+    argv
+}
+
+/// The argv before the arguments: the program, or the shell, its flags,
+/// the command and the empty `$0`.
+fn executable_part(action: &Action, program: Option<&String>) -> Vec<String> {
     let mut argv = Vec::new();
-    match &action.program {
+    match program {
         Some(program) => argv.push(program.clone()),
         None => {
             argv.push(SHELL.to_owned());
@@ -256,7 +264,6 @@ pub fn arguments(action: &Action) -> Vec<String> {
             }
         }
     }
-    argv.extend(action.arguments.iter().map(|argument| argument.to_string()));
     argv
 }
 
@@ -468,6 +475,97 @@ pub struct ActionExtra {
     /// crate::action_console::describe). Never keyed.
     #[serde(with = "crate::snapshot::codec::optional_shared_path")]
     pub progress: Option<SharedPath>,
+    /// The path-mapped command line of a spawn registered in a
+    /// `--experimental_output_paths=strip` configuration
+    /// (crate::path_mapping, docs/PATH_MAPPING.md); whether the spawn runs
+    /// with it is decided by [`path_mapping_effective`] and, at execution,
+    /// by its inputs' collisions.
+    pub path_mapping: Option<Box<PathMapping>>,
+}
+
+/// The path-mapped command line of a spawn (CommandLines.expand with a
+/// StrippingPathMapper): what [`Action::program`], [`Action::arguments`]
+/// and the command line's parameter files are under path mapping.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PathMapping {
+    /// The mapped program (SingletonCommandLine of the executable path:
+    /// `None` when it is the action's own).
+    pub program: Option<String>,
+    /// The mapped arguments (`None`: the action's own).
+    pub arguments: Option<Vec<crate::interner::IStr>>,
+    /// The command line's parameter files at their mapped paths with their
+    /// mapped contents; they replace the first [`Self::replaces`] entries
+    /// of [`ActionExtra::param_files`] (the unmapped command line's
+    /// parameter files), whose other entries (a tool's empty runfiles) are
+    /// staged at their mapped paths.
+    #[serde(with = "crate::snapshot::codec::path_contents")]
+    pub param_files: Vec<(PathBuf, Vec<u8>)>,
+    pub replaces: usize,
+    /// The error expanding the mapped command line (a map_each failing
+    /// under the mapping): a mapped spawn fails with it.
+    pub error: Option<String>,
+    /// A ParameterFileWriteAction whose effective output paths mode is
+    /// STRIP and whose inputs do not collide: the mapped bytes it writes
+    /// (its [`WriteAction::content`] stays the unmapped command line,
+    /// which `Target.actions` shows).
+    pub write_content: Option<Vec<u8>>,
+}
+
+impl PathMapping {
+    /// The mapping of an expanded command line: `arguments` and `replaces`
+    /// parameter files unmapped, `mapped` the mapped expansion.
+    pub(crate) fn of_expansion(
+        program: Option<String>,
+        arguments: &[String],
+        replaces: usize,
+        mapped: Result<crate::command_line::Expanded, String>,
+    ) -> Self {
+        match mapped {
+            Ok((mapped, param_files)) => Self {
+                program,
+                arguments: (mapped != arguments).then(|| crate::interner::IStr::all(mapped)),
+                param_files,
+                replaces,
+                error: None,
+                write_content: None,
+            },
+            Err(error) => Self {
+                program,
+                arguments: None,
+                param_files: Vec::new(),
+                replaces,
+                error: Some(error),
+                write_content: None,
+            },
+        }
+    }
+}
+
+/// PathMappers.getEffectiveOutputPathsMode of a spawn: registered in a
+/// `strip` configuration and opted in by its final execution requirements
+/// (the rule tags and the requirements, `--modify_execution_info`
+/// applied) or its mnemonic. Its inputs may still collide at execution
+/// ([`prepare`]).
+pub fn path_mapping_effective(action: &Action) -> bool {
+    action.extra.path_mapping.is_some()
+        && crate::path_mapping::effective(&action.extra.mnemonic, |key| {
+            action.execution_info.contains(key) || action.extra.execution_info.contains_key(key)
+        })
+}
+
+/// The argv of the path-mapped spawn ([`arguments`] with the mapped
+/// program and arguments).
+pub fn mapped_arguments(action: &Action) -> Vec<String> {
+    let Some(mapping) = &action.extra.path_mapping else {
+        return arguments(action);
+    };
+    let program = mapping.program.as_ref().or(action.program.as_ref());
+    let mut argv = executable_part(action, program);
+    match &mapping.arguments {
+        Some(mapped) => argv.extend(mapped.iter().map(|argument| argument.to_string())),
+        None => argv.extend(action.arguments.iter().map(|argument| argument.to_string())),
+    }
+    argv
 }
 
 /// A runfiles mapping: each runfiles path with its input's execution path

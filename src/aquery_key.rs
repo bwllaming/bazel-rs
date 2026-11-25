@@ -209,6 +209,12 @@ pub enum ArgsOp {
     Uuid(&'static str),
     /// Bytes already encoded (a NestedSet's fingerprint, [`nested_set`]).
     Raw(Vec<u8>),
+    /// map_each results of an Args in a `strip` configuration: the
+    /// operations without path mapping, then those with
+    /// PathMapperConstants.FOR_FINGERPRINTING (the mapper of the key of an
+    /// action whose effective output paths mode is STRIP,
+    /// PathMapper.forActionKey; crate::path_mapping).
+    PathMapped(Vec<ArgsOp>, Vec<ArgsOp>),
 }
 
 /// The fingerprint description of one `Args` object: its operations, or
@@ -240,8 +246,14 @@ impl ArgsRecipe {
         self.unmodelled.get_or_insert(reason);
     }
 
-    fn add_to(&self, fp: &mut Fingerprint) {
-        for op in &self.ops {
+    fn add_to(&self, fp: &mut Fingerprint, path_mapped: bool) {
+        add_ops(&self.ops, fp, path_mapped);
+    }
+}
+
+fn add_ops(ops: &[ArgsOp], fp: &mut Fingerprint, path_mapped: bool) {
+    {
+        for op in ops {
             match op {
                 ArgsOp::Object { file, text } => {
                     fp.int(i32::from(*file)).string(text);
@@ -254,6 +266,9 @@ impl ArgsRecipe {
                 }
                 ArgsOp::Raw(bytes) => {
                     fp.raw(bytes);
+                }
+                ArgsOp::PathMapped(plain, mapped) => {
+                    add_ops(if path_mapped { mapped } else { plain }, fp, path_mapped);
                 }
             }
         }
@@ -555,14 +570,18 @@ fn finish(
 #[derive(Clone, Debug)]
 pub enum KeyKind<'a> {
     /// SpawnAction.computeKey (:396-417): GUID, the command lines, the
-    /// mnemonic, the fixed and inherited environment and the execution info
-    /// (path mapping OFF adds nothing).
+    /// mnemonic, the fixed and inherited environment and the execution info;
+    /// an effective output paths mode of STRIP (`path_mapped`,
+    /// crate::path_mapping) maps the map_each results with
+    /// FOR_FINGERPRINTING and adds StrippingPathMapper.GUID and the (empty)
+    /// additional artifacts for path mapping (PathMappers.addToFingerprint).
     Spawn {
         command_lines: &'a [CommandLinePart],
         mnemonic: &'a str,
         environment: &'a [(String, String)],
         inherited: &'a [String],
         execution_info: &'a [(String, String)],
+        path_mapped: bool,
     },
     /// RegularFileWriteAction.computeKey (FileWriteAction.java:276-281), or
     /// CompressedFileWriteAction's over 256 characters.
@@ -593,10 +612,13 @@ pub enum KeyKind<'a> {
         target: &'a str,
         target_type: &'a str,
     },
-    /// ParameterFileWriteAction.computeKey (:232-245).
+    /// ParameterFileWriteAction.computeKey (:232-245); `path_mapped`: its
+    /// effective output paths mode is STRIP (the map_each results with
+    /// FOR_FINGERPRINTING).
     ParamFileWrite {
         file_type: &'static str,
         args: &'a ArgsRecipe,
+        path_mapped: bool,
     },
 }
 
@@ -614,6 +636,7 @@ pub fn action_key(
             environment,
             inherited,
             execution_info,
+            path_mapped,
         } => {
             fp.string(SPAWN_GUID);
             for part in *command_lines {
@@ -624,7 +647,7 @@ pub fn action_key(
                         }
                     }
                     CommandLinePart::Args(recipe, param) => {
-                        recipe.add_to(&mut fp);
+                        recipe.add_to(&mut fp, *path_mapped);
                         if let Some(param) = param {
                             fp.uuid(PARAM_FILE_UUID)
                                 .string(&param.flag_format)
@@ -637,6 +660,13 @@ pub fn action_key(
             fp.string_map(environment.iter().map(|(k, v)| (k.as_str(), v.as_str())));
             fp.strings(inherited.iter().map(String::as_str));
             fp.string_map(execution_info.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+            if *path_mapped {
+                // PathMappers.addToFingerprint: the GUID, then
+                // addNestedSetToFingerprint of SpawnAction's empty
+                // additional artifacts.
+                fp.string(crate::path_mapping::GUID);
+                fp.int(EMPTY_SET_DIGEST);
+            }
             platform
         }
         KeyKind::FileWrite {
@@ -702,9 +732,13 @@ pub fn action_key(
                 .string(target_type);
             platform
         }
-        KeyKind::ParamFileWrite { file_type, args } => {
+        KeyKind::ParamFileWrite {
+            file_type,
+            args,
+            path_mapped,
+        } => {
             fp.string(PARAM_FILE_WRITE_GUID).string(file_type);
-            args.add_to(&mut fp);
+            args.add_to(&mut fp, *path_mapped);
             platform
         }
     };
@@ -785,6 +819,7 @@ mod tests {
                 environment: &path,
                 inherited: &[],
                 execution_info: &[],
+                path_mapped: false,
             }),
             "8502406d6fd846ba741cf24491fa7313913c43f0bbf54195e3f203a172e831d2"
         );
@@ -803,6 +838,7 @@ mod tests {
                 environment: &pairs(&[("Z", "1"), ("A", "x y")]),
                 inherited: &[],
                 execution_info: &pairs(&[("no-sandbox", "1")]),
+                path_mapped: false,
             }),
             "177a5a2944d7f34159f6b8aeee86b0fe5bfb6c6403dbcf5ecf9b813363767c89"
         );
@@ -825,6 +861,7 @@ mod tests {
                 environment: &path,
                 inherited: &[],
                 execution_info: &[],
+                path_mapped: false,
             }),
             "95f8ca076f67f60eb25ab0b3ce7fa25731d3c409c99c7415a5963dc29e22ca73"
         );
@@ -851,6 +888,7 @@ mod tests {
                 environment: &[],
                 inherited: &[],
                 execution_info: &[],
+                path_mapped: false,
             }),
             "59526ef0cbf2aa6e90f3645a128583d2d8a00ab27120baaa3732bb0a80a8cfd4"
         );

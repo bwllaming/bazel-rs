@@ -96,7 +96,9 @@ pub const MAGIC: &[u8; 8] = b"BZRSPLN1";
 // 11: a node's `groups_at` places its shared runs only; its runfiles trees
 // stay after all of its own inputs (a PyCompile's Python runtime run beside
 // its precompiler's runfiles tree).
-pub const FORMAT: u32 = 11;
+// 12: path mapping (crate::path_mapping): Args groups and deferred vectors
+// carry their mapped values, actions their mapped command line.
+pub const FORMAT: u32 = 12;
 /// Actions per NODES section (fixed: the encoding must not depend on the
 /// machine).
 pub const CHUNK: usize = 1024;
@@ -2062,6 +2064,8 @@ mod tests {
             map_each: map_each.map(crate::command_line::Mapper::frozen),
             expander: false,
             noop: None,
+            mapped_items: None,
+            mapped_error: None,
         }))
     }
 
@@ -2087,6 +2091,7 @@ mod tests {
             },
             progress: "Action pkg/out".into(),
             extra_param_files: vec![(PathBuf::from("pkg/out.runfiles/empty"), Vec::new())],
+            mapped_executable: None,
         })
     }
 
@@ -2136,6 +2141,14 @@ mod tests {
                         .into(),
                 ),
                 progress: Some("Making %{output}".into()),
+                path_mapping: Some(Box::new(crate::action::PathMapping {
+                    program: Some("bazel-out/cfg/bin/pkg/tool".into()),
+                    arguments: Some(vec!["bazel-out/cfg/bin/x".into()]),
+                    param_files: vec![("bazel-out/cfg/bin/p.params".into(), vec![b'x'])],
+                    replaces: 1,
+                    error: Some("map_each failed".into()),
+                    write_content: Some(vec![0, 1]),
+                })),
             },
             shell_pad: true,
             executable_file: false,
@@ -2262,6 +2275,7 @@ mod tests {
                         param: None,
                     },
                     extra_param_files: Vec::new(),
+                    mapped: false,
                 })),
                 groups: Vec::new(),
                 groups_at: None,
@@ -2643,12 +2657,15 @@ mod tests {
                         map_each: None,
                         expander: true,
                         noop: None,
+                        mapped_items: None,
+                        mapped_error: None,
                     }))],
                     flag_per_line: false,
                     file_type: ParamFileType::Unquoted,
                     param: None,
                 },
                 extra_param_files: Vec::new(),
+                mapped: false,
             })),
             groups: Vec::new(),
             groups_at: None,

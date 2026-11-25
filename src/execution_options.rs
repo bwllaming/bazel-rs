@@ -507,6 +507,26 @@ pub fn modify_ordered(mnemonic: &str, info: &mut Vec<(String, String)>) {
     }
 }
 
+/// BuildConfigurationValue.modifiedExecutionInfo of one action at analysis
+/// (this command's `--modify_execution_info`): its requirements and rule
+/// tags with the modifiers for `mnemonic` applied (crate::path_mapping
+/// decides from them; the option is part of the snapshot key).
+pub fn modified(
+    mnemonic: &str,
+    requirements: &std::collections::BTreeMap<String, String>,
+    tags: &std::collections::BTreeSet<String>,
+) -> (
+    std::collections::BTreeMap<String, String>,
+    std::collections::BTreeSet<String>,
+) {
+    let guard = MODIFIERS.read().unwrap_or_else(|error| error.into_inner());
+    let (modifiers, additive) = &*guard;
+    let mut requirements = requirements.clone();
+    let mut tags = tags.clone();
+    modify(modifiers, *additive, mnemonic, &mut requirements, &mut tags);
+    (requirements, tags)
+}
+
 /// BuildConfigurationValue.modifiedExecutionInfo for every spawn of a
 /// planned request (SpawnAction, StarlarkAction, Genrule, CppCompile,
 /// Javac, TestRunner …: every action that executes a process; file writes

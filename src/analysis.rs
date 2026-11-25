@@ -2094,6 +2094,7 @@ pub fn analyze_in(
         views_key: None,
         prerequisite_failures: Vec::new(),
         output_root: crate::label::GENERATED_EXEC_ROOT,
+        path_mapping: false,
         action_owner: &owner,
         action_env: Arc::new(crate::configuration::NativeOptions::default().action_environment()),
         runfiles: crate::runfiles_tree::RunfilesOptions::default(),
@@ -2302,6 +2303,7 @@ fn analyze_aspect_inner(
         rule_class: base_class.clone(),
         rule_location: rule.location.clone(),
         output_root: target.output_root.to_owned(),
+        path_mapping: target.path_mapping,
         action_owner: target.action_owner.to_owned(),
         declared: RefCell::new(Vec::new()),
         shareable: RefCell::new(BTreeSet::new()),
@@ -2937,6 +2939,9 @@ pub(crate) struct ConfiguredOutputs<'a> {
     /// the target provides `AnalysisFailureInfo` with them as causes
     /// (ConfiguredTargetFactory.erroredConfiguredTarget, B32).
     pub prerequisite_failures: Vec<String>,
+    /// The configuration has `--experimental_output_paths=strip`: its
+    /// spawns record their path-mapped command lines (crate::path_mapping).
+    pub path_mapping: bool,
 }
 
 /// The suppressed rule errors of a target analyzed with
@@ -3187,6 +3192,7 @@ fn analyze_inner(
         rule_class: invocation.declaration.rule_class.clone(),
         rule_location: rule.location.clone(),
         output_root: target.output_root.to_owned(),
+        path_mapping: target.path_mapping,
         action_owner: target.action_owner.to_owned(),
         declared: RefCell::new(Vec::new()),
         shareable: RefCell::new(BTreeSet::new()),
@@ -4384,6 +4390,7 @@ r = rule(implementation=impl, attrs={
             rule_location: None,
             action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),
+            path_mapping: false,
             action_owner: "//pkg:rule".into(),
             declared: RefCell::new(Vec::new()),
             shareable: RefCell::new(BTreeSet::new()),

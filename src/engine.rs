@@ -3067,6 +3067,8 @@ struct ComputeSnapshot {
     action_owner: String,
     action_env: Arc<crate::action_env::ActionEnvironment>,
     runfiles: crate::runfiles_tree::RunfilesOptions,
+    /// ConfiguredOutputs.path_mapping.
+    path_mapping: bool,
     loaded_functions: Arc<crate::analysis_runtime::LoadedFunctions>,
     repositories: Arc<RepositorySet>,
     /// ConfiguredOutputs.run_under.
@@ -8867,6 +8869,7 @@ impl Engine {
             action_owner: &snapshot.action_owner,
             action_env: snapshot.action_env.clone(),
             runfiles: snapshot.runfiles,
+            path_mapping: snapshot.path_mapping,
             loaded_functions: Some(&snapshot.loaded_functions),
             run_under: snapshot.run_under.clone(),
             allow_analysis_failures: snapshot.allow_analysis_failures,
@@ -9542,6 +9545,11 @@ impl Engine {
             action_owner: action_owner.clone(),
             action_env: action_env.clone(),
             runfiles: engine.configured_runfiles_options(config),
+            path_mapping: engine
+                .configurations
+                .get(config)
+                .native
+                .output_paths_strip(),
             loaded_functions,
             repositories: engine.repositories.clone(),
             run_under: engine.run_under_dependency_key(config),

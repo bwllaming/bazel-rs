@@ -971,6 +971,7 @@ impl Engine {
                         &KeyKind::ParamFileWrite {
                             file_type: param.file_type,
                             args: &param.recipe,
+                            path_mapped: param.path_mapped,
                         },
                         key_platform,
                         &properties,
@@ -1186,9 +1187,23 @@ impl Engine {
             }
             (None, None) => {
                 record.mnemonic = action.extra.mnemonic.clone();
-                let arguments = meta
-                    .arguments
-                    .as_ref()
+                // PathMappers.getEffectiveOutputPathsMode over the final
+                // execution info (crate::path_mapping): the key maps; the
+                // printed arguments are mapped when no two inputs or
+                // outputs collide by path (getArguments creates the mapper
+                // without input metadata).
+                let path_mapped = crate::action::path_mapping_effective(action);
+                let mapped_arguments = meta.mapped_arguments.as_ref().filter(|_| {
+                    path_mapped
+                        && crate::path_mapping::strippable_by_paths(
+                            listed()
+                                .iter()
+                                .map(String::as_str)
+                                .chain(action.outputs.iter().filter_map(|path| path.to_str())),
+                        )
+                });
+                let arguments = mapped_arguments
+                    .or(meta.arguments.as_ref())
                     .map_or_else(|| crate::action::arguments(action), InternedStrings::to_vec);
                 let raw = match (&meta.progress, record.mnemonic.as_str()) {
                     (Some(raw), _) => raw.clone(),
@@ -1271,6 +1286,7 @@ impl Engine {
                     environment: &record.environment,
                     inherited: &inherited,
                     execution_info: &record.execution_info,
+                    path_mapped,
                 };
                 let kind = match &meta.compute_key {
                     Some(bytes) => KeyKind::Encoded(bytes),
@@ -1343,6 +1359,7 @@ impl Engine {
                 environment: &record.environment,
                 inherited: &[],
                 execution_info: &[],
+                path_mapped: false,
             },
             platform,
             properties,

@@ -63,6 +63,13 @@ mod owned {
         #[allocative(skip)]
         #[trace(static)]
         pub(super) recipe: RefCell<Option<crate::aquery_key::ArgsRecipe>>,
+        /// The Args belongs to a `--experimental_output_paths=strip`
+        /// configuration: each mutation also records its path-mapped
+        /// values (crate::path_mapping), which an action supporting path
+        /// mapping runs with.
+        #[allocative(skip)]
+        #[trace(static)]
+        pub(super) mapping: bool,
     }
 }
 pub(crate) use owned::Args;
@@ -76,6 +83,18 @@ pub(crate) fn add_strings(args: &Args, values: Vec<String>) -> anyhow::Result<()
             .ops
             .extend(values.iter().cloned().map(crate::aquery_key::ArgsOp::Text));
     });
+    if args.mapping {
+        // CcToolchainVariables' string values under a path mapper
+        // (PathMapper.mapHeuristically: every output path's configuration
+        // segment stripped).
+        let mapped: Vec<String> = values
+            .iter()
+            .map(|value| crate::path_mapping::strip_heuristically(value).into_owned())
+            .collect();
+        if mapped != values {
+            return args.push(Group::Mapped(values, mapped));
+        }
+    }
     args.push(Group::Strings(values))
 }
 
@@ -231,11 +250,18 @@ impl<'v> StarlarkValue<'v> for Args {
 /// Allocate a mutable builder tied to one rule analysis. The owner must set
 /// `active` to false when analysis ends, including error/unwind paths.
 pub fn alloc_args<'v>(heap: Heap<'v>, active: Arc<AtomicBool>) -> Value<'v> {
+    alloc_args_with(heap, active, false)
+}
+
+/// [`alloc_args`] of an analysis in a configuration with
+/// `--experimental_output_paths=strip` when `mapping` (crate::path_mapping).
+pub fn alloc_args_with<'v>(heap: Heap<'v>, active: Arc<AtomicBool>, mapping: bool) -> Value<'v> {
     heap.alloc_complex_no_freeze(Args {
         groups: RefCell::new(Vec::new()),
         param: RefCell::new(ParamState::default()),
         active,
         recipe: RefCell::new(crate::aquery::capturing().then(Default::default)),
+        mapping,
     })
 }
 
@@ -259,8 +285,21 @@ pub(crate) fn serialize_write_content(value: Value<'_>) -> anyhow::Result<Vec<u8
 }
 
 pub(crate) fn serialize_write_content_of(snapshot: &ArgsSnapshot) -> Result<Vec<u8>, String> {
-    let arguments =
-        crate::command_line::expand_groups(&snapshot.groups, snapshot.flag_per_line, None)?;
+    serialize_write_content_with(snapshot, false)
+}
+
+/// [`serialize_write_content_of`], path-mapped when `mapped`
+/// (ParameterFileWriteAction with a StrippingPathMapper, crate::path_mapping).
+pub(crate) fn serialize_write_content_with(
+    snapshot: &ArgsSnapshot,
+    mapped: bool,
+) -> Result<Vec<u8>, String> {
+    let arguments = crate::command_line::expand_groups_with(
+        &snapshot.groups,
+        snapshot.flag_per_line,
+        None,
+        mapped,
+    )?;
     Ok(crate::command_line::param_file_bytes(
         &arguments,
         snapshot.file_type,
@@ -480,6 +519,23 @@ fn string_value(value: Value<'_>, eval: &Evaluator<'_, '_, '_>) -> anyhow::Resul
     }
 }
 
+/// [`string_value`] under path mapping when it differs: a derived File's
+/// mapped exec path (StrippingPathMapper.getMappedExecPathString; source
+/// files and every other value are unchanged).
+fn mapped_string_value(
+    value: Value<'_>,
+    eval: &Evaluator<'_, '_, '_>,
+) -> anyhow::Result<Option<String>> {
+    let _ = eval;
+    Ok(match crate::starlark_types::file_of(value) {
+        Some(file) if !file.is_source => match crate::path_mapping::strip(&file.path) {
+            std::borrow::Cow::Owned(mapped) => Some(mapped),
+            std::borrow::Cow::Borrowed(_) => None,
+        },
+        _ => None,
+    })
+}
+
 fn named_value<'v>(args: &[Value<'v>]) -> anyhow::Result<(Option<String>, Value<'v>)> {
     match args {
         [value] => Ok((None, *value)),
@@ -667,6 +723,17 @@ fn vector_group<'v>(
     }
     let expander = !map_each.is_none() && wants_expander(map_each);
     let mut items: Vec<Item> = Vec::new();
+    // The path-mapped items of an Args in a `strip` configuration
+    // (crate::path_mapping): derived Files at their mapped paths, map_each
+    // called again under the mapping (its Files report mapped paths).
+    let mut mapped_items: Option<Vec<Item>> = builder.mapping.then(Vec::new);
+    // The first failure of a mapped map_each: only a mapped command line
+    // fails with it (Bazel calls map_each under the mapper only when it
+    // expands that command line).
+    let mut mapped_error: Option<String> = None;
+    // The FOR_FINGERPRINTING map_each results for aquery's key of a mapped
+    // action, per element of a depset (in its order).
+    let mut fingerprint_strings: Vec<Vec<String>> = Vec::new();
     let mut deferred = false;
     let mut ops: Option<Vec<crate::aquery_key::ArgsOp>> =
         builder.recipe.borrow().is_some().then(Vec::new);
@@ -716,12 +783,49 @@ fn vector_group<'v>(
                         match map_one_with(item, map_each, expander, true, eval) {
                             Ok(strings) => {
                                 noop.strings.push(strings.clone());
+                                let fingerprint = if builder.mapping {
+                                    use crate::path_mapping::{Mode, with_mode};
+                                    let stripped = with_mode(Mode::Strip, || {
+                                        map_one_with(item, map_each, expander, true, eval)
+                                    });
+                                    let fingerprint = with_mode(Mode::Fingerprint, || {
+                                        map_one_with(item, map_each, expander, true, eval)
+                                    });
+                                    match (stripped, fingerprint) {
+                                        (Ok(stripped), Ok(fingerprint)) => {
+                                            noop.mapped.get_or_insert_with(Vec::new).push(stripped);
+                                            Some(fingerprint)
+                                        }
+                                        (Err(error), _) | (_, Err(error)) => {
+                                            noop.error = Some(error.to_string());
+                                            None
+                                        }
+                                    }
+                                } else {
+                                    None
+                                };
                                 if is_depset {
+                                    if let Some(fingerprint) = fingerprint {
+                                        fingerprint_strings.push(fingerprint);
+                                    }
                                     element_strings.push(strings);
                                 } else {
-                                    ops.extend(
-                                        strings.into_iter().map(crate::aquery_key::ArgsOp::Text),
-                                    );
+                                    let plain: Vec<_> = strings
+                                        .into_iter()
+                                        .map(crate::aquery_key::ArgsOp::Text)
+                                        .collect();
+                                    match fingerprint {
+                                        Some(fingerprint) => {
+                                            ops.push(crate::aquery_key::ArgsOp::PathMapped(
+                                                plain,
+                                                fingerprint
+                                                    .into_iter()
+                                                    .map(crate::aquery_key::ArgsOp::Text)
+                                                    .collect(),
+                                            ))
+                                        }
+                                        None => ops.extend(plain),
+                                    }
                                 }
                             }
                             Err(error) => noop.error = Some(error.to_string()),
@@ -729,22 +833,75 @@ fn vector_group<'v>(
                     }
                 }
                 deferred = true;
-                items.push(if expand_directories {
+                let tree = if expand_directories {
                     Item::Directory(file.clone())
                 } else {
                     Item::Unexpanded(file.clone())
-                });
+                };
+                if let Some(mapped_items) = mapped_items.as_mut() {
+                    mapped_items.push(tree.clone());
+                }
+                items.push(tree);
                 continue;
             }
         }
         let strings = map_one(item, map_each, expander, eval)?;
+        if let Some(mapped_items) = mapped_items.as_mut() {
+            let mapped = if map_each.is_none() {
+                Ok(vec![
+                    mapped_string_value(item, eval)?.unwrap_or_else(|| strings[0].clone()),
+                ])
+            } else {
+                crate::path_mapping::with_mode(crate::path_mapping::Mode::Strip, || {
+                    map_one(item, map_each, expander, eval)
+                })
+            };
+            match mapped {
+                Ok(mapped) => match mapped_items.last_mut() {
+                    Some(Item::Strings(previous)) => previous.extend(mapped),
+                    _ => mapped_items.push(Item::Strings(mapped)),
+                },
+                Err(error) => {
+                    mapped_error.get_or_insert(error.to_string());
+                }
+            }
+        }
         if !map_each.is_none()
             && let Some(ops) = ops.as_mut()
         {
+            let fingerprint = if builder.mapping {
+                Some(
+                    crate::path_mapping::with_mode(crate::path_mapping::Mode::Fingerprint, || {
+                        map_one(item, map_each, expander, eval)
+                    })
+                    // A mapper failing under FOR_FINGERPRINTING fails the
+                    // key of a mapped action only (genuine computes it then).
+                    .unwrap_or_default(),
+                )
+            } else {
+                None
+            };
             if is_depset {
+                if let Some(fingerprint) = fingerprint {
+                    fingerprint_strings.push(fingerprint);
+                }
                 element_strings.push(strings.clone());
             } else {
-                ops.extend(strings.iter().cloned().map(crate::aquery_key::ArgsOp::Text));
+                let plain: Vec<_> = strings
+                    .iter()
+                    .cloned()
+                    .map(crate::aquery_key::ArgsOp::Text)
+                    .collect();
+                match fingerprint {
+                    Some(fingerprint) => ops.push(crate::aquery_key::ArgsOp::PathMapped(
+                        plain,
+                        fingerprint
+                            .into_iter()
+                            .map(crate::aquery_key::ArgsOp::Text)
+                            .collect(),
+                    )),
+                    None => ops.extend(plain),
+                }
             }
         }
         match items.last_mut() {
@@ -781,17 +938,27 @@ fn vector_group<'v>(
                 .enumerate()
                 .map(|(position, item)| (*item, position))
                 .collect();
-            let bytes = crate::aquery_key::nested_set(&depset.node, &mut |item, fp| {
-                for text in index
-                    .get(item)
-                    .and_then(|position| element_strings.get(*position))
-                    .into_iter()
-                    .flatten()
-                {
-                    fp.string(text);
-                }
-            });
-            ops.push(crate::aquery_key::ArgsOp::Raw(bytes));
+            let digest = |strings: &[Vec<String>]| {
+                crate::aquery_key::nested_set(&depset.node, &mut |item, fp| {
+                    for text in index
+                        .get(item)
+                        .and_then(|position| strings.get(*position))
+                        .into_iter()
+                        .flatten()
+                    {
+                        fp.string(text);
+                    }
+                })
+            };
+            let bytes = digest(&element_strings);
+            if !map_each.is_none() && builder.mapping && fingerprint_strings.len() == flat.len() {
+                ops.push(crate::aquery_key::ArgsOp::PathMapped(
+                    vec![crate::aquery_key::ArgsOp::Raw(bytes)],
+                    vec![crate::aquery_key::ArgsOp::Raw(digest(&fingerprint_strings))],
+                ));
+            } else {
+                ops.push(crate::aquery_key::ArgsOp::Raw(bytes));
+            }
         } else {
             builder.record(|recipe| recipe.unmodelled("a depset whose elements did not map"));
         }
@@ -840,24 +1007,50 @@ fn vector_group<'v>(
                 },
             )
         };
+        let mapped_items = mapped_items.filter(|mapped| !same_items(mapped, &items));
         return Ok(Some(Group::Deferred(Arc::new(DeferredVector {
             shape,
             items,
             map_each,
             expander,
             noop,
+            mapped_items,
+            mapped_error,
         }))));
     }
-    let values = items
-        .into_iter()
-        .flat_map(|item| match item {
-            Item::Strings(strings) => strings,
-            Item::Directory(_) | Item::Unexpanded(_) => unreachable!("no directory items"),
+    let flatten = |items: Vec<Item>| -> Vec<String> {
+        items
+            .into_iter()
+            .flat_map(|item| match item {
+                Item::Strings(strings) => strings,
+                Item::Directory(_) | Item::Unexpanded(_) => unreachable!("no directory items"),
+            })
+            .collect()
+    };
+    let values =
+        crate::command_line::assemble(&shape, flatten(items)).map_err(anyhow::Error::msg)?;
+    if let Some(error) = mapped_error {
+        return Ok(Some(Group::MappedError(values, error)));
+    }
+    if let Some(mapped) = mapped_items {
+        let mapped =
+            crate::command_line::assemble(&shape, flatten(mapped)).map_err(anyhow::Error::msg)?;
+        if mapped != values {
+            return Ok(Some(Group::Mapped(values, mapped)));
+        }
+    }
+    Ok(Some(Group::Strings(values)))
+}
+
+/// Whether two item lists expand alike (equal strings, the same trees).
+fn same_items(a: &[Item], b: &[Item]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|pair| match pair {
+            (Item::Strings(a), Item::Strings(b)) => a == b,
+            (Item::Directory(a), Item::Directory(b))
+            | (Item::Unexpanded(a), Item::Unexpanded(b)) => a == b,
+            _ => false,
         })
-        .collect();
-    Ok(Some(Group::Strings(
-        crate::command_line::assemble(&shape, values).map_err(anyhow::Error::msg)?,
-    )))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -890,11 +1083,26 @@ fn args_methods(builder: &mut MethodsBuilder) {
             }
         });
         let mut values: Vec<_> = name.into_iter().collect();
+        let mapped = builder
+            .mapping
+            .then(|| mapped_string_value(value, eval))
+            .transpose()?
+            .flatten();
         values.push(formatted(
             format.into_option(),
             &string_value(value, eval)?,
         )?);
-        builder.push(Group::Strings(values))?;
+        match mapped {
+            // SingleFormattedArg/the single value under a path mapper: a
+            // derived File at its mapped path.
+            Some(mapped) => {
+                let mut stripped = values.clone();
+                *stripped.last_mut().expect("the value") =
+                    formatted(format.into_option(), &mapped)?;
+                builder.push(Group::Mapped(values, stripped))?;
+            }
+            None => builder.push(Group::Strings(values))?,
+        }
         Ok(this)
     }
 

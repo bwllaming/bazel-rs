@@ -493,6 +493,8 @@ const STRICT_DEPS_MODES: &[&str] = &["OFF", "WARN", "ERROR", "STRICT", "DEFAULT"
 const ONE_VERSION_ENFORCEMENT_LEVELS: &[&str] = &["OFF", "WARNING", "ERROR"];
 /// JavaConfiguration.JavaClasspathMode (rules/java/JavaConfiguration.java:49-60).
 const JAVA_CLASSPATH_MODES: &[&str] = &["OFF", "JAVABUILDER", "BAZEL", "BAZEL_NO_FALLBACK"];
+/// CoreOptions.OutputPathsMode (analysis/config/CoreOptions.java:912-924).
+const OUTPUT_PATHS_MODES: &[&str] = &["OFF", "STRIP"];
 
 /// The table-driven options (docs/CONFIGURATION.md "Value options"). Each
 /// row was checked against genuine Bazel 9.3.0 (paired capture
@@ -828,6 +830,30 @@ pub const VALUE_OPTIONS: &[ValueOption] = &[
         command_line: true,
         exec: ExecValue::Propagate,
         exec_source: "builtin_exec_platforms.bzl:237",
+    },
+    // CoreOptions.outputPathsMode (`--experimental_output_paths`,
+    // OutputPathsConverter: an EnumConverter of OutputPathsMode OFF/STRIP):
+    // path mapping of the actions that support it (crate::path_mapping,
+    // docs/PATH_MAPPING.md). Propagated to exec configurations
+    // (builtin_exec_platforms.bzl:236).
+    ValueOption {
+        option: OptionDef {
+            name: "experimental_output_paths",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Enum {
+                type_name: "output path mode",
+                values: OUTPUT_PATHS_MODES,
+            },
+            default: "off",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/analysis/config/CoreOptions.java:932-952",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:236",
     },
     // PythonOptions.disallowNativeRules
     // (`--incompatible_python_disallow_native_rules`, rules_python examples'
@@ -2725,6 +2751,16 @@ impl NativeOptions {
     pub fn host_cpu(&self) -> &str {
         self.host_cpu.as_deref().unwrap_or(host_cpu())
     }
+
+    /// `--experimental_output_paths=strip` (CoreOptions.outputPathsMode
+    /// STRIP): actions supporting path mapping run with stripped paths
+    /// (crate::path_mapping).
+    pub fn output_paths_strip(&self) -> bool {
+        matches!(
+            self.values.get("experimental_output_paths"),
+            Some(OptionValue::Enum(mode)) if mode.eq_ignore_ascii_case("strip")
+        )
+    }
 }
 
 /// A build setting value, compared like the Java objects Bazel stores
@@ -4559,6 +4595,7 @@ mod tests {
                 "java_launcher",
                 "host_java_launcher",
                 "enable_runfiles",
+                "experimental_output_paths",
                 "incompatible_python_disallow_native_rules",
                 "incompatible_default_to_explicit_init_py",
                 "experimental_platform_in_output_dir",

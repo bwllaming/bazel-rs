@@ -901,13 +901,17 @@ impl<'v> StarlarkValue<'v> for File {
 
     fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         let basename = self.path.rsplit('/').next().unwrap_or("");
+        // A map_each of a mapped command line reads mapped paths
+        // (crate::path_mapping::Mode; Artifact.getExecPathStringForStarlark,
+        // getDirnameForStarlark, getRootForStarlark).
+        let path = crate::path_mapping::file_path(&self.path, self.is_source);
         Some(match name {
-            "path" => heap.alloc(self.path.as_str()),
+            "path" => heap.alloc(path.as_ref()),
             "short_path" => heap.alloc(self.short_path.as_str()),
             "basename" => heap.alloc(basename),
             // Artifact.getDirname (actions/Artifact.java:384-391): the exec
             // path's parent as getSafePathString, `.` for a top-level path.
-            "dirname" => heap.alloc(match self.path.rsplit_once('/') {
+            "dirname" => heap.alloc(match path.rsplit_once('/') {
                 Some(("", _)) => "/",
                 Some((dir, _)) => dir,
                 None => ".",
@@ -919,7 +923,13 @@ impl<'v> StarlarkValue<'v> for File {
             // declared kind (ctx.actions.declare_symlink).
             "is_symlink" => heap.alloc(self.is_symlink),
             "root" => heap.alloc(FileRoot {
-                path: self.root_path(),
+                path: match crate::path_mapping::mode() {
+                    crate::path_mapping::Mode::Off => self.root_path(),
+                    // PathMapper.mapRoot: the mapped exec path without the
+                    // root-relative part (the mapping never changes it).
+                    _ => crate::path_mapping::file_path(&self.root_path(), self.is_source)
+                        .into_owned(),
+                },
                 is_source: self.is_source,
                 source_repository: if self.is_source {
                     self.short_path

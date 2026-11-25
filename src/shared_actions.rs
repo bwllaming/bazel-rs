@@ -649,6 +649,7 @@ impl Fingerprint {
             // (crate::action_console): like the action id, not compared.
             owner: _,
             progress: _,
+            path_mapping,
         } = extra;
         self.paths(tree_outputs.iter());
         self.paths(tree_inputs.iter());
@@ -689,6 +690,12 @@ impl Fingerprint {
         if let Some(java) = java_compile {
             self.str("java-compile-v1");
             self.bytes(&postcard::to_stdvec(java).expect("plain Java compilation intent"));
+        }
+        // Only actions of `strip` configurations (crate::path_mapping): the
+        // mapped command line, as Bazel's key maps map_each results.
+        if let Some(mapping) = path_mapping {
+            self.tag(12);
+            self.bytes(&postcard::to_stdvec(mapping).expect("plain path mapping"));
         }
     }
 

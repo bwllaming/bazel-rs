@@ -730,6 +730,9 @@ pub(crate) fn call<'v>(
             };
             let data = Arc::clone(&configuration.data);
             let active = context.active.clone();
+            // LinkCommandLine under a path mapper (CcToolchainVariables'
+            // mapHeuristically, crate::args::add_strings).
+            let mapping = context.path_mapping;
             let _ = context;
             data.require_action_config(&action).map_err(failure)?;
             let expanded = data.command_line(&action, variables, eval)?;
@@ -745,7 +748,7 @@ pub(crate) fn call<'v>(
             if let Some(param_file) = crate::cc_variables::linker_param_file(variables, eval)? {
                 flags.retain(|flag| !flag.contains(&param_file));
             }
-            let args_value = crate::args::alloc_args(heap, active);
+            let args_value = crate::args::alloc_args_with(heap, active, mapping);
             let args = args_value
                 .downcast_ref::<crate::args::Args>()
                 .expect("fresh Args");

@@ -140,6 +140,7 @@ pub mod package_specification;
 pub mod patch_inputs;
 pub mod patching;
 mod path_key;
+pub mod path_mapping;
 pub mod plan_timings;
 pub mod platform;
 mod platform_providers;
