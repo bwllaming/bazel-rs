@@ -236,6 +236,23 @@ pub(crate) fn has_marker(directory: &Path) -> Result<bool, String> {
     Ok(false)
 }
 
+/// RepoFileFunction.java:110-116's IOException message for a REPO.bazel
+/// that exists but cannot be read: genuine prints only it, without its
+/// cause (genuine 9.3.1 checked: a directory, an unreadable file). A
+/// descriptor-table exhaustion (EMFILE/ENFILE: a native resource failure;
+/// the read is retried first, crate::fd_budget) names its cause.
+pub fn repo_file_read_error(path: &Path, error: Option<&io::Error>) -> String {
+    match error {
+        Some(error) if crate::fd_budget::exhausted(error) => {
+            format!(
+                "error reading REPO.bazel file at {}: {error}",
+                path.display()
+            )
+        }
+        _ => format!("error reading REPO.bazel file at {}", path.display()),
+    }
+}
+
 /// The repository's REPO.bazel with the same stays-inside-the-workspace
 /// check as BUILD files (`find_build_file`). Like `RepoFileFunction`, any
 /// existing path counts (`FileValue.exists()`, following symlinks; a
@@ -248,19 +265,9 @@ pub fn repo_file(root: &Path) -> Result<Option<PathBuf>, String> {
         Ok(metadata) if metadata.is_file() => {}
         // RepoFileFunction.java:110-116: reading fails with exactly this
         // IOException message (the cause is not part of it).
-        Ok(_) => {
-            return Err(format!(
-                "error reading REPO.bazel file at {}",
-                path.display()
-            ));
-        }
+        Ok(_) => return Err(repo_file_read_error(&path, None)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => {
-            return Err(format!(
-                "error reading REPO.bazel file at {}",
-                path.display()
-            ));
-        }
+        Err(error) => return Err(repo_file_read_error(&path, Some(&error))),
     }
     let resolved = observed_fs::canonicalize(&path)
         .map_err(|e| format!("cannot resolve REPO.bazel file {}: {e}", path.display()))?;
@@ -606,6 +613,26 @@ mod tests {
         assert_eq!(
             discover_packages(&temp.0, "src/ts", &ignored).unwrap(),
             ["src/ts", "src/ts/app"]
+        );
+    }
+
+    #[test]
+    fn repo_file_read_errors_name_only_a_descriptor_exhaustion() {
+        let path = Path::new("/ws/REPO.bazel");
+        assert_eq!(
+            repo_file_read_error(path, Some(&io::Error::from_raw_os_error(13))),
+            "error reading REPO.bazel file at /ws/REPO.bazel"
+        );
+        assert_eq!(
+            repo_file_read_error(path, Some(&io::Error::from_raw_os_error(24))),
+            format!(
+                "error reading REPO.bazel file at /ws/REPO.bazel: {}",
+                io::Error::from_raw_os_error(24)
+            )
+        );
+        assert!(
+            repo_file_read_error(path, Some(&io::Error::from_raw_os_error(23)))
+                .starts_with("error reading REPO.bazel file at /ws/REPO.bazel: ")
         );
     }
 

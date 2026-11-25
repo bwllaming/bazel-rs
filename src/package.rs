@@ -2437,9 +2437,10 @@ fn repo_file_value(
             ignored_directories: Vec::new(),
         });
     };
-    // RepoFileFunction.java:110-116: the IOException message is exactly this.
-    let source = crate::observed_fs::read_to_string(&path)
-        .map_err(|_| format!("error reading REPO.bazel file at {}", path.display()))?;
+    // RepoFileFunction.java:110-116: the IOException message
+    // (crate::workspace::repo_file_read_error).
+    let source = crate::fd_budget::retry(|| crate::observed_fs::read_to_string(&path))
+        .map_err(|error| crate::workspace::repo_file_read_error(&path, Some(&error)))?;
     let dialect = Dialect {
         enable_def: false,
         enable_lambda: false,
