@@ -1561,7 +1561,12 @@ fn run() -> Result<(), String> {
         // described (all of them for --print_action), unless the snapshot
         // saves every action's description.
         let selection = (!print_action).then(|| {
-            aquery_selection(&analysis, &expression, &aquery_options, &relative_directory)
+            aquery_selection(
+                &analysis.graph,
+                &expression,
+                &aquery_options,
+                &relative_directory,
+            )
         });
         let selected = selection
             .as_ref()
@@ -3523,7 +3528,7 @@ fn analyzes(command: &str) -> bool {
 /// The configured targets an aquery expression selects (its action
 /// filters stripped).
 fn aquery_selection(
-    analysis: &bazel_rs::engine::aquery::Analysis,
+    graph: &bazel_rs::engine::cquery::Graph,
     expression: &bazel_rs::query_language::Expr,
     options: &bazel_rs::aquery::Options,
     relative: &str,
@@ -3533,7 +3538,7 @@ fn aquery_selection(
             "Error doing post analysis query: Evaluation of query \"{expression}\" failed: {error}"
         )
     })?;
-    analysis.graph.evaluate(
+    graph.evaluate(
         &stripped,
         &options.query,
         relative,
@@ -3553,17 +3558,7 @@ fn aquery_hit(
     threads: usize,
 ) -> Result<(), String> {
     bazel_rs::perf_mark("aquery.snapshot_hit");
-    let stripped = bazel_rs::aquery::strip_filters(expression).map_err(|error| {
-        format!(
-            "Error doing post analysis query: Evaluation of query \"{expression}\" failed: {error}"
-        )
-    })?;
-    let selected = hit.plan.graph.evaluate(
-        &stripped,
-        &options.query,
-        relative,
-        &mut std::collections::BTreeMap::new(),
-    )?;
+    let selected = aquery_selection(&hit.plan.graph, expression, options, relative)?;
     let (actions, listings) = hit.load(&selected, threads)?;
     let bazel_rs::aquery_snapshot::Hit { plan, records } = hit;
     drop(records);
