@@ -11,10 +11,10 @@ their workaround edits are in `scripts/oss_corpus_repos.json`. Unit tests for
 the harness's pure parts are in `tests/test_oss_corpus.py`.
 
 First run: 2026-11-16/17, bazel-rs 0.4.23 (the installed main binary, sha256
-`69ce3bf6…`), genuine `bazel-9.3.1-linux-x86_64`. Latest full run (the
-results below): 2026-11-20, bazel-rs 0.4.34 (main d11712c8, LTO release).
-Second batch (27 more projects, "Second batch" below): 2026-11-24,
-bazel-rs 0.4.37 (main 46ef3df1, non-LTO release).
+`69ce3bf6…`), genuine `bazel-9.3.1-linux-x86_64`. Second batch (27 more
+projects, "Second batch" below) added 2026-11-24 (bazel-rs 0.4.37). Latest
+full run of all 64 (the results below): 2026-11-25 (corpus-rerun2), the
+released bazel-rs 0.5.1.
 
 ## Method
 
@@ -51,6 +51,11 @@ bazel-rs 0.4.37 (main 46ef3df1, non-LTO release).
      their targets are absolute paths into each tool's own tree. The
      `<out>-N.params` files are counted separately (see C1).
   6. `test`: `test --keep_going //...`. Each target's status is compared.
+     A project's `test_flags` and `test_timeout` (JSON) add flags and a
+     longer cap to this phase only, on both tools (rules_kotlin:
+     `--local_test_jobs=4`, 60 minutes; B53). Lines inside printed test
+     logs (`--test_output=all`) are not statuses: a nested Bazel's own
+     test summary there is not the run's.
 - **Measurements.** For each command: exit code and wall time. Also the CPU
   time of the client's process tree (from wait4) and the tool's peak RSS:
   the VmHWM of the tool's own process, polled. For the warm genuine server,
@@ -66,8 +71,10 @@ bazel-rs 0.4.37 (main 46ef3df1, non-LTO release).
   - `BOTH-FAIL`: both fail the same way (for example, a project test that
     fails on both tools).
 - **Host.** 64 CPUs and 251 GB RAM, shared with other workers. The load
-  average was 15–60 during the first runs and 6–95 (mostly 10–35) during
-  the corpus-rerun run, so timings are indicative only.
+  average was 15–60 during the first runs, 6–95 (mostly 10–35) during
+  the corpus-rerun run and 8–164 (10th–90th percentile 14–50, the
+  projects' own builds included) during corpus-rerun2, so timings are
+  indicative only.
 
 ```
 python3 scripts/oss_corpus.py clone --src /tmp/opencode/w/oss-src
@@ -129,9 +136,9 @@ These projects were screened out because genuine 9.3.1 itself fails on them:
 - google/or-tools: about 1,200 loading errors.
 - bazelbuild/examples `go-tutorial`: rules_go 0.4x uses the removed `CcInfo`.
 
-flatbuffers is kept even though genuine fails on it the same way, through
-the old rules_go's `CcInfo`, because bazel-rs fails with an extra error
-there (B12).
+flatbuffers is kept even though genuine fails on it too, through the old
+rules_go's `CcInfo`, because bazel-rs's errors there differ (B82; the
+earlier B12 turned out to be genuine's own error too).
 
 ### Workaround edits (applied to both tools)
 
@@ -150,180 +157,167 @@ and supports `archive_override`. The two edits left are for genuine:
   0.51.3 and 1.27.1, as in docs/BENCHMARKS.md. The pinned rules_go 0.52
   fails on Bazel 9 because `CcInfo` was removed.
 
+rules_kotlin's `test` phase runs with `--local_test_jobs=4` on both tools
+(JSON `test_flags`): not a workaround for a bazel-rs bug but for the host,
+whose 64 cores the 51 nested Bazel servers otherwise overload (B53).
+
 ## Results
 
-Full rerun on 2026-11-20 (branch corpus-rerun): main d11712c8 = bazel-rs
-0.4.34, LTO release build (sha256 `6528369c…`), against genuine
+Full rerun of all 64 projects on 2026-11-25 (branch corpus-rerun2): the
+released bazel-rs 0.5.1 (the `x86_64-unknown-linux-musl` release archive,
+sha256 `6811df0d…`; binary `672b2c1a…`), against genuine
 `bazel-9.3.1-linux-x86_64`. Every project ran every phase of its JSON entry
 (OpenROAD: `nobuild_cold,nobuild_warm,server,query`, then `build //:openroad`
-by hand on the same state) with no workaround edits for bazel-rs bugs (the B2
-`comment_out` lines and OpenROAD's B9/B22 vendored archive are dropped:
-`archive_override` and every rc option now work). One project ran at a
-time, after the 1-minute load average fell below 20 (or 30 minutes passed);
-the "load" column of the performance table is the 1-minute load sampled
-every 20 s during the project (64 CPUs, shared with other workers' runs).
-The table and notes below are from this run only; earlier runs' tables
-and notes are in this file's git history (before this commit).
+by hand on the same state; rules_kotlin's `test` with `--local_test_jobs=4`
+on both tools and a 60-minute cap, as the corpus-rerun recommendation
+proposed for B53), with no workaround edits for bazel-rs bugs. One project
+ran at a time, after the 1-minute load average fell below 20 (at most 60
+minutes of waiting; no project needed more than 20). The "load" column of
+the performance table is the 1-minute load sampled every 20 s during the
+project, the project's own builds included (64 CPUs, shared with other
+workers' runs; 8–164 over the run, 10th–90th percentile 14–50). The tables and notes of
+both batches are from this run only; earlier runs' tables and notes are in
+this file's git history (before this commit).
 
 Times are wall seconds: genuine (g) against bazel-rs (rs); † marks a
 non-zero exit. The "warm nobuild" column gives genuine `--batch` / warm
 genuine server / bazel-rs. Peak RSS is the tool process during the cold run.
 The outputs column counts `bazel-bin` files: common, only genuine, only
 bazel-rs, and hash differences in the sample (C1's params files are not
-counted). `query //...` labels match on all 37 projects.
+counted). Rows are grouped: identical, the same failure, cosmetic
+differences only (C1–C6), differing, blocked. `query //...` labels match on
+all 64 projects (59,464 labels; rules_py's query answers too).
 
 | project | verdict | cold nobuild g / rs (s) | warm nobuild g-batch / g-server / rs (s) | build g / rs (s) | peak RSS cold g / rs (MB) | outputs (common, only g, only rs, hash diff) | tests g / rs | open differences |
 |---|---|---|---|---|---|---|---|---|
-| abseil-cpp | **OK** | 17.2 / 13.2 | 3.5 / 0.2 / 0.2 | 76.3 / 66.0 | 1191 / 540 | 2767, 0, 0, 0 | PASSED:252 / same | |
-| diff.bzl | **OK** | 20.7 / 15.4 | 3.4 / 0.2 / 0.2 | 13.7 / 11.4 | 1178 / 367 | 308, 0, 0, 0 | PASSED:6 / same | |
-| examples-bzlmod-01 | **OK** | 11.9 / 6.6 | 3.1 / 0.1 / 0.1 | 6.1 / 2.9 | 600 / 257 | 187, 0, 0, 0 | — | |
-| examples-bzlmod-05 | **OK** | 8.6 / 3.7 | 2.5 / 0.1 / 0.1 | 2.5 / 0.1 | 387 / 82 | 1, 0, 0, 0 | — | |
-| examples-cpp-tutorial | **OK** | 11.5 / 6.4 | 2.7 / 0.1 / 0.2 | 3.0 / 0.6 | 597 / 235 | 13, 0, 0, 0 | — | |
-| examples-rules | **OK** | 13.7 / 8.5 | 3.0 / 0.2 / 0.1 | 4.9 / 1.1 | 637 / 286 | 103, 0, 0, 0 | PASSED:1 / same | |
-| examples-rust-ffi | **OK** | 56.1 / 22.6 | 2.8 / 0.2 / 0.2 | 4.2 / 1.7 | 851 / 398 | 57, 0, 0, 0 | — | |
-| googletest | **OK** | 18.9 / 12.5 | 3.4 / 0.2 / 0.2 | 29.4 / 29.8 | 1181 / 436 | 529, 0, 0, 0 | PASSED:44 / same | |
-| highway | **OK**¹ | 12.4 / 7.3 | 3.1 / 0.2 / 0.2 | 178.0 / 172.6 | 582 / 268 | 1053, 0, 0, 0 | PASSED:138 / same | |
-| limdor-cpp | **OK** | 12.0 / 6.6 | 2.8 / 0.2 / 0.1 | 3.1 / 0.6 | 635 / 251 | 18, 0, 0, 0 | PASSED:1 / same | |
-| limdor-rust | **OK** | 28.5 / 26.0 | 3.0 / 0.1 / 0.2 | 4.5 / 2.1 | 847 / 485 | 91, 0, 0, 0 | PASSED:1 / same | |
-| openroad | **OK**² | 90.7 / 120.1 | 8.7 / 0.7 / 1.4 | `//:openroad` 714.0 / 994.6 | 3749 / 6868 | `//:openroad` 19201, 0, 0, 0 (all compared) | — | |
-| rules-template | **OK** | 27.2 / 22.3 | 4.2 / 0.2 / 0.2 | 27.1 / 25.0 | 1311 / 445 | 446, 0, 0, 0 | PASSED:2 / same | |
-| rules_go-basic_gazelle | **OK** | 25.7 / 22.3 | 4.0 / 0.3 / 0.2 | 31.3 / 28.9 | 1244 / 488 | 117, 0, 0, 0 | PASSED:1 / same | |
-| rules_python-pip_parse | **OK** | 31.2 / 32.5 | 3.6 / 0.3 / 0.2 | 4.4 / 1.1 | 1635 / 800 | 56, 0, 0, 0 | PASSED:2 / same | |
-| tink-cc-examples | **OK** | 18.0 / 12.1 | 3.6 / 0.3 / 0.2 | 95.1 / 87.3 | 1219 / 601 | 3499, 0, 0, 0 | PASSED:13 / same | |
-| bazel-gazelle | BOTH-FAIL³ | 41.0 / 36.8 | 4.6 / 0.3 / 0.2 | 57.0 / 52.0 | 1765 / 940 | 2551, 0, 0, 0 | FAILED:2 PASSED:194 / same | |
-| bazel-skylib | BOTH-FAIL³ | 21.7 / 20.0 | 3.7 / 0.3 / 0.2 | 50.7 / 50.2 | 1289 / 566 | 689, 0, 0, 0 | FAILED:4 PASSED:158 / same | |
-| buildtools | BOTH-FAIL³ | 24.5 / 24.1 | 4.5 / 0.3 / 0.2 | 49.6 / 48.7 | 1951 / 1300 | 566, 0, 0, 0 | FAILED:2 PASSED:23 / same | |
-| examples-configurations | BOTH-FAIL⁴ | 9.8† / 5.6† | 2.2† / 0.1† / 0.2† | 1.8† / 0.2† | 472 / 104 | 0, 0, 0, 0 | — | |
-| re2 | BOTH-FAIL⁵ | 11.7† / 8.1† | 3.2† / 0.2† / 1.2† | 16.4† / 15.9† | 1057 / 316 | 1085, 0, 0, 0 | PASSED:21 / same | |
-| riegeli | BOTH-FAIL⁶ | 28.5† / 20.0† | 4.4† / 0.3† / 3.2† | 70.9† / 68.8† | 1373 / 805 | 2800, 0, 0, 0 | PASSED:2 / same | |
-| examples-java-maven | DIFF | 34.8 / 56.0 | 3.3 / 0.2 / 0.2 | 8.9 / 7.2 | 1216 / 457 | 133, 2, 0, 0 | PASSED:2 / same | C2 |
-| examples-java-tutorial | DIFF⁷ | 18.8† / 19.4† | 3.3† / 0.1† / 0.8† | 6.4† / 4.2† | 745 / 306 | 11, 2, 0, 0 | — | C2 |
-| junit5-starter | DIFF | 22.2 / 15.0 | 3.6 / 0.2 / 0.2 | 7.8 / 5.4 | 1298 / 515 | 100, 28, 0, 0 | PASSED:1 / same | C2 |
-| yalantinglibs | DIFF⁸ | 12.0 / 6.8 | 3.4 / 0.2 / 0.2 | 58.6† / 52.2† | 679 / 244 | 126, 6, 0, 0 | FAILED TO BUILD:1 PASSED:2 SKIPPED:2 / same | C5 |
-| examples-frontend | DIFF⁹ | 88.3† / 121.6† | 60.9† / 110.9† / 97.7† | 60.8† / 137.7† | 1488 / 1806 | 215801, 12, 2, 0 | PASSED:14 / same | C3 |
-| examples-rust-deps-cargo | DIFF¹⁰ | 39.6 / 28.8 | 3.4 / 0.2 / 0.2 | 27.7 / 24.7 | 1016 / 371 | 103, 0, 0, 1 | — | C4 |
-| rules_python-bzlmod | DIFF | 41.6 / 37.2 | 4.5 / 0.3 / 0.2 | 41.8 / 42.1 | 2118 / 2605 | 319, 0, 0, 1 | PASSED:31 / same | B34 |
-| with_cfg-examples | DIFF | 36.1 / 27.6 | 4.3 / 0.5 / 0.1 | 9.1 / 6.8 | 1921 / 1111 | 213, 31, 0, 0 | PASSED:20 / same | C2 |
-| capnproto | DIFF¹¹ | 17.1 / 11.1 | 3.5 / 0.2 / 0.2 | 23.9 / 18.1 | 1079 / 385 | 1270, 132, 0, 0 | FAILED TO BUILD:5 SKIPPED:14 / same | C5 |
-| flatbuffers | DIFF¹² | 17.1† / 7.4† | 3.0† / 0.3† / 0.5† | 3.1† / 0.4† | 763 / 207 | 0, 0, 0, 0 | — | B12 |
-| rules_jvm_external-simple | DIFF¹² | 72.9† / 38.1† | 4.2† / 0.4† / 1.8† | 4.0† / 1.5† | 1625 / 655 | 0, 0, 0, 0 | — | B47 |
-| rules_cc | BOTH-FAIL¹⁶ | 18.1 / 20.6 | 5.0 / 0.6 / 5.5 | 46.6 / 46.6 | 2295 / 1754 | 1984, 0, 0, 0 | FAILED:1 PASSED:453 SKIPPED:2 / same | |
-| protobuf | DIFF¹³ | 67.4† / 58.7† | 6.5† / 0.6† / 11.5† | 262.9† / 278.6† | 2586 / 2749 | 19840, 21247, 0, 0 | — | B33, C2, C5 |
-| rules_kotlin | DIFF¹⁴ | 46.0 / 47.7 | 4.5 / 0.3 / 0.2 | 62.0 / 63.7 | 2426 / 2098 | 2235, 1116, 0, 1 | 30-minute cap on both: genuine at 244, bazel-rs at 224 of 268 (B53) | C2, B53 |
-| rules_zig | DIFF¹⁵ | 32.2 / 35.3 | 13.4 / 0.5 / 11.2 | 36.6 / 37.2 | 2484 / 1329 | 1292, 0, 0, 5 | PASSED:211 SKIPPED:4 / same | C6 |
+| abseil-cpp | **OK** | 14.4 / 10.3 | 3.8 / 0.2 / 0.2 | 74.5 / 72.5 | 1089 / 481 | 2767, 0, 0, 0 | PASSED:252 / same |  |
+| diff.bzl | **OK** | 21.5 / 15.4 | 3.4 / 0.3 / 0.2 | 11.8 / 11.3 | 1181 / 340 | 308, 0, 0, 0 | PASSED:6 / same |  |
+| examples-bzlmod-01 | **OK** | 11.9 / 6.6 | 3.1 / 0.1 / 0.1 | 5.8 / 2.6 | 627 / 239 | 187, 0, 0, 0 | — |  |
+| examples-bzlmod-05 | **OK** | 8.3 / 3.1 | 2.5 / 0.1 / 0.1 | 2.6 / 0.1 | 321 / 79 | 1, 0, 0, 0 | — |  |
+| examples-cpp-tutorial | **OK** | 11.3 / 6.1 | 2.6 / 0.1 / 0.1 | 2.8 / 0.6 | 712 / 232 | 13, 0, 0, 0 | — |  |
+| examples-rules | **OK** | 12.5 / 8.5 | 3.2 / 0.2 / 0.1 | 3.9 / 1.1 | 903 / 265 | 103, 0, 0, 0 | PASSED:1 / same |  |
+| examples-rust-ffi | **OK** | 57.8 / 16.7 | 2.9 / 0.2 / 0.2 | 4.5 / 2.0 | 816 / 402 | 57, 0, 0, 0 | — |  |
+| googletest | **OK** | 17.9 / 11.9 | 3.2 / 0.2 / 0.2 | 32.2 / 30.9 | 1149 / 400 | 529, 0, 0, 0 | PASSED:44 / same |  |
+| highway | **OK** | 11.6 / 6.8 | 3.2 / 0.2 / 0.2 | 181.4 / 178.3 | 605 / 257 | 1053, 0, 0, 0 | PASSED:138 / same |  |
+| limdor-cpp | **OK** | 11.0 / 6.3 | 2.6 / 0.1 / 0.2 | 3.2 / 0.6 | 722 / 250 | 18, 0, 0, 0 | PASSED:1 / same |  |
+| limdor-rust | **OK** | 27.9 / 20.0 | 3.1 / 0.2 / 0.2 | 4.9 / 1.8 | 910 / 479 | 91, 0, 0, 0 | PASSED:1 / same |  |
+| openroad | **OK**¹ | 75.9 / 106.0 | 9.6 / 0.8 / 1.4 | `//:openroad` 674.5 / 1010.2 | 3330 / 4748 | `//:openroad` 19201, 0, 0, 0 (all hashed) | — |  |
+| rules-template | **OK** | 25.7 / 21.2 | 3.8 / 0.2 / 0.2 | 29.0 / 24.5 | 1293 / 380 | 446, 0, 0, 0 | PASSED:2 / same |  |
+| rules_go-basic_gazelle | **OK** | 25.2 / 42.8 | 3.9 / 0.3 / 0.2 | 32.5 / 32.7 | 1242 / 392 | 117, 0, 0, 0 | PASSED:1 / same |  |
+| rules_python-pip_parse | **OK** | 30.1 / 28.9 | 3.8 / 0.4 / 0.2 | 6.0 / 1.2 | 1632 / 757 | 56, 0, 0, 0 | PASSED:2 / same |  |
+| tink-cc-examples | **OK** | 16.7 / 15.1 | 3.8 / 0.2 / 0.2 | 99.6 / 85.7 | 1163 / 534 | 3499, 0, 0, 0 | PASSED:13 / same |  |
+| bazel-gazelle | BOTH-FAIL² | 33.0 / 37.4 | 5.0 / 0.3 / 0.2 | 58.5 / 53.7 | 1662 / 745 | 2551, 0, 0, 0 | FAILED:2 PASSED:194 / same |  |
+| bazel-skylib | BOTH-FAIL² | 22.1 / 16.8 | 3.7 / 0.2 / 0.2 | 47.7 / 50.8 | 1274 / 487 | 689, 0, 0, 0 | FAILED:4 PASSED:158 / same |  |
+| buildtools | BOTH-FAIL² | 24.0 / 21.7 | 4.7 / 0.3 / 0.2 | 49.5 / 50.3 | 1776 / 916 | 566, 0, 0, 0 | FAILED:2 PASSED:23 / same |  |
+| examples-configurations | BOTH-FAIL³ | 8.8† / 4.6† | 2.1† / 0.1† / 0.2† | 2.1† / 0.2† | 410 / 103 | 0, 0, 0, 0 | — |  |
+| re2 | BOTH-FAIL⁴ | 12.1† / 7.9† | 3.3† / 0.2† / 1.2† | 16.4† / 16.8† | 1094 / 295 | 1085, 0, 0, 0 | PASSED:21 / same |  |
+| riegeli | BOTH-FAIL⁵ | 31.0† / 16.1† | 4.0† / 0.3† / 3.1† | 70.9† / 68.7† | 1355 / 692 | 2800, 0, 0, 0 | PASSED:2 / same |  |
+| rules_cc | BOTH-FAIL⁶ | 20.9† / 20.4† | 5.2† / 0.7† / 5.3† | 52.7† / 52.3† | 2720 / 1734 | 1984, 0, 0, 0 | FAILED:1 PASSED:453 SKIPPED:2 / same |  |
+| capnproto | DIFF⁷ | 18.5 / 10.9 | 3.4 / 0.2 / 0.1 | 28.9† / 18.3† | 1145 / 360 | 1270, 132, 0, 0 | FAILED TO BUILD:5 SKIPPED:14 / same | C5 |
+| examples-frontend | DIFF⁸ | 85.3† / 123.4† | 61.0† / 110.6† / 95.8† | 61.0† / 135.5† | 1536 / 1612 | 215801, 12, 2, 0 | PASSED:14 / same | C3, build id |
+| examples-java-maven | DIFF | 31.3 / 32.0 | 3.1 / 0.1 / 0.2 | 8.0 / 6.5 | 1206 / 443 | 133, 2, 0, 0 | PASSED:2 / same | C2 |
+| examples-java-tutorial | DIFF⁹ | 21.5† / 15.0† | 3.2† / 0.2† / 1.0† | 6.4† / 4.3† | 691 / 285 | 11, 2, 0, 0 | — | C2 |
+| examples-rust-deps-cargo | DIFF¹⁰ | 40.0 / 28.8 | 3.3 / 0.3 / 0.2 | 27.3 / 25.8 | 1072 / 356 | 103, 0, 0, 1 | — | C4 |
+| junit5-starter | DIFF | 24.0 / 21.9 | 3.5 / 0.2 / 0.2 | 8.2 / 5.4 | 1291 / 425 | 100, 28, 0, 0 | PASSED:1 / same | C2 |
+| rules_zig | DIFF¹¹ | 33.8 / 50.5 | 13.2 / 0.5 / 11.0 | 37.9 / 37.9 | 2370 / 1263 | 1292, 0, 0, 5 | PASSED:211 SKIPPED:4 / same | C6 |
+| with_cfg-examples | DIFF | 32.6 / 30.4 | 4.3 / 0.4 / 0.1 | 9.4 / 6.0 | 1721 / 1076 | 213, 31, 0, 0 | PASSED:20 / same | C2 |
+| yalantinglibs | DIFF⁷ | 11.3 / 6.6 | 3.2 / 0.2 / 0.2 | 67.9† / 54.2† | 641 / 236 | 128, 4, 0, 0 | FAILED TO BUILD:1 PASSED:2 SKIPPED:2 / same | C5 |
+| flatbuffers | BOTH-FAIL¹² | 17.5† / 7.5† | 3.0† / 0.3† / 0.4† | 3.0† / 0.5† | 674 / 214 | 0, 0, 0, 0 | — | B82 |
+| protobuf | DIFF¹³ | 66.3† / 45.4† | 7.1† / 0.8† / 13.7† | 285.7† / 300.2† | 3006 / 2718 | 19840, 21247, 0, 0 | — | B33, C2, C5 |
+| rules_jvm_external-simple | BOTH-FAIL¹⁴ | 60.6† / 25.8† | 4.5† / 0.3† / 1.4† | 4.1† / 1.5† | 1712 / 566 | 0, 0, 0, 0 | — | B47 |
+| rules_kotlin | DIFF¹⁵ | 36.8 / 42.7 | 5.2 / 0.4 / 0.2 | 56.2 / 62.2 | 2368 / 1422 | 2235, 1116, 0, 1 | PASSED:268 / same | C2, KSP srcjar |
+| rules_python-bzlmod | DIFF¹⁶ | 40.7 / 33.2 | 4.8 / 0.3 / 0.2 | 44.4 / 39.3 | 1961 / 2577 | 319, 0, 0, 1 | PASSED:31 / same | B34 |
 
 Notes:
 
-1. The first highway run's `build` coincided with a machine-wide load
-   spike (1-minute load up to 1,973 from other work; bazel-rs 382 s against
-   genuine's 206 s before it); `nobuild_cold,build` were rerun on their own
-   at load 15–33 (the row). Its `test` (both 739–749 s) ran at load 9–25.
-2. Phases `nobuild_cold,nobuild_warm,server,query` (`query //...` matches,
-   7,079 labels; `build --nobuild //...` exits 0 on both, with the
-   project's own `archive_override(kepler-formal)` and its seven patches:
-   B9 is fixed), then `build --keep_going //:openroad` by hand on the same
-   state, `--jobs=16`: genuine 714.0 s (load 12 → 38), bazel-rs 994.6 s
-   (load 20 → 52, other workers' runs), the same 13,480/13,479 actions and
-   7,642 sandboxed spawns, critical path 59.7 s against 63.5 s, peak RSS
-   2.9 GB against 3.0 GB. All 19,201 `bazel-out/k8-opt/bin` files match byte
-   for byte (none only on one side, C1's params files aside).
-3. The project's own failing tests (and the `query //...` exit 3 of its
+1. Phases `nobuild_cold,nobuild_warm,server,query` (`query //...` matches,
+   7,079 labels; `build --nobuild //...` exits 0 on both), then `build
+   --keep_going //:openroad` by hand on the same state, `--jobs=16`:
+   genuine 674.5 s (load 10–30), bazel-rs 1,010.2 s (load 12–76, median
+   28), the same 13,480 actions (5,838 internal, 7,642 sandboxed
+   spawns), critical path 54.5 s against 62.1 s, CPU time of the client
+   tree 10,828 s against 14,464 s, peak RSS 2.9 GB against 2.2 GB. All
+   19,201 `bazel-out/k8-opt/bin` files match byte for byte (all hashed;
+   none only on one side, C1's params files aside).
+2. The project's own failing tests (and the `query //...` exit 3 of its
    `--keep_going` loading errors) are identical on both tools.
-4. Both tools abort on genuine's `error loading project files: Every .bzl
-   file must have a corresponding package` (B24, fixed).
-5. Both fail the project's `//app` package; every test status, label and
-   output matches (B1 is fixed).
-6. Both fail the same way in loading (`sh_binary` undefined in `//python`,
+3. Both tools abort on genuine's `error loading project files: Every .bzl
+   file must have a corresponding package` (B24).
+4. Both fail the project's `//app` package; every test status, label and
+   output matches.
+5. Both fail the same way in loading (`sh_binary` undefined in `//python`,
    `@local_config_tf` not visible); the outputs and tests match.
-7. Both fail loading on `//:greeter`; only C2 differs.
-8. The compile errors (gcc 13) are identical; genuine keeps the failed
-   compiles' `.d` files and the failed test's runfiles manifest (C5).
-9. `cosmo.zip` (the `ape` toolchain) times out from this host on both
+6. Both tools fail the same `//...` analyses (`//cc/private:srcs` and the
+   integration tests needing a local `bazel`) and the same test
+   (`//tests/system_library:system_library_test`); all 456 test statuses
+   and all 1,984 `bazel-bin` files match.
+7. The compile errors (gcc 13) are identical (capnproto: "Build succeeded
+   for only 40 of 171 top-level targets", 1,177 processes on both); the
+   only-genuine files are the failed compiles' `.d` files (C5).
+8. `cosmo.zip` (the `ape` toolchain) times out from this host on both
    tools, so every command fails and the timings include connection
-   timeouts. Only C3 and next.js's random build id (2 files each side)
-   differ.
-10. corpus-parity6 (B49 fixed): the file lists match; the hash difference
-    is `_bs.out_dir/anyhow.d`, whose dep-info lines hold each tool's
-    absolute sandbox path (C4).
-11. corpus-parity6 (B50, B52 fixed): the compile errors (gcc 13), "Build
-    succeeded for only 40 of 171 top-level targets", the 1,177 processes
-    (697 internal) and the test statuses match; the 132 only-genuine files
-    are the failed compiles' `.d` files (C5). The `test` row is from a
-    non-LTO build of the final commit (the B52 fix came after the release
-    binary of the other phases).
-12. Genuine fails too (flatbuffers: the old rules_go's `CcInfo`;
-    rules_jvm_external-simple: no Android SDK); bazel-rs adds B12 / B47.
+   timeouts. Only C3 (10 files) and next.js's random build id (2 files
+   each side) differ.
+9. Both fail loading on `//:greeter`; only C2 differs.
+10. The hash difference is `_bs.out_dir/anyhow.d`, whose dep-info lines
+    hold each tool's absolute sandbox path (C4).
+11. Every phase exits 0 on both tools, `query //...` matches (610 labels),
+    all 1,292 `bazel-bin` files are common and the 215 test statuses match.
+    The 5 sampled hash differences are Zig compiler outputs that differ
+    only in their `__anon_<n>` symbol numbers (C6).
+12. Both fail: the old rules_go's removed `CcInfo`, aspect_bazel_lib 1.x's
+    `@local_config_platform` (genuine 9.3.1 reports the same error, so B12
+    is not a bazel-rs difference) and the `incompatible_use_toolchain_transition`
+    of its toolchain repositories. `ts/BUILD.bazel` loads `@aspect_rules_ts`
+    (failing) and then `@flatbuffers_npm`: genuine evaluates both loads and
+    also reports that repository's fetch failure (rules_js
+    `verify_node_modules_ignored`); bazel-rs stops at the first failing load
+    and never fetches it (B82). Exit codes and labels match.
 13. `//ruby/...` and `//csharp/...` excluded (genuine needs a system
-    `ruby`), no `test` phase. `query` matches (3,411 labels). Both fail
-    the same compiles (gcc 13) and the rules_ruby fetch; bazel-rs also fails
-    analysis of `//bazel/tests:test_compile_path_mapping` (B33). Of the
-    21,247 only-genuine files, 21,243 are C2 `_javac` class files and 3 are
-    B33's target. corpus-parity6 (B48, B49 fixed): 13,940 processes against
-    13,945 (the 5 are B33's target), the build 302 s against 290 s (was
-    648 s). corpus-last: unchanged (13,940 against 13,945 processes, 279 s
-    against 263 s); B33's target now fails with the path-mapping reason
-    named. Its warm run re-analyses (11.5 s): a command whose analysis
-    failed saves no snapshot.
-14. corpus-parity6 (B51 fixed): `build //...` succeeds on both; the
-    only-genuine files are C2's `_javac` classes, the hash difference a
-    KSP-generated srcjar. `test //...` runs nested Bazel integration tests
-    (`//examples:*_test`): genuine finished in 772 s (2 of them fail);
-    bazel-rs hit the 20-minute cap with 224 of 268 tests done (B53).
-    test-exec-speed (2026-11-22) reran it (row above) with a 30-minute
-    cap, started at a load below 40: both tools hit the cap (genuine 244,
-    bazel-rs 224 of 268 tests done; bazel-rs had finished more of the
-    nested tests, 16 against 11), so the test statuses are not compared.
-    B53 is not a bazel-rs difference: see its row.
-15. corpus-zig (B56, B57, B58 fixed): every phase exits 0 on both tools,
-    `query //...` matches (610 labels), all 1,292 `bazel-bin` files are
-    common and the 215 test statuses match. The 5 sampled hash
-    differences are Zig compiler outputs (a shared library and four
-    executables) that differ only in their `__anon_<n>` symbol numbers: they
-    depend on the shared host `/tmp/zig-cache` (C6); a genuine rebuild of
-    two of them after `clean` differs from genuine's own first build too.
+    `ruby`), no `test` phase. `query` matches (3,411 labels). Both fail the
+    same compiles (gcc 13) and the rules_ruby fetch; bazel-rs also fails
+    analysis of `//bazel/tests:test_compile_path_mapping` (B33, named as
+    the path-mapping gap): 13,940 processes against 13,945 (the 5 are that
+    target's). Of the 21,247 only-genuine files, 21,243 are C2 `_javac`
+    class files and 3 are B33's target. Its warm run re-analyses (13.7 s):
+    a command whose analysis failed saves no snapshot.
+14. Genuine fails too (no Android SDK); bazel-rs adds B47's transition
+    error.
+15. `build //...` succeeds on both; the only-genuine files are C2's
+    `_javac` classes, the hash difference a KSP-generated srcjar (not
+    investigated). `test //...` with `--local_test_jobs=4` (both tools)
+    finishes on both: 736.5 s against 738.8 s, all 268 tests PASSED on both
+    (B53 resolved). The tests print their logs (`--test_output=all` in the
+    project's rc) and the nested Bazel integration tests' logs hold the
+    nested runs' own test summaries; the harness counted those as tests
+    (280 against 281, because genuine skips printing two 1.7 MB logs over
+    `--experimental_ui_max_stdouterr_bytes`, while bazel-rs's run of the
+    same test wrote 0.6 MB: the nested Bazel's progress output depends on
+    timing). oss_corpus.py now skips printed test logs, nested ones
+    included; the row is re-parsed from the kept logs.
+16. `external/other_module+/other_module/pkg/bin_zipapp.zip` differs: the
+    zipper stores the inputs' file modes and symlinks (B34).
 
-16. corpus-last (B32 fixed): both tools fail the same `//...` analyses
-    (`//cc/private:srcs` and the integration tests needing a local `bazel`)
-    and the same test (`//tests/system_library:system_library_test`); all
-    456 test statuses and all 1,984 `bazel-bin` files match.
-
-**Summary.** 37 projects ran, all with no workaround edits for bazel-rs
+**Summary (first batch).** 37 projects, no workaround edits for bazel-rs
 bugs:
 
 - **16 identical** (same exit codes, `query //...` labels, `bazel-bin`
   file lists, sampled SHA-256s and test results): abseil-cpp, diff.bzl,
   examples-bzlmod-01, examples-bzlmod-05, examples-cpp-tutorial,
   examples-rules, examples-rust-ffi, googletest, highway, limdor-cpp,
-  limdor-rust, openroad (nobuild, query and the full `//:openroad` build:
-  19,201 identical files), rules-template, rules_go-basic_gazelle,
+  limdor-rust, openroad (nobuild, query and the full `//:openroad`
+  build: 19,201 identical files), rules-template, rules_go-basic_gazelle,
   rules_python-pip_parse, tink-cc-examples.
 - **7 fail identically** (the project's own failures): bazel-gazelle,
-  bazel-skylib, buildtools, examples-configurations, re2, riegeli, and
-  rules_cc since corpus-last (B32 fixed: all 456 test statuses match).
-- **14 differ**: 8 only cosmetically (examples-java-maven,
-  examples-java-tutorial, junit5-starter, with_cfg-examples since B43: C2;
-  yalantinglibs, capnproto: C5; examples-rust-deps-cargo: C4; rules_zig:
-  C6, its tests and file lists match since B56, B57 and B58), and
-  examples-frontend (C3), rules_python-bzlmod (B34: file modes and
-  symlinks in one zipapp), flatbuffers (B12) and rules_jvm_external-simple
-  (B47) where genuine fails too, protobuf (B33: one analysis test needs
-  path mapping, an explicit gap), rules_kotlin (builds; its `test //...`
-  does not finish in 30 minutes on either tool, B53).
-
-corpus-parity6 (2026-11-21, its LTO release binary) reran protobuf,
-examples-rust-deps-cargo, rules_kotlin and capnproto (their rows and notes
-10, 11, 13 and 14); corpus-rulescc (2026-11-23, a non-LTO release build)
-reran rules_cc (451 of genuine's 453 tests then); corpus-zig
-(2026-11-23, a non-LTO release build) reran rules_zig (its row and note
-15); corpus-last (2026-11-24, non-LTO release builds of its commits) reran
-rules_cc, with_cfg-examples, protobuf and rules_python-bzlmod (their rows,
-notes 13 and 16); the other rows are the corpus-rerun run's.
-
-`query //...` matches on all 37. Every common output sampled is
-byte-identical except B34's zipapp, C4's dep-info file and rules_zig's 5
-Zig outputs (C6). Fixed since the previous runs, by this run's evidence: B1, B2 (every
-rc option of the corpus; all `comment_out` edits dropped), B3, B9 (no
-vendored archive for OpenROAD), B10, B11, B14, B20, B21, B23, B24, B25.
+  bazel-skylib, buildtools, examples-configurations, re2, riegeli, rules_cc.
+- **9 differ only cosmetically**: capnproto, yalantinglibs (C5),
+  examples-java-maven, examples-java-tutorial, junit5-starter,
+  with_cfg-examples (C2), examples-rust-deps-cargo (C4), rules_zig (C6),
+  examples-frontend (C3 and next.js's random build id).
+- **5 differ**: protobuf (B33, one analysis test), rules_python-bzlmod
+  (B34, one zipapp), rules_kotlin (a KSP srcjar's hash, not investigated;
+  its 268 tests now match), and, where genuine fails too, flatbuffers (B82,
+  a missing second load error) and rules_jvm_external-simple (B47).
 
 ## Second batch (corpus-expand, 2026-11-24)
 
@@ -336,7 +330,7 @@ ruff/flake8/pylint aspects), rules_py, abseil-py, boringssl, cel-cpp, gRPC
 C++ and four more bazelbuild/examples bzlmod lessons. Each is pinned in
 `scripts/oss_corpus_repos.json` (the 27 entries after rules_python-pip_parse).
 
-Run: branch corpus-expand, main 46ef3df1 = bazel-rs 0.4.37, non-LTO release
+First run: branch corpus-expand, main 46ef3df1 = bazel-rs 0.4.37, non-LTO release
 build (sha256 `82e5df11…`), against genuine `bazel-9.3.1-linux-x86_64`; every
 phase of each JSON entry, caps as configured (20 minutes per command), one
 project at a time after the 1-minute load fell below 20; the load during
@@ -397,239 +391,117 @@ Screened out (genuine 9.3.1 fails, or the host lacks a toolchain):
 
 ### Results (second batch)
 
-Columns as in the first table († a non-zero exit; "—" for bazel-rs's RSS
-where it exited at startup). `query //...` labels match on the 24 projects
-where both tools answer; on aspect-bazel-examples and rules_py bazel-rs
-exited at startup (B59) and on grpc it hits the 20-minute cap (B66). In the
-corpus2-quick rerun aspect-bazel-examples' labels match too (6,834); rules_py
-still stops at startup (`strip`).
+From the corpus-rerun2 run (the released 0.5.1; method and columns as in
+the first table; † a non-zero exit, "—" for bazel-rs's RSS where it exited
+at startup). `query //...` labels match on all 27 (rules_py and grpc
+included: grpc's 11,419 labels, B66 fixed).
 
 | project | verdict | cold nobuild g / rs (s) | warm nobuild g-batch / g-server / rs (s) | build g / rs (s) | peak RSS cold g / rs (MB) | outputs (common, only g, only rs, hash diff) | tests g / rs | open differences |
 |---|---|---|---|---|---|---|---|---|
-| abseil-py | **OK** | 10.4 / 6.9 | 2.8 / 0.2 / 0.2 | 3.0 / 0.6 | 625 / 243 | 222, 0, 0, 0 | PASSED:26 / same | |
-| boringssl | **OK** | 13.6 / 7.2 | 3.6 / 0.1 / 0.2 | 24.6 / 26.9 | 610 / 261 | 1479, 0, 0, 0 | PASSED:5 / same | |
-| examples-bzlmod-02 | **OK** | 11.8 / 7.3 | 3.0 / 0.2 / 0.2 | 5.6 / 2.8 | 744 / 251 | 195, 0, 0, 0 | — | |
-| examples-bzlmod-04 | **OK** | 10.8 / 5.3 | 3.6 / 0.2 / 0.2 | 2.7 / 0.2 | 777 / 241 | 1, 0, 0, 0 | — | |
-| examples-bzlmod-06 | **OK** | 8.4 / 3.5 | 2.5 / 0.1 / 0.1 | 2.6 / 0.1 | 308 / 85 | 1, 0, 0, 0 | — | |
-| grpc-gateway | **OK** | 24.9 / 23.6 | 4.2 / 0.3 / 0.2 | 35.6 / 32.8 | 1584 / 562 | 1294, 0, 0, 0 | PASSED:13 / same | |
-| rules_buf-bzlmod | **OK** | 27.8 / 23.5 | 3.5 / 0.2 / 0.2 | 47.5 / 47.6 | 1245 / 418 | 460, 0, 0, 0 | PASSED:1 / same | |
-| rules_js-e2e-bzlmod | **OK** | 18.5 / 11.9 | 3.7 / 0.3 / 0.2 | 9.7 / 8.0 | 1149 / 467 | 14220, 0, 0, 0 | PASSED:9 / same | |
-| rules_oci-smoke | **OK** | 18.2 / 11.5 | 3.0 / 0.2 / 0.1 | 4.2 / 0.7 | 765 / 297 | 60, 0, 0, 0 | PASSED:6 / same | |
-| rules_ts-examples | **OK**² | 18.1 / 120.8 | 3.9 / 0.3 / 2.6 | 62.4 / 56.4 | 1432 / 542 | 54123, 0, 0, 0 | PASSED:188 / same | |
-| cel-cpp | BOTH-FAIL | 27.0† / 23.6† | 4.1† / 0.3† / 5.3† | 218.7† / 215.8† | 1703 / 737 | 4599, 0, 0, 0 | PASSED:244 TIMEOUT:1 / same | |
-| examples-bzlmod-03 | BOTH-FAIL | 8.9† / 3.2† | 2.5† / 0.1† / 0.1† | 2.3† / 0.1† | 309 / 86 | 2, 0, 0, 0 | — | |
-| bazel-remote | DIFF | 28.2† / 27.9† | 4.9† / 0.4† / 2.8† | 38.1† / 35.7† | 1606 / 844 | 973, 0, 0, 1 | PASSED:13 / same | stamp |
-| grpc | DIFF² | 39.5 / 43.4 | 5.2 / 0.3 / 0.2 | 362.4 / 384.5 | 1704 / 1149 | 9360, 0, 0, 0 | — | query B66 (fixed on main since) |
-| rules_foreign_cc-examples | DIFF² | 25.7 / 14.0 | 5.9 / 0.2 / 0.2 | 24.5 / 19.1 | 1446 / 724 | 345, 0, 0, 17 | PASSED:23 / same | C4 |
-| rules_lint-python | DIFF⁴ | 29.2 / 51.1 | 3.9 / 0.3 / 0.2 | 25.1† / 23.8† | 1968 / 810 | 311, 1, 0, 1 | FAILED:2 FAILED TO BUILD:1 PASSED:41 / same | C4, C5 |
-| rules_lint-shell | **OK**⁴ | 32.1 / 37.4 | 3.6 / 0.3 / 0.2 | 23.5 / 21.4 | 1361 / 494 | 65, 0, 0, 0 | PASSED:8 / same | |
-| rules_nodejs-smoke | DIFF | 14.2 / 9.6 | 3.8 / 0.4 / 0.2 | 4.2 / 1.9 | 1300 / 592 | 54, 0, 0, 1 | PASSED:10 / same | C4 |
-| rules_pkg | DIFF² | 19.6 / 17.8 | 3.6 / 0.2 / 0.2 | 57.0† / 53.9† | 1222 / 577 | 955, 1, 0, 2 | FAILED:1 PASSED:104 SKIPPED:19 / FAILED:2 PASSED:103 SKIPPED:19 | B34, C5 |
-| rules_rust-all_crate_deps | **OK**³ | 71.8 / 54.8 | 3.4 / 0.4 / 0.2 | 34.4 / 31.0 | 1528 / 593 | 368, 0, 0, 0 | PASSED:3 / same | |
-| rules_rust-sys | DIFF | 25.1 / 20.3 | 9.0 / 0.2 / 7.8 | 36.6 / 35.2 | 1441 / 386 | 815, 0, 0, 3 | PASSED:1 / same | C4 |
-| rules_scala-scala3 | DIFF | 22.6 / 18.5 | 3.1 / 0.1 / 0.2 | 11.7† / 11.6† | 1057 / 326 | 10, 2, 0, 0 | — | C5 |
-| aspect-bazel-examples | RS-FAIL³ | 144.3 / 148.8 | 7.0 / 0.7 / 0.5 | 83.3 / 97.0† | 2462 / 2083 | 156499, 2587, 3, 1 | FAILED:2 PASSED:32 / FAILED:1 FAILED TO BUILD:5 PASSED:25 | B78 |
-| bb-storage | **OK**³ | 151.0 / 138.9 | 5.5 / 0.3 / 0.2 | 57.1 / 68.2 | 2034 / 1306 | 4521, 0, 0, 0 | PASSED:36 / same | |
-| rules_java | RS-FAIL⁶ | 28.9 / 33.7† | 5.7 / 0.4 / 5.6† | 9.2 / 10.6† | 1850 / 1664 | 982, 53, 0, 0 | PASSED:321 / PASSED:308 | B67 (output paths, aspect platform), B33 |
-| rules_py | RS-FAIL² | 38.5 / 0.1† | 7.8 / 0.9 / 0.1† | 118.7 / 0.1† | 3923 / — | 0, 4004, 0, 0 | FAILED:2 PASSED:413 / 0 | B33 (`strip` at startup) |
-| rules_rust-proto | **OK**⁴ | 75.4 / 69.6 | 3.7 / 0.3 / 0.2 | 62.1 / 62.7 | 1585 / 776 | 402, 0, 0, 0 | PASSED:3 / same | |
+| abseil-py | **OK** | 11.6 / 6.5 | 3.1 / 0.2 / 0.2 | 3.2 / 0.6 | 690 / 238 | 222, 0, 0, 0 | PASSED:26 / same |  |
+| bb-storage | **OK** | 149.8 / 135.5 | 5.3 / 0.5 / 0.2 | 58.7 / 66.7 | 2050 / 1260 | 4521, 0, 0, 0 | PASSED:36 / same |  |
+| boringssl | **OK** | 12.8 / 6.9 | 3.0 / 0.1 / 0.2 | 27.0 / 28.0 | 643 / 250 | 1479, 0, 0, 0 | PASSED:5 / same |  |
+| examples-bzlmod-02 | **OK** | 11.6 / 7.0 | 3.1 / 0.2 / 0.2 | 5.6 / 2.7 | 846 / 249 | 195, 0, 0, 0 | — |  |
+| examples-bzlmod-04 | **OK** | 9.8 / 5.1 | 2.9 / 0.2 / 0.2 | 2.7 / 0.2 | 782 / 234 | 1, 0, 0, 0 | — |  |
+| examples-bzlmod-06 | **OK** | 8.2 / 3.7 | 2.2 / 0.2 / 0.1 | 2.6 / 0.1 | 319 / 80 | 1, 0, 0, 0 | — |  |
+| grpc-gateway | **OK** | 42.5 / 56.3 | 5.3 / 0.2 / 0.2 | 36.8 / 42.8 | 1525 / 545 | 1294, 0, 0, 0 | PASSED:13 / same |  |
+| rules_buf-bzlmod | **OK** | 26.9 / 24.1 | 3.2 / 0.2 / 0.1 | 48.9 / 46.9 | 1389 / 414 | 460, 0, 0, 0 | PASSED:1 / same |  |
+| rules_js-e2e-bzlmod | **OK** | 17.2 / 11.5 | 3.2 / 0.2 / 0.2 | 8.8 / 6.8 | 1221 / 477 | 14220, 0, 0, 0 | PASSED:9 / same |  |
+| rules_lint-shell | **OK** | 26.4 / 27.4 | 3.8 / 0.3 / 0.2 | 26.3 / 22.7 | 1232 / 449 | 65, 0, 0, 0 | PASSED:8 / same |  |
+| rules_oci-smoke | **OK** | 16.3 / 8.6 | 2.8 / 0.2 / 0.1 | 3.2 / 0.6 | 794 / 281 | 60, 0, 0, 0 | PASSED:6 / same |  |
+| rules_rust-all_crate_deps | **OK** | 70.0 / 53.2 | 3.4 / 0.3 / 0.2 | 33.3 / 32.8 | 1841 / 553 | 368, 0, 0, 0 | PASSED:3 / same |  |
+| rules_rust-proto | **OK** | 70.4 / 71.2 | 4.0 / 0.2 / 0.2 | 59.6 / 57.9 | 1658 / 694 | 402, 0, 0, 0 | PASSED:3 / same |  |
+| rules_ts-examples | **OK** | 18.3 / 14.4 | 4.1 / 0.2 / 2.7 | 56.9 / 53.6 | 1349 / 550 | 54123, 0, 0, 0 | PASSED:188 / same |  |
+| cel-cpp | BOTH-FAIL¹ | 25.6† / 24.9† | 3.8† / 0.3† / 5.5† | 230.6† / 247.1† | 1472 / 743 | 4599, 0, 0, 0 | PASSED:244 TIMEOUT:1 / same |  |
+| examples-bzlmod-03 | BOTH-FAIL² | 8.9† / 3.7† | 2.4† / 0.2† / 0.1† | 2.7† / 0.1† | 337 / 84 | 2, 0, 0, 0 | — |  |
+| grpc | BOTH-FAIL³ | 42.3 / 47.5 | 5.2 / 0.3 / 0.2 | 307.1 / 318.0 | 1767 / 1143 | 9360, 0, 0, 0 | — |  |
+| rules_foreign_cc-examples | DIFF⁴ | 18.7 / 13.2 | 4.5 / 0.3 / 0.2 | 19.9 / 20.2 | 1430 / 717 | 345, 0, 0, 17 | PASSED:23 / same | C4 |
+| rules_lint-python | DIFF⁵ | 28.4 / 51.7 | 4.2 / 0.3 / 0.2 | 25.9† / 24.0† | 1612 / 782 | 311, 1, 0, 1 | FAILED:2 FAILED TO BUILD:1 PASSED:41 / same | C4, C5 |
+| rules_nodejs-smoke | DIFF⁶ | 14.5 / 9.9 | 3.3 / 0.4 / 0.2 | 3.4 / 1.8 | 1350 / 585 | 54, 0, 0, 1 | PASSED:10 / same | C4 |
+| rules_rust-sys | DIFF⁶ | 25.3 / 21.5 | 9.2 / 0.3 / 6.6 | 35.5 / 35.4 | 1370 / 399 | 815, 0, 0, 3 | PASSED:1 / same | C4 |
+| rules_scala-scala3 | DIFF⁷ | 19.1 / 13.9 | 3.6 / 0.2 / 0.2 | 12.5† / 11.5† | 804 / 348 | 10, 2, 0, 0 | — | C5 |
+| bazel-remote | DIFF⁸ | 29.0† / 27.8† | 4.5† / 0.3† / 2.8† | 40.2† / 38.1† | 1547 / 839 | 973, 0, 0, 1 | PASSED:13 / same | stamp |
+| rules_pkg | DIFF⁹ | 20.3 / 17.4 | 3.6 / 0.2 / 0.2 | 60.4† / 55.7† | 1319 / 573 | 955, 1, 0, 2 | FAILED:1 PASSED:104 SKIPPED:19 / FAILED:2 PASSED:103 SKIPPED:19 | B34, stamp, C5 |
+| aspect-bazel-examples | RS-FAIL¹⁰ | 149.3 / 116.6 | 6.5 / 0.8 / 0.5 | 88.0 / 136.2† | 2997 / 2060 | 156499, 2587, 3, 1 | FAILED:2 PASSED:32 / FAILED:1 FAILED TO BUILD:5 PASSED:25 | B78 |
+| rules_java | RS-FAIL¹¹ | 79.2 / 38.3† | 4.7 / 0.3 / 5.6† | 8.8 / 11.4† | 2020 / 1613 | 973, 62, 0, 0 | PASSED:321 / PASSED:305 | B67, B33 |
+| rules_py | RS-FAIL¹² | 43.1 / 0.1† | 8.2 / 0.9 / 0.1† | 120.6 / 0.1† | 4056 / — | 0, 4004, 0, 0 | FAILED:2 PASSED:413 / 0 | B33 (`strip` at startup) |
 
 Notes:
 
-- abseil-py, boringssl, the three bzlmod lessons, grpc-gateway, rules_buf,
-  rules_js e2e and rules_oci smoke: every phase identical.
-- cel-cpp: both report the same loading errors in `@cel-spec` (native
-  `proto_library` removed), so every command exits 1 on both; the 4,599
-  outputs and the 245 test statuses (one TIMEOUT on both) match.
-  examples-bzlmod-03: the lesson's `@emojis` is not visible on both tools.
-- bazel-remote: both fail the arm64/darwin cross targets the same way (no
-  matching toolchain for gozstd's libzstd); the hash difference is rules_oci's
-  stamped `_bazel-remote-image.digest_stamp.json` (stamping; not
-  investigated).
-- rules_lint-shell, rules_rust-all_crate_deps: the hash differences are
-  `.repo_mapping` files missing lines (B62).
-- rules_nodejs-smoke `help.txt` and rules_rust-sys's bzip2 objects and
-  rlib: absolute paths of each tool's tree (`npm --help` prints npm's
-  install path; cc-rs's debug info holds the sandbox path), C4.
-- rules_pkg: the only-genuine `distro/changelog.txt` is a failed action's
-  output (both fail `git_changelog` without `.git`), C5;
-  `tests/stamped_zip.zip` is stamped. bazel-rs fails `pkg_tar_test`'s
-  `test_preserve_mode`: the tar of the source `tests/testdata/hello.txt`
-  (0644) records 0444, the mode of bazel-rs's read-only staged store blob
-  (B34's cause), and so the `.tar`'s hash differs. Its test summary names
-  the two tests of `@mappings_test_external_repo` canonically (B71).
-- rules_scala-scala3: both fail scalac the same way; genuine keeps the
-  failed action's `lib.diagnosticsproto` and `lib.sdeps` (C5).
-- rules_ts-examples: B65 (4 `ts_proto_library` actions fail, 8 tests).
-- rules_rust-proto: B61 (every prost target).
-- rules_java: 41 analysis tests do not analyze: 36 Starlark transitions on
-  Java options (B67; 12 of them on `experimental_output_paths`, B33's gap),
-  2 `Target.actions` in `artifact_closure`'s aspect (B61), 1
-  `java_common.compile` with coverage (B67), 1 testonly error under
-  `expect_failure` (B70), 1 a native genrule's `Target.actions` (B32's gap).
-- rules_foreign_cc-examples: B64 (every native-tool toolchain).
-- rules_lint-python: B60 (aspect_rules_py's interpreter toolchain).
-- (corpus-expand, before the rerun) rules_py, aspect-bazel-examples, grpc, bb-storage: B59 at startup. With
-  the rc line commented out the next blocker is rules_py: B59 again
-  (`--experimental_output_paths=strip`), then B60; aspect-bazel-examples:
-  B63; grpc: B68 (`build --nobuild //:all`), and `query //...` hangs (B66);
-  bb-storage: B69 (39 of 222 targets not analyzed).
+1. Both report the same loading errors in `@cel-spec` (native
+   `proto_library` removed), so every command exits 1 on both; the 4,599
+   outputs and the 245 test statuses (one TIMEOUT on both) match.
+2. The lesson's `@emojis` is not visible on both tools.
+3. `build //:all` identical (9,360 outputs, B59/B68 fixed); `query
+   --keep_going //...` exits 3 on both (genuine's own package errors) with
+   the same 11,419 labels (B66 and its missing-labels follow-up fixed).
+4. The 17 hash differences are CMake/Make/Ninja logs and meson outputs
+   holding each tool's absolute paths (C4); the 23 tests match (B64, B74
+   fixed).
+5. Tests identical (B60 fixed), no `.repo_mapping` differences (B62 fixed);
+   left: bandit's report (C4) and a failed action's output (C5).
+6. `help.txt` (`npm --help` prints npm's install path) and rules_rust-sys's
+   bzip2 objects and rlib (cc-rs's debug info holds the sandbox path): C4.
+7. Both fail scalac the same way; genuine keeps the failed action's
+   `lib.diagnosticsproto` and `lib.sdeps` (C5).
+8. Both fail the arm64/darwin cross targets the same way (no matching
+   toolchain for gozstd's libzstd); the hash difference is rules_oci's
+   stamped `_bazel-remote-image.digest_stamp.json` (`--stamp` with a
+   `workspace_status_command` that runs `git` in a copy without `.git`;
+   not investigated).
+9. The only-genuine `distro/changelog.txt` is a failed action's output
+   (both fail `git_changelog` without `.git`), C5; `tests/stamped_zip.zip`
+   is stamped. bazel-rs fails `pkg_tar_test`'s `test_preserve_mode`: the
+   tar of the source `tests/testdata/hello.txt` (0644) records 0444, the
+   mode of bazel-rs's read-only staged store blob (B34), so the `.tar`'s
+   hash differs. The test summary labels match (B71 fixed).
+10. `query //...` identical (6,834 labels), every target analyzes and
+    156,499 outputs match (B59, B63, B72, B76, B77, B79 fixed). Left: B78
+    (toolchains_llvm's `cc_wrapper.sh` finds clang through the `realpath`
+    of its own path, so every cgo GoStdlib action fails `could not find
+    clang`: 2,587 Go outputs and 5 tests do not build). Also different, not
+    investigated: the two Angular tests fail on genuine and pass on
+    bazel-rs (environment), `//oci_python_image/hello_world:test_container`
+    fails on bazel-rs (3 only-bazel-rs blobs in its image), and one mypy
+    cache file's hash.
+11. 305 of 321 tests (0.5.1). The 16 that do not analyze: 12 Starlark
+    transitions on `experimental_output_paths` (B33's gap) and 4 of B67
+    (`experimental_java_classpath`, `experimental_run_android_lint_on_java_rules`,
+    `java_common.compile` under coverage, and `test_strict_java_deps_error`'s
+    testing aspect reading `ctx.var` before the target platform is
+    resolved). main after 0.5.1 fixes the first three (parity-small: 308 of
+    321).
+12. bazel-rs stops at startup on `--experimental_output_paths=strip`
+    (`bazel/workspace.bazelrc:22`, B33's explicit path-mapping gap); its
+    `query //...` (no `build` options) matches, 7,996 labels.
 
-**Summary (second batch).** 27 projects: 9 identical (abseil-py,
+**Summary (second batch).** 27 projects: 14 identical (abseil-py, bb-storage,
 boringssl, examples-bzlmod-02/04/06, grpc-gateway, rules_buf-bzlmod,
-rules_js-e2e-bzlmod, rules_oci-smoke), 2 fail identically (cel-cpp,
-examples-bzlmod-03), 7 differ (bazel-remote, rules_nodejs-smoke,
-rules_rust-sys, rules_scala-scala3: stamps, C4, C5 only; rules_lint-shell,
-rules_rust-all_crate_deps: B62; rules_pkg: B34, B71), and 9 fail on bazel-rs
-only (aspect-bazel-examples, bb-storage, grpc, rules_py: B59;
-rules_foreign_cc-examples: B64; rules_java: B67, B61, B70; rules_lint-python:
-B60; rules_rust-proto: B61; rules_ts-examples: B65). 13 new bugs, B59–B71.
+rules_js-e2e-bzlmod, rules_lint-shell, rules_oci-smoke,
+rules_rust-all_crate_deps, rules_rust-proto, rules_ts-examples), 3 fail
+identically (cel-cpp, examples-bzlmod-03, grpc's `query`), 5 differ only
+cosmetically (rules_foreign_cc-examples, rules_lint-python,
+rules_nodejs-smoke, rules_rust-sys: C4; rules_scala-scala3: C5), 2 differ
+(bazel-remote: a stamped digest, not investigated; rules_pkg: B34) and 3 are
+blocked on bazel-rs (aspect-bazel-examples: B78; rules_java: B67, B33;
+rules_py: B33's `strip`).
 
-### Rerun on corpus2-quick (2026-11-24)
+**Summary (all 64).** 30 identical, 10 fail identically, 14 differ only
+cosmetically, 7 differ, 3 blocked. Confirmed fixed by this run's
+evidence: B53 (resolved with `--local_test_jobs=4`), B59 (except `strip`),
+B60–B66, B68–B72, B74, B76, B77, B79; B12 is genuine's own error. New:
+B82 (a package's later failing loads). Open, by projects affected: B33 (3:
+protobuf, rules_java, rules_py), B34 (2: rules_python-bzlmod, rules_pkg),
+B67 (1: rules_java), B78 (1: aspect-bazel-examples), B47 (1:
+rules_jvm_external-simple, genuine fails too), B82 (1: flatbuffers, genuine
+fails too); not investigated: bazel-remote's stamped digest, rules_kotlin's
+KSP srcjar, aspect-bazel-examples' `test_container`.
 
-Rows marked ² are from a rerun on branch corpus2-quick (thin-LTO release
-builds of the branch; the last fixes, B72/B74–B77, in a second and
-third binary), the same pinned commits and phases, one project at a time.
-The DNS resolver of the host timed out intermittently during the first
-reruns (genuine's registry and npm downloads failed with `Unknown host`,
-Go's with `i/o timeout`): those projects ran again, and for rules_ts-examples,
-whose genuine `nobuild_cold` still hit it, the genuine cold time and RSS are
-corpus-expand's (genuine is unchanged). The rerun projects' blockers now:
+### Earlier reruns of the second batch
 
-- rules_ts-examples: **identical** (B65 fixed: all 54,123 outputs and 188
-  tests).
-- grpc: `build //:all` identical (9,360 outputs) since B59/B68; only `query
-  //...` still hit the cap (B66; fixed on main by frozen-assert after this
-  rerun's binaries were built).
-- rules_foreign_cc-examples: tests identical (23); B64 and B74 fixed; the 17
-  hash differences are CMake/Make/Ninja logs and meson outputs holding each
-  tool's absolute paths (C4).
-- rules_lint-python: tests identical (B60 fixed); outputs differ by the
-  `.repo_mapping` files (B62), bandit's report (C4) and a failed action's
-  output (C5).
-- rules_pkg: B71 fixed; `pkg_tar_test` still fails on B34.
-- rules_java: 281 of 321 tests (B70 fixed); the rest are B67 (37), B61 (2)
-  and B32's native-genrule gap (1).
-- bb-storage: past B59; its blocker is B69 (27 of 36 tests do not build).
-- rules_py: still `--experimental_output_paths=strip` at startup (B33, the
-  explicit path-mapping gap). With that rc line commented out in a private
-  copy, B60 and B75 are fixed and 3,717 targets analyze; left: two
-  `platform(flags = ...)` platforms (not modelled), py_pex_binary's
-  "could not resolve the binary's interpreter version from its venv
-  toolchain" (behind those platforms) and `cannot create REPO.bazel: File
-  exists` once (not investigated).
-- aspect-bazel-examples: past B59, B63, B72, B76 and B77: `query //...`
-  identical (6,834 labels), 246 of 247 targets analyze and 156,499 outputs
-  match. Left: B78 (toolchains_llvm's `cc_wrapper.sh` finds clang through
-  the `realpath` of its own path, so every cgo GoStdlib action fails `could
-  not find clang`: 2,587 Go outputs and 5 tests do not build) and B79
-  (`//tools:bazel_env`: its `_extract_toolchain_info` aspect on a
-  `_toolchain` target reports `attribute target: dependency
-  //tools:bazel_env.genrule_or_toolchain.jdk was not resolved`). Tests also
-  differ where genuine fails (the two Angular tests, rails' cache controller
-  test: environment) and on `//oci_python_image/hello_world:test_container`
-  (not investigated).
-
-New bugs of the rerun (repros as above; genuine fixture
-tests/fixtures/corpus2_quick):
-
-- **B72**: an extension whose implementation creates `r(name = "r", items =
-  ["i%d" % i for i in range(150000)])` (an `attr.string_list`): bazel-rs
-  `repository @@+ext+r: host preparation node limit exceeded (100000 nodes)`.
-- **B73**: any MODULE.bazel error (e.g. `bazel_dep(name = "BAD", version =
-  "1")`): genuine exits 48, bazel-rs 1 (fixed on corpus2-rest).
-- **B74**: `ctx.actions.declare_file("a///b.txt")` (genuine `a/b.txt`;
-  `../x` and `/abs` keep genuine's `not under package directory` error).
-- **B75**: `r(name = "t", deps = {":a": "x"})` for an `attr.label_list`
-  (genuine: the dict's keys); `attr.string_list(default = {...})` keeps the
-  @Param `want 'sequence'` error.
-- **B76**: `glob(["src/**/*"], exclude = ["dist/"])`.
-- **B77**: a transition with inputs/outputs `//command_line_option:host_cpu`
-  and `//command_line_option:platform_suffix`.
-- **B78**: a repository rule writing a script that resolves
-  `$(realpath "$0")`, goes up two directories and enters a sibling
-  repository by its canonical name (toolchains_llvm's cc wrapper).
-- **B79**: aspect-bazel-examples `build //tools:bazel_env` (not reduced).
-
-**Summary (rerun).** Of the 9 projects that failed on bazel-rs only,
-rules_ts-examples is now identical, grpc, rules_foreign_cc-examples and
-rules_lint-python differ only by B66 (query; fixed since on main), C4/C5 and B62, rules_pkg by
-B34; aspect-bazel-examples (B78, B79), bb-storage (B69), rules_java (B67,
-B61) and rules_py (`strip`, B33) still fail. Fixed: B59 (except `strip`),
-B60, B63, B64, B65, B68, B70, B71 and the rerun's B72, B74–B77; new open:
-B73, B78, B79.
-
-### Rerun (corpus2-rest, 2026-11-24)
-
-³ Rerun of rules_rust-all_crate_deps, rules_lint-shell, rules_lint-python,
-rules_java, bb-storage, rules_rust-proto and aspect-bazel-examples with
-branch corpus2-rest (`e56ed089`, a non-LTO release build), host load 8–23:
-
-- bb-storage: **identical** (B69 fixed: all 36 tests and 4,521 outputs).
-- rules_rust-all_crate_deps: **identical** (B62's config_setting part
-  fixed).
-- rules_lint-shell, rules_lint-python: the `.repo_mapping` hash differences
-  are the open aspect-dependency part of B62 (rules_lint's lint aspect's
-  dependencies and toolchains); rules_lint-python's others are C4/C5.
-- rules_java: 305 of 321 tests (B67 mostly fixed; `artifact_closure`'s
-  `Target.actions`, counted as B61 before, no longer fails). Left: 12
-  `experimental_output_paths` (B33), `experimental_java_classpath`,
-  `experimental_run_android_lint_on_java_rules`, `java_common.compile`
-  under coverage, and `test_strict_java_deps_error`: rules_testing's
-  `testing_aspect` reads `ctx.var` where the target platform was not
-  resolved yet (`rule implementation needs the target platform`; aspect
-  applications have no deferred-platform retry).
-- rules_rust-proto: B61 (rules_rust's `rust_analyzer_aspect`, attached by
-  prost's toolchain attributes, reads `target.actions` of `rust_proc_macro`
-  crates).
-- aspect-bazel-examples: B79 fixed (`//tools:bazel_env` analyzes and
-  builds); B78 is the blocker (2,587 Go outputs, 5 tests): the cgo
-  wrapper's `toolchain_path_prefix` is
-  `<cache>/repositories/direct/trees/toolchains_llvm++llvm+llvm_toolchain_llvm/`.
-
-Also fixed on corpus2-rest: B73 (module resolution failures exit 48). New:
-B80 (`mod graph` evaluates no extensions).
-
-### Rerun (aspect-actions, 2026-11-24)
-
-⁴ Rerun of rules_rust-proto, rules_lint-shell, rules_lint-python and
-rules_java with branch aspect-actions (`01bce777`, a non-LTO release
-build), host load 18–30 (another worker's builds and a ~/code measurement
-ran beside it):
-
-- rules_rust-proto: **identical** (B61 fixed: `rust_analyzer_aspect` reads
-  the actions of each `rust_proc_macro` crate on demand; 402 outputs, 3
-  tests).
-- rules_lint-shell: **identical** (B62's aspect part fixed: the lint
-  aspect's `shellcheck_bin`, `.shellcheckrc` and sarif_parser toolchain
-  repositories are in `shellcheck_test`'s repo mapping manifests).
-- rules_lint-python: the 19 `.repo_mapping` differences are gone (B62);
-  left: bandit's report (C4) and a failed action's output (C5).
-- rules_java: unchanged (305 of 321 tests; the same 16, B67 and B33).
-
-### Rerun (parity-small, 2026-11-25)
-
-⁶ Rerun of rules_java with branch parity-small (`5f67d083`, a non-LTO
-release build), host load ~20:
-
-- rules_java: 308 of 321 tests (was 305). Fixed:
-  `test_dependency_artifacts_with_exports` (`--experimental_java_classpath`
-  is a configuration option; `javabuilder` gives the Javac action's
-  `--reduce_classpath_mode JAVABUILDER_REDUCED --deps_artifacts …`),
-  `test_java_binary_can_set_transitive_validation`
-  (`--experimental_run_android_lint_on_java_rules` is a configuration
-  option) and `test_coverage_uses_coverage_runner_for_main` (a test rule's
-  `java_common.compile` is not instrumented without
-  `--instrument_test_targets`). Left: the 12 `experimental_output_paths`
-  tests (B33) and `test_strict_java_deps_error` (rules_testing's
-  `testing_aspect` reads `ctx.var` where the target platform was not
-  resolved yet; aspect applications have no deferred-platform retry — the
-  retry would have to re-plan the application on the coordinator after
-  resolving the platform, also for applications analyzed on workers, so it
-  is left open). 3 more outputs in common (982; 53 genuine-only, the
-  analysis tests that do not analyze).
-
-Also on parity-small: B80 fixed (`mod` evaluates every extension).
+corpus2-quick, corpus2-rest, aspect-actions and parity-small (2026-11-24/25)
+reran subsets of the second batch while B59–B79 were fixed; their tables
+and notes are in this file's git history. The bugs they found are below.
 
 ### New bugs (second batch), with minimal repros
 
@@ -753,102 +625,143 @@ files shown, run as `bazel --ignore_all_rc_files build //:t`; genuine
   through `use_repo_rule`, a test in it, `test_suite(name = "all", tests =
   ["@other//:t"])`, `bazel test //:all`.
 
+New bugs of the corpus2-quick rerun (genuine fixture
+tests/fixtures/corpus2_quick):
+
+- **B72**: an extension whose implementation creates `r(name = "r", items =
+  ["i%d" % i for i in range(150000)])` (an `attr.string_list`): bazel-rs
+  `repository @@+ext+r: host preparation node limit exceeded (100000 nodes)`.
+- **B73**: any MODULE.bazel error (e.g. `bazel_dep(name = "BAD", version =
+  "1")`): genuine exits 48, bazel-rs 1 (fixed on corpus2-rest).
+- **B74**: `ctx.actions.declare_file("a///b.txt")` (genuine `a/b.txt`;
+  `../x` and `/abs` keep genuine's `not under package directory` error).
+- **B75**: `r(name = "t", deps = {":a": "x"})` for an `attr.label_list`
+  (genuine: the dict's keys); `attr.string_list(default = {...})` keeps the
+  @Param `want 'sequence'` error.
+- **B76**: `glob(["src/**/*"], exclude = ["dist/"])`.
+- **B77**: a transition with inputs/outputs `//command_line_option:host_cpu`
+  and `//command_line_option:platform_suffix`.
+- **B78**: a repository rule writing a script that resolves
+  `$(realpath "$0")`, goes up two directories and enters a sibling
+  repository by its canonical name (toolchains_llvm's cc wrapper).
+- **B79**: aspect-bazel-examples `build //tools:bazel_env` (not reduced).
+
+### New bugs (corpus-rerun2), with minimal repros
+
+- **B82: a package's later failing loads** (flatbuffers; genuine fails too).
+  A BUILD file whose first `load` fails (an unknown repository) and whose
+  second `load` names a repository whose fetch fails: genuine evaluates
+  every load of the file and reports both (`An error occurred during the
+  fetch of repository '+bad+bad'` and `error loading package 'pkg': Unable
+  to find package for @@[unknown repo 'nonexistent' …]`); bazel-rs reports
+  only the first (without genuine's `error loading package 'pkg':`
+  prefix) and never fetches the second repository. Exit codes match (1).
+  Repro: `MODULE.bazel` with `bad = use_repo_rule("//:r.bzl", "bad")`,
+  `bad(name = "bad")`; `r.bzl` with a repository rule whose implementation
+  calls `fail()`; `pkg/BUILD.bazel` with `load("@nonexistent//:defs.bzl",
+  "a")`, `load("@bad//:defs.bzl", "b")`, `filegroup(name = "t")`; `build
+  --nobuild --keep_going //pkg:t` (checked with genuine 9.3.1 and the
+  released 0.5.1).
+
 ## Bugs (ranked by the number of projects they block)
 
-Every bug below is a case where genuine 9.3.1 succeeds and bazel-rs fails or
-differs. The logs are in `<work>/logs/<project>/rs/<phase>.err`. The status
-column is from the 2026-11-20 full rerun (corpus-rerun): open bugs first,
-ranked by the projects they affect in that run, then the fixed ones. B59–B71 are from the second
-batch (corpus-expand, 2026-11-24), B72–B75 from its rerun on corpus2-quick; their
-rows lead the table.
+Every bug below is a case where genuine 9.3.1 succeeds (or fails
+differently) and bazel-rs fails or differs. The logs are in
+`<work>/logs/<project>/rs/<phase>.err`. The "corpus-rerun2" column is this
+run's evidence (the released 0.5.1, all 64 projects, 2026-11-25): open
+bugs first, ranked by the projects they affect in it; the "status" column
+says where each was found or fixed. B59–B71 are from the second batch
+(corpus-expand), B72–B79 from its reruns, B80–B81 from parity-small, B82
+from corpus-rerun2.
 
-| id | status (corpus-rerun) | summary |
-|---|---|---|
-| B72 | fixed (corpus2-quick); 1 (aspect-bazel-examples) | native host budgets (100,000 nodes / 64 MiB weighted bytes) on module metadata Bazel bounds nowhere: the direct repository catalog (every direct repository's complete mapping is charged; a large root module exceeded it, and every load needing a repository mapping failed with `host preparation node limit exceeded`) and an extension-generated repository's recorded attributes (`repository @@…: host preparation node limit exceeded`). Both are unbounded now (depth and overflow still fail); the innate `use_repo_rule` group keeps its deliberate per-group profile |
-| B73 | fixed (corpus2-rest); every project with a broken MODULE.bazel; exit code only | a module resolution failure (a root or dependency MODULE.bazel that fails, a missing `include()`, a module no registry has, an unparsable MODULE.bazel.lock or, under `--lockfile_mode=error`, an old one or a missing registry checksum) exits 48 like Bazel (ExitCode.EXTERNAL_DEPS_ERROR) in every command that computes the main repository mapping, `fetch` included (it reported `Fetching some target dependencies failed`, exit 2); 37 in `mod` and for a `local_path_override` whose directory does not exist (the override repository's fetch failure); crate::exit_code::module_failure, genuine matrix tests/fixtures/module_failure_exit_codes |
-| B80 | fixed (parity-small); `mod` only | `mod graph` (and the other inspecting subcommands) evaluates every module extension in Bazel (BazelModuleInspectorFunction) and fails with `Results may be incomplete as N extension(s) failed.`, exit 2, when one fails (a failing implementation, a missing extension `.bzl`, an imported repository the extension does not generate); bazel-rs evaluated none for `mod graph` and exited 0. Every subcommand but `dump_repo_mapping` and `tidy` now evaluates (or reuses from the lockfile) every extension first, reports each failure and fails with exit 2 after its output (tests/fixtures/module_failure_exit_codes' `mod graph` rows pinned; docs/MOD_COMMAND.md) |
-| B81 | open (parity-small); no project | a REPO.bazel that exists but cannot be read (a directory, an unreadable file): genuine `build` reports `ERROR: error reading REPO.bazel file at <path>` with the failed build's summary (exit 1) and `query` `ERROR: Target parsing failed due to unexpected exception: error reading REPO.bazel file at <path>` (exit 7); bazel-rs prints the same message as `bazel-rs: …` without the summary and exits 1 for both (genuine 9.3.1 scratch capture). The message itself matches (no cause; bazel-rs names the cause of a descriptor exhaustion only, crate::workspace::repo_file_read_error) |
-| B74 | fixed (corpus2-quick); 1 (rules_foreign_cc-examples, meson) | `ctx.actions.declare_file("lib///introspect.json")` failed as an invalid target name; Bazel normalizes the path (PathFragment.create: empty and `.` segments, `..`) |
-| B75 | fixed (corpus2-quick); 1 (rules_py, behind B59's `strip`) | a list-typed attribute rejected a dict (bazel_env.bzl's `toolchain_targets = {}`); Type.ListType.convert takes any Iterable (a dict's keys, a set's elements) |
-| B76 | fixed (corpus2-quick); 1 (aspect-bazel-examples) | a glob exclusion with an empty segment (`exclude = ["dist/"]`) failed as an invalid pattern; Bazel never validates exclusions (UnixGlob.removeExcludes), such a pattern matches nothing |
-| B77 | fixed (corpus2-quick); 1 (aspect-bazel-examples `//tools:bazel_env`) | Starlark transitions on `--host_cpu` and `--platform_suffix` (bazel_env.bzl's `_flip_output_dir`) were not modelled |
-| B78 | open (corpus2-rest); 1 (aspect-bazel-examples, 2,587 outputs, 5 tests) | a repository script that finds a sibling repository through its own `realpath` (toolchains_llvm's `cc_wrapper.sh`, run by rules_go's GoStdlib with an absolute path: `realpath`, `dirname` twice, then the sibling's canonical name) lands in the native repository store, whose directories are content digests: `toolchain_path_prefix=<cache>/repositories/direct/trees/toolchains_llvm++llvm+llvm_toolchain_llvm/`. Genuine's realpath is `<output_base>/external/<repo>/...`, whose siblings are named. Any fix must make the parent of a repository file's real directory hold every repository by canonical name: a staged symlink cannot (realpath resolves it into the store); a per-worktree `external/` of real directories would need hardlink mirrors of whole repositories. Smallest sound-enough design (not implemented): constant links `direct/trees/<canonical name>` → `../../external/<canonical name>` (the repository's slot, docs/REPOSITORY_SLOTS.md, which already binds names cache-wide), created with the slot; it covers repositories with slots (module extension and builtin ones, toolchains_llvm's), inherits the slots' cache-wide binding (two worktrees using different versions of one canonical repository at once could see each other's), and needs the store's directory scans and the GC to skip non-digest entries |
-| B79 | fixed (corpus2-rest); 1 (aspect-bazel-examples `//tools:bazel_env`) | two aspect-planning gaps behind bazel_env.bzl. (1) An aspect's `ctx.rule.attr` of a Starlark-transition attribute that declares aspects (`_toolchain.target`, `cfg = _flip_output_dir, aspects = [_extract_toolchain_info]`) is the attribute's aspect view; the application inserted it under the plain transition key only (`attribute target: dependency … was not resolved`). (2) A top-level aspect (rules_mypy's `--aspects`) on a target whose rule transition is not idempotent (`_bazel_env_rule`'s `cfg = _flip_output_dir`) was keyed by the delegate's configuration with `shouldApplyRuleTransition` true, a key nothing was analyzed under: its exec edges fell back to the target configuration (`internal analysis order error: …function_transition_allowlist`). Phase 1 and the plan key the application by the delegate's own key now. Genuine fixture tests/fixtures/aspect_transition_attribute |
-| B59 | fixed (corpus2-quick) except `strip`; 4 (aspect-bazel-examples, bb-storage, grpc, rules_py) | rc options rejected at startup. `--client_env` (crate::client_env: rc values under the process environment, command-line values over it), `--macos_minimum_os`/`--host_macos_minimum_os`, `--protocopt` and `--noincompatible_enable_proto_toolchain_resolution` are modelled (docs/RC_OPTIONS.md; tests/fixtures/corpus2_quick). `--experimental_output_paths=strip` stays the explicit path-mapping gap (B33, corpus-last), so rules_py still stops at startup |
-| B60 | fixed (corpus2-quick); 2 (rules_py, rules_lint-python) | `config.string(allow_multiple = True)`: repeated values accumulate into a list, `[default]` by default, config_setting matches an element, transitions must set a list and always stay in the configuration (genuine compares with the default wrapped twice) (docs/BUILD_SETTINGS.md) |
-| B61 | fixed (aspect-actions) | `Target.actions` read by an aspect outside analysis tests (rules_rust `rust_analyzer_aspect` on prost's toolchain attributes): the "not kept" marker. Every Starlark rule target not inspected by an analysis test now holds a lazy marker; an analysis (aspect application or rule implementation) that reads it before it is filled ends with an internal sentinel, and the coordinator analyzes that target again with its views kept, fills the marker and runs the reader again (docs/ANALYSIS_TESTS.md, "Target.actions"; tests/fixtures/aspect_target_actions). ~/code `build --nobuild //src/...`: +7–8.5 MB retained (3,758 → 3,765 MB), peak RSS unchanged. Left, explicit: the merged target of an aspect application whose actions were not kept (an aspect reading the `target` of a required aspect that registered actions) has no `actions` field |
-| B62 | fixed (corpus2-rest: select() keys; aspect-actions: aspect dependencies) | `.repo_mapping` missed the repositories of a select() key's config_setting dependencies: a config_setting's `constraint_values` and `flag_values` keys, a constraint_value's `constraint_setting`, a platform's constraints and parents, an alias's `actual` (not dependency edges of those native rules, and a select() key is looked up before its dependent is configured) are walked over their loaded packages now (`Engine::prerequisite_repositories_in`; rules_rust-all_crate_deps' manifest identical; tests/fixtures/repo_mapping_closure `from_constraint`). The packages of an attribute aspect's dependencies — its own attributes, its resolved toolchains, the applications it propagates to — are a dependent's transitive packages too: each application carries its transitive repositories with its providers (crate::aspect_repositories, docs/ASPECTS.md) and a Starlark rule's prepare adds those of its aspect-applied edges (rules_lint's `shellcheck_test`: its lint aspect's `shellcheck_bin`, `.shellcheckrc` and the sarif_parser toolchain; rules_lint-shell identical; tests/fixtures/repo_mapping_closure `from_aspect`, `over_aspect`) |
-| B63 | fixed (corpus2-quick); 1 (aspect-bazel-examples) | `include()` in MODULE.bazel: Bazel's syntax check, breadth-first segment reading with its BAD_MODULE messages, in-place evaluation with per-segment bindings, one module-wide tag order (the lockfile usages digest is genuine's), the cycle error, dev includes, the registry-module error (docs/MODULE_INCLUDE.md) |
-| B64 | fixed (corpus2-quick); 1 (rules_foreign_cc-examples) | `ctx.resolve_command`: CommandHelper over `tools`/`label_dict`, exec-path location expansion, Make variables, `/bin/bash -c` argv and the tools' inputs (docs/CTX_SURFACE.md) |
-| B65 | fixed (corpus2-quick); 1 (rules_ts-examples; 8 tests) | `Args` formats a bool as Java's Boolean.toString (`true`/`false`) on the command line and in the action key |
-| B66 | fixed (frozen-assert); 1 (grpc `query //...`) | query of packages loading a rules_python `pip.parse` hub (gRPC's, 6 Python versions) spun past the 20-minute cap; genuine 10 s. rules_python's `parse_simpleapi_html` walks pypi.org's 49 MB simple index with `find(x, cursor)` and slices, each a scan from the string's start in the vendored starlark: ASCII strings index in O(1) now (docs/STARLARK_VENDOR.md "ASCII strings"). gRPC `query --keep_going //...` with the extension evaluated: 12.8 s; `//src/python/grpcio_tests/tests/status:all` 11.4 s (genuine cold 25 s). The output then lacks 10 of genuine's 11,419 labels: the targets `examples/objective-c/BUILD` defines before its failing `objc_library` (a package with errors; genuine's `--keep_going` query keeps them; fixed on frozen-followups, docs/QUERY.md "Packages with errors") |
-| B67 | mostly fixed (corpus2-rest), 1 (rules_java; 13 analysis tests) | Starlark transitions on Java options: `experimental_strict_java_deps`, `java_header_compilation`, `use_ijars`, `java_deps`, `experimental_one_version_enforcement`, `one_version_enforcement_on_java_tests`, `incompatible_disallow_java_import_exports`, `java_launcher` and `host_java_launcher` are configuration options now (docs/CONFIGURATION.md; tests/fixtures/java_transition_options). `experimental_java_classpath` (the native Javac/JavacTurbine classpath modes) and `experimental_run_android_lint_on_java_rules` too, and `java_common.compile` under coverage instruments only what shouldInstrumentJar selects (parity-small; tests/fixtures/java_classpath_options). Open: `experimental_output_paths` (12, B33's path-mapping gap) and a testing aspect reading `ctx.var` in a configuration whose target platform was not resolved yet (`rule implementation needs the target platform`: aspect applications have no deferred-platform retry; 1 test, `test_strict_java_deps_error`) |
-| B68 | fixed (corpus2-quick); 1 (grpc) | `--compiler`/`--host_compiler` are configuration options (config_setting, transitions, the exec func `compiler = host_compiler`) |
-| B69 | fixed (corpus2-rest), 1 (bb-storage) | conflicting `.repo_mapping` actions for a rules_js `*_binary` used as a `js_run_binary` tool: the binary is analyzed in two exec configurations that differ only in `--platforms` (`@platforms//host` and the `--host_platform`, both `host` platforms naming their output directory `k8`), so both register `bazel-out/k8-opt-exec/.../purgecss.repo_mapping`; Bazel shares equal actions, its runfiles support's included. The runfiles support actions are keyed by output path and content now and shared when equal (`ActionKey::native`; tests/fixtures/shared_runfiles_support) |
-| B70 | fixed (corpus2-quick); 1 (rules_java; 1 test) | a Starlark rule's testonly violation under `--allow_analysis_failures` is an `AnalysisFailureInfo` cause with its other prerequisite errors |
-| B71 | fixed (corpus2-quick); 1 (rules_pkg); cosmetic | the test summary prints the main repository's display form (`@apparent//pkg:t`), kept in the planned tests (snapshot hits too) |
-| B53 | not a bazel-rs bug (test-exec-speed); 1 (rules_kotlin); `test //...` | rules_kotlin's `test //...` runs 51 nested Bazel integration tests (`//examples:*_test`), each a genuine Bazel 7/8/9 whose server sizes itself to the whole host (64 CPUs) and builds with its own cold caches. One test alone takes the same under both tools (`android_.bazelversion_test` 280 s genuine, 279 s bazel-rs), and so does the batch of 51 at 16 jobs (445 s genuine, 412 s bazel-rs, low outside load). The test environment matches too (env, TEST_TMPDIR layout, limits, cgroup, namespaces, network). Small differences: stdin is /dev/null rather than a closed pipe, NoNewPrivs is set (Landlock), and test-setup.sh got `name` where genuine passes `./name`; that last one is fixed, fixture tests/fixtures/test_exec_env. In the full `test //...`, each tool runs 16 nested servers at once (both tools are scheduled alike). The 64-core machine then reaches a load of about 1,300 and almost stops making new processes, and both tools hit the 30-minute cap (genuine at 244/268 in run3 and run4, bazel-rs at 224/268). Genuine's 772 s in corpus-parity6 was a luckier window. oss_corpus.py now kills the nested servers that outlive a timed-out command: they had kept building for hours and skewed later measurements |
-| B54 | fixed (corpus-rulescc); 1 (rules_cc `//tests/debug_files`) | an aspect over a Starlark rule target that sets `target_compatible_with` (or `exec_compatible_with`) failed with `attribute target_compatible_with: dependency ... was not resolved`: the aspect's `ctx.rule.attr` had no prerequisites of those built-in attributes, which the rule's own analysis has (skylib's `_action_retrieving_aspect` on rules_cc's `dwo_files` targets) |
-| B55 | fixed (corpus-rulescc); 1 (rules_cc `test_wrong_cc_import_definitions_fails`) | `--allow_analysis_failures`: prerequisite validation errors (`target ... does not exist`, `... does not produce any ... files`, misplaced files, missing providers) failed the build instead of becoming the target's `AnalysisFailureInfo` causes (the attribute errors' own messages), and an aspect applied to an errored target ran instead of being the errored aspect with the target's causes (ConfiguredTargetFactory.createAspect, MergedConfiguredTarget.getAnalysisFailures; capture tests/fixtures/corpus_rulescc `prerequisite_failures_allowed`) |
-| B56 | fixed (corpus-zig); 1 (rules_zig); 3 analysis tests | a Starlark transition on `//command_line_option:apple_generate_dsym` (rules_zig's `dsym_test_test_4..6` set it through `analysistest.make(config_settings = ...)`) was not a modelled native option, so the three tests were not analyzed. It is a configuration option now (CppOptions.appleGenerateDsym, boolean, default false, not propagated to exec): transitions read and write it, `select()` and the ST- hash see it, and `ctx.fragments.cpp.apple_generate_dsym` reads it, which rules_cc's `configure_features` turns into the `generate_dsym_file` or `no_generate_debug_symbols` feature (tests/fixtures/corpus_zig) |
-| B57 | fixed (corpus-zig); 1 (rules_zig); 2 tests | `Target.actions`' `inputs` of a Starlark spawn listed a File `executable` first; rules_zig's `module_binary_test` and `multiple_sources_binary_test` assert that the main source is the first input. Genuine's inputs are a STABLE_ORDER NestedSet: the declared inputs, then the tools, whose transitive sets (an executable's or tool's FilesToRunProvider: its files to build, its `<executable>.runfiles` tree artifact, the executable; a depset) precede the direct Files (a File executable without runfiles, File tools) (SpawnAction.Builder.buildSpawnAction). `Target.actions`, aquery's primary input and print_action use that order now (print_action leaves out the runfiles trees, as SpawnInfo does); the registered inputs, and so the action keys, keep their order (tests/fixtures/corpus_zig) |
-| B58 | fixed (corpus-zig); 1 (rules_zig); the outputs column | `info` and `clean` rejected `--flag_alias` (and the aliases it defines) from the inherited `build` rc options as an unsupported option, so the corpus read no `bazel-rs info bazel-bin` for rules_zig (its `.bazelrc.flags`). Every command with CoreOptions parses it (OptionsParser.withAliasFlag): the first parsing pass now checks the definitions and rewrites the aliases for every command (tests/fixtures/corpus_zig) |
-| B13c | fixed (b13c); 1 (rules_zig) | one toolchain implementation for two execution platforms in one configuration (ConfiguredTargetKey.executionPlatformLabel) ended the command; the key carries the execution platform of toolchain dependencies now (design and soundness below) |
-| B32 | fixed (corpus-last); 1 (rules_cc's own tests: all 456 statuses match) | rules_cc's own analysis tests. Fixed on corpus-parity4: `--fission`, `--build_test_dwp`, `--legacy_whole_archive`, `--incompatible_remove_legacy_whole_archive` are configuration options and `--dynamic_mode` is transitionable; a fission compile's `.dwo` is declared where genuine declares it. Fixed on corpus-parity5: `cc_internal.freeze` is Bazel's shallow immutable copy (the vendored starlark's immutable list/dict that is not frozen yet, docs/DEPSETS.md; the 38 thin-LTO and linkstamp targets), `create_header_info_with_deps` adds the merged deps' headers (cc_import's `direct_public_headers`), a toolchain's `artifact_name_pattern` applies (mingw/msvc dll names), `objc.target_should_alwayslink` of an explicit `alwayslink`, map_each's `must be declared by a top-level def statement` error, structs/providers with frozen list fields are hashable, and transitions on `instrumentation_filter`, `save_temps`, `start_end_lib`, `interface_shared_objects`, `process_headers_in_dependencies` (tests/fixtures/corpus_parity5). Fixed on corpus-rulescc (tests/fixtures/corpus_rulescc, tests/cc_compile.rs `thin_lto_actions_match_genuine`, `linkstamp_compiles_match_genuine`, `fdo_profiles_match_genuine`; 346 → 387 → 441 → 451): the ThinLTO backends (`cc_internal.create_lto_backend_action`, LtoBackendAction's argv, progress message and computeKey; `collect_per_file_lto_backend_opts`; `wrap_link_actions(sharable_artifacts = True)`), the shareable linkstamp compile, any `cc_internal.freeze` copy in a depset element (LtoCompilationContextInfo's BitcodeInfo with mutable `copts`), `get_artifact_name_extension_for_category` positional; the FDO/Propeller/memprof options (`--fdo_optimize`, `--fdo_profile`, `--xbinary_fdo`, `--cs_fdo_profile`, `--cs_fdo_absolute_path`, `--fdo_prefetch_hints`, `--propeller_optimize*`, `--memprof_profile`, `--fdo_instrument`, `--cs_fdo_instrument`), `--custom_malloc`, `--grte_top`/`--host_grte_top`, `--experimental_cpp_modules`, `--ltobackendopt`/`--ltoindexopt`/`--per_file_ltobackendopt` and `--action_env` as configuration options (command line, transitions, config_setting, ST- hashes), the cpp fragment's accessors of them, the late-bound `configuration_field("cpp", ...)` defaults per configuration (`custom_malloc`, `fdo_*`, `xbinary_fdo` and `propeller_optimize` with genuine's precedence, `libc_top`, `zipper`), `cc_internal.absolute_symlink` (aquery-equal, executing it fails explicitly), C++20 module compiles' module map inputs, `cc_internal.expand_and_tokenize`, `Target.actions` of every target of an analysis test's configuration, B54 and B55. Fixed on corpus-last (tests/fixtures/corpus_last, tests/corpus_last.rs; 451 → 453): a kept `genrule` answers its GenRuleAction as `Target.actions` (`test_fdo_profile_action_graph`; also when a frozen walk's worker would have published it), an executable's views end with its RunfilesSupport actions, a registered symlink is `Symlink`/`ExecutableSymlink`/`SolibSymlink`/`UnresolvedSymlink`, and a requested analysis test with a propagating attribute aspect keeps every target's actions (`test_propeller_host_builds` reads an exec tool's, its toolchains' and wrappers'; docs/ANALYSIS_TESTS.md). Not modelled: the input discovery of LtoBackendAction (imports file) and of C++20 module compiles (module map). |
-| B33 | explicit gap (corpus-last), 1 (protobuf); 1 target | protobuf analysis. Fixed on corpus-parity4: symbolic-macro visibility delegation and alias select() keys under `--incompatible_config_setting_private_default_visibility` (5 visibility errors), `declare_file(sibling=)` from another package, per-attribute aspect views of aspects propagating over one attribute (`UpbMinitableCcInfo`/`JavaInfo` on proto_library targets), `Target.actions` of targets merged with aspects and of a rule under test's dependencies, `--dynamic_mode` transitions (rules_fuzzing). Fixed on corpus-parity5: transitions writing `instrumentation_filter` (`generated_sources_not_coverage_instrumented`; the filter is per configuration natively too). Left, an explicit gap: `experimental_output_paths=strip` with `modify_execution_info` (`test_compile_path_mapping`). Genuine's path mapping (PathMappers/StrippingPathMapper) rewrites `bazel-out/<cfg>/` to `bazel-out/cfg/` in the argv of every action with `supports-path-mapping` (or a listed mnemonic) that is not `local`, executes it with its inputs and outputs staged at the mapped paths (a genuine capture: such an action that echoes its argv writes `bazel-out/cfg/bin/...` into its output), keys it with the mapper's GUID and falls back when two inputs collide after mapping. Modelling it needs a mapper in Args expansion (File arguments, map_each roots, some mnemonics' string heuristics), path-rewritten staging and publication, and the key: not cheap, and running such actions unmapped would silently change their outputs. So `--experimental_output_paths=strip` on the command line and a transition writing it fail explicitly, naming path mapping (`off`, the default, is accepted) |
-| B34 | open, 2 (rules_python-bzlmod; rules_pkg `pkg_tar_test` fails, corpus-expand); assessed on corpus-last | `external/other_module+/other_module/pkg/bin_zipapp.zip` differs from genuine's: the same 2,076 entries, 2,059 of them with another mode and 10 a file instead of a symlink. rules_python's zipper (`tools/zipapp/zipper.py`) stores `st_mode` of each input (`os.stat` through the sandbox symlink: genuine's 0664/0644/0775/0755 for source and repository files, set by the checkout's umask and the download, against bazel-rs's read-only store blobs, 0444/0555), and stores an input as a relative symlink when the sandbox symlink's target is itself a relative symlink (10 links of the downloaded Python toolchain, `bin/python3 -> python3.11`, `lib/pkgconfig/python3.pc`; bazel-rs stages their resolved content, so the zip holds the file). Declared symlinks (`_bin.venv/bin/python3`) already match. Options: (1) genuine's modes need writable inodes (hardlinks share the inode's mode), which gives up the read-only blob protection of the store (docs/HARDLINK_STAGING.md): not sound; genuine's own modes also follow the umask, so its zip is not hermetic either. (2) Stage an input that is a relative symlink in an immutable repository tree as an absolute symlink to that tree entry (genuine's view, `readlink(readlink(p))` relative): sound for repository trees only (the workspace is live), but the executor rejects symlink inputs, verifies staged inodes and keys identities by blob, so it touches staging, verification and the REAPI input root: not cheap. Neither implemented |
-| B43 | fixed (corpus-last); 1 (with_cfg) | genuine builds `cc_no_copt_binary/binary_/binary.runfiles_manifest` and `.repo_mapping`: with_cfg's frontend forwards the wrapped `cc_binary`'s OutputGroupInfo, whose `_hidden_top_level_INTERNAL_` group is the `cc_binary`'s runfiles tree artifact (RuleConfiguredTargetBuilder.java:155-173: a target with a RunfilesSupport has its tree there, not its runfiles' artifacts). bazel-rs put the default runfiles' artifacts there. Now the group holds `<exe>.runfiles`, and a requested group holding another target's tree builds that tree (its manifests and runfiles; tests/fixtures/corpus_last, `forwarded_runfiles_tree`) |
-| B12 | open, 1 (flatbuffers; genuine fails too) | `@local_config_platform` unknown (aspect_bazel_lib 1.x `platform_utils.bzl:3`) |
-| B47 | open, 1 (rules_jvm_external-simple; genuine fails too, no Android SDK) | rules_android's `android_split_transition` reads `//command_line_option:Android configuration distinguisher`: "transition inputs ... do not correspond to valid settings" (an unmodelled Android native option) |
-| B52 | fixed (corpus-parity6) | the test summary listed `FAILED TO BUILD` targets in string order (`//a/b:c` before `//a:z`); genuine orders them as Label.compareTo, package before name (capnproto's first five lines) |
-| B48 | fixed (corpus-parity6) | protobuf built protoc in 8 extra exec configurations and the prebuilt-protoc validation in 17 extra target configurations: an analysis test (`testing.analysis_test`, rules_testing) propagated its target under test's `_validation` group; RuleConfiguredTargetBuilder.propagateValidationActionOutputGroup propagates none for analysis tests. protobuf: 13,940 processes against 13,945 (B33's target), 302 s against 290 s |
-| B49 | fixed (corpus-parity6) | rules_rust's `cargo_build_script` `_bs-` runfiles manifest: a tool's runfiles manifest and tree are built with the action that stages the tool's runfiles (Bazel's spawn holds the tool's runfiles tree artifact, whose RunfilesTreeAction takes the MANIFEST); never staged in the sandbox (tests/fixtures/corpus_parity6) |
-| B50 | fixed (corpus-parity6) | capnproto `build --keep_going`: a runfiles manifest or tree still runs for a binary whose link failed (SourceManifestAction's inputs are the unresolved symlinks only, SymlinkTreeAction's the input manifest); the tree tallies as SymlinkTreeAction alone then. 1,177 processes on both |
-| B51 | fixed (corpus-parity6) | rules_kotlin's multiplex JdepsMerge reads the `-kt.jar` beside the jdeps it merges, not an input: a non-sandboxed worker runs in genuine's shared execution root, so its native working directory also holds the other outputs of its inputs' producing actions (docs/PERSISTENT_WORKERS.md) |
-| B1 | fixed (googletest, re2, highway identical) | `config_setting(values = {"features": …})` |
-| B2 | fixed (every rc option of the corpus; all `comment_out` edits dropped) | rc options rejected at startup: "options are never silently ignored" |
-| B3 | fixed (bazel-skylib, junit5-starter, with_cfg analyse) | `native.existing_rule` / `existing_rules` missing in BUILD and legacy-macro context |
-| B9 | fixed (openroad's own `archive_override`, rules_cc, protobuf, examples-rust-deps-cargo) | `archive_override` unsupported |
-| B10 | fixed (rules_kotlin, riegeli, openroad) | `override_repo()` / `inject_repo()` unsupported in MODULE.bazel |
-| B11 | fixed (tink-cc-examples identical, capnproto) | `strip_prefix` with a trailing `/` rejected |
-| B14 | fixed (tink-cc-examples, examples-java-maven) | internal errors "has no recorded duplicate-label check" / "internal analysis order error" |
-| B20 | fixed (capnproto analyses) | `rule(output_to_genfiles=True)` |
-| B21 | fixed (rules_zig's repository rules) | `attr.int_list` in repository rules |
-| B22 | not exercised (OpenROAD's `archive_override` works, so the `git_override` alternative is not needed) | `git_override` of a repository with submodule gitlinks |
-| B23 | fixed (examples-rules identical) | predeclared `attr.output` given as `":name"` |
-| B24 | fixed (corpus-parity4; examples-configurations aborts as genuine) | PROJECT.scl project files: looked up and loaded before the analysis, genuine's `error loading project files` (docs/CONFIGURATION.md "PROJECT.scl project files"); a project with configurations fails explicitly |
-| B25 | fixed (examples-frontend's warm `test` passes 14/14) | "needs-repository: repository @@rules_diff+ is unfetched and this thread does not fetch" on a warm `test` |
-| B6 | fixed (corpus-parent) | `_repo_mapping` manifest missed the repositories of select() keys and of an output file's generating rule |
-| B4 | fixed (corpus-parity2) | `android_common` global undefined: now the `.bzl` toplevel; its two methods fail explicitly |
-| B13 | fixed (bazel-skylib, rules_zig, rules_cc, bazel-gazelle) | analysis tests: `analysis_test_transition`, `testing.analysis_test`, `Target.actions`, `AnalysisFailureInfo` (docs/ANALYSIS_TESTS.md) |
-| B13a | fixed (corpus-parity2) | transition on `//command_line_option:minimum_os_version` and `ctx.fragments.cpp.minimum_os_version()` |
-| B13b | fixed (corpus-parity2) | `srcs = ["."]` (the package directory as a source label): "unsafe source label //tests/directory:." |
-| B13d | fixed (= B29) | rules_cc's own `cc_test.bzl`/`cc_binary.bzl` "cannot use private API" |
-| B13e | fixed (corpus-parity2) | `cc_import` of `mylib.dll`/`mylib.lib` on Linux: "does not match expected filetype" |
-| B15 | fixed (corpus-runfiles) | test runfiles were hardlinks, not symlinks |
-| B7 | fixed (corpus-parity2) | transition: "Starlark flag and its alias have different values: False and "false"" |
-| B5 | fixed (corpus-parity2) | `local_repository` → `rctx.symlink(path, ".")` rejected (now a copy plus a `watch_tree` input, docs/LOCAL_REPOSITORIES.md) |
-| B8 | fixed (corpus-parity3) | declared output "crosses a package boundary": a `declare_file`/`declare_directory` output may lie below a subpackage; predeclared outputs keep genuine's `Label ... is invalid because ... is a subpackage` |
-| B16 | fixed (corpus-macros) | symbolic macro `inherit_attrs` |
-| B17 | fixed (corpus-parent) | `rule(parent=…)` rule extension (docs/RULE_EXTENSION.md) |
-| B18, B19 | fixed (corpus-ccshared) | `cc_shared_library` (`cc_common.check_experimental_cc_shared_library`); solib naming in transitioned configurations |
-| B26 | fixed | depset elements holding functions that are not top-level defs (skylib `DirectoryInfo` in rules_cc `cc_args`; openroad) |
-| B27 | fixed (corpus-runfiles) | `depset` was not a BUILD-file global, and list-typed attributes did not accept depsets (`@openssl//:BUILD.bazel:508`, `select({...: depset([...])})`) |
-| B28 | fixed (corpus-runfiles) | `build //...` missed genuine's `.pic.o`/`.pic.d` of external C++ deps: the rule-returned `_hidden_top_level_INTERNAL_` group (rules_cc cc_library's transitive objects) was not built |
-| B29 | fixed (corpus-parity2) | "file '//cc/private/rules_impl:cc_test.bzl' cannot use private API": the private-API allowlist now treats the main repository as rules_cc when the root module is rules_cc |
-| B30 | fixed (corpus-ccshared) | `provider in target` fails "Target membership requires an exported provider constructor" in with_cfg's `transitioning_alias.bzl:55` |
-| B31 | fixed (corpus-parity3) | `config_common.config_feature_flag_transition`: loads; no transition unless the attribute sets flag values, which fails explicitly (docs/TEST_FLAGS.md) |
-| B35 | fixed (corpus-parity3) | rules_kotlin: `download_and_extract(rename_files=…)`, `Target.actions` through an alias, TestingAspectInfo (per-attribute aspect views), `check_java_toolchain_is_declared_on_rule`, mutable `default_jvm_opts`, genquery `buildfiles` scope |
-| B36 | fixed (corpus-ccshared) | `ctx.actions.write(execution_requirements=…)` rejected (rules_cc_autoconf `ctx_actions_write.bzl`; 360 OpenROAD targets) |
-| B37 | fixed (corpus-ccshared) | a repository's BUILD file symlinked into another repository's tree: "build file … resolves outside workspace" (sv-elab's `vendored-hashlib`) |
-| B38 | fixed (corpus-ccshared) | `repository_ctx.delete()` of the repository directory itself (bazel_tools `git_repository`'s `git_worker.bzl`; sv-elab's `vendored-slang`) |
-| B39 | fixed (corpus-ccshared) | a tool hardlinking a repository file into its output (bazel_lib `copy_to_directory`): publication chmod'ed the shared tree file, then libcxx compiles failed "changed while it was being staged" |
-| B40 | fixed (corpus-parity3) | `copy_to_directory` over a source-directory input: sandboxed spawns now see the directory as a symlink, as genuine's sandboxes stage it (docs/SOURCE_DIRECTORIES.md) |
-| B41 | fixed (corpus-parity3) | rules_js `node_modules` links in `bazel-bin`: a relative symlink output keeps its text in the output tree (docs/UNRESOLVED_SYMLINKS.md) |
-| B42 | fixed (corpus-ccshared) | a test's runfile of an `actions.symlink` output of a generated file was a copy at the link's exec path, so `$ORIGIN` of a with_cfg-forwarded `cc_binary` missed its `dynamic_deps` |
-| B44 | fixed (corpus-parity3) | `ctx.actions.write(mnemonic=...)` was dropped: rules_cc's module maps are `CppModuleMap` in aquery, the profile and `Target.actions` |
-| B45 | fixed (corpus-parity3) | compiles staged the toolchain's `all_files` instead of `compiler_files` (`as_files` for `assemble`) |
-| B46 | fixed (corpus-parity4) | `Target.actions` `argv` is empty for an action whose `Args` use `map_each` |
+| id | corpus-rerun2 (0.5.1) | status | summary |
+|---|---|---|---|
+| B33 | **explicit gap**; 3 (protobuf: 1 target; rules_java: 12 tests; rules_py: stops at startup) | explicit gap (corpus-last), 1 (protobuf); 1 target | protobuf analysis. Fixed on corpus-parity4: symbolic-macro visibility delegation and alias select() keys under `--incompatible_config_setting_private_default_visibility` (5 visibility errors), `declare_file(sibling=)` from another package, per-attribute aspect views of aspects propagating over one attribute (`UpbMinitableCcInfo`/`JavaInfo` on proto_library targets), `Target.actions` of targets merged with aspects and of a rule under test's dependencies, `--dynamic_mode` transitions (rules_fuzzing). Fixed on corpus-parity5: transitions writing `instrumentation_filter` (`generated_sources_not_coverage_instrumented`; the filter is per configuration natively too). Left, an explicit gap: `experimental_output_paths=strip` with `modify_execution_info` (`test_compile_path_mapping`). Genuine's path mapping (PathMappers/StrippingPathMapper) rewrites `bazel-out/<cfg>/` to `bazel-out/cfg/` in the argv of every action with `supports-path-mapping` (or a listed mnemonic) that is not `local`, executes it with its inputs and outputs staged at the mapped paths (a genuine capture: such an action that echoes its argv writes `bazel-out/cfg/bin/...` into its output), keys it with the mapper's GUID and falls back when two inputs collide after mapping. Modelling it needs a mapper in Args expansion (File arguments, map_each roots, some mnemonics' string heuristics), path-rewritten staging and publication, and the key: not cheap, and running such actions unmapped would silently change their outputs. So `--experimental_output_paths=strip` on the command line and a transition writing it fail explicitly, naming path mapping (`off`, the default, is accepted) |
+| B34 | **open**; 2 (rules_python-bzlmod's zipapp; rules_pkg's `pkg_tar_test`) | open, 2 (rules_python-bzlmod; rules_pkg `pkg_tar_test` fails, corpus-expand); assessed on corpus-last | `external/other_module+/other_module/pkg/bin_zipapp.zip` differs from genuine's: the same 2,076 entries, 2,059 of them with another mode and 10 a file instead of a symlink. rules_python's zipper (`tools/zipapp/zipper.py`) stores `st_mode` of each input (`os.stat` through the sandbox symlink: genuine's 0664/0644/0775/0755 for source and repository files, set by the checkout's umask and the download, against bazel-rs's read-only store blobs, 0444/0555), and stores an input as a relative symlink when the sandbox symlink's target is itself a relative symlink (10 links of the downloaded Python toolchain, `bin/python3 -> python3.11`, `lib/pkgconfig/python3.pc`; bazel-rs stages their resolved content, so the zip holds the file). Declared symlinks (`_bin.venv/bin/python3`) already match. Options: (1) genuine's modes need writable inodes (hardlinks share the inode's mode), which gives up the read-only blob protection of the store (docs/HARDLINK_STAGING.md): not sound; genuine's own modes also follow the umask, so its zip is not hermetic either. (2) Stage an input that is a relative symlink in an immutable repository tree as an absolute symlink to that tree entry (genuine's view, `readlink(readlink(p))` relative): sound for repository trees only (the workspace is live), but the executor rejects symlink inputs, verifies staged inodes and keys identities by blob, so it touches staging, verification and the REAPI input root: not cheap. Neither implemented |
+| B67 | **open**; 1 (rules_java: 4 tests at 0.5.1, 1 on main after it) | mostly fixed (corpus2-rest), 1 (rules_java; 13 analysis tests) | Starlark transitions on Java options: `experimental_strict_java_deps`, `java_header_compilation`, `use_ijars`, `java_deps`, `experimental_one_version_enforcement`, `one_version_enforcement_on_java_tests`, `incompatible_disallow_java_import_exports`, `java_launcher` and `host_java_launcher` are configuration options now (docs/CONFIGURATION.md; tests/fixtures/java_transition_options). `experimental_java_classpath` (the native Javac/JavacTurbine classpath modes) and `experimental_run_android_lint_on_java_rules` too, and `java_common.compile` under coverage instruments only what shouldInstrumentJar selects (parity-small; tests/fixtures/java_classpath_options). Open: `experimental_output_paths` (12, B33's path-mapping gap) and a testing aspect reading `ctx.var` in a configuration whose target platform was not resolved yet (`rule implementation needs the target platform`: aspect applications have no deferred-platform retry; 1 test, `test_strict_java_deps_error`) |
+| B78 | **open**; 1 (aspect-bazel-examples: 2,587 outputs, 5 tests) | open (corpus2-rest); 1 (aspect-bazel-examples, 2,587 outputs, 5 tests) | a repository script that finds a sibling repository through its own `realpath` (toolchains_llvm's `cc_wrapper.sh`, run by rules_go's GoStdlib with an absolute path: `realpath`, `dirname` twice, then the sibling's canonical name) lands in the native repository store, whose directories are content digests: `toolchain_path_prefix=<cache>/repositories/direct/trees/toolchains_llvm++llvm+llvm_toolchain_llvm/`. Genuine's realpath is `<output_base>/external/<repo>/...`, whose siblings are named. Any fix must make the parent of a repository file's real directory hold every repository by canonical name: a staged symlink cannot (realpath resolves it into the store); a per-worktree `external/` of real directories would need hardlink mirrors of whole repositories. Smallest sound-enough design (not implemented): constant links `direct/trees/<canonical name>` → `../../external/<canonical name>` (the repository's slot, docs/REPOSITORY_SLOTS.md, which already binds names cache-wide), created with the slot; it covers repositories with slots (module extension and builtin ones, toolchains_llvm's), inherits the slots' cache-wide binding (two worktrees using different versions of one canonical repository at once could see each other's), and needs the store's directory scans and the GC to skip non-digest entries |
+| B47 | **open**; 1 (rules_jvm_external-simple; genuine fails too) | open, 1 (rules_jvm_external-simple; genuine fails too, no Android SDK) | rules_android's `android_split_transition` reads `//command_line_option:Android configuration distinguisher`: "transition inputs ... do not correspond to valid settings" (an unmodelled Android native option) |
+| B82 | **open**; 1 (flatbuffers; genuine fails too) | open (corpus-rerun2); 1 (flatbuffers; genuine fails too); error reporting | a BUILD file whose first `load` fails (an unknown repository) and whose second names a repository whose fetch fails: genuine evaluates every load of the file and reports both failures (the fetch's and `error loading package 'pkg': …`); bazel-rs stops at the first failing load (reported without genuine's `error loading package` prefix) and never fetches the second repository. flatbuffers' `ts/BUILD.bazel` (`@aspect_rules_ts`, then `@flatbuffers_npm`, whose rules_js `verify_node_modules_ignored` check fails). Exit codes match |
+| B81 | open; not exercised | open (parity-small); no project | a REPO.bazel that exists but cannot be read (a directory, an unreadable file): genuine `build` reports `ERROR: error reading REPO.bazel file at <path>` with the failed build's summary (exit 1) and `query` `ERROR: Target parsing failed due to unexpected exception: error reading REPO.bazel file at <path>` (exit 7); bazel-rs prints the same message as `bazel-rs: …` without the summary and exits 1 for both (genuine 9.3.1 scratch capture). The message itself matches (no cause; bazel-rs names the cause of a descriptor exhaustion only, crate::workspace::repo_file_read_error) |
+| B72 | fixed (aspect-bazel-examples analyzes) | fixed (corpus2-quick); 1 (aspect-bazel-examples) | native host budgets (100,000 nodes / 64 MiB weighted bytes) on module metadata Bazel bounds nowhere: the direct repository catalog (every direct repository's complete mapping is charged; a large root module exceeded it, and every load needing a repository mapping failed with `host preparation node limit exceeded`) and an extension-generated repository's recorded attributes (`repository @@…: host preparation node limit exceeded`). Both are unbounded now (depth and overflow still fail); the innate `use_repo_rule` group keeps its deliberate per-group profile |
+| B73 | not exercised | fixed (corpus2-rest); every project with a broken MODULE.bazel; exit code only | a module resolution failure (a root or dependency MODULE.bazel that fails, a missing `include()`, a module no registry has, an unparsable MODULE.bazel.lock or, under `--lockfile_mode=error`, an old one or a missing registry checksum) exits 48 like Bazel (ExitCode.EXTERNAL_DEPS_ERROR) in every command that computes the main repository mapping, `fetch` included (it reported `Fetching some target dependencies failed`, exit 2); 37 in `mod` and for a `local_path_override` whose directory does not exist (the override repository's fetch failure); crate::exit_code::module_failure, genuine matrix tests/fixtures/module_failure_exit_codes |
+| B80 | not exercised (`mod` not run) | fixed (parity-small); `mod` only | `mod graph` (and the other inspecting subcommands) evaluates every module extension in Bazel (BazelModuleInspectorFunction) and fails with `Results may be incomplete as N extension(s) failed.`, exit 2, when one fails (a failing implementation, a missing extension `.bzl`, an imported repository the extension does not generate); bazel-rs evaluated none for `mod graph` and exited 0. Every subcommand but `dump_repo_mapping` and `tidy` now evaluates (or reuses from the lockfile) every extension first, reports each failure and fails with exit 2 after its output (tests/fixtures/module_failure_exit_codes' `mod graph` rows pinned; docs/MOD_COMMAND.md) |
+| B74 | fixed (rules_foreign_cc-examples' meson outputs) | fixed (corpus2-quick); 1 (rules_foreign_cc-examples, meson) | `ctx.actions.declare_file("lib///introspect.json")` failed as an invalid target name; Bazel normalizes the path (PathFragment.create: empty and `.` segments, `..`) |
+| B75 | not exercised (rules_py stops at `strip`) | fixed (corpus2-quick); 1 (rules_py, behind B59's `strip`) | a list-typed attribute rejected a dict (bazel_env.bzl's `toolchain_targets = {}`); Type.ListType.convert takes any Iterable (a dict's keys, a set's elements) |
+| B76 | fixed (aspect-bazel-examples) | fixed (corpus2-quick); 1 (aspect-bazel-examples) | a glob exclusion with an empty segment (`exclude = ["dist/"]`) failed as an invalid pattern; Bazel never validates exclusions (UnixGlob.removeExcludes), such a pattern matches nothing |
+| B77 | fixed (`//tools:bazel_env` builds) | fixed (corpus2-quick); 1 (aspect-bazel-examples `//tools:bazel_env`) | Starlark transitions on `--host_cpu` and `--platform_suffix` (bazel_env.bzl's `_flip_output_dir`) were not modelled |
+| B79 | fixed (`//tools:bazel_env` builds) | fixed (corpus2-rest); 1 (aspect-bazel-examples `//tools:bazel_env`) | two aspect-planning gaps behind bazel_env.bzl. (1) An aspect's `ctx.rule.attr` of a Starlark-transition attribute that declares aspects (`_toolchain.target`, `cfg = _flip_output_dir, aspects = [_extract_toolchain_info]`) is the attribute's aspect view; the application inserted it under the plain transition key only (`attribute target: dependency … was not resolved`). (2) A top-level aspect (rules_mypy's `--aspects`) on a target whose rule transition is not idempotent (`_bazel_env_rule`'s `cfg = _flip_output_dir`) was keyed by the delegate's configuration with `shouldApplyRuleTransition` true, a key nothing was analyzed under: its exec edges fell back to the target configuration (`internal analysis order error: …function_transition_allowlist`). Phase 1 and the plan key the application by the delegate's own key now. Genuine fixture tests/fixtures/aspect_transition_attribute |
+| B59 | fixed except `strip` (aspect-bazel-examples, bb-storage, grpc start; rules_py: B33) | fixed (corpus2-quick) except `strip`; 4 (aspect-bazel-examples, bb-storage, grpc, rules_py) | rc options rejected at startup. `--client_env` (crate::client_env: rc values under the process environment, command-line values over it), `--macos_minimum_os`/`--host_macos_minimum_os`, `--protocopt` and `--noincompatible_enable_proto_toolchain_resolution` are modelled (docs/RC_OPTIONS.md; tests/fixtures/corpus2_quick). `--experimental_output_paths=strip` stays the explicit path-mapping gap (B33, corpus-last), so rules_py still stops at startup |
+| B60 | fixed (rules_lint-python's tests match) | fixed (corpus2-quick); 2 (rules_py, rules_lint-python) | `config.string(allow_multiple = True)`: repeated values accumulate into a list, `[default]` by default, config_setting matches an element, transitions must set a list and always stay in the configuration (genuine compares with the default wrapped twice) (docs/BUILD_SETTINGS.md) |
+| B61 | fixed (rules_rust-proto identical) | fixed (aspect-actions) | `Target.actions` read by an aspect outside analysis tests (rules_rust `rust_analyzer_aspect` on prost's toolchain attributes): the "not kept" marker. Every Starlark rule target not inspected by an analysis test now holds a lazy marker; an analysis (aspect application or rule implementation) that reads it before it is filled ends with an internal sentinel, and the coordinator analyzes that target again with its views kept, fills the marker and runs the reader again (docs/ANALYSIS_TESTS.md, "Target.actions"; tests/fixtures/aspect_target_actions). ~/code `build --nobuild //src/...`: +7–8.5 MB retained (3,758 → 3,765 MB), peak RSS unchanged. Left, explicit: the merged target of an aspect application whose actions were not kept (an aspect reading the `target` of a required aspect that registered actions) has no `actions` field |
+| B62 | fixed (rules_rust-all_crate_deps, rules_lint-shell identical; no `.repo_mapping` difference) | fixed (corpus2-rest: select() keys; aspect-actions: aspect dependencies) | `.repo_mapping` missed the repositories of a select() key's config_setting dependencies: a config_setting's `constraint_values` and `flag_values` keys, a constraint_value's `constraint_setting`, a platform's constraints and parents, an alias's `actual` (not dependency edges of those native rules, and a select() key is looked up before its dependent is configured) are walked over their loaded packages now (`Engine::prerequisite_repositories_in`; rules_rust-all_crate_deps' manifest identical; tests/fixtures/repo_mapping_closure `from_constraint`). The packages of an attribute aspect's dependencies — its own attributes, its resolved toolchains, the applications it propagates to — are a dependent's transitive packages too: each application carries its transitive repositories with its providers (crate::aspect_repositories, docs/ASPECTS.md) and a Starlark rule's prepare adds those of its aspect-applied edges (rules_lint's `shellcheck_test`: its lint aspect's `shellcheck_bin`, `.shellcheckrc` and the sarif_parser toolchain; rules_lint-shell identical; tests/fixtures/repo_mapping_closure `from_aspect`, `over_aspect`) |
+| B63 | fixed (aspect-bazel-examples) | fixed (corpus2-quick); 1 (aspect-bazel-examples) | `include()` in MODULE.bazel: Bazel's syntax check, breadth-first segment reading with its BAD_MODULE messages, in-place evaluation with per-segment bindings, one module-wide tag order (the lockfile usages digest is genuine's), the cycle error, dev includes, the registry-module error (docs/MODULE_INCLUDE.md) |
+| B64 | fixed (rules_foreign_cc-examples' 23 tests match) | fixed (corpus2-quick); 1 (rules_foreign_cc-examples) | `ctx.resolve_command`: CommandHelper over `tools`/`label_dict`, exec-path location expansion, Make variables, `/bin/bash -c` argv and the tools' inputs (docs/CTX_SURFACE.md) |
+| B65 | fixed (rules_ts-examples identical) | fixed (corpus2-quick); 1 (rules_ts-examples; 8 tests) | `Args` formats a bool as Java's Boolean.toString (`true`/`false`) on the command line and in the action key |
+| B66 | fixed (grpc `query //...`: 11,419 labels match) | fixed (frozen-assert); 1 (grpc `query //...`) | query of packages loading a rules_python `pip.parse` hub (gRPC's, 6 Python versions) spun past the 20-minute cap; genuine 10 s. rules_python's `parse_simpleapi_html` walks pypi.org's 49 MB simple index with `find(x, cursor)` and slices, each a scan from the string's start in the vendored starlark: ASCII strings index in O(1) now (docs/STARLARK_VENDOR.md "ASCII strings"). gRPC `query --keep_going //...` with the extension evaluated: 12.8 s; `//src/python/grpcio_tests/tests/status:all` 11.4 s (genuine cold 25 s). The output then lacks 10 of genuine's 11,419 labels: the targets `examples/objective-c/BUILD` defines before its failing `objc_library` (a package with errors; genuine's `--keep_going` query keeps them; fixed on frozen-followups, docs/QUERY.md "Packages with errors") |
+| B68 | fixed (grpc `//:all` identical) | fixed (corpus2-quick); 1 (grpc) | `--compiler`/`--host_compiler` are configuration options (config_setting, transitions, the exec func `compiler = host_compiler`) |
+| B69 | fixed (bb-storage identical) | fixed (corpus2-rest), 1 (bb-storage) | conflicting `.repo_mapping` actions for a rules_js `*_binary` used as a `js_run_binary` tool: the binary is analyzed in two exec configurations that differ only in `--platforms` (`@platforms//host` and the `--host_platform`, both `host` platforms naming their output directory `k8`), so both register `bazel-out/k8-opt-exec/.../purgecss.repo_mapping`; Bazel shares equal actions, its runfiles support's included. The runfiles support actions are keyed by output path and content now and shared when equal (`ActionKey::native`; tests/fixtures/shared_runfiles_support) |
+| B70 | fixed (rules_java) | fixed (corpus2-quick); 1 (rules_java; 1 test) | a Starlark rule's testonly violation under `--allow_analysis_failures` is an `AnalysisFailureInfo` cause with its other prerequisite errors |
+| B71 | fixed (rules_pkg's test labels match) | fixed (corpus2-quick); 1 (rules_pkg); cosmetic | the test summary prints the main repository's display form (`@apparent//pkg:t`), kept in the planned tests (snapshot hits too) |
+| B53 | resolved (rules_kotlin with `--local_test_jobs=4`: 736.5 / 738.8 s, all 268 tests match) | not a bazel-rs bug (test-exec-speed); 1 (rules_kotlin); `test //...` | rules_kotlin's `test //...` runs 51 nested Bazel integration tests (`//examples:*_test`), each a genuine Bazel 7/8/9 whose server sizes itself to the whole host (64 CPUs) and builds with its own cold caches. One test alone takes the same under both tools (`android_.bazelversion_test` 280 s genuine, 279 s bazel-rs), and so does the batch of 51 at 16 jobs (445 s genuine, 412 s bazel-rs, low outside load). The test environment matches too (env, TEST_TMPDIR layout, limits, cgroup, namespaces, network). Small differences: stdin is /dev/null rather than a closed pipe, NoNewPrivs is set (Landlock), and test-setup.sh got `name` where genuine passes `./name`; that last one is fixed, fixture tests/fixtures/test_exec_env. In the full `test //...`, each tool runs 16 nested servers at once (both tools are scheduled alike). The 64-core machine then reaches a load of about 1,300 and almost stops making new processes, and both tools hit the 30-minute cap (genuine at 244/268 in run3 and run4, bazel-rs at 224/268). Genuine's 772 s in corpus-parity6 was a luckier window. oss_corpus.py now kills the nested servers that outlive a timed-out command: they had kept building for hours and skewed later measurements |
+| B54 | fixed (rules_cc: 456 statuses match) | fixed (corpus-rulescc); 1 (rules_cc `//tests/debug_files`) | an aspect over a Starlark rule target that sets `target_compatible_with` (or `exec_compatible_with`) failed with `attribute target_compatible_with: dependency ... was not resolved`: the aspect's `ctx.rule.attr` had no prerequisites of those built-in attributes, which the rule's own analysis has (skylib's `_action_retrieving_aspect` on rules_cc's `dwo_files` targets) |
+| B55 | fixed (rules_cc: 456 statuses match) | fixed (corpus-rulescc); 1 (rules_cc `test_wrong_cc_import_definitions_fails`) | `--allow_analysis_failures`: prerequisite validation errors (`target ... does not exist`, `... does not produce any ... files`, misplaced files, missing providers) failed the build instead of becoming the target's `AnalysisFailureInfo` causes (the attribute errors' own messages), and an aspect applied to an errored target ran instead of being the errored aspect with the target's causes (ConfiguredTargetFactory.createAspect, MergedConfiguredTarget.getAnalysisFailures; capture tests/fixtures/corpus_rulescc `prerequisite_failures_allowed`) |
+| B56 | fixed (rules_zig's tests match) | fixed (corpus-zig); 1 (rules_zig); 3 analysis tests | a Starlark transition on `//command_line_option:apple_generate_dsym` (rules_zig's `dsym_test_test_4..6` set it through `analysistest.make(config_settings = ...)`) was not a modelled native option, so the three tests were not analyzed. It is a configuration option now (CppOptions.appleGenerateDsym, boolean, default false, not propagated to exec): transitions read and write it, `select()` and the ST- hash see it, and `ctx.fragments.cpp.apple_generate_dsym` reads it, which rules_cc's `configure_features` turns into the `generate_dsym_file` or `no_generate_debug_symbols` feature (tests/fixtures/corpus_zig) |
+| B57 | fixed (rules_zig's tests match) | fixed (corpus-zig); 1 (rules_zig); 2 tests | `Target.actions`' `inputs` of a Starlark spawn listed a File `executable` first; rules_zig's `module_binary_test` and `multiple_sources_binary_test` assert that the main source is the first input. Genuine's inputs are a STABLE_ORDER NestedSet: the declared inputs, then the tools, whose transitive sets (an executable's or tool's FilesToRunProvider: its files to build, its `<executable>.runfiles` tree artifact, the executable; a depset) precede the direct Files (a File executable without runfiles, File tools) (SpawnAction.Builder.buildSpawnAction). `Target.actions`, aquery's primary input and print_action use that order now (print_action leaves out the runfiles trees, as SpawnInfo does); the registered inputs, and so the action keys, keep their order (tests/fixtures/corpus_zig) |
+| B58 | fixed (rules_zig's outputs compared) | fixed (corpus-zig); 1 (rules_zig); the outputs column | `info` and `clean` rejected `--flag_alias` (and the aliases it defines) from the inherited `build` rc options as an unsupported option, so the corpus read no `bazel-rs info bazel-bin` for rules_zig (its `.bazelrc.flags`). Every command with CoreOptions parses it (OptionsParser.withAliasFlag): the first parsing pass now checks the definitions and rewrites the aliases for every command (tests/fixtures/corpus_zig) |
+| B13c | fixed (rules_zig) | fixed (b13c); 1 (rules_zig) | one toolchain implementation for two execution platforms in one configuration (ConfiguredTargetKey.executionPlatformLabel) ended the command; the key carries the execution platform of toolchain dependencies now (design and soundness below) |
+| B32 | fixed (rules_cc: 456 statuses match) | fixed (corpus-last); 1 (rules_cc's own tests: all 456 statuses match) | rules_cc's own analysis tests. Fixed on corpus-parity4: `--fission`, `--build_test_dwp`, `--legacy_whole_archive`, `--incompatible_remove_legacy_whole_archive` are configuration options and `--dynamic_mode` is transitionable; a fission compile's `.dwo` is declared where genuine declares it. Fixed on corpus-parity5: `cc_internal.freeze` is Bazel's shallow immutable copy (the vendored starlark's immutable list/dict that is not frozen yet, docs/DEPSETS.md; the 38 thin-LTO and linkstamp targets), `create_header_info_with_deps` adds the merged deps' headers (cc_import's `direct_public_headers`), a toolchain's `artifact_name_pattern` applies (mingw/msvc dll names), `objc.target_should_alwayslink` of an explicit `alwayslink`, map_each's `must be declared by a top-level def statement` error, structs/providers with frozen list fields are hashable, and transitions on `instrumentation_filter`, `save_temps`, `start_end_lib`, `interface_shared_objects`, `process_headers_in_dependencies` (tests/fixtures/corpus_parity5). Fixed on corpus-rulescc (tests/fixtures/corpus_rulescc, tests/cc_compile.rs `thin_lto_actions_match_genuine`, `linkstamp_compiles_match_genuine`, `fdo_profiles_match_genuine`; 346 → 387 → 441 → 451): the ThinLTO backends (`cc_internal.create_lto_backend_action`, LtoBackendAction's argv, progress message and computeKey; `collect_per_file_lto_backend_opts`; `wrap_link_actions(sharable_artifacts = True)`), the shareable linkstamp compile, any `cc_internal.freeze` copy in a depset element (LtoCompilationContextInfo's BitcodeInfo with mutable `copts`), `get_artifact_name_extension_for_category` positional; the FDO/Propeller/memprof options (`--fdo_optimize`, `--fdo_profile`, `--xbinary_fdo`, `--cs_fdo_profile`, `--cs_fdo_absolute_path`, `--fdo_prefetch_hints`, `--propeller_optimize*`, `--memprof_profile`, `--fdo_instrument`, `--cs_fdo_instrument`), `--custom_malloc`, `--grte_top`/`--host_grte_top`, `--experimental_cpp_modules`, `--ltobackendopt`/`--ltoindexopt`/`--per_file_ltobackendopt` and `--action_env` as configuration options (command line, transitions, config_setting, ST- hashes), the cpp fragment's accessors of them, the late-bound `configuration_field("cpp", ...)` defaults per configuration (`custom_malloc`, `fdo_*`, `xbinary_fdo` and `propeller_optimize` with genuine's precedence, `libc_top`, `zipper`), `cc_internal.absolute_symlink` (aquery-equal, executing it fails explicitly), C++20 module compiles' module map inputs, `cc_internal.expand_and_tokenize`, `Target.actions` of every target of an analysis test's configuration, B54 and B55. Fixed on corpus-last (tests/fixtures/corpus_last, tests/corpus_last.rs; 451 → 453): a kept `genrule` answers its GenRuleAction as `Target.actions` (`test_fdo_profile_action_graph`; also when a frozen walk's worker would have published it), an executable's views end with its RunfilesSupport actions, a registered symlink is `Symlink`/`ExecutableSymlink`/`SolibSymlink`/`UnresolvedSymlink`, and a requested analysis test with a propagating attribute aspect keeps every target's actions (`test_propeller_host_builds` reads an exec tool's, its toolchains' and wrappers'; docs/ANALYSIS_TESTS.md). Not modelled: the input discovery of LtoBackendAction (imports file) and of C++20 module compiles (module map). |
+| B43 | fixed (with_cfg-examples: C2 only) | fixed (corpus-last); 1 (with_cfg) | genuine builds `cc_no_copt_binary/binary_/binary.runfiles_manifest` and `.repo_mapping`: with_cfg's frontend forwards the wrapped `cc_binary`'s OutputGroupInfo, whose `_hidden_top_level_INTERNAL_` group is the `cc_binary`'s runfiles tree artifact (RuleConfiguredTargetBuilder.java:155-173: a target with a RunfilesSupport has its tree there, not its runfiles' artifacts). bazel-rs put the default runfiles' artifacts there. Now the group holds `<exe>.runfiles`, and a requested group holding another target's tree builds that tree (its manifests and runfiles; tests/fixtures/corpus_last, `forwarded_runfiles_tree`) |
+| B12 | genuine's own error (genuine 9.3.1 reports the same `@local_config_platform` error on flatbuffers) | open, 1 (flatbuffers; genuine fails too) | `@local_config_platform` unknown (aspect_bazel_lib 1.x `platform_utils.bzl:3`) |
+| B52 | fixed (capnproto's summary matches) | fixed (corpus-parity6) | the test summary listed `FAILED TO BUILD` targets in string order (`//a/b:c` before `//a:z`); genuine orders them as Label.compareTo, package before name (capnproto's first five lines) |
+| B48 | fixed (protobuf: 13,940 / 13,945 processes, B33's target) | fixed (corpus-parity6) | protobuf built protoc in 8 extra exec configurations and the prebuilt-protoc validation in 17 extra target configurations: an analysis test (`testing.analysis_test`, rules_testing) propagated its target under test's `_validation` group; RuleConfiguredTargetBuilder.propagateValidationActionOutputGroup propagates none for analysis tests. protobuf: 13,940 processes against 13,945 (B33's target), 302 s against 290 s |
+| B49 | fixed (examples-rust-deps-cargo: file lists match) | fixed (corpus-parity6) | rules_rust's `cargo_build_script` `_bs-` runfiles manifest: a tool's runfiles manifest and tree are built with the action that stages the tool's runfiles (Bazel's spawn holds the tool's runfiles tree artifact, whose RunfilesTreeAction takes the MANIFEST); never staged in the sandbox (tests/fixtures/corpus_parity6) |
+| B50 | fixed (capnproto: 1,177 processes on both) | fixed (corpus-parity6) | capnproto `build --keep_going`: a runfiles manifest or tree still runs for a binary whose link failed (SourceManifestAction's inputs are the unresolved symlinks only, SymlinkTreeAction's the input manifest); the tree tallies as SymlinkTreeAction alone then. 1,177 processes on both |
+| B51 | fixed (rules_kotlin builds on both) | fixed (corpus-parity6) | rules_kotlin's multiplex JdepsMerge reads the `-kt.jar` beside the jdeps it merges, not an input: a non-sandboxed worker runs in genuine's shared execution root, so its native working directory also holds the other outputs of its inputs' producing actions (docs/PERSISTENT_WORKERS.md) |
+| B1 | fixed (googletest, highway identical) | fixed (googletest, re2, highway identical) | `config_setting(values = {"features": …})` |
+| B2 | fixed (every rc option of the corpus but `strip`, B33) | fixed (every rc option of the corpus; all `comment_out` edits dropped) | rc options rejected at startup: "options are never silently ignored" |
+| B3 | fixed (no recurrence) | fixed (bazel-skylib, junit5-starter, with_cfg analyse) | `native.existing_rule` / `existing_rules` missing in BUILD and legacy-macro context |
+| B9 | fixed (openroad identical) | fixed (openroad's own `archive_override`, rules_cc, protobuf, examples-rust-deps-cargo) | `archive_override` unsupported |
+| B10 | fixed (rules_kotlin, riegeli, openroad) | fixed (rules_kotlin, riegeli, openroad) | `override_repo()` / `inject_repo()` unsupported in MODULE.bazel |
+| B11 | fixed (tink-cc-examples identical) | fixed (tink-cc-examples identical, capnproto) | `strip_prefix` with a trailing `/` rejected |
+| B14 | fixed (no recurrence) | fixed (tink-cc-examples, examples-java-maven) | internal errors "has no recorded duplicate-label check" / "internal analysis order error" |
+| B20 | fixed (no recurrence) | fixed (capnproto analyses) | `rule(output_to_genfiles=True)` |
+| B21 | fixed (no recurrence) | fixed (rules_zig's repository rules) | `attr.int_list` in repository rules |
+| B22 | not exercised | not exercised (OpenROAD's `archive_override` works, so the `git_override` alternative is not needed) | `git_override` of a repository with submodule gitlinks |
+| B23 | fixed (no recurrence) | fixed (examples-rules identical) | predeclared `attr.output` given as `":name"` |
+| B24 | fixed (examples-configurations aborts as genuine) | fixed (corpus-parity4; examples-configurations aborts as genuine) | PROJECT.scl project files: looked up and loaded before the analysis, genuine's `error loading project files` (docs/CONFIGURATION.md "PROJECT.scl project files"); a project with configurations fails explicitly |
+| B25 | fixed (examples-frontend's `test`: 14/14) | fixed (examples-frontend's warm `test` passes 14/14) | "needs-repository: repository @@rules_diff+ is unfetched and this thread does not fetch" on a warm `test` |
+| B6 | fixed (no recurrence) | fixed (corpus-parent) | `_repo_mapping` manifest missed the repositories of select() keys and of an output file's generating rule |
+| B4 | fixed (no recurrence) | fixed (corpus-parity2) | `android_common` global undefined: now the `.bzl` toplevel; its two methods fail explicitly |
+| B13 | fixed (no recurrence) | fixed (bazel-skylib, rules_zig, rules_cc, bazel-gazelle) | analysis tests: `analysis_test_transition`, `testing.analysis_test`, `Target.actions`, `AnalysisFailureInfo` (docs/ANALYSIS_TESTS.md) |
+| B13a | fixed (no recurrence) | fixed (corpus-parity2) | transition on `//command_line_option:minimum_os_version` and `ctx.fragments.cpp.minimum_os_version()` |
+| B13b | fixed (no recurrence) | fixed (corpus-parity2) | `srcs = ["."]` (the package directory as a source label): "unsafe source label //tests/directory:." |
+| B13d | fixed (no recurrence) | fixed (= B29) | rules_cc's own `cc_test.bzl`/`cc_binary.bzl` "cannot use private API" |
+| B13e | fixed (no recurrence) | fixed (corpus-parity2) | `cc_import` of `mylib.dll`/`mylib.lib` on Linux: "does not match expected filetype" |
+| B15 | fixed (no recurrence) | fixed (corpus-runfiles) | test runfiles were hardlinks, not symlinks |
+| B7 | fixed (no recurrence) | fixed (corpus-parity2) | transition: "Starlark flag and its alias have different values: False and "false"" |
+| B5 | fixed (no recurrence) | fixed (corpus-parity2) | `local_repository` → `rctx.symlink(path, ".")` rejected (now a copy plus a `watch_tree` input, docs/LOCAL_REPOSITORIES.md) |
+| B8 | fixed (no recurrence) | fixed (corpus-parity3) | declared output "crosses a package boundary": a `declare_file`/`declare_directory` output may lie below a subpackage; predeclared outputs keep genuine's `Label ... is invalid because ... is a subpackage` |
+| B16 | fixed (no recurrence) | fixed (corpus-macros) | symbolic macro `inherit_attrs` |
+| B17 | fixed (no recurrence) | fixed (corpus-parent) | `rule(parent=…)` rule extension (docs/RULE_EXTENSION.md) |
+| B18, B19 | fixed (no recurrence) | fixed (corpus-ccshared) | `cc_shared_library` (`cc_common.check_experimental_cc_shared_library`); solib naming in transitioned configurations |
+| B26 | fixed (no recurrence) | fixed | depset elements holding functions that are not top-level defs (skylib `DirectoryInfo` in rules_cc `cc_args`; openroad) |
+| B27 | fixed (no recurrence) | fixed (corpus-runfiles) | `depset` was not a BUILD-file global, and list-typed attributes did not accept depsets (`@openssl//:BUILD.bazel:508`, `select({...: depset([...])})`) |
+| B28 | fixed (no recurrence) | fixed (corpus-runfiles) | `build //...` missed genuine's `.pic.o`/`.pic.d` of external C++ deps: the rule-returned `_hidden_top_level_INTERNAL_` group (rules_cc cc_library's transitive objects) was not built |
+| B29 | fixed (no recurrence) | fixed (corpus-parity2) | "file '//cc/private/rules_impl:cc_test.bzl' cannot use private API": the private-API allowlist now treats the main repository as rules_cc when the root module is rules_cc |
+| B30 | fixed (no recurrence) | fixed (corpus-ccshared) | `provider in target` fails "Target membership requires an exported provider constructor" in with_cfg's `transitioning_alias.bzl:55` |
+| B31 | fixed (no recurrence) | fixed (corpus-parity3) | `config_common.config_feature_flag_transition`: loads; no transition unless the attribute sets flag values, which fails explicitly (docs/TEST_FLAGS.md) |
+| B35 | fixed (no recurrence) | fixed (corpus-parity3) | rules_kotlin: `download_and_extract(rename_files=…)`, `Target.actions` through an alias, TestingAspectInfo (per-attribute aspect views), `check_java_toolchain_is_declared_on_rule`, mutable `default_jvm_opts`, genquery `buildfiles` scope |
+| B36 | fixed (no recurrence) | fixed (corpus-ccshared) | `ctx.actions.write(execution_requirements=…)` rejected (rules_cc_autoconf `ctx_actions_write.bzl`; 360 OpenROAD targets) |
+| B37 | fixed (no recurrence) | fixed (corpus-ccshared) | a repository's BUILD file symlinked into another repository's tree: "build file … resolves outside workspace" (sv-elab's `vendored-hashlib`) |
+| B38 | fixed (no recurrence) | fixed (corpus-ccshared) | `repository_ctx.delete()` of the repository directory itself (bazel_tools `git_repository`'s `git_worker.bzl`; sv-elab's `vendored-slang`) |
+| B39 | fixed (no recurrence) | fixed (corpus-ccshared) | a tool hardlinking a repository file into its output (bazel_lib `copy_to_directory`): publication chmod'ed the shared tree file, then libcxx compiles failed "changed while it was being staged" |
+| B40 | fixed (no recurrence) | fixed (corpus-parity3) | `copy_to_directory` over a source-directory input: sandboxed spawns now see the directory as a symlink, as genuine's sandboxes stage it (docs/SOURCE_DIRECTORIES.md) |
+| B41 | fixed (no recurrence) | fixed (corpus-parity3) | rules_js `node_modules` links in `bazel-bin`: a relative symlink output keeps its text in the output tree (docs/UNRESOLVED_SYMLINKS.md) |
+| B42 | fixed (no recurrence) | fixed (corpus-ccshared) | a test's runfile of an `actions.symlink` output of a generated file was a copy at the link's exec path, so `$ORIGIN` of a with_cfg-forwarded `cc_binary` missed its `dynamic_deps` |
+| B44 | fixed (no recurrence) | fixed (corpus-parity3) | `ctx.actions.write(mnemonic=...)` was dropped: rules_cc's module maps are `CppModuleMap` in aquery, the profile and `Target.actions` |
+| B45 | fixed (no recurrence) | fixed (corpus-parity3) | compiles staged the toolchain's `all_files` instead of `compiler_files` (`as_files` for `assemble`) |
+| B46 | fixed (no recurrence) | fixed (corpus-parity4) | `Target.actions` `argv` is empty for an action whose `Args` use `map_each` |
 
 ### Details and minimal repros
 
@@ -1043,6 +956,10 @@ not contain ':'" (examples `rules/predeclared_outputs/hash.bzl:68`).
 **B12.** aspect_bazel_lib 1.x `platform_utils.bzl:3` loads
 `@local_config_platform//:constraints.bzl`. bazel-rs fails with "unknown
 apparent repository @local_config_platform"; genuine still provides it.
+corpus-rerun2: genuine 9.3.1 reports the same error on flatbuffers
+(`No repository visible as '@local_config_platform' from repository
+'@@aspect_bazel_lib+'`), so this is not a bazel-rs difference; the
+project's remaining difference is B82.
 
 **B4.** rules_android `reexport_android_common.bzl:23`: "name
 'android_common' is not defined". Genuine 9.3.1 still has the global.
@@ -1306,10 +1223,14 @@ history before the corpus-rerun commit).
 - C4: dep-info (`.d`) files a build script writes hold the absolute
   sandbox path of each tool's execution root
   (`_bs.out_dir/anyhow.d` in examples-rust-deps-cargo); they differ between
-  two genuine runs too.
+  two genuine runs too. More generally, outputs that record a
+  tool's absolute paths: rules_rust-sys's bzip2 objects (cc-rs debug info),
+  rules_nodejs-smoke's `help.txt`, rules_foreign_cc's CMake/Make/Ninja logs
+  and meson outputs, rules_lint-python's bandit report.
 - C5: after a failed action genuine's `bazel-bin` keeps the failed
-  compiles' `.d` files (yalantinglibs, capnproto, protobuf); bazel-rs does
-  not. (The failing targets' runfiles manifests match since B50.)
+  compiles' `.d` files (yalantinglibs, capnproto, protobuf) and other
+  failed actions' outputs (rules_scala-scala3, rules_lint-python, rules_pkg);
+  bazel-rs does not. (The failing targets' runfiles manifests match since B50.)
 - C6: Zig compiler outputs (rules_zig's test binaries and shared
   libraries) differ in their `__anon_<n>` symbol numbers. rules_zig points
   every compile at the host `/tmp/zig-cache`, which both tools' spawns
@@ -1321,91 +1242,142 @@ history before the corpus-rerun commit).
 
 ## Performance
 
-### Performance vs genuine (corpus-rerun, 2026-11-20)
+### Performance vs genuine (corpus-rerun2, 2026-11-25)
 
-From the full rerun above (bazel-rs 0.4.34, LTO release; one project at a
-time; "load" is the 1-minute load average sampled during the project, other
-workers' runs included). Wall seconds; † a non-zero exit (both tools fail
-the same command unless the results table says otherwise), "(cap)" the
-20-minute cap. Each × is genuine ÷ bazel-rs, so above 1 means bazel-rs is
+From the full rerun above (the released bazel-rs 0.5.1; one project at a
+time; "load" is the 1-minute load average sampled during the project, its
+own builds and other workers' runs included). Wall seconds; † a non-zero
+exit (both tools fail the same command unless the results tables say
+otherwise). Each × is genuine ÷ bazel-rs, so above 1 means bazel-rs is
 faster or smaller: warm compares bazel-rs's fresh process with genuine's
 warm server, peak RSS is the cold `build --nobuild` run's. Cold includes
-every download from the public mirrors. OpenROAD's build is
-`build //:openroad` (by hand; its peak RSS 2.9 GB genuine, 3.0 GB bazel-rs);
-the test column of OpenROAD and protobuf is not run (JSON phases).
+every download from the public mirrors. OpenROAD's build is `build
+//:openroad` (by hand, load 10–30 for genuine and 12–76 for bazel-rs; its
+peak RSS 2.9 GB genuine, 2.2 GB bazel-rs); the test column of OpenROAD,
+protobuf and grpc is not run (JSON phases). rules_py's bazel-rs commands
+stop at startup (B33), so it has no ratios.
 
 | project | load | cold g / rs (s) | × | warm g-batch / g-server / rs (s) | × vs server | build g / rs (s) | × | test g / rs (s) | × | peak RSS cold g / rs (MB) | × |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| abseil-cpp | 17–28 | 17.2 / 13.2 | 1.30 | 3.5 / 0.2 / 0.2 | 1.00 | 76.3 / 66.0 | 1.16 | 57.2 / 57.0 | 1.00 | 1191 / 540 | 2.2 |
-| bazel-gazelle | 11–42 | 41.0 / 36.8 | 1.11 | 4.6 / 0.3 / 0.2 | 1.50 | 57.0 / 52.0 | 1.09 | 47.0† / 46.1† | 1.02 | 1765 / 940 | 1.9 |
-| bazel-skylib | 17–33 | 21.7 / 20.0 | 1.08 | 3.7 / 0.3 / 0.2 | 1.50 | 50.7 / 50.2 | 1.01 | 4.3† / 1.8† | 2.39 | 1289 / 566 | 2.3 |
-| buildtools | 11–95 | 24.5 / 24.1 | 1.02 | 4.5 / 0.3 / 0.2 | 1.75 | 49.6 / 48.7 | 1.02 | 7.9† / 4.3† | 1.86 | 1951 / 1300 | 1.5 |
-| capnproto | 14–19 | 39.2 / 11.1 | 3.54 | 3.4 / 0.2 / 0.2 | 1.25 | 20.2† / 18.2† | 1.11 | 9.4† / 7.5† | 1.26 | 1078 / 384 | 2.8 |
-| diff.bzl | 19–25 | 20.7 / 15.4 | 1.34 | 3.4 / 0.2 / 0.2 | 0.80 | 13.7 / 11.4 | 1.20 | 3.8 / 0.8 | 4.70 | 1178 / 367 | 3.2 |
-| examples-bzlmod-01 | 15–19 | 11.9 / 6.6 | 1.81 | 3.1 / 0.1 / 0.1 | 1.00 | 6.1 / 2.9 | 2.12 | 3.0† / 0.5† | 6.02 | 600 / 257 | 2.3 |
-| examples-bzlmod-05 | 12–13 | 8.6 / 3.7 | 2.36 | 2.5 / 0.1 / 0.1 | 3.00 | 2.5 / 0.1 | 25.10 | 2.5† / 0.1† | 49.20 | 387 / 82 | 4.7 |
-| examples-configurations | 18–23 | 9.8† / 5.6† | 1.76 | 2.2† / 0.1† / 0.2† | 0.50 | 1.8† / 0.2† | 9.05 | 1.9† / 0.3† | 6.37 | 472 / 104 | 4.5 |
-| examples-cpp-tutorial | 12–15 | 11.5 / 6.4 | 1.81 | 2.7 / 0.1 / 0.2 | 0.75 | 3.0 / 0.6 | 5.47 | 3.4† / 0.5† | 7.60 | 597 / 235 | 2.5 |
-| examples-frontend | 8–43 | 88.3† / 121.6† | 0.73 | 60.9† / 110.9† / 97.7† | 1.14 | 60.8† / 137.7† | 0.44 | 60.9† / 104.4† | 0.58 | 1488 / 1806 | 0.8 |
-| examples-java-maven | 18–82 | 34.8 / 56.0 | 0.62 | 3.3 / 0.2 / 0.2 | 1.00 | 8.9 / 7.2 | 1.23 | 7.0 / 2.6 | 2.68 | 1216 / 457 | 2.7 |
-| examples-java-tutorial | 12–20 | 18.8† / 19.4† | 0.97 | 3.3† / 0.1† / 0.8† | 0.20 | 6.4† / 4.2† | 1.52 | 3.4† / 0.9† | 3.73 | 745 / 306 | 2.4 |
-| examples-rules | 9–14 | 13.7 / 8.5 | 1.62 | 3.0 / 0.2 / 0.1 | 1.33 | 4.9 / 1.1 | 4.39 | 3.6 / 0.9 | 3.76 | 637 / 286 | 2.2 |
-| examples-rust-deps-cargo | 17–23 | 42.2 / 30.3 | 1.39 | 3.1 / 0.2 / 0.2 | 1.00 | 27.3 / 24.6 | 1.11 | 3.9† / 0.6† | 7.04 | 1013 / 364 | 2.8 |
-| examples-rust-ffi | 13–29 | 56.1 / 22.6 | 2.49 | 2.8 / 0.2 / 0.2 | 1.25 | 4.2 / 1.7 | 2.43 | 3.2† / 1.4† | 2.24 | 851 / 398 | 2.1 |
-| flatbuffers | 12–13 | 17.1† / 7.4† | 2.33 | 3.0† / 0.3† / 0.5† | 0.67 | 3.1† / 0.4† | 7.65 | 3.2† / 0.5† | 7.02 | 763 / 207 | 3.7 |
-| googletest | 14–17 | 18.9 / 12.5 | 1.51 | 3.4 / 0.2 / 0.2 | 1.25 | 29.4 / 29.8 | 0.99 | 7.0 / 6.0 | 1.18 | 1181 / 436 | 2.7 |
-| highway | 15–33 | 12.4 / 7.3 | 1.70 | 3.1 / 0.2 / 0.2 | 1.00 | 178.0 / 172.6 | 1.03 | 739.1 / 749.0 | 0.99 | 582 / 268 | 2.2 |
-| junit5-starter | 12–18 | 22.2 / 15.0 | 1.48 | 3.6 / 0.2 / 0.2 | 1.25 | 7.8 / 5.4 | 1.46 | 4.5 / 1.5 | 3.06 | 1298 / 515 | 2.5 |
-| limdor-cpp | 12–16 | 12.0 / 6.6 | 1.82 | 2.8 / 0.2 / 0.1 | 1.33 | 3.1 / 0.6 | 5.18 | 3.2 / 0.8 | 4.28 | 635 / 251 | 2.5 |
-| limdor-rust | 11–37 | 28.5 / 26.0 | 1.10 | 3.0 / 0.1 / 0.2 | 0.75 | 4.5 / 2.1 | 2.19 | 3.6 / 1.1 | 3.14 | 847 / 485 | 1.7 |
-| openroad (`//:openroad`) | 6–21 | 90.7 / 120.1 | 0.76 | 8.7 / 0.7 / 1.4 | 0.46 | 714.0 / 994.6 | 0.72 | — / — | — | 3749 / 6868 | 0.5 |
-| protobuf | 16–62 | 41.9† / 62.3† | 0.67 | 7.3† / 0.6† / 15.2† | 0.04 | 286.9† / 648.0† | 0.44 | — / — | — | 2718 / 3613 | 0.8 |
-| re2 | 10–30 | 11.7† / 8.1† | 1.44 | 3.2† / 0.2† / 1.2† | 0.21 | 16.4† / 15.9† | 1.03 | 327.9† / 331.8† | 0.99 | 1057 / 316 | 3.3 |
-| riegeli | 12–25 | 28.5† / 20.0† | 1.43 | 4.4† / 0.3† / 3.2† | 0.09 | 70.9† / 68.8† | 1.03 | 12.8† / 10.6† | 1.21 | 1373 / 805 | 1.7 |
-| rules-template | 12–20 | 27.2 / 22.3 | 1.22 | 4.2 / 0.2 / 0.2 | 1.25 | 27.1 / 25.0 | 1.08 | 4.3 / 0.8 | 5.02 | 1311 / 445 | 2.9 |
-| rules_cc | 16–39 | 18.8† / 20.5† | 0.92 | 5.7† / 0.6† / 5.7† | 0.10 | 51.3† / 56.0† | 0.92 | 6.3† / 7.2† | 0.88 | 2655 / 1696 | 1.6 |
-| rules_go-basic_gazelle | 13–23 | 25.7 / 22.3 | 1.15 | 4.0 / 0.3 / 0.2 | 1.75 | 31.3 / 28.9 | 1.09 | 4.2 / 0.9 | 4.69 | 1244 / 488 | 2.5 |
-| rules_jvm_external-simple | 19–35 | 72.9† / 38.1† | 1.91 | 4.2† / 0.4† / 1.8† | 0.23 | 4.0† / 1.5† | 2.72 | 4.3† / 1.6† | 2.77 | 1625 / 655 | 2.5 |
-| rules_kotlin | 15–43 | 37.6 / 45.1 | 0.83 | 5.4 / 0.6 / 0.2 | 2.40 | 66.9 / 79.0† | 0.85 | 1209.0 (cap) / 1200.0 (cap) | — | 2320 / 2073 | 1.1 |
-| rules_python-bzlmod | 10–36 | 43.2 / 36.2 | 1.19 | 4.6 / 0.6 / 0.2 | 2.20 | 43.7 / 39.7 | 1.10 | 7.5 / 10.3 | 0.73 | 1959 / 2577 | 0.8 |
-| rules_python-pip_parse | 12–17 | 31.2 / 32.5 | 0.96 | 3.6 / 0.3 / 0.2 | 1.40 | 4.4 / 1.1 | 4.22 | 4.8 / 2.0 | 2.38 | 1635 / 800 | 2.0 |
-| rules_zig | 17–32 | 38.0 / 37.5† | 1.01 | 14.1 / 0.3 / 12.0† | 0.03 | 38.0 / 12.2† | 3.10 | 14.4 / 12.1† | 1.19 | 2517 / 1933 | 1.3 |
-| tink-cc-examples | 10–21 | 18.0 / 12.1 | 1.48 | 3.6 / 0.3 / 0.2 | 1.50 | 95.1 / 87.3 | 1.09 | 4.9 / 1.7 | 2.85 | 1219 / 601 | 2.0 |
-| with_cfg-examples | 12–21 | 33.2 / 28.2 | 1.18 | 4.0 / 0.4 / 0.1 | 2.67 | 8.9 / 5.9 | 1.52 | 5.0 / 1.2 | 4.03 | 1737 / 1678 | 1.0 |
-| yalantinglibs | 14–35 | 12.0 / 6.8 | 1.78 | 3.4 / 0.2 / 0.2 | 1.00 | 58.6† / 52.2† | 1.12 | 54.4† / 53.7† | 1.01 | 679 / 244 | 2.8 |
+| abseil-cpp | 16–40 | 14.4 / 10.3 | 1.40 | 3.8 / 0.2 / 0.2 | 1.00 | 74.5 / 72.5 | 1.03 | 33.4 / 59.3 | 0.56 | 1089 / 481 | 2.3 |
+| diff.bzl | 10–12 | 21.5 / 15.4 | 1.39 | 3.4 / 0.3 / 0.2 | 1.20 | 11.8 / 11.3 | 1.04 | 3.8 / 0.9 | 4.24 | 1181 / 340 | 3.5 |
+| examples-bzlmod-01 | 9–11 | 11.9 / 6.6 | 1.81 | 3.1 / 0.1 / 0.1 | 1.00 | 5.8 / 2.6 | 2.23 | 3.4† / 0.3† | 9.60 | 627 / 239 | 2.6 |
+| examples-bzlmod-05 | 16–17 | 8.3 / 3.1 | 2.68 | 2.5 / 0.1 / 0.1 | 3.00 | 2.6 / 0.1 | 25.60 | 2.4† / 0.1† | 24.10 | 321 / 79 | 4.0 |
+| examples-cpp-tutorial | 17–17 | 11.3 / 6.1 | 1.87 | 2.6 / 0.1 / 0.1 | 1.00 | 2.8 / 0.6 | 5.11 | 2.8† / 0.5† | 5.52 | 712 / 232 | 3.1 |
+| examples-rules | 18–21 | 12.5 / 8.5 | 1.48 | 3.2 / 0.2 / 0.1 | 1.33 | 3.9 / 1.1 | 3.40 | 3.4 / 0.9 | 3.54 | 903 / 265 | 3.4 |
+| examples-rust-ffi | 15–23 | 57.8 / 16.7 | 3.45 | 2.9 / 0.2 / 0.2 | 1.00 | 4.5 / 2.0 | 2.20 | 3.1† / 1.4† | 2.25 | 816 / 402 | 2.0 |
+| googletest | 18–42 | 17.9 / 11.9 | 1.50 | 3.2 / 0.2 / 0.2 | 1.00 | 32.2 / 30.9 | 1.04 | 7.0 / 6.1 | 1.15 | 1149 / 400 | 2.9 |
+| highway | 14–52 | 11.6 / 6.8 | 1.71 | 3.2 / 0.2 / 0.2 | 1.00 | 181.4 / 178.3 | 1.02 | 776.1 / 765.5 | 1.01 | 605 / 257 | 2.4 |
+| limdor-cpp | 9–17 | 11.0 / 6.3 | 1.74 | 2.6 / 0.1 / 0.2 | 0.75 | 3.2 / 0.6 | 5.27 | 3.0 / 0.8 | 4.01 | 722 / 250 | 2.9 |
+| limdor-rust | 8–10 | 27.9 / 20.0 | 1.39 | 3.1 / 0.2 / 0.2 | 1.25 | 4.9 / 1.8 | 2.77 | 3.5 / 0.8 | 4.68 | 910 / 479 | 1.9 |
+| openroad (`//:openroad`) | 9–35 | 75.9 / 106.0 | 0.72 | 9.6 / 0.8 / 1.4 | 0.57 | 674.5 / 1010.2 | 0.67 | — / — | — | 3330 / 4748 | 0.7 |
+| rules-template | 16–26 | 25.7 / 21.2 | 1.21 | 3.8 / 0.2 / 0.2 | 1.25 | 29.0 / 24.5 | 1.18 | 4.2 / 0.9 | 4.64 | 1293 / 380 | 3.4 |
+| rules_go-basic_gazelle | 20–41 | 25.2 / 42.8 | 0.59 | 3.9 / 0.3 / 0.2 | 1.50 | 32.5 / 32.7 | 0.99 | 4.3 / 0.9 | 4.74 | 1242 / 392 | 3.2 |
+| rules_python-pip_parse | 14–20 | 30.1 / 28.9 | 1.04 | 3.8 / 0.4 / 0.2 | 1.60 | 6.0 / 1.2 | 4.81 | 5.0 / 2.4 | 2.11 | 1632 / 757 | 2.2 |
+| tink-cc-examples | 16–26 | 16.7 / 15.1 | 1.11 | 3.8 / 0.2 / 0.2 | 1.00 | 99.6 / 85.7 | 1.16 | 4.4 / 1.7 | 2.63 | 1163 / 534 | 2.2 |
+| bazel-gazelle | 15–41 | 33.0 / 37.4 | 0.88 | 5.0 / 0.3 / 0.2 | 1.50 | 58.5 / 53.7 | 1.09 | 37.8† / 34.8† | 1.09 | 1662 / 745 | 2.2 |
+| bazel-skylib | 10–27 | 22.1 / 16.8 | 1.32 | 3.7 / 0.2 / 0.2 | 1.25 | 47.7 / 50.8 | 0.94 | 3.7† / 1.9† | 1.94 | 1274 / 487 | 2.6 |
+| buildtools | 10–108 | 24.0 / 21.7 | 1.10 | 4.7 / 0.3 / 0.2 | 1.75 | 49.5 / 50.3 | 0.99 | 9.1† / 4.5† | 2.04 | 1776 / 916 | 1.9 |
+| examples-configurations | 18–22 | 8.8† / 4.6† | 1.90 | 2.1† / 0.1† / 0.2† | 0.75 | 2.1† / 0.2† | 10.55 | 1.9† / 0.2† | 9.55 | 410 / 103 | 4.0 |
+| re2 | 11–31 | 12.1† / 7.9† | 1.53 | 3.3† / 0.2† / 1.2† | 0.17 | 16.4† / 16.8† | 0.98 | 329.2† / 328.7† | 1.00 | 1094 / 295 | 3.7 |
+| riegeli | 9–22 | 31.0† / 16.1† | 1.93 | 4.0† / 0.3† / 3.1† | 0.10 | 70.9† / 68.7† | 1.03 | 11.2† / 11.3† | 1.00 | 1355 / 692 | 2.0 |
+| rules_cc | 14–28 | 20.9† / 20.4† | 1.02 | 5.2† / 0.7† / 5.3† | 0.13 | 52.7† / 52.3† | 1.01 | 6.5† / 7.6† | 0.86 | 2720 / 1734 | 1.6 |
+| capnproto | 18–42 | 18.5 / 10.9 | 1.70 | 3.4 / 0.2 / 0.1 | 1.67 | 28.9† / 18.3† | 1.58 | 8.8† / 7.6† | 1.15 | 1145 / 360 | 3.2 |
+| examples-frontend | 8–31 | 85.3† / 123.4† | 0.69 | 61.0† / 110.6† / 95.8† | 1.15 | 61.0† / 135.5† | 0.45 | 61.4† / 106.4† | 0.58 | 1536 / 1612 | 1.0 |
+| examples-java-maven | 16–20 | 31.3 / 32.0 | 0.98 | 3.1 / 0.1 / 0.2 | 0.75 | 8.0 / 6.5 | 1.22 | 7.0 / 3.4 | 2.06 | 1206 / 443 | 2.7 |
+| examples-java-tutorial | 16–21 | 21.5† / 15.0† | 1.43 | 3.2† / 0.2† / 1.0† | 0.25 | 6.4† / 4.3† | 1.50 | 3.6† / 0.9† | 4.01 | 691 / 285 | 2.4 |
+| examples-rust-deps-cargo | 13–29 | 40.0 / 28.8 | 1.39 | 3.3 / 0.3 / 0.2 | 1.50 | 27.3 / 25.8 | 1.06 | 3.7† / 0.6† | 6.10 | 1072 / 356 | 3.0 |
+| junit5-starter | 16–23 | 24.0 / 21.9 | 1.09 | 3.5 / 0.2 / 0.2 | 1.25 | 8.2 / 5.4 | 1.53 | 4.5 / 1.5 | 3.01 | 1291 / 425 | 3.0 |
+| rules_zig | 10–19 | 33.8 / 50.5 | 0.67 | 13.2 / 0.5 / 11.0 | 0.05 | 37.9 / 37.9 | 1.00 | 14.2 / 12.7 | 1.12 | 2370 / 1263 | 1.9 |
+| with_cfg-examples | 11–25 | 32.6 / 30.4 | 1.07 | 4.3 / 0.4 / 0.1 | 2.67 | 9.4 / 6.0 | 1.56 | 5.0 / 1.4 | 3.57 | 1721 / 1076 | 1.6 |
+| yalantinglibs | 20–34 | 11.3 / 6.6 | 1.72 | 3.2 / 0.2 / 0.2 | 1.00 | 67.9† / 54.2† | 1.25 | 57.6† / 53.6† | 1.07 | 641 / 236 | 2.7 |
+| flatbuffers | 16–18 | 17.5† / 7.5† | 2.34 | 3.0† / 0.3† / 0.4† | 0.87 | 3.0† / 0.5† | 6.58 | 2.8† / 0.5† | 6.13 | 674 / 214 | 3.1 |
+| protobuf | 12–34 | 66.3† / 45.4† | 1.46 | 7.1† / 0.8† / 13.7† | 0.06 | 285.7† / 300.2† | 0.95 | — / — | — | 3006 / 2718 | 1.1 |
+| rules_jvm_external-simple | 19–24 | 60.6† / 25.8† | 2.35 | 4.5† / 0.3† / 1.4† | 0.21 | 4.1† / 1.5† | 2.73 | 4.2† / 1.4† | 2.91 | 1712 / 566 | 3.0 |
+| rules_kotlin | 15–164 | 36.8 / 42.7 | 0.86 | 5.2 / 0.4 / 0.2 | 2.00 | 56.2 / 62.2 | 0.90 | 736.5 / 738.8 | 1.00 | 2368 / 1422 | 1.7 |
+| rules_python-bzlmod | 15–23 | 40.7 / 33.2 | 1.22 | 4.8 / 0.3 / 0.2 | 1.75 | 44.4 / 39.3 | 1.13 | 6.8 / 9.7 | 0.70 | 1961 / 2577 | 0.8 |
+| abseil-py | 19–27 | 11.6 / 6.5 | 1.77 | 3.1 / 0.2 / 0.2 | 1.25 | 3.2 / 0.6 | 5.35 | 10.4 / 9.3 | 1.12 | 690 / 238 | 2.9 |
+| bb-storage | 11–43 | 149.8 / 135.5 | 1.11 | 5.3 / 0.5 / 0.2 | 1.80 | 58.7 / 66.7 | 0.88 | 12.3 / 11.6 | 1.05 | 2050 / 1260 | 1.6 |
+| boringssl | 18–34 | 12.8 / 6.9 | 1.85 | 3.0 / 0.1 / 0.2 | 0.75 | 27.0 / 28.0 | 0.96 | 17.1 / 16.9 | 1.01 | 643 / 250 | 2.6 |
+| examples-bzlmod-02 | 13–16 | 11.6 / 7.0 | 1.67 | 3.1 / 0.2 / 0.2 | 1.00 | 5.6 / 2.7 | 2.07 | 4.1† / 0.9† | 4.51 | 846 / 249 | 3.4 |
+| examples-bzlmod-04 | 14–15 | 9.8 / 5.1 | 1.94 | 2.9 / 0.2 / 0.2 | 1.00 | 2.7 / 0.2 | 10.84 | 2.4† / 0.2† | 12.05 | 782 / 234 | 3.3 |
+| examples-bzlmod-06 | 18–18 | 8.2 / 3.7 | 2.23 | 2.2 / 0.2 / 0.1 | 3.20 | 2.6 / 0.1 | 25.60 | 2.5† / 0.1† | 25.10 | 319 / 80 | 4.0 |
+| grpc-gateway | 16–63 | 42.5 / 56.3 | 0.75 | 5.3 / 0.2 / 0.2 | 1.25 | 36.8 / 42.8 | 0.86 | 4.7 / 1.4 | 3.50 | 1525 / 545 | 2.8 |
+| rules_buf-bzlmod | 19–49 | 26.9 / 24.1 | 1.12 | 3.2 / 0.2 / 0.1 | 1.67 | 48.9 / 46.9 | 1.04 | 3.9 / 1.0 | 3.87 | 1389 / 414 | 3.4 |
+| rules_js-e2e-bzlmod | 17–24 | 17.2 / 11.5 | 1.50 | 3.2 / 0.2 / 0.2 | 1.25 | 8.8 / 6.8 | 1.29 | 3.9 / 1.6 | 2.51 | 1221 / 477 | 2.6 |
+| rules_lint-shell | 18–33 | 26.4 / 27.4 | 0.96 | 3.8 / 0.3 / 0.2 | 1.50 | 26.3 / 22.7 | 1.16 | 3.9 / 0.8 | 4.90 | 1232 / 449 | 2.7 |
+| rules_oci-smoke | 18–19 | 16.3 / 8.6 | 1.89 | 2.8 / 0.2 / 0.1 | 1.33 | 3.2 / 0.6 | 5.27 | 3.4 / 1.5 | 2.26 | 794 / 281 | 2.8 |
+| rules_rust-all_crate_deps | 18–27 | 70.0 / 53.2 | 1.32 | 3.4 / 0.3 / 0.2 | 1.50 | 33.3 / 32.8 | 1.02 | 4.0 / 1.0 | 3.97 | 1841 / 553 | 3.3 |
+| rules_rust-proto | 15–45 | 70.4 / 71.2 | 0.99 | 4.0 / 0.2 / 0.2 | 1.00 | 59.6 / 57.9 | 1.03 | 4.8 / 4.1 | 1.17 | 1658 / 694 | 2.4 |
+| rules_ts-examples | 11–34 | 18.3 / 14.4 | 1.27 | 4.1 / 0.2 / 2.7 | 0.09 | 56.9 / 53.6 | 1.06 | 5.0 / 2.3 | 2.15 | 1349 / 550 | 2.5 |
+| cel-cpp | 12–73 | 25.6† / 24.9† | 1.03 | 3.8† / 0.3† / 5.5† | 0.06 | 230.6† / 247.1† | 0.93 | 314.1† / 310.9† | 1.01 | 1472 / 743 | 2.0 |
+| examples-bzlmod-03 | 16–18 | 8.9† / 3.7† | 2.39 | 2.4† / 0.2† / 0.1† | 2.00 | 2.7† / 0.1† | 18.07 | 2.7† / 0.1† | 17.73 | 337 / 84 | 4.0 |
+| grpc | 18–33 | 42.3 / 47.5 | 0.89 | 5.2 / 0.3 / 0.2 | 1.20 | 307.1 / 318.0 | 0.97 | — / — | — | 1767 / 1143 | 1.5 |
+| rules_foreign_cc-examples | 18–32 | 18.7 / 13.2 | 1.41 | 4.5 / 0.3 / 0.2 | 1.50 | 19.9 / 20.2 | 0.99 | 4.7 / 1.7 | 2.81 | 1430 / 717 | 2.0 |
+| rules_lint-python | 16–35 | 28.4 / 51.7 | 0.55 | 4.2 / 0.3 / 0.2 | 1.20 | 25.9† / 24.0† | 1.08 | 5.0† / 2.5† | 1.99 | 1612 / 782 | 2.1 |
+| rules_nodejs-smoke | 14–28 | 14.5 / 9.9 | 1.46 | 3.3 / 0.4 / 0.2 | 2.00 | 3.4 / 1.8 | 1.95 | 3.3 / 0.8 | 4.07 | 1350 / 585 | 2.3 |
+| rules_rust-sys | 14–24 | 25.3 / 21.5 | 1.18 | 9.2 / 0.3 / 6.6 | 0.05 | 35.5 / 35.4 | 1.00 | 9.5 / 7.5 | 1.26 | 1370 / 399 | 3.4 |
+| rules_scala-scala3 | 15–21 | 19.1 / 13.9 | 1.38 | 3.6 / 0.2 / 0.2 | 1.25 | 12.5† / 11.5† | 1.09 | 4.8† / 2.7† | 1.78 | 804 / 348 | 2.3 |
+| bazel-remote | 15–38 | 29.0† / 27.8† | 1.04 | 4.5† / 0.3† / 2.8† | 0.11 | 40.2† / 38.1† | 1.05 | 10.5† / 8.1† | 1.29 | 1547 / 839 | 1.8 |
+| rules_pkg | 15–37 | 20.3 / 17.4 | 1.17 | 3.6 / 0.2 / 0.2 | 1.25 | 60.4† / 55.7† | 1.08 | 6.1† / 8.9† | 0.69 | 1319 / 573 | 2.3 |
+| aspect-bazel-examples | 13–136 | 149.3 / 116.6 | 1.28 | 6.5 / 0.8 / 0.5 | 1.67 | 88.0 / 136.2† | 0.65 | 22.9† / 46.0† | 0.50 | 2997 / 2060 | 1.5 |
+| rules_java | 20–66 | 79.2 / 38.3† | 2.07 | 4.7 / 0.3 / 5.6† | 0.05 | 8.8 / 11.4† | 0.77 | 8.1 / 7.4† | 1.10 | 2020 / 1613 | 1.3 |
+| rules_py | 13–57 | 43.1 / 0.1† | — | 8.2 / 0.9 / 0.1† | — | 120.6 / 0.1† | — | 15.4† / 0.1† | — | 4056 / — | — |
 
 - **Cold `build --nobuild //...`** (module resolution, every fetch,
-  loading, analysis): bazel-rs is faster on 29 of 37 projects, typically
-  1.1–2.5× (abseil 13.2 s against 17.2, capnproto 11.1 against 39.2,
-  rust-ffi 22.6 against 56.1, both with slow genuine downloads). Slower:
-  OpenROAD (120.1 against 90.7 s, P7), protobuf (62.3 against 41.9),
-  examples-frontend (121.6 against 88.3, both failing on a download
-  timeout), rules_kotlin (45.1 against 37.6), rules_cc (20.5 against 18.8)
-  and examples-java-maven (56.0 against 34.8, during a load peak of 82).
+  loading, analysis): bazel-rs is faster on 51 of 63 projects (rules_py
+  aside), typically 1.1–2× (examples-rust-ffi 16.7 s against 57.8,
+  rules_java 38.3 against 79.2, both with slow genuine downloads), even on
+  3. Slower on 9: rules_lint-python (51.7 against 28.4 s; 51.1 against 29.2
+  in corpus-expand too), rules_go-basic_gazelle (42.8 against 25.2; 22.3
+  against 25.7 in corpus-rerun), rules_zig (50.5 against 33.8),
+  examples-frontend (123.4 against 85.3, both failing on a download
+  timeout), OpenROAD (106.0 against 75.9 s, P7), grpc-gateway (56.3 against
+  42.5), rules_kotlin (42.7 against 36.8), bazel-gazelle (37.4 against
+  33.0) and grpc (47.5 against 42.3). Only rules_lint-python, OpenROAD and
+  rules_kotlin were slower in the earlier runs too; the others moved by
+  more than the difference between runs (downloads).
 - **Warm `build --nobuild`:** a fresh bazel-rs process with its analysis
-  snapshot takes 0.1–0.2 s on every project whose analysis succeeds, like
-  genuine's warm server (0.1–0.6 s) and 15–30× faster than genuine
-  `--batch` (2.5–14.1 s); OpenROAD 1.4 s against the server's 0.7 s and
-  `--batch`'s 8.7 s. A command whose analysis failed saves no snapshot,
-  so its repeat re-analyses (protobuf 15.2 s, rules_zig 12.0, rules_cc
-  5.7, riegeli 3.2 against the server's 0.3–0.6 s).
-- **Full build:** bazel-rs is faster or even on 32 of 37 (abseil 66.0 s
-  against 76.3, tink-cc 87.3 against 95.1, highway 172.6 against 178.0).
-  Slower: protobuf (648 against 287 s: B48 built protoc 8 more times;
-  302 against 290 s after corpus-parity6),
-  examples-frontend (137.7 against 60.8, both failing), OpenROAD
-  `//:openroad` (994.6 against 714.0 s for the same 13,479 actions, at a
-  higher load: 20–52 against 12–38; openroad-perf measured 773.9 against
-  693.5 s), rules_kotlin (79.0 against 66.9, failing on B51; 59.7
-  against 59.2 after corpus-parity6).
-- **Tests:** faster or even on 31 of the 34 `test` commands (some without
-  test targets); slower on
-  examples-frontend, rules_python-bzlmod (10.3 against 7.5 s) and rules_cc
-  (fewer tests run).
-- **Memory:** bazel-rs's cold peak RSS is lower on 32 of 37, typically
-  1.5–3×. Higher: OpenROAD (6.9 GB against 3.7 GB), protobuf (3.6 against
-  2.7 GB), rules_python-bzlmod (2.6 against 2.0 GB), examples-frontend (1.8
-  against 1.5 GB).
+  snapshot takes 0.1–0.3 s on 47 of 63, like genuine's warm server
+  (0.1–0.8 s) and 10–30× faster than genuine `--batch` (2.1–13.2 s);
+  OpenROAD 1.4 s against the server's 0.8 s and `--batch`'s 9.6 s. No
+  snapshot: a command whose analysis failed saves none, so its repeat
+  re-analyses (protobuf 13.7 s, rules_java 5.6, cel-cpp 5.5, rules_cc 5.3,
+  riegeli 3.1, bazel-remote 2.8; re2, examples-java-tutorial and
+  rules_jvm_external-simple 1.0–1.5 s; examples-frontend's commands all wait
+  on download timeouts). Three succeed
+  and still miss: rules_zig (11.0 s) and rules_rust-sys (6.6 s) set
+  `common --lockfile_mode=off`, so every command reads the registry's
+  `MODULE.bazel` files over the network again and bazel-rs saves no
+  snapshot (`BAZEL_RS_SNAPSHOT_EXPLAIN`: `not saved: taint network (206)`;
+  genuine `--batch` pays the same, 13.2 and 9.2 s); rules_ts-examples
+  (2.7 s): aspect_tools_telemetry's repository rule prints, so the cold
+  run and the first repeat save no snapshot (`taint
+  repository-rule-executed`) and the measured second repeat is the first
+  to save one.
+- **Full build:** bazel-rs is faster or even on 54 of 63 (tink-cc 85.7 s
+  against 99.6, yalantinglibs 54.2 against 67.9, capnproto 18.3 against
+  28.9). Slower: OpenROAD `//:openroad` (1,010 against 674 s for the same
+  13,480 actions; CPU time 14,464 against 10,828 s, at a higher load:
+  median 28 against 25, peaks 76 against 30; 994.6 against 714.0 in
+  corpus-rerun, 773.9 against 693.5 in openroad-perf), examples-frontend
+  (135.5 against 61.0, both failing), aspect-bazel-examples (136.2 against
+  88.0, failing on B78), rules_java (11.4 against 8.8, failing analysis),
+  grpc-gateway (42.8 against 36.8), bb-storage (66.7 against 58.7; 68.2
+  against 57.1 in corpus-expand too), rules_kotlin (62.2 against 56.2,
+  CPU 1,813 against 1,436 s), cel-cpp (247.1 against 230.6) and
+  bazel-skylib (50.8 against 47.7).
+- **Tests:** faster or even on 54 of the 60 `test` commands (some without
+  test targets). Slower: aspect-bazel-examples (fewer tests built),
+  examples-frontend (download timeouts), abseil-cpp (59.3 against 33.4 s;
+  a rerun of its `build,test` alone at load 10–18: 60.4 against 63.0 s, so
+  genuine's 33.4 s was a luckier window), rules_pkg and rules_cc (one
+  test more fails or less runs), rules_python-bzlmod (9.7 against 6.8 s;
+  10.3 against 7.5 in corpus-rerun too).
+- **Memory:** bazel-rs's cold peak RSS is lower on 60 of 63, by 2.6× in
+  the median. Higher: OpenROAD (4.7 GB against 3.3 GB; 6.9 against 3.7 GB
+  in corpus-rerun), rules_python-bzlmod (2.6 against 2.0 GB) and
+  examples-frontend (1.6 against 1.5 GB).
 
 ### Earlier summary (first runs, 2026-11-16/18)
 
@@ -1695,16 +1667,23 @@ were runs with the download cache pre-filled too, the fully cold runs take
 
 ## Recommendations
 
-From the corpus-rerun run (2026-11-20):
+From the corpus-rerun2 run (2026-11-25, the released 0.5.1):
 
-1. rules_zig: B56 and B57 (B13c, which blocked it, is fixed on b13c;
-   B48–B52 are fixed on corpus-parity6).
-2. B53 (not a bazel-rs bug): rules_kotlin's `test //...` runs 16 nested
-   host-sized Bazel servers at once and overloads the machine under both
-   tools; comparing its test statuses needs a longer cap or fewer
-   concurrent tests (e.g. `--local_test_jobs=4` for both tools).
-3. Output parity left: B34 (a zipapp's file modes and symlinks, not
-   blocking) and B33 (path mapping, an explicit gap).
-4. Performance: OpenROAD cold analysis (P7) and peak RSS (6.9 GB against
-   3.7 GB), `//:openroad` build time, protobuf's memory, examples-frontend.
-5. Rerun the corpus after each fix: `oss_corpus.py run --only <project>`.
+1. B33 (path mapping, `--experimental_output_paths=strip`) is the top
+   blocker: rules_py stops at startup, rules_java's 12 tests and
+   protobuf's `test_compile_path_mapping` do not analyze. Modelling it is
+   not cheap (B33's row), but it is the only open bug touching 3 projects.
+2. B34 (staged inputs' file modes and relative symlinks) is the only known
+   bazel-rs output difference of passing builds (rules_python-bzlmod's
+   zipapp, rules_pkg's `pkg_tar_test`).
+3. B78 (aspect-bazel-examples: toolchains_llvm's `realpath` cc wrapper),
+   then B67's last test (an aspect's deferred-platform retry), B47 and B82
+   (both where genuine fails too).
+4. Not investigated yet: bazel-remote's stamped digest, rules_kotlin's
+   KSP srcjar, aspect-bazel-examples' `test_container`.
+5. Performance: OpenROAD `//:openroad` (1.5× genuine's wall and 1.34× its
+   CPU time in this run) and cold analysis (P7) and peak RSS (4.7 against
+   3.3 GB); rules_lint-python's cold run (1.8× genuine in two runs); no
+   analysis snapshot under `--lockfile_mode=off` (rules_zig,
+   rules_rust-sys).
+6. Rerun the corpus after each fix: `oss_corpus.py run --only <project>`.
