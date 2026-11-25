@@ -682,7 +682,7 @@ impl Engine {
         analysis: &mut Analysis,
         selected: Option<&BTreeSet<u32>>,
     ) -> Result<crate::aquery_snapshot::Records, String> {
-        use crate::aquery_snapshot::{GroupTable, Records, StoredRecord, Unit};
+        use crate::aquery_snapshot::{GroupTable, Records};
         let Some(Pending { jobs, tests }) = analysis.pending.take() else {
             return Err("aquery snapshot: the analysis was described already".into());
         };
@@ -705,6 +705,7 @@ impl Engine {
                 table.note(&nodes[job.index]);
             }
         }
+        crate::perf_mark("aquery.snapshot_groups");
         let mut blocks: Vec<&[TargetJobs]> = Vec::new();
         let mut start = 0;
         let mut size = 0;
@@ -724,9 +725,10 @@ impl Engine {
         type Described = Result<(Vec<u8>, Vec<(u32, ActionRecord)>), String>;
         let describe = |block: &&[TargetJobs]| -> Described {
             let mut kept = Vec::new();
-            let mut stored: Vec<Unit> = Vec::with_capacity(block.len());
+            let mut encoder = crate::aquery_snapshot::BlockEncoder::default();
             for (node, (jobs, tests)) in block.iter() {
-                let mut records = Vec::new();
+                encoder.start(*node);
+                let keep = wanted(*node);
                 for job in jobs {
                     for record in self.aquery_job_records(
                         job,
@@ -754,33 +756,33 @@ impl Engine {
                             }
                             None => None,
                         };
-                        records.push((record, listing));
+                        encoder.push(&record, listing.as_ref());
+                        if keep {
+                            kept.push((*node, record));
+                        }
                     }
                 }
-                records.extend(tests.iter().map(|record| (record.clone(), None)));
-                if wanted(*node) {
-                    kept.extend(records.iter().map(|(record, _)| (*node, record.clone())));
+                for record in tests {
+                    encoder.push(record, None);
+                    if keep {
+                        kept.push((*node, record.clone()));
+                    }
                 }
-                stored.push((
-                    *node,
-                    records
-                        .into_iter()
-                        .map(|(mut record, listing)| {
-                            record.listed_from = None;
-                            StoredRecord { record, listing }
-                        })
-                        .collect(),
-                ));
             }
-            Ok((crate::aquery_snapshot::encode_block(&stored)?, kept))
+            Ok((encoder.finish()?, kept))
         };
-        let described = in_parallel(&blocks, self.loading_phase_threads, &describe);
+        // One block per task (each a few hundred actions), on at most 16
+        // threads (each holds its block's records and encoding).
+        let described = crate::aquery_snapshot::on_threads(
+            &blocks,
+            self.loading_phase_threads.min(16),
+            &describe,
+        )?;
         drop(display);
         let mut records = Records::default();
         records.push_groups(&table)?;
         let mut actions = Vec::new();
-        for (block, result) in blocks.iter().zip(described) {
-            let (encoded, kept) = result?;
+        for (block, (encoded, kept)) in blocks.iter().zip(described) {
             let (Some((first, _)), Some((last, _))) = (block.first(), block.last()) else {
                 continue;
             };

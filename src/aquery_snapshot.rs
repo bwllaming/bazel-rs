@@ -153,10 +153,352 @@ impl Records {
     }
 }
 
-/// One block's units, encoded and deflated.
+/// One block's units, encoded ([`TabledBlock`]) and deflated.
 pub fn encode_block(units: &[Unit]) -> Result<Vec<u8>, String> {
-    let raw = postcard::to_stdvec(units).map_err(|e| e.to_string())?;
-    Ok(crate::snapshot::format::compress_plan(&raw))
+    let mut block = BlockEncoder::default();
+    for (node, records) in units {
+        block.start(*node);
+        for stored in records {
+            block.push(&stored.record, stored.listing.as_ref());
+        }
+    }
+    block.finish()
+}
+
+/// A block being encoded record by record (`Engine::aquery_describe_snapshot`
+/// drops each described record once it is in the block: a block's memory is
+/// its distinct strings and their indices, not every record's strings).
+#[derive(Default)]
+pub struct BlockEncoder {
+    table: Strings,
+    units: Vec<(u32, Vec<TabledRecord>)>,
+}
+
+impl BlockEncoder {
+    /// Start the records of the graph node `node` (ascending).
+    pub fn start(&mut self, node: u32) {
+        self.units.push((node, Vec::new()));
+    }
+
+    /// One record of the current node, with its listing.
+    pub fn push(&mut self, record: &ActionRecord, listing: Option<&Listing>) {
+        let tabled = TabledRecord::of(record, listing, &mut self.table);
+        if let Some((_, records)) = self.units.last_mut() {
+            records.push(tabled);
+        }
+    }
+
+    /// The encoded, deflated block.
+    pub fn finish(self) -> Result<Vec<u8>, String> {
+        let block = TabledBlockRef {
+            strings: self.table.strings.iter().map(|text| &**text).collect(),
+            units: self.units,
+        };
+        let raw = postcard::to_stdvec(&block).map_err(|e| e.to_string())?;
+        Ok(crate::snapshot::format::compress_plan(&raw))
+    }
+}
+
+/// [`encode_block`]'s units.
+fn decode_block(records: &[u8], blob_ref: &Blob) -> Result<Vec<Unit>, String> {
+    let block: TabledBlock = inflate(records, blob_ref)?;
+    let strings = &block.strings;
+    block
+        .units
+        .into_iter()
+        .map(|(node, records)| {
+            Ok((
+                node,
+                records
+                    .into_iter()
+                    .map(|record| record.decode(strings))
+                    .collect::<Result<_, String>>()?,
+            ))
+        })
+        .collect()
+}
+
+/// A block as stored: its distinct strings once (an action lists the paths,
+/// flags and environment of its siblings: deflate's 32 KiB window would see
+/// few of the repeats), and its units with every string an index into them.
+#[derive(Deserialize)]
+struct TabledBlock {
+    strings: Vec<String>,
+    units: Vec<(u32, Vec<TabledRecord>)>,
+}
+
+/// [`TabledBlock`] borrowing the strings of the units it encodes.
+#[derive(Serialize)]
+struct TabledBlockRef<'a> {
+    strings: Vec<&'a str>,
+    units: Vec<(u32, Vec<TabledRecord>)>,
+}
+
+/// A block's string table being built: each distinct string once.
+#[derive(Default)]
+struct Strings {
+    index: HashMap<std::rc::Rc<str>, u32>,
+    strings: Vec<std::rc::Rc<str>>,
+}
+
+impl Strings {
+    fn of(&mut self, text: &str) -> u32 {
+        if let Some(&index) = self.index.get(text) {
+            return index;
+        }
+        let index = self.strings.len() as u32;
+        let shared: std::rc::Rc<str> = std::rc::Rc::from(text);
+        self.strings.push(std::rc::Rc::clone(&shared));
+        self.index.insert(shared, index);
+        index
+    }
+
+    fn all(&mut self, texts: &[String]) -> Vec<u32> {
+        texts.iter().map(|text| self.of(text)).collect()
+    }
+
+    fn pairs(&mut self, pairs: &[(String, String)]) -> Vec<(u32, u32)> {
+        pairs
+            .iter()
+            .map(|(key, value)| (self.of(key), self.of(value)))
+            .collect()
+    }
+}
+
+fn string(strings: &[String], index: u32) -> Result<String, String> {
+    strings
+        .get(index as usize)
+        .cloned()
+        .ok_or_else(|| "invalid aquery snapshot string index".to_owned())
+}
+
+fn strings_of(strings: &[String], indices: Vec<u32>) -> Result<Vec<String>, String> {
+    indices
+        .into_iter()
+        .map(|index| string(strings, index))
+        .collect()
+}
+
+fn pairs_of(strings: &[String], pairs: Vec<(u32, u32)>) -> Result<Vec<(String, String)>, String> {
+    pairs
+        .into_iter()
+        .map(|(key, value)| Ok((string(strings, key)?, string(strings, value)?)))
+        .collect()
+}
+
+#[derive(Serialize, Deserialize)]
+enum TabledSegment {
+    Own(Vec<u32>),
+    GroupInputs(u32),
+    GroupDependencies(u32),
+}
+
+/// A [`StoredRecord`] with its strings in the block's table: every field of
+/// [`ActionRecord`] (destructured exhaustively: a new field must be stored)
+/// but `listed_from`, which the stored listing stands for.
+#[derive(Serialize, Deserialize)]
+pub struct TabledRecord {
+    target: u32,
+    display_target: u32,
+    rule_class: Option<u32>,
+    configuration: u64,
+    aspects: Vec<(u32, Vec<(u32, u32)>)>,
+    mnemonic: u32,
+    description: u32,
+    action_key: u32,
+    discovers_inputs: bool,
+    arguments: Option<Vec<u32>>,
+    environment: Vec<(u32, u32)>,
+    inputs: Vec<u32>,
+    outputs: Vec<(u32, bool)>,
+    execution_info: Vec<(u32, u32)>,
+    execution_platform: Option<u32>,
+    display_execution_platform: Option<u32>,
+    file_write: Option<(bool, u32)>,
+    template: Option<(u32, Vec<(u32, u32)>)>,
+    unresolved_symlink: Option<u32>,
+    param_file: Option<Vec<u32>>,
+    pretty: Option<u32>,
+    runfiles_support: bool,
+    text_environment: Option<Vec<(u32, u32)>>,
+    input_order: Option<Vec<u32>>,
+    expansion_error: Option<u32>,
+    listing: Option<(Vec<TabledSegment>, Option<Vec<u32>>)>,
+}
+
+impl TabledRecord {
+    fn of(record: &ActionRecord, listing: Option<&Listing>, t: &mut Strings) -> Self {
+        let ActionRecord {
+            target,
+            display_target,
+            rule_class,
+            configuration,
+            aspects,
+            mnemonic,
+            description,
+            action_key,
+            discovers_inputs,
+            arguments,
+            environment,
+            inputs,
+            outputs,
+            execution_info,
+            execution_platform,
+            display_execution_platform,
+            file_write,
+            template,
+            unresolved_symlink,
+            param_file,
+            pretty,
+            runfiles_support,
+            text_environment,
+            input_order,
+            expansion_error,
+            listed_from: _,
+        } = record;
+        Self {
+            target: t.of(target),
+            display_target: t.of(display_target),
+            rule_class: rule_class.as_deref().map(|text| t.of(text)),
+            configuration: *configuration as u64,
+            aspects: aspects
+                .iter()
+                .map(|aspect| (t.of(&aspect.name), t.pairs(&aspect.parameters)))
+                .collect(),
+            mnemonic: t.of(mnemonic),
+            description: t.of(description),
+            action_key: t.of(action_key),
+            discovers_inputs: *discovers_inputs,
+            arguments: arguments.as_deref().map(|items| t.all(items)),
+            environment: t.pairs(environment),
+            inputs: t.all(inputs),
+            outputs: outputs
+                .iter()
+                .map(|(path, tree)| (t.of(path), *tree))
+                .collect(),
+            execution_info: t.pairs(execution_info),
+            execution_platform: execution_platform.as_deref().map(|text| t.of(text)),
+            display_execution_platform: display_execution_platform
+                .as_deref()
+                .map(|text| t.of(text)),
+            file_write: file_write
+                .as_ref()
+                .map(|(executable, contents)| (*executable, t.of(contents))),
+            template: template
+                .as_ref()
+                .map(|(text, substitutions)| (t.of(text), t.pairs(substitutions))),
+            unresolved_symlink: unresolved_symlink.as_deref().map(|text| t.of(text)),
+            param_file: param_file.as_deref().map(|items| t.all(items)),
+            pretty: pretty.as_deref().map(|text| t.of(text)),
+            runfiles_support: *runfiles_support,
+            text_environment: text_environment.as_deref().map(|pairs| t.pairs(pairs)),
+            input_order: input_order.as_deref().map(|items| t.all(items)),
+            expansion_error: expansion_error.as_deref().map(|text| t.of(text)),
+            listing: listing.map(|listing| {
+                (
+                    listing
+                        .segments
+                        .iter()
+                        .map(|segment| match segment {
+                            Segment::Own(paths) => TabledSegment::Own(t.all(paths)),
+                            Segment::GroupInputs(index) => TabledSegment::GroupInputs(*index),
+                            Segment::GroupDependencies(index) => {
+                                TabledSegment::GroupDependencies(*index)
+                            }
+                        })
+                        .collect(),
+                    listing.input_order.as_deref().map(|items| t.all(items)),
+                )
+            }),
+        }
+    }
+
+    fn decode(self, s: &[String]) -> Result<StoredRecord, String> {
+        let one = |index: u32| string(s, index);
+        let maybe = |index: Option<u32>| index.map(one).transpose();
+        let record = ActionRecord {
+            target: one(self.target)?,
+            display_target: one(self.display_target)?,
+            rule_class: maybe(self.rule_class)?,
+            configuration: usize::try_from(self.configuration).map_err(|e| e.to_string())?,
+            aspects: self
+                .aspects
+                .into_iter()
+                .map(|(name, parameters)| {
+                    Ok(crate::aquery::Aspect {
+                        name: one(name)?,
+                        parameters: pairs_of(s, parameters)?,
+                    })
+                })
+                .collect::<Result<_, String>>()?,
+            mnemonic: one(self.mnemonic)?,
+            description: one(self.description)?,
+            action_key: one(self.action_key)?,
+            discovers_inputs: self.discovers_inputs,
+            arguments: self
+                .arguments
+                .map(|items| strings_of(s, items))
+                .transpose()?,
+            environment: pairs_of(s, self.environment)?,
+            inputs: strings_of(s, self.inputs)?,
+            outputs: self
+                .outputs
+                .into_iter()
+                .map(|(path, tree)| Ok((one(path)?, tree)))
+                .collect::<Result<_, String>>()?,
+            execution_info: pairs_of(s, self.execution_info)?,
+            execution_platform: maybe(self.execution_platform)?,
+            display_execution_platform: maybe(self.display_execution_platform)?,
+            file_write: self
+                .file_write
+                .map(|(executable, contents)| Ok::<_, String>((executable, one(contents)?)))
+                .transpose()?,
+            template: self
+                .template
+                .map(|(text, substitutions)| {
+                    Ok::<_, String>((one(text)?, pairs_of(s, substitutions)?))
+                })
+                .transpose()?,
+            unresolved_symlink: maybe(self.unresolved_symlink)?,
+            param_file: self
+                .param_file
+                .map(|items| strings_of(s, items))
+                .transpose()?,
+            pretty: maybe(self.pretty)?,
+            runfiles_support: self.runfiles_support,
+            text_environment: self
+                .text_environment
+                .map(|pairs| pairs_of(s, pairs))
+                .transpose()?,
+            input_order: self
+                .input_order
+                .map(|items| strings_of(s, items))
+                .transpose()?,
+            expansion_error: maybe(self.expansion_error)?,
+            listed_from: None,
+        };
+        let listing = self
+            .listing
+            .map(|(segments, input_order)| {
+                Ok::<_, String>(Listing {
+                    segments: segments
+                        .into_iter()
+                        .map(|segment| {
+                            Ok(match segment {
+                                TabledSegment::Own(paths) => Segment::Own(strings_of(s, paths)?),
+                                TabledSegment::GroupInputs(index) => Segment::GroupInputs(index),
+                                TabledSegment::GroupDependencies(index) => {
+                                    Segment::GroupDependencies(index)
+                                }
+                            })
+                        })
+                        .collect::<Result<_, String>>()?,
+                    input_order: input_order.map(|items| strings_of(s, items)).transpose()?,
+                })
+            })
+            .transpose()?;
+        Ok(StoredRecord { record, listing })
+    }
 }
 
 /// The shared input groups the stored listings reference, each once (by
@@ -395,7 +737,7 @@ impl Hit {
             .filter(|block| selected.range(block.first..=block.last).next().is_some())
             .collect();
         let decoded = on_threads(&blocks, threads, &|block: &&BlockRef| {
-            let units: Vec<Unit> = inflate(&self.records, &block.blob)?;
+            let units: Vec<Unit> = decode_block(&self.records, &block.blob)?;
             Ok(units
                 .into_iter()
                 .filter(|(node, _)| selected.contains(node))
@@ -458,34 +800,43 @@ impl Hit {
     }
 }
 
-/// `work` of every item on up to `threads` threads, results in order.
-fn on_threads<I: Sync, T: Send>(
+/// `work` of every item on up to `threads` threads (at most 32), results
+/// in order; the first error in order is the result.
+pub fn on_threads<I: Sync, T: Send>(
     items: &[I],
     threads: usize,
     work: &(dyn Fn(&I) -> Result<T, String> + Sync),
 ) -> Result<Vec<T>, String> {
-    let threads = threads.clamp(1, 16).min(items.len());
+    let threads = threads.clamp(1, 32).min(items.len());
     if threads <= 1 {
         return items.iter().map(work).collect();
     }
     let results: Vec<std::sync::Mutex<Option<Result<T, String>>>> =
         items.iter().map(|_| std::sync::Mutex::new(None)).collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
-    std::thread::scope(|scope| {
-        for _ in 0..threads {
-            scope.spawn(|| {
-                loop {
-                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let Some(item) = items.get(index) else {
-                        break;
-                    };
-                    let result = work(item);
-                    *results[index]
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
-                }
-            });
+    let run = || {
+        loop {
+            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let Some(item) = items.get(index) else {
+                break;
+            };
+            let result = work(item);
+            *results[index]
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
         }
+    };
+    std::thread::scope(|scope| {
+        for _ in 1..threads {
+            // The describing threads' stack (deep depset fingerprints) like
+            // Engine::aquery_describe's.
+            std::thread::Builder::new()
+                .name("aquery-snapshot".to_owned())
+                .stack_size(16 << 20)
+                .spawn_scoped(scope, run)
+                .expect("spawn an aquery snapshot thread");
+        }
+        run();
     });
     results
         .into_iter()
@@ -617,6 +968,79 @@ mod tests {
                 node.groups.len()
             );
         }
+    }
+
+    /// A block stores every field of a record and its listing.
+    #[test]
+    fn blocks_round_trip_every_field() {
+        let pair = |a: &str, b: &str| (a.to_owned(), b.to_owned());
+        let record = ActionRecord {
+            target: "//pkg:t".into(),
+            display_target: "//pkg:t".into(),
+            rule_class: Some("genrule".into()),
+            configuration: 1,
+            aspects: vec![crate::aquery::Aspect {
+                name: "//:a.bzl%a".into(),
+                parameters: vec![pair("p", "v")],
+            }],
+            mnemonic: "Genrule".into(),
+            description: "Executing genrule //pkg:t".into(),
+            action_key: "0123".into(),
+            discovers_inputs: true,
+            arguments: Some(vec!["/bin/bash".into(), "-c".into(), "/bin/bash".into()]),
+            environment: vec![pair("PATH", "/bin")],
+            inputs: vec!["pkg/in".into()],
+            outputs: vec![("bazel-out/out".into(), true)],
+            execution_info: vec![pair("no-remote", "")],
+            execution_platform: Some("@@platforms//host:host".into()),
+            display_execution_platform: Some("@platforms//host".into()),
+            file_write: Some((true, "contents".into())),
+            template: Some(("tmpl".into(), vec![pair("{X}", "x")])),
+            unresolved_symlink: Some("../x".into()),
+            param_file: Some(vec!["--flag".into()]),
+            pretty: Some("runfiles for //pkg:t".into()),
+            runfiles_support: true,
+            text_environment: Some(vec![pair("PATH", "/usr/bin")]),
+            input_order: Some(vec!["pkg/in".into()]),
+            expansion_error: Some("error".into()),
+            listed_from: None,
+        };
+        let listing = Listing {
+            segments: vec![
+                Segment::Own(vec!["pkg/in".into(), "/bin/bash".into()]),
+                Segment::GroupInputs(3),
+                Segment::GroupDependencies(4),
+            ],
+            input_order: Some(vec!["pkg/first".into()]),
+        };
+        let units: Vec<Unit> = vec![
+            (
+                2,
+                vec![
+                    StoredRecord {
+                        record: record.clone(),
+                        listing: Some(listing),
+                    },
+                    StoredRecord {
+                        record: ActionRecord::default(),
+                        listing: None,
+                    },
+                ],
+            ),
+            (
+                7,
+                vec![StoredRecord {
+                    record,
+                    listing: None,
+                }],
+            ),
+        ];
+        let mut records = Records::default();
+        records.push_block(2, 7, &encode_block(&units).unwrap());
+        assert_eq!(
+            decode_block(&records.bytes, &records.blocks[0].blob).unwrap(),
+            units
+        );
     }
 
     /// A hit loads the selected nodes' records only, with their listings,
