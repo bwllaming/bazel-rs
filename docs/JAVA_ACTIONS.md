@@ -151,8 +151,9 @@ AnsiStrippingOutputStream), and its action failure framing is its own
 only selected jars, runs `BAZEL_REDUCED`, and initially requires only the jdeps
 output. If the proto requests fallback it deletes partial outputs, resets
 metadata/stdout/stderr, and executes again with `BAZEL_FALLBACK` and all outputs
-required. Cache hits, workers, remote execution, path mapping and persistent
-plans preserve that protocol using an optional typed JavaCompileSpec inside
+required. Cache hits, workers, remote execution and persistent
+plans preserve that protocol (path mapping, `--experimental_output_paths=strip`,
+fails explicitly for these native actions, docs/PATH_MAPPING.md) using an optional typed JavaCompileSpec inside
 ActionExtra. One logical key/lock covers the full semantic intent and all
 potential input content identities; only the attempt's mandatory inputs and
 selected jars are staged. Excluded-jar edits invalidate fallback-produced cache

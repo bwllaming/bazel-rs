@@ -179,7 +179,7 @@ rc file any more. On unconditional lines of sub-workspaces:
 (the examples repository's `android/*` workspaces), `--override_module`
 (rules_python's gazelle example), `--android_platforms` and
 `--platform_mappings` (rules_kotlin's Android examples). In named configs or
-CI-only rc files: `--experimental_output_paths=strip`, the Android worker
+CI-only rc files: the Android worker
 options `--persistent_android_*`, `--persistent_multiplex_android_*`,
 `--internal_persistent_busybox_tools`, `--experimental_persistent_aar_extractor`,
 the remote-only `--experimental_remote_cache_lease_extension`,
@@ -191,7 +191,9 @@ the remote-only `--experimental_remote_cache_lease_extension`,
 second batch's `--macos_minimum_os`, `--host_macos_minimum_os` and
 `--compiler` are modelled since corpus2-quick), `--custom_malloc` and `--explain`;
 `--all_incompatible_changes` is rejected by genuine too. Each still fails
-explicitly when used.
+explicitly when used. `--experimental_output_paths=strip` (rules_py's
+`bazel/workspace.bazelrc`, unconditional) is modelled since path-mapping
+(docs/PATH_MAPPING.md, B33).
 
 ## Remaining rejected options
 
