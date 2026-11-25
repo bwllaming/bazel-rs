@@ -127,8 +127,12 @@ are the configuration (its identity covers both options) and this command's
   native Javac action is not modelled in the native profile`): their
   command lines (JavaCompileAction's flag mapping, the `.jdeps` rewriting
   back to unmapped paths) are native. Their `Target.actions` and aquery
-  command lines stay unmapped (genuine maps Turbine's and JavaResourceJar's)
-  and their aquery keys differ. Java builds without `strip` are unaffected.
+  command lines stay unmapped and their aquery keys differ. Genuine 9.3.1
+  on a `java_library` pair (rules_java 9.3.0) with `strip` builds it (5
+  sandboxed spawns and 2 Javac workers), its aquery shows Turbine's and
+  JavaResourceJar's argv mapped and Javac's unmapped
+  (JavaCompileAction.getArguments has no mapper). Java builds without
+  `strip` are unaffected.
 - A CppLink whose `cc_internal.get_link_args` command line would run mapped
   (rules_cc's opt-in `cpp_link_path_mapping` feature) fails explicitly: the
   expanded link variables cannot tell artifacts from strings
