@@ -68,7 +68,57 @@ pub(crate) fn action_cache_hit() {
 /// One more spawn of an action counted with [`action_completed`] (a test
 /// action's attempts and test.xml generation).
 pub(crate) fn spawn(runner: &'static str) {
-    with(|stats| *stats.runners.entry(runner).or_default() += 1);
+    let deferred = DEFERRED.with(|deferred| {
+        deferred
+            .borrow_mut()
+            .as_mut()
+            .map(|spawns| spawns.push(runner))
+            .is_some()
+    });
+    if !deferred {
+        with(|stats| *stats.runners.entry(runner).or_default() += 1);
+    }
+}
+
+thread_local! {
+    /// The spawns of the test action running on this thread
+    /// ([`defer_spawns`]).
+    static DEFERRED: std::cell::RefCell<Option<Vec<&'static str>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Hold back the [`spawn`]s of this thread until the guard is dropped (they
+/// count then) or [`DeferredSpawns::interrupted`]: Bazel counts an action's
+/// spawns from its ActionResult (ActionResultReceivedEvent), which an
+/// action the build's failure interrupts never posts — it completes as an
+/// internal action.
+pub(crate) fn defer_spawns() -> DeferredSpawns {
+    DEFERRED.with(|deferred| *deferred.borrow_mut() = Some(Vec::new()));
+    DeferredSpawns(())
+}
+
+/// [`defer_spawns`]' guard.
+pub(crate) struct DeferredSpawns(());
+
+impl DeferredSpawns {
+    /// The action was interrupted: its spawns do not count; it completed
+    /// without a spawn result (internal).
+    pub(crate) fn interrupted(self) {
+        DEFERRED.with(|deferred| deferred.borrow_mut().take());
+        action_completed(&[]);
+    }
+}
+
+impl Drop for DeferredSpawns {
+    fn drop(&mut self) {
+        if let Some(spawns) = DEFERRED.with(|deferred| deferred.borrow_mut().take()) {
+            with(|stats| {
+                for runner in spawns {
+                    *stats.runners.entry(runner).or_default() += 1;
+                }
+            });
+        }
+    }
 }
 
 /// A test action ran its spawns (counted with [`spawn`]).

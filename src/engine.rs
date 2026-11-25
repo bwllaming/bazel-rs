@@ -3304,6 +3304,9 @@ pub struct BuildSummary {
     /// reported (crate::action_console): the results print, then the build
     /// fails.
     pub action_failed: bool,
+    /// With [`Self::action_failed`], the failed actions' errors (`test`
+    /// names the tests they failed to build, FAILED TO BUILD).
+    pub action_errors: Vec<String>,
 }
 
 /// A target pattern evaluation failure (`Engine::expand_pattern`).

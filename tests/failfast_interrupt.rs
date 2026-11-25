@@ -7,9 +7,8 @@
 //! and console, the interrupted actions counted as internal processes; no
 //! process of theirs survives, nothing of theirs is cached (the disk cache
 //! stays empty, the rerun executes again) and the cache's work directory is
-//! empty afterwards. Declared divergences (the receipt's notes): bazel-rs
-//! publishes nothing of an interrupted action into the output tree, and
-//! `test` after a failed build action does not print the build summary.
+//! empty afterwards. Declared divergence (the receipt's notes): bazel-rs
+//! publishes nothing of an interrupted action into the output tree.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
@@ -242,25 +241,28 @@ fn the_first_failure_interrupts_the_actions_in_flight() {
             "{context}"
         );
         assert_eq!(console(&ran.stdout, &ws), expected["stdout"], "{context}");
-        let native_console = console(&ran.stderr, &ws);
-        if case == "test" {
-            // Known gap (the receipt's notes): no build summary after the
-            // failure; the failure itself is genuine's.
-            let lines = native_console.as_array().unwrap();
-            assert!(lines.len() >= 3, "{context}");
-            assert_eq!(
-                lines[..],
-                expected["console"].as_array().unwrap()[..lines.len()],
-                "{context}"
-            );
-        } else {
-            assert_eq!(native_console, expected["console"], "{context}");
-        }
+        assert_eq!(console(&ran.stderr, &ws), expected["console"], "{context}");
         let bin_pkg = listing(&ws.join("bazel-bin/pkg"));
         match case {
             "rerun" => assert_eq!(bin_pkg.as_ref(), Some(&expected["bin_pkg"]), "{context}"),
-            // Declared divergence: nothing of an interrupted action (and
-            // after a failed `test`, nothing at all) is published.
+            // The completed actions' outputs are published: the test's
+            // script, its repository mapping and runfiles manifest (whose
+            // paths name each one's own execution root).
+            "test" => {
+                let files = bin_pkg.as_ref().unwrap().as_object().unwrap();
+                let genuine = expected["bin_pkg"].as_object().unwrap();
+                let names = |map: &serde_json::Map<String, Value>| {
+                    map.keys()
+                        .cloned()
+                        .collect::<std::collections::BTreeSet<_>>()
+                };
+                assert_eq!(names(files), names(genuine), "{context}");
+                for name in ["slow_test.sh", "slow_test.sh.repo_mapping"] {
+                    assert_eq!(files[name], genuine[name], "{name}");
+                }
+            }
+            // Declared divergence: nothing of an interrupted action is
+            // published.
             _ => assert!(
                 bin_pkg
                     .as_ref()

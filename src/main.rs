@@ -4383,6 +4383,9 @@ fn test_tail(
     // outcomes; the test runner exits the process).
     match &result {
         Ok(_) if build_failed => snapshot.execution_failed("the --keep_going build failed"),
+        Ok(executed) if executed.summary.action_failed => {
+            snapshot.execution_failed("an action failed")
+        }
         Ok(_) => snapshot.finish(),
         Err(error) if planned_ok => snapshot.execution_failed(error),
         Err(error) => snapshot.failed(error),
@@ -4431,6 +4434,23 @@ fn test_tail(
         bazel_rs::note!("bazel-rs: remote downloads: {blobs} blobs, {bytes} bytes");
     }
     action_summary(&summary, remote_enabled);
+    // An action failed (reported when it failed, crate::action_console):
+    // like `build`, the results and the build summary print and what
+    // completed is published; then the test summary of a failed build
+    // (genuine capture tests/fixtures/failfast_interrupt, `test`).
+    if summary.action_failed {
+        bazel_rs::snapshot::hit::heal_after_failure(None);
+        bazel_rs::progress::failed_build_summary();
+        eprintln!("ERROR: Build did NOT complete successfully");
+        return test_build_failure(
+            &summary.action_errors.join("\n"),
+            &test_labels,
+            options,
+            session.map(bazel_rs::test_runner::Session::finish),
+            &skipped,
+            &test_display,
+        );
+    }
     // A `bazel-rs affected` planning (docs/AFFECTED_TARGETS.md): the
     // digests are written and the analysis succeeded, which is all it asks
     // of `test --nobuild` — exit 0, so that its orchestrator can take any

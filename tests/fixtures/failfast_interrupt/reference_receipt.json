@@ -4,7 +4,7 @@
  "notes": [
   "Genuine interrupts the actions in flight at the first failure without --keep_going: every case ends within a second of the ERROR line, no sleeper, test or worker process survives, nothing is written to the disk cache, the interrupted actions count as internal processes (their ActionCompletionEvent) and the rerun executes the sleeper again.",
   "Declared divergence (bin_pkg): bazel-rs publishes only what completed into the output tree, so bazel-bin/pkg has no partial outputs of interrupted standalone spawns (genuine's ran in the execroot), no parameter file of the interrupted worker action and no empty package directory.",
-  "Known gap (test case): after a failed build action `bazel-rs test` prints neither the build summary lines (`Use --verbose_failures`, `INFO: N processes`, `Build did NOT complete successfully`) nor publishes the completed actions' outputs; unrelated to the interrupt (also without a running test)."
+  "Test case: the build summary lines and the completed actions' outputs (bazel-bin/pkg/slow_test.sh*) are matched natively since parity-small (the runfiles manifest's paths name each one's execution root); the interrupted test counts as an internal process."
  ],
  "rows": [
   {

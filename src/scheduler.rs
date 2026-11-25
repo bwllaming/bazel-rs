@@ -988,6 +988,18 @@ pub fn execute_graph_outcome(
     nodes: Vec<PlannedAction>,
     jobs: usize,
 ) -> Result<KeepGoingOutcome, String> {
+    execute_graph_outcome_with_leaves(cache, nodes, jobs, None)
+}
+
+/// [`execute_graph_outcome`] with leaf jobs ([`Leaves`]: `bazel test`'s
+/// test actions): after the first failure no leaf starts and the leaves in
+/// flight see their interrupt flag.
+pub fn execute_graph_outcome_with_leaves(
+    cache: &Path,
+    nodes: Vec<PlannedAction>,
+    jobs: usize,
+    leaves: Option<&Leaves<'_>>,
+) -> Result<KeepGoingOutcome, String> {
     execute_outcome(
         cache,
         nodes,
@@ -995,7 +1007,7 @@ pub fn execute_graph_outcome(
         &|cache: &Path, action: &Action| {
             action::execute(cache, &crate::bazel_bytes::platform_action(action))
         },
-        None,
+        leaves,
         false,
     )
 }

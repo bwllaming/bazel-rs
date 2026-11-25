@@ -1349,6 +1349,9 @@ impl Runner<'_> {
         if interrupt.load(std::sync::atomic::Ordering::Acquire) {
             return Ok(None);
         }
+        // The action's spawns count once it has a result (none when the
+        // build's failure interrupts it).
+        let spawns = crate::spawn_stats::defer_spawns();
         // A fresh execution root.
         let work_parent = tests.join("work");
         fs::create_dir_all(&work_parent).map_err(|e| io("cannot create", &work_parent, e))?;
@@ -1531,6 +1534,7 @@ impl Runner<'_> {
                 // The build failed while the test ran: the action is
                 // interrupted, its outputs are neither published nor cached.
                 Attempted::Interrupted => {
+                    spawns.interrupted();
                     remove_tree(&work)?;
                     break None;
                 }

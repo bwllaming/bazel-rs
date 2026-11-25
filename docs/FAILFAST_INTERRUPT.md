@@ -75,7 +75,16 @@ and the spawns running under it. Without `--keep_going` every action gets it
   failed action's. The scheduler completes it like a skipped job, counts it
   (`KeepGoingOutcome::interrupted`), and the summary counts it internal;
 - test leaves keep their polling (`run_leaf`'s flag): SIGTERM, SIGKILL after
-  the grace period, `NO STATUS`.
+  the grace period, `NO STATUS`; the interrupted test action counts as an
+  internal process (its attempts' spawns are held back until it has a
+  result, crate::spawn_stats::defer_spawns: Bazel counts spawns from the
+  ActionResult an interrupted action never posts).
+
+`test` reports a failed build like `build` (since parity-small): the
+failing action's console, the build results, `Use --verbose_failures …`,
+`INFO: N processes …`, `ERROR: Build did NOT complete successfully`, the
+completed actions' outputs published, then the test summary (`NO STATUS` /
+`FAILED TO BUILD`) on stdout, exit 1.
 
 An action whose spawn had already ended when the interrupt came completes
 normally (its result is kept, like genuine's completed actions).
@@ -86,7 +95,4 @@ normally (its result is kept, like genuine's completed actions).
   publishes only what completed, so an interrupted standalone spawn leaves no
   partial output in `bazel-bin` (genuine's ran in the execroot and leave
   theirs), and the interrupted worker action's parameter file is not there.
-- `bazel-rs test` after a failed build action prints neither the build
-  summary nor publishes the completed outputs (a gap unrelated to the
-  interrupt: also without a running test).
 - A remote test spawn is not interrupted (its call runs to its end).

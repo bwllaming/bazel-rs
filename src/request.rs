@@ -863,24 +863,26 @@ fn execute_tests(
         cap: session.leaf_cap(),
         run: &run,
     };
+    // Without --keep_going the first failed action stops the build; the
+    // actions that completed keep their results (published and counted like
+    // `build`'s, [`execute_with_tests`]).
     let outcome = if keep_going {
         scheduler::execute_graph_keep_going(options.cache, nodes, options.jobs, Some(&leaves))?
     } else {
-        scheduler::KeepGoingOutcome {
-            results: scheduler::execute_graph_with_leaves(
-                options.cache,
-                nodes,
-                options.jobs,
-                Some(&leaves),
-            )?,
-            errors: BTreeMap::new(),
-            interrupted: 0,
-        }
+        scheduler::execute_graph_outcome_with_leaves(
+            options.cache,
+            nodes,
+            options.jobs,
+            Some(&leaves),
+        )?
     };
     // --notest_keep_going under --nokeep_going: a test that did not pass
     // stopped the build before it completed (its failure is the command's,
     // TestRunnerAction.executeAllAttempts); a complete build reports as usual.
-    if session.stopped_the_build() && outcome.results.len() < planned_actions {
+    if outcome.errors.is_empty()
+        && session.stopped_the_build()
+        && outcome.results.len() < planned_actions
+    {
         return Err(crate::test_runner::TEST_FAILED_ABORTING.to_owned());
     }
     let results = &outcome.results;
@@ -1046,6 +1048,7 @@ pub fn execute_with_tests(
     let mut action_errors: Vec<(String, String)> = Vec::new();
     // A build without --keep_going whose action failed (reported).
     let mut action_failed = false;
+    let mut failed_actions: Vec<String> = Vec::new();
     crate::action_console::set_keep_going(keep_going.is_some());
     let results = if execute {
         crate::perf_mark("execute.start");
@@ -1065,38 +1068,49 @@ pub fn execute_with_tests(
             errors,
             interrupted,
         } = match tests {
-            Some(session) => execute_tests(
-                options,
-                nodes,
-                &run_plans,
-                &configurations,
-                &symlink_outputs,
-                session,
-                keep_going.is_some(),
-            )?,
             None if keep_going.is_some() => {
                 scheduler::execute_graph_keep_going(options.cache, nodes, options.jobs, None)?
             }
-            None => {
-                // An action failure was printed when it happened
-                // (crate::action_console): the build reports what it built
-                // and fails afterwards (BuildResultPrinter, the summary);
-                // any other failure fails the request as before.
-                let outcome = scheduler::execute_graph_outcome(options.cache, nodes, options.jobs)?;
-                let unreported: Vec<String> = outcome
-                    .errors
-                    .iter()
-                    .filter(|(_, error)| !crate::action_console::is_reported(error))
-                    .map(|(id, error)| format!("action '{id}': {error}"))
-                    .collect();
-                if !unreported.is_empty() {
-                    return Err(unreported.join("\n"));
+            _ => {
+                let outcome = match tests {
+                    Some(session) => execute_tests(
+                        options,
+                        nodes,
+                        &run_plans,
+                        &configurations,
+                        &symlink_outputs,
+                        session,
+                        keep_going.is_some(),
+                    )?,
+                    None => scheduler::execute_graph_outcome(options.cache, nodes, options.jobs)?,
+                };
+                if keep_going.is_none() {
+                    // An action failure was printed when it happened
+                    // (crate::action_console): the build reports what it
+                    // built and fails afterwards (BuildResultPrinter, the
+                    // summary; `test` then its test summary); any other
+                    // failure fails the request as before.
+                    let unreported: Vec<String> = outcome
+                        .errors
+                        .iter()
+                        .filter(|(_, error)| !crate::action_console::is_reported(error))
+                        .map(|(id, error)| format!("action '{id}': {error}"))
+                        .collect();
+                    if !unreported.is_empty() {
+                        return Err(unreported.join("\n"));
+                    }
+                    action_failed = !outcome.errors.is_empty();
                 }
-                action_failed = !outcome.errors.is_empty();
                 outcome
             }
         };
         action_errors = errors.into_iter().collect();
+        if action_failed {
+            failed_actions = action_errors
+                .iter()
+                .map(|(_, error)| error.clone())
+                .collect();
+        }
         // A failed action completed without a spawn result (internal),
         // unless its spawn succeeded and its outputs were missing.
         for (_, error) in &action_errors {
@@ -1259,6 +1273,7 @@ pub fn execute_with_tests(
         BTreeSet::new()
     };
     summary.action_failed = action_failed;
+    summary.action_errors = failed_actions;
     let not_built = keep_going.as_ref().map(KeepGoingResult::not_built);
     let reported = |label: &Label| {
         !failed_requested.contains(label)
