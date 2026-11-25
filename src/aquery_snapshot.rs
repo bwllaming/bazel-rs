@@ -148,13 +148,21 @@ pub fn node_chunks(
     nodes: &[crate::engine::cquery::Node],
     threads: usize,
 ) -> Result<Vec<Bytes>, String> {
+    // Each chunk deflated as soon as it is serialized: the graph's nodes
+    // are never held uncompressed as a whole beside the graph.
     let chunks: Vec<&[crate::engine::cquery::Node]> = nodes.chunks(NODE_CHUNK).collect();
     on_threads(&chunks, threads, &|chunk| {
-        postcard::to_stdvec(chunk)
-            .map(Bytes)
-            .map_err(|e| e.to_string())
+        let raw = postcard::to_stdvec(chunk).map_err(|e| e.to_string())?;
+        if raw.len() > MAX_NODE_CHUNK {
+            return Err("aquery snapshot: a node chunk exceeds its size limit".into());
+        }
+        Ok(Bytes(crate::snapshot::format::compress_plan(&raw)))
     })
 }
+
+/// The largest node chunk, uncompressed (4096 nodes; ~/code's average is
+/// ~2 KB a node).
+const MAX_NODE_CHUNK: usize = 256 << 20;
 
 /// Decode the PLAN section ([`PlanWireRef`]), its node chunks on up to
 /// `threads` threads.
@@ -173,7 +181,8 @@ pub fn decode_plan(bytes: &[u8], threads: usize) -> Result<Plan, String> {
         return Err("aquery snapshot: graph nodes outside their chunks".into());
     }
     let chunks: Vec<Vec<crate::engine::cquery::Node>> = on_threads(&nodes, threads, &|chunk| {
-        postcard::from_bytes(chunk).map_err(|e| format!("aquery snapshot decode: {e}"))
+        let raw = crate::snapshot::format::decompress_plan_bounded(chunk.to_vec(), MAX_NODE_CHUNK)?;
+        postcard::from_bytes(&raw).map_err(|e| format!("aquery snapshot decode: {e}"))
     })?;
     drop(nodes);
     graph.nodes = chunks.into_iter().flatten().collect();
@@ -582,8 +591,69 @@ impl TabledRecord {
 pub struct GroupTable {
     /// Group allocations by address (identities only, never dereferenced).
     by_pointer: HashMap<usize, u32>,
-    by_value: HashMap<GroupListing, u32>,
+    /// The table's entries by a 128-bit digest of their listing (equal
+    /// digests compared by value against the table: no second copy of a
+    /// listing as a key).
+    by_digest: HashMap<u128, Vec<u32>>,
     table: Vec<GroupListing>,
+}
+
+/// The destinations a group lists: its inputs', then its generated inputs'.
+fn group_destinations(
+    group: &InputGroup,
+) -> (
+    impl Iterator<Item = &std::path::Path>,
+    impl Iterator<Item = &std::path::Path>,
+) {
+    (
+        group
+            .inputs
+            .iter()
+            .map(|(_, destination)| destination.as_path()),
+        group
+            .dependencies
+            .iter()
+            .map(|dependency| dependency.destination.as_path()),
+    )
+}
+
+/// A 128-bit digest of what a group lists ([`GroupListing`]'s strings).
+fn group_digest(group: &InputGroup) -> u128 {
+    let mut hasher = blake3::Hasher::new();
+    let (inputs, dependencies) = group_destinations(group);
+    for (tag, paths) in [
+        (0u8, inputs.collect::<Vec<_>>()),
+        (1, dependencies.collect()),
+    ] {
+        hasher.update(&[tag]);
+        hasher.update(&(paths.len() as u64).to_le_bytes());
+        for path in paths {
+            let text = path.to_string_lossy();
+            hasher.update(&(text.len() as u64).to_le_bytes());
+            hasher.update(text.as_bytes());
+        }
+    }
+    u128::from_le_bytes(
+        hasher.finalize().as_bytes()[..16]
+            .try_into()
+            .expect("16 bytes"),
+    )
+}
+
+/// Whether `listing` is what `group` lists.
+fn lists(listing: &GroupListing, group: &InputGroup) -> bool {
+    let (inputs, dependencies) = group_destinations(group);
+    let same = |strings: &[String], paths: &mut dyn Iterator<Item = &std::path::Path>| {
+        let mut strings = strings.iter();
+        loop {
+            match (strings.next(), paths.next()) {
+                (None, None) => return true,
+                (Some(text), Some(path)) if *text == path.to_string_lossy() => {}
+                _ => return false,
+            }
+        }
+    };
+    same(&listing.inputs, &mut { inputs }) && same(&listing.dependencies, &mut { dependencies })
 }
 
 impl GroupTable {
@@ -595,23 +665,28 @@ impl GroupTable {
             if self.by_pointer.contains_key(&pointer) {
                 continue;
             }
-            let listing = GroupListing {
-                inputs: group
-                    .inputs
-                    .iter()
-                    .map(|(_, destination)| destination.to_string_lossy().into_owned())
-                    .collect(),
-                dependencies: group
-                    .dependencies
-                    .iter()
-                    .map(|dependency| dependency.destination.to_string_lossy().into_owned())
-                    .collect(),
+            let candidates = self.by_digest.entry(group_digest(group)).or_default();
+            let known = candidates
+                .iter()
+                .copied()
+                .find(|&index| lists(&self.table[index as usize], group));
+            let index = match known {
+                Some(index) => index,
+                None => {
+                    let index = self.table.len() as u32;
+                    let (inputs, dependencies) = group_destinations(group);
+                    self.table.push(GroupListing {
+                        inputs: inputs
+                            .map(|path| path.to_string_lossy().into_owned())
+                            .collect(),
+                        dependencies: dependencies
+                            .map(|path| path.to_string_lossy().into_owned())
+                            .collect(),
+                    });
+                    candidates.push(index);
+                    index
+                }
             };
-            let next = self.table.len() as u32;
-            let index = *self.by_value.entry(listing.clone()).or_insert(next);
-            if index == next {
-                self.table.push(listing);
-            }
             self.by_pointer.insert(pointer, index);
         }
     }
