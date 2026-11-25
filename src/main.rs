@@ -1577,9 +1577,10 @@ fn run() -> Result<(), String> {
         bazel_rs::perf_mark("aquery.engine_dropped");
         lockfile_gate.open();
         if let (Some(session), Some(records)) = (aquery_session, records) {
+            let configurations = analysis.configurations().to_vec();
             session.finish(
-                &analysis.graph,
-                analysis.configurations(),
+                &mut analysis.graph,
+                &configurations,
                 records,
                 &_lockfile_writer.0,
             )?;

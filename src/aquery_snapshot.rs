@@ -93,8 +93,8 @@ pub struct BlockRef {
     pub blob: Blob,
 }
 
-/// The PLAN section of an aquery snapshot (owned, decoded).
-#[derive(Debug, PartialEq, Deserialize)]
+/// The PLAN section of an aquery snapshot, decoded.
+#[derive(Debug, PartialEq)]
 pub struct Plan {
     pub graph: Graph,
     pub configurations: Vec<Configuration>,
@@ -103,14 +103,87 @@ pub struct Plan {
     pub blocks: Vec<BlockRef>,
 }
 
-/// [`Plan`] borrowed for encoding (the same fields in the same order).
+/// Configured graph nodes per separately encoded chunk of the PLAN section
+/// (decoded on several threads: the graph's decode is most of a large hit).
+const NODE_CHUNK: usize = 4096;
+
+/// The PLAN section as stored: the graph without its nodes, the nodes in
+/// chunks of [`NODE_CHUNK`] (each its own postcard bytes), the
+/// configurations and the record index.
 #[derive(Serialize)]
-pub struct PlanRef<'a> {
+pub struct PlanWireRef<'a> {
     pub graph: &'a Graph,
+    pub nodes: &'a [Bytes],
     pub configurations: &'a [Configuration],
     pub group_count: u32,
     pub groups: &'a [Blob],
     pub blocks: &'a [BlockRef],
+}
+
+/// [`PlanWireRef`], decoded (the node chunks borrowed from the section).
+#[derive(Deserialize)]
+struct PlanWire<'a> {
+    graph: Graph,
+    #[serde(borrow)]
+    nodes: Vec<&'a [u8]>,
+    configurations: Vec<Configuration>,
+    group_count: u32,
+    groups: Vec<Blob>,
+    blocks: Vec<BlockRef>,
+}
+
+/// A byte string, written as serde's bytes (decoded borrowed, as `&[u8]`).
+#[derive(Debug, Default)]
+pub struct Bytes(Vec<u8>);
+
+impl Serialize for Bytes {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(&self.0)
+    }
+}
+
+/// The PLAN section's node chunks of `nodes` ([`PlanWireRef::nodes`]),
+/// encoded on up to `threads` threads.
+pub fn node_chunks(
+    nodes: &[crate::engine::cquery::Node],
+    threads: usize,
+) -> Result<Vec<Bytes>, String> {
+    let chunks: Vec<&[crate::engine::cquery::Node]> = nodes.chunks(NODE_CHUNK).collect();
+    on_threads(&chunks, threads, &|chunk| {
+        postcard::to_stdvec(chunk)
+            .map(Bytes)
+            .map_err(|e| e.to_string())
+    })
+}
+
+/// Decode the PLAN section ([`PlanWireRef`]), its node chunks on up to
+/// `threads` threads.
+pub fn decode_plan(bytes: &[u8], threads: usize) -> Result<Plan, String> {
+    let wire: PlanWire =
+        postcard::from_bytes(bytes).map_err(|e| format!("aquery snapshot decode: {e}"))?;
+    let PlanWire {
+        mut graph,
+        nodes,
+        configurations,
+        group_count,
+        groups,
+        blocks,
+    } = wire;
+    if !graph.nodes.is_empty() {
+        return Err("aquery snapshot: graph nodes outside their chunks".into());
+    }
+    let chunks: Vec<Vec<crate::engine::cquery::Node>> = on_threads(&nodes, threads, &|chunk| {
+        postcard::from_bytes(chunk).map_err(|e| format!("aquery snapshot decode: {e}"))
+    })?;
+    drop(nodes);
+    graph.nodes = chunks.into_iter().flatten().collect();
+    Ok(Plan {
+        graph,
+        configurations,
+        group_count,
+        groups,
+        blocks,
+    })
 }
 
 /// The described records of an analysis, encoded
@@ -1102,8 +1175,8 @@ mod tests {
             providers: crate::engine::cquery::NO_PROVIDERS,
             files: Box::default(),
         };
-        let graph = Graph {
-            nodes: (0..40).map(|_| graph_node()).collect(),
+        let empty_graph = || Graph {
+            nodes: Vec::new(),
             configurations: Vec::new(),
             top_checksum: String::new(),
             patterns: Default::default(),
@@ -1119,6 +1192,10 @@ mod tests {
             no_config_configurations: Default::default(),
             fragments: Default::default(),
             fragments_recorded: false,
+        };
+        let graph = Graph {
+            nodes: (0..40).map(|_| graph_node()).collect(),
+            ..empty_graph()
         };
         let hit = Hit {
             plan: Plan {
@@ -1136,6 +1213,35 @@ mod tests {
             records: records.bytes.clone(),
         };
         hit.check().unwrap();
+        // The PLAN section round trip (nodes in chunks, decoded on threads).
+        let mut graph = Graph {
+            nodes: (0..(NODE_CHUNK as u32 * 2 + 5))
+                .map(|index| crate::engine::cquery::Node {
+                    target: crate::cquery_proto::Target::Rule(crate::cquery_proto::Rule {
+                        name: format!("//pkg:{index}"),
+                        ..Default::default()
+                    }),
+                    ..graph_node()
+                })
+                .collect(),
+            ..empty_graph()
+        };
+        let nodes = std::mem::take(&mut graph.nodes);
+        let chunks = node_chunks(&nodes, 3).unwrap();
+        assert_eq!(chunks.len(), 3);
+        let wire = postcard::to_stdvec(&PlanWireRef {
+            graph: &graph,
+            nodes: &chunks,
+            configurations: &hit.plan.configurations,
+            group_count: hit.plan.group_count,
+            groups: &hit.plan.groups,
+            blocks: &hit.plan.blocks,
+        })
+        .unwrap();
+        graph.nodes = nodes;
+        let decoded = decode_plan(&wire, 4).unwrap();
+        assert_eq!(decoded.graph, graph);
+        assert_eq!(decoded.blocks, hit.plan.blocks);
         let selected: BTreeSet<u32> = [3, 4, 35].into_iter().collect();
         let (actions, listings) = hit.load(&selected, 4).unwrap();
         let targets: Vec<(u32, &str)> = actions

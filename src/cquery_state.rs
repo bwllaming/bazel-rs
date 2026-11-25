@@ -313,7 +313,7 @@ impl AquerySession {
     /// from them is removed and the command fails.
     pub fn finish(
         mut self,
-        graph: &Graph,
+        graph: &mut Graph,
         configurations: &[crate::aquery::Configuration],
         records: crate::aquery_snapshot::Records,
         registry: &crate::registry_session::SessionHandle,
@@ -367,13 +367,21 @@ impl AquerySession {
             let recording = snapshot::validate::Policy::current().select_owned(recorder.take());
             let inputs = format::encode_inputs(&recording, &replay_records, tables.as_ref(), false);
             crate::perf_mark("aquery.snapshot_encode_begin");
-            let plan = encode_graph(&crate::aquery_snapshot::PlanRef {
-                graph,
-                configurations,
-                group_count: records.group_count,
-                groups: &records.groups,
-                blocks: &records.blocks,
-            })?;
+            // The nodes go in chunks of their own (crate::aquery_snapshot::
+            // decode_plan decodes them on threads); put back after.
+            let nodes = std::mem::take(&mut graph.nodes);
+            let plan = crate::aquery_snapshot::node_chunks(&nodes, 8).and_then(|chunks| {
+                encode_graph(&crate::aquery_snapshot::PlanWireRef {
+                    graph,
+                    nodes: &chunks,
+                    configurations,
+                    group_count: records.group_count,
+                    groups: &records.groups,
+                    blocks: &records.blocks,
+                })
+            });
+            graph.nodes = nodes;
+            let plan = plan?;
             crate::perf_mark("aquery.snapshot_compressed");
             history::save_family(
                 &self.cache,
@@ -671,8 +679,11 @@ fn decode_graph(reader: &store::Reader) -> Result<Graph, String> {
 fn decode_aquery(reader: &store::Reader) -> Result<crate::aquery_snapshot::Hit, String> {
     let bytes = history::section(reader, format::Section::Plan)?;
     crate::perf_mark("aquery.snapshot_inflated");
-    let mut plan: crate::aquery_snapshot::Plan =
-        postcard::from_bytes(&bytes).map_err(|e| format!("aquery snapshot decode: {e}"))?;
+    let threads = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .min(8);
+    let mut plan = crate::aquery_snapshot::decode_plan(&bytes, threads)?;
     drop(bytes);
     plan.graph = check_graph(plan.graph)?;
     let records = history::section(reader, format::Section::Aquery)?;
