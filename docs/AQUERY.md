@@ -398,10 +398,13 @@ miss that saves):
 | `aquery 'kind("cc_.*", //src/...)'` (175,608 actions, 411 printed) | 47.8-49.0 s, 8,463-8,465 MiB | 52.9-54.3 s, 8,757-8,773 MiB | 47.9 s, 8,487 MiB | 1.5-1.6 s, 1,629-1,642 MiB |
 | `aquery 'deps(//src/python/tools/...)'` (2,613 actions, 437 MB of text) | 5.3 s, 1,048-1,079 MiB | 5.6-5.7 s, 1,093-1,102 MiB | 5.0 s | 1.7-1.8 s (0.3 s before the formatter), 210-218 MiB |
 
-A miss costs ~5 s more than before on kind(cc_.*): ~2.5 s of analysis
-under the recording window (observed_fs, as a cquery miss) and ~2.5 s
-after it: group table 0.6 s, describing and encoding the universe 0.8 s,
-the window's inputs 0.7 s, the graph's frames 0.3 s, the write 0.2 s.
+A miss costs ~5 s more than before on kind(cc_.*): ~3.5 s of analysis
+under the recording window (observed_fs, as a cquery miss: `aquery.graph`
+at 47.7-48.8 s against 44.3-45.3 s) and ~2 s after it (3.4 s against
+1.4 s from `aquery.graph` to the written output): group table 0.6 s,
+describing and encoding the universe 0.8 s (the selection alone took
+0.6 s), the window's inputs 0.7 s, the graph's frames 0.3 s, the write
+0.2 s.
 `BAZEL_RS_SNAPSHOT=off` is the path before, unchanged.
 
 The miss's peak (~300 MiB over before) is set during the analysis
