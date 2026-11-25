@@ -466,11 +466,28 @@ impl AspectCx for CoordAspects<'_, '_> {
                 // analyzed again once the views are filled
                 // (crate::engine::target_views).
                 let attempt = analysis::analyze_aspect_buffered(&application, &outputs);
+                // Its direct dependency views: the `target` parameter, the
+                // base rule's (`ctx.rule.attr`), its own attributes' and
+                // its base aspects' attributes'.
+                let direct = || {
+                    target_views::unfilled(
+                        std::iter::once(&application.target)
+                            .chain(application.dependencies.values())
+                            .chain(application.aspect_dependencies.values())
+                            .chain(
+                                application
+                                    .base_aspect_attributes
+                                    .iter()
+                                    .flat_map(|base| base.dependencies.values()),
+                            ),
+                    )
+                };
                 self.engine.with_target_views(
                     self.state,
                     self.configured,
                     attempt,
                     crate::target_actions::take_wanted,
+                    &direct,
                     || analysis::analyze_aspect_buffered(&application, &outputs),
                 )
             }

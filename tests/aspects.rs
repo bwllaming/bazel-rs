@@ -1188,5 +1188,53 @@ fn target_actions_outside_analysis_tests_like_bazel() {
             &build(&[], &["//merged:mc"]),
             "has no field or method 'actions'",
         );
+        // Readers of 40 targets' actions (a rule over its `deps`, an aspect
+        // over its base's): each asks for one per attempt, so the second
+        // ask fills every unfilled marker of the reader's direct
+        // dependency views — 2 retries per reader, never one per target.
+        let output = Command::new(TIMEOUT)
+            .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
+            .args(["--ignore_all_rc_files", "--cache-dir=cache", "build"])
+            .args(platforms)
+            .args(["//many:r", "//many:a"])
+            .current_dir(ws.path())
+            .env("BAZEL_RS_TIMING", "1")
+            .envs(environment.iter().copied())
+            .explicit_modules()
+            .output()
+            .unwrap();
+        let text = ok(&output);
+        assert_eq!(ws.output("r.txt"), expected("bazel-bin/many/r.txt"));
+        assert_eq!(ws.output("a.txt"), expected("bazel-bin/many/a.txt"));
+        let stats = text
+            .lines()
+            .find(|line| line.starts_with("PERF-TARGET-VIEWS "))
+            .unwrap_or_else(|| panic!("{text}"));
+        // Which reader asks first (and so how many each fills) is the
+        // analysis order's; the bound is not.
+        let count = |name: &str| -> u64 {
+            stats
+                .split_whitespace()
+                .find_map(|field| field.strip_prefix(&format!("{name}=")))
+                .unwrap()
+                .parse()
+                .unwrap()
+        };
+        assert!(
+            count("readers") <= 2
+                && count("retries") <= 2 * count("readers")
+                && count("filled") <= 41,
+            "{environment:?}: {stats}"
+        );
     }
+    // A rule reading Target.actions, then the target platform its prepare
+    // deferred (the default host platform, no --platforms): the views'
+    // retry, then the platform's (the built-in profile).
+    let ws = Workspace::fixture("aspect_target_actions");
+    let text = ok(&ws.build_builtin(&[], &["//platform_reader:r"]));
+    assert!(!text.contains('\u{0}'), "{text}");
+    assert_eq!(
+        ws.output("r.txt"),
+        expected("bazel-bin/platform_reader/r.txt")
+    );
 }

@@ -16,10 +16,6 @@
 
 use super::*;
 
-/// How deep a fill may itself fill (a target whose re-analysis asks for the
-/// views of another), and how often one reader is retried.
-const MAX_FILLS: usize = 16;
-
 impl PlanReads for PlanState<'_> {
     fn dry(&self, key: &ConfiguredTargetKey) -> Option<Artifacts> {
         self.dry.get(key).cloned()
@@ -130,7 +126,24 @@ impl prepare::PrepareCx for ViewsPrepare<'_, '_> {
         edge_config: ConfigId,
         aspects: Vec<Arc<crate::aspects::AspectDefinition>>,
     ) -> Result<DependencyTarget, String> {
+        // The target was prepared and committed before: its dependency
+        // views and its edges' aspect applications are memo hits (nothing
+        // analyzed or committed again; debug builds check it).
         if aspects.is_empty() {
+            #[cfg(debug_assertions)]
+            {
+                let key = ConfiguredTargetKey::new(label.clone(), edge_config);
+                let memoized = match &self.engine.frozen_walk {
+                    Some(frozen) => {
+                        frozen.views.contains_key(&key) || self.state.views.contains_key(&key)
+                    }
+                    None => self.state.views.contains_key(&key),
+                };
+                debug_assert!(
+                    memoized,
+                    "internal error: a Target.actions fill's view of {label} is not memoized"
+                );
+            }
             let PlanState {
                 dry,
                 custom_providers,
@@ -160,27 +173,149 @@ impl prepare::PrepareCx for ViewsPrepare<'_, '_> {
                 edge_config,
             );
         }
-        Ok(self
+        let applications = self.state.aspect_providers.len();
+        let planned = self
             .engine
             .plan_aspect_dependency(self.state, self.configured, label, edge_config, aspects)
-            .map_err(|error| located(rule.location.as_deref(), error))?
-            .0)
+            .map_err(|error| located(rule.location.as_deref(), error))?;
+        debug_assert!(
+            self.state.aspect_providers.len() == applications
+                && planned
+                    .1
+                    .iter()
+                    .all(|(key, _)| self.state.aspect_providers.contains_key(key)),
+            "internal error: a Target.actions fill planned an aspect application of {label} again"
+        );
+        let _ = applications;
+        Ok(planned.0)
     }
 }
 
+/// How deep a fill may itself fill (a target whose analysis again reads
+/// the views of another): the dependency graph's depth, bounded against a
+/// bug looping.
+const MAX_DEPTH: usize = 64;
+
+/// The round of a reader's retries from which the unfilled markers of all
+/// its direct dependency views are filled with what it asked for: a reader
+/// of one target's actions pays one retry, a reader of many (`[d.actions
+/// for d in ctx.attr.deps]`, which asks for one per attempt) two.
+const FILL_DIRECT_FROM_ROUND: usize = 1;
+
+/// `PERF-TARGET-VIEWS` (`BAZEL_RS_TIMING=1`): readers that asked, their
+/// retries, the markers filled.
+static ASKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static RETRIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static FILLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn bump(counter: &std::sync::atomic::AtomicU64) {
+    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The `PERF-TARGET-VIEWS` line.
+pub(super) fn report() {
+    let get =
+        |counter: &std::sync::atomic::AtomicU64| counter.load(std::sync::atomic::Ordering::Relaxed);
+    crate::snapshot::diag::line_fmt(format_args!(
+        "PERF-TARGET-VIEWS readers={} retries={} filled={}",
+        get(&ASKS),
+        get(&RETRIES),
+        get(&FILLS)
+    ));
+}
+
+/// The markers not filled yet of `views` (a reader's direct dependency
+/// views).
+pub(super) fn unfilled<'a>(
+    views: impl Iterator<Item = &'a DependencyTarget>,
+) -> Vec<crate::target_actions::Wanted> {
+    let mut found: Vec<crate::target_actions::Wanted> = Vec::new();
+    for view in views {
+        let Some(marker) = view.providers.get(crate::target_actions::PROVIDER_ID) else {
+            continue;
+        };
+        let Some(lazy) = crate::target_actions::Lazy::from_value(marker.value()) else {
+            continue;
+        };
+        if lazy.views().is_none() && !found.iter().any(|known| known.key == lazy.key) {
+            found.push(crate::target_actions::Wanted {
+                key: lazy.key.clone(),
+                marker: marker.clone(),
+            });
+        }
+    }
+    found
+}
+
+/// What one fill did.
+enum Filled {
+    /// The marker had its views already.
+    Already,
+    /// Filled now.
+    Now,
+    /// The target could not be analyzed again for them.
+    Failed,
+}
+
 impl Engine {
-    /// Fill the views of every target in `wanted` (an analysis's
-    /// [`crate::target_actions::take_wanted`]). `false`: one could not be
-    /// filled (the reader's sentinel then stands for its own error).
-    pub(super) fn fill_target_views(
+    /// Fill the views of every target in `wanted`: `Ok(n)`, the markers
+    /// filled now; `Err`: one could not be.
+    fn fill_target_views(
         &mut self,
         state: &mut PlanState<'_>,
         configured: &mut ConfiguredNodes,
         wanted: &[crate::target_actions::Wanted],
-    ) -> bool {
-        wanted
-            .iter()
-            .all(|wanted| self.fill_one_target_views(state, configured, wanted, 0))
+        depth: usize,
+    ) -> Result<usize, ()> {
+        let mut now = 0;
+        for wanted in wanted {
+            match self.fill_one_target_views(state, configured, wanted, depth) {
+                Filled::Already => {}
+                Filled::Now => now += 1,
+                Filled::Failed => return Err(()),
+            }
+        }
+        Ok(now)
+    }
+
+    /// One round of a reader's retries (`round` from 0): fill what it
+    /// asked for (`error`'s sentinel, `wanted`) and, from
+    /// [`FILL_DIRECT_FROM_ROUND`], every unfilled marker of its direct
+    /// dependency views (`direct`). `Err`: the explicit error the reader
+    /// fails with — a fill failed, or a retry asked again for nothing new
+    /// (it would ask forever). Terminates: each round after the first fills
+    /// at least one marker, a marker is only ever filled, and there are
+    /// finitely many.
+    pub(super) fn reader_fill_round(
+        &mut self,
+        state: &mut PlanState<'_>,
+        configured: &mut ConfiguredNodes,
+        error: &str,
+        mut wanted: Vec<crate::target_actions::Wanted>,
+        direct: &dyn Fn() -> Vec<crate::target_actions::Wanted>,
+        round: usize,
+    ) -> Result<(), String> {
+        if round == 0 {
+            bump(&ASKS);
+        }
+        if round >= FILL_DIRECT_FROM_ROUND {
+            for more in direct() {
+                if !wanted.iter().any(|known| known.key == more.key) {
+                    wanted.push(more);
+                }
+            }
+        }
+        // The first attempt may have run on a worker before another reader
+        // filled what it asked for (nothing new to fill: it runs again);
+        // every later one runs here, after the round, and asks only for
+        // markers unfilled then.
+        match self.fill_target_views(state, configured, &wanted, 0) {
+            Ok(filled) if filled > 0 || round == 0 => {
+                bump(&RETRIES);
+                Ok(())
+            }
+            _ => Err(crate::target_actions::unwanted(error.to_owned())),
+        }
     }
 
     /// Fill the marker `wanted` read, and the planning state's of its
@@ -192,12 +327,12 @@ impl Engine {
         configured: &mut ConfiguredNodes,
         wanted: &crate::target_actions::Wanted,
         depth: usize,
-    ) -> bool {
+    ) -> Filled {
         let Some(seen) = crate::target_actions::Lazy::from_value(wanted.marker.value()) else {
-            return false;
+            return Filled::Failed;
         };
         if seen.views().is_some() {
-            return true;
+            return Filled::Already;
         }
         let key = &wanted.key;
         let planned = state
@@ -210,13 +345,13 @@ impl Engine {
             .and_then(|marker| crate::target_actions::Lazy::from_value(marker.value()));
         if let Some(views) = planned_lazy.and_then(crate::target_actions::Lazy::views) {
             seen.fill(views.clone());
-            return true;
+            return Filled::Now;
         }
-        if depth >= MAX_FILLS {
-            return false;
+        if depth >= MAX_DEPTH {
+            return Filled::Failed;
         }
         let Some(rule) = self.configured_rules.get(key).cloned() else {
-            return false;
+            return Filled::Failed;
         };
         // Nothing of the analysis again is observable but its views: its
         // console is dropped (the target's own analysis wrote it), its
@@ -228,13 +363,14 @@ impl Engine {
         effects.apply(self, false);
         match views {
             Some(views) if !sentinel => {
+                bump(&FILLS);
                 if let Some(planned) = planned_lazy {
                     planned.fill(views.clone());
                 }
                 seen.fill(views);
-                true
+                Filled::Now
             }
-            _ => false,
+            _ => Filled::Failed,
         }
     }
 
@@ -263,20 +399,25 @@ impl Engine {
         let mut snapshot = custom.snapshot;
         snapshot.retain_actions = true;
         let (mut snapshot, mut outcome) = Engine::compute_target(snapshot);
-        for _ in 0..MAX_FILLS {
-            let Err(error) = &outcome.analyzed else {
-                break;
-            };
-            if error.contains(crate::platforms::NEEDS_TARGET_PLATFORM) {
+        let mut platform_resolved = false;
+        while let Err(error) = &outcome.analyzed {
+            if error.contains(crate::platforms::NEEDS_TARGET_PLATFORM) && !platform_resolved {
+                platform_resolved = true;
                 self.resolve_deferred_platform(&mut snapshot, prepared.config, configured)
                     .ok()?;
             } else if crate::target_actions::needs_views(error) {
-                let wanted = std::mem::take(&mut outcome.wanted_views);
-                if !wanted
-                    .iter()
-                    .all(|wanted| self.fill_one_target_views(state, configured, wanted, depth + 1))
-                {
-                    return None;
+                // As a reader's rounds, its direct dependencies at once (it
+                // reads their actions: its own analysis did, from filled
+                // markers or not at all).
+                let mut wanted = std::mem::take(&mut outcome.wanted_views);
+                for more in unfilled(snapshot.dependency_targets.values()) {
+                    if !wanted.iter().any(|known| known.key == more.key) {
+                        wanted.push(more);
+                    }
+                }
+                match self.fill_target_views(state, configured, &wanted, depth + 1) {
+                    Ok(filled) if filled > 0 => {}
+                    _ => return None,
                 }
             } else {
                 return None;
@@ -288,61 +429,32 @@ impl Engine {
         crate::target_actions::TargetActions::from_value(views.value()).cloned()
     }
 
-    /// A rule implementation's compute that asked for views (its commit):
-    /// filled, then computed again here, until it asks for none.
-    pub(super) fn rule_with_target_views(
-        &mut self,
-        state: &mut ActionPlanning,
-        configured: &mut ConfiguredNodes,
-        mut snapshot: ComputeSnapshot,
-        mut outcome: ComputeOutcome,
-    ) -> (ComputeOutcome, ComputeSnapshot) {
-        for _ in 0..MAX_FILLS {
-            if !outcome
-                .analyzed
-                .as_ref()
-                .is_err_and(|error| crate::target_actions::needs_views(error))
-            {
-                return (outcome, snapshot);
-            }
-            let wanted = std::mem::take(&mut outcome.wanted_views);
-            if !self.fill_target_views(&mut state.plan_state(), configured, &wanted) {
-                break;
-            }
-            (snapshot, outcome) = Engine::compute_target(snapshot);
-        }
-        outcome.analyzed = outcome.analyzed.map_err(crate::target_actions::unwanted);
-        (outcome, snapshot)
-    }
-
-    /// A reader's analysis `attempt` with the views it asked for filled:
-    /// `analyze` runs it again after each fill (its earlier attempt
-    /// dropped, prints included) until it asks for none; a sentinel left
-    /// (a fill failed) is the reader's own error.
+    /// A reader's analysis `attempt` (an aspect application) with the
+    /// views it asked for filled: `analyze` runs it again after each round
+    /// ([`Self::reader_fill_round`]; its earlier attempt dropped, prints
+    /// included) until it asks for none.
     pub(super) fn with_target_views<T>(
         &mut self,
         state: &mut PlanState<'_>,
         configured: &mut ConfiguredNodes,
         mut attempt: (Result<T, String>, Vec<String>),
         wanted: impl Fn() -> Vec<crate::target_actions::Wanted>,
+        direct: &dyn Fn() -> Vec<crate::target_actions::Wanted>,
         mut analyze: impl FnMut() -> (Result<T, String>, Vec<String>),
     ) -> (Result<T, String>, Vec<String>) {
-        for _ in 0..MAX_FILLS {
-            if !attempt
-                .0
-                .as_ref()
-                .is_err_and(|error| crate::target_actions::needs_views(error))
+        let mut round = 0;
+        loop {
+            let error = match &attempt.0 {
+                Err(error) if crate::target_actions::needs_views(error) => error.clone(),
+                _ => return attempt,
+            };
+            if let Err(error) =
+                self.reader_fill_round(state, configured, &error, wanted(), direct, round)
             {
-                return attempt;
+                return (Err(error), attempt.1);
             }
-            if !self.fill_target_views(state, configured, &wanted()) {
-                break;
-            }
+            round += 1;
             attempt = analyze();
         }
-        (
-            attempt.0.map_err(crate::target_actions::unwanted),
-            attempt.1,
-        )
     }
 }

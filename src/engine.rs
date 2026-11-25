@@ -9798,55 +9798,55 @@ impl Engine {
     ) -> Result<(), String> {
         let mut snapshot = snapshot;
         let mut outcome = computed;
-        if outcome
-            .analyzed
-            .as_ref()
-            .is_err_and(|error| error.contains(crate::platforms::NEEDS_TARGET_PLATFORM))
-        {
-            self.resolve_deferred_platform(&mut snapshot, config, configured)?;
+        // The compute's sentinels, each answered at this commit slot and the
+        // implementation run again here, in whatever order they come (a
+        // retry may raise another: B61's views first, the deferred target
+        // platform next). The aborted attempts' buffered lines are dropped
+        // with them; the last run is the sequential evaluation and
+        // reproduces its output exactly.
+        let mut platform_resolved = false;
+        let mut repository_retries = 0;
+        let mut views_round = 0;
+        while let Err(error) = &outcome.analyzed {
+            if error.contains(crate::platforms::NEEDS_TARGET_PLATFORM) && !platform_resolved {
+                // The target's own configuration's target platform.
+                platform_resolved = true;
+                self.resolve_deferred_platform(&mut snapshot, config, configured)?;
+            } else if crate::repository_demand::is_needs_repository(error) && repository_retries < 8
+            {
+                // The no-demand guard aborted the compute (review §1.2):
+                // here repository demand may fetch.
+                repository_retries += 1;
+            } else if crate::target_actions::needs_views(error) {
+                // B61: it read the `Target.actions` of a target whose views
+                // were not kept: they are filled (crate::engine::target_views).
+                let error = error.clone();
+                let wanted = std::mem::take(&mut outcome.wanted_views);
+                let dependencies = &snapshot.dependency_targets;
+                let filled = self.reader_fill_round(
+                    &mut state.plan_state(),
+                    configured,
+                    &error,
+                    wanted,
+                    &|| target_views::unfilled(dependencies.values()),
+                    views_round,
+                );
+                if let Err(error) = filled {
+                    outcome.analyzed = Err(error);
+                    break;
+                }
+                views_round += 1;
+            } else {
+                break;
+            }
             let timer = crate::plan_timings::StageTimer::start(
                 crate::plan_timings::PlanStage::CommitRetry,
                 u64::MAX,
                 0,
             );
-            let retry = Engine::compute_target(snapshot);
+            (snapshot, outcome) = Engine::compute_target(snapshot);
             timer.finish();
-            snapshot = retry.0;
-            outcome = retry.1;
         }
-        let (outcome, snapshot) = if outcome
-            .analyzed
-            .as_ref()
-            .is_err_and(|error| crate::repository_demand::is_needs_repository(error))
-        {
-            // The no-demand guard aborted the compute (review §1.2):
-            // re-run it inline at this commit slot, where repository
-            // demand may fetch. The aborted attempt's buffered lines are
-            // dropped with it; the re-run is the sequential evaluation
-            // and reproduces its output exactly.
-            let timer = crate::plan_timings::StageTimer::start(
-                crate::plan_timings::PlanStage::CommitRetry,
-                u64::MAX,
-                0,
-            );
-            let retried = Engine::compute_target(snapshot);
-            timer.finish();
-            (retried.1, retried.0)
-        } else {
-            (outcome, snapshot)
-        };
-        // B61: an implementation that read the `Target.actions` of a target
-        // whose views were not kept: they are filled, and it is analyzed
-        // again here (crate::engine::target_views).
-        let (outcome, snapshot) = if outcome
-            .analyzed
-            .as_ref()
-            .is_err_and(|error| crate::target_actions::needs_views(error))
-        {
-            self.rule_with_target_views(state, configured, snapshot, outcome)
-        } else {
-            (outcome, snapshot)
-        };
         let ComputeOutcome {
             analyzed,
             wanted_views: _,
@@ -12054,6 +12054,7 @@ impl Engine {
                 }
             }
             crate::plan_timings::report(&labels, &edges);
+            target_views::report();
         }
         // W0-A: retained-memory breakdown (BAZEL_RS_TIMING_ALLOC=1 only).
         alloc_report::report_if_enabled(self, &state, &plan, &configured);

@@ -521,24 +521,21 @@ pub(crate) fn needs_views(error: &str) -> bool {
     error.contains(NEEDS_VIEWS)
 }
 
-/// The error a [`NEEDS_VIEWS`] sentinel stands for when the views could
-/// not be filled: the analysis's own error, else (it only tested
-/// `hasattr`) an explicit one.
+/// The explicit error of a reader whose [`NEEDS_VIEWS`] could not be
+/// answered (a target asked for could not be analyzed again for its
+/// views): never the reader's own "no field" error, which would look like
+/// its bug (genuine answers any rule target's actions).
 pub(crate) fn unwanted(error: String) -> String {
     let Some(at) = error.find(NEEDS_VIEWS) else {
         return error;
     };
     let rest = &error[at + NEEDS_VIEWS.len()..];
-    let (labels, message) = rest.split_once('\u{0}').unwrap_or((rest, ""));
-    let message = if message.is_empty() {
-        format!(
-            "reading the Target.actions of {labels}, not kept, {}",
-            crate::language_modules::NOT_IMPLEMENTED
-        )
-    } else {
-        message.to_owned()
-    };
-    format!("{}{message}", &error[..at])
+    let labels = rest.split_once('\u{0}').map_or(rest, |(labels, _)| labels);
+    format!(
+        "{}reading the Target.actions of {labels}: analyzing it again for the actions the analysis did not keep failed, which {}",
+        &error[..at],
+        crate::language_modules::NOT_IMPLEMENTED
+    )
 }
 
 impl fmt::Display for TargetActions {

@@ -118,7 +118,19 @@ applications are memo hits, its owners and prerequisites were noted and
 checked by its own prepare — and its implementation, isolated: console
 dropped, observations committed, nothing registered), fills the marker and
 runs the reader again from its start; the attempt that asked is dropped
-whole, its prints included, so the reader prints once. The answer is the
+whole, its prints included, so the reader prints once. A reader asks for
+one target per attempt (the read fails there), so its second ask also fills
+every unfilled marker of its direct dependency views (a rule's dependency
+targets; an aspect's `target`, `ctx.rule.attr`, its own and its base
+aspects' attributes): a reader of one target's actions runs twice, one of
+`[d.actions for d in ctx.attr.deps]` three times. Its rounds go on while
+each fills a marker (finitely many, and a marker is only ever filled); a
+target that cannot be analyzed again fails the reader with an explicit
+`... is not implemented in the native profile` error, never its own "no
+field". A rule's commit answers its compute's sentinels in whatever order
+they come (the views', the deferred target platform's, the no-demand
+guard's: tests/fixtures/aspect_target_actions `//platform_reader:r` reads
+`target.actions` before `ctx.var`). The answer is the
 target's own analysis's views, kept or filled, so it never depends on the
 analysis order, the evaluator's scheduling or which targets were analyzed
 before an aspect met them (a select() on a Starlark flag analyzes a plan

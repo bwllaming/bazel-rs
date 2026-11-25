@@ -1,0 +1,16 @@
+load("//:defs.bzl", "lib")
+load(":defs.bzl", "platform_reader")
+
+constraint_setting(name = "s")
+
+constraint_value(
+    name = "v",
+    constraint_setting = ":s",
+)
+
+lib(name = "d")
+
+platform_reader(
+    name = "r",
+    dep = ":d",
+)
