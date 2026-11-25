@@ -242,6 +242,22 @@ fn the_first_failure_interrupts_the_actions_in_flight() {
         );
         assert_eq!(console(&ran.stdout, &ws), expected["stdout"], "{context}");
         assert_eq!(console(&ran.stderr, &ws), expected["console"], "{context}");
+        // The failed (and interrupted) actions are on the critical path
+        // with the time they ran (CriticalPathComputer.actionComplete;
+        // genuine 9.3.1 scratch capture: `Critical Path: 8.03s` for a
+        // failing `sleep 8` genrule, with and without --keep_going): at
+        // least the failing action's sleep.
+        if case != "rerun" {
+            let failing = if case == "test" { 8.0 } else { 1.0 };
+            let critical: f64 = ran
+                .stderr
+                .split("Critical Path: ")
+                .nth(1)
+                .and_then(|rest| rest.split('s').next())
+                .and_then(|seconds| seconds.parse().ok())
+                .unwrap_or_else(|| panic!("no critical path: {context}"));
+            assert!(critical >= failing, "{case}: critical path {critical}s");
+        }
         let bin_pkg = listing(&ws.join("bazel-bin/pkg"));
         match case {
             "rerun" => assert_eq!(bin_pkg.as_ref(), Some(&expected["bin_pkg"]), "{context}"),

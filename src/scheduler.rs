@@ -1167,6 +1167,16 @@ where
             dependencies,
         )
     });
+    // A failed or interrupted action is on the critical path too, with the
+    // time it ran (CriticalPathComputer.actionComplete: the
+    // ActionCompletionEvent SkyframeActionExecutor posts in a `finally`).
+    let started = std::time::Instant::now();
+    let inputs_critical = producers
+        .iter()
+        .flatten()
+        .map(|producer| producer.critical)
+        .max()
+        .unwrap_or_default();
     let result = catch_unwind(AssertUnwindSafe(|| {
         // The groups' inputs are listed in the action now, for this one
         // execution (PA-1): their sources after the action's own, their
@@ -1227,13 +1237,7 @@ where
         } else {
             clock.elapsed()
         };
-        result.critical = own
-            + producers
-                .iter()
-                .flatten()
-                .map(|producer| producer.critical)
-                .max()
-                .unwrap_or_default();
+        result.critical = own + inputs_critical;
         if result.outputs.len() != node.action.outputs.len() {
             return Err(format!(
                 "executor returned {} outputs, expected {}",
@@ -1244,6 +1248,9 @@ where
         Ok(result)
     }))
     .unwrap_or_else(|payload| Err(format!("worker panicked: {}", panic_message(&*payload))));
+    if result.is_err() {
+        crate::spawn_stats::critical_path_at_least(started.elapsed() + inputs_critical);
+    }
     // Stopped by the interrupt of the failed build (crate::interrupt): no
     // result, no event, no error of its own — like a job skipped before it
     // started (an interrupted action posts no ActionExecutedEvent).

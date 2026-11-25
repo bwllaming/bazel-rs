@@ -84,7 +84,8 @@ tests/console_text.rs):
   `local`, `processwrapper-sandbox`, `remote`, `worker`; a test action counts
   its attempts and its test.xml generation). The critical path is the
   longest chain of action execution times (a cache hit adds nothing; tests
-  are not on it). No thousands separator (UiStateTracker). Without the
+  are not on it; a failed or interrupted action is, with the time it ran:
+  CriticalPathComputer finalizes every ActionCompletionEvent). No thousands separator (UiStateTracker). Without the
   display they are printed for exits 0 and 3, and before the `ERROR: Build
   did NOT complete successfully` of a failed action (with or without
   `--keep_going`; without the completion line); another failure ends with
