@@ -551,6 +551,82 @@ pub fn listed_inputs(node: &crate::scheduler::PlannedAction) -> Vec<String> {
     }
 }
 
+/// The first of [`listed_inputs`] of `node`, without listing them (the
+/// primary input of an action without a NestedSet input order).
+pub fn first_listed_input(node: &crate::scheduler::PlannedAction) -> Option<String> {
+    let path = |path: &std::path::Path| path.to_string_lossy().into_owned();
+    let has_runs = node.groups.iter().any(|group| !group.runfiles);
+    if let Some((_, destination)) = listed_sources(node).next() {
+        return Some(path(destination));
+    }
+    let dependencies: Box<dyn Iterator<Item = &crate::scheduler::Dependency>> = if has_runs {
+        let split = match node.groups_at {
+            Some(at) => (at.dependencies as usize).min(node.dependencies.len()),
+            None => node.dependencies.len(),
+        };
+        let (before, after) = node.dependencies.split_at(split);
+        Box::new(
+            before
+                .iter()
+                .chain(
+                    node.groups
+                        .iter()
+                        .filter(|group| !group.runfiles)
+                        .flat_map(|group| group.dependencies.iter()),
+                )
+                .chain(after),
+        )
+    } else {
+        Box::new(node.dependencies.iter())
+    };
+    if let Some(dependency) = dependencies.into_iter().next() {
+        return Some(path(&dependency.destination));
+    }
+    if let Some((embedded, _)) = node.action.embedded_inputs.first() {
+        return Some(path(embedded));
+    }
+    node.groups
+        .iter()
+        .find(|group| !has_runs || group.runfiles)
+        .map(|group| path(&group.root))
+}
+
+/// The source inputs of `node` in [`listed_inputs`]'s order: its own, with
+/// its shared runs' (groups that are not runfiles trees) at
+/// PlannedAction::groups_at, else after them (PlannedAction::runs_listed).
+pub fn listed_sources(
+    node: &crate::scheduler::PlannedAction,
+) -> impl Iterator<
+    Item = &(
+        crate::shared_path::SharedPath,
+        crate::shared_path::SharedPath,
+    ),
+> {
+    let own = &node.action.inputs;
+    let position = match node.groups_at {
+        Some(at) if node.groups.iter().any(|group| !group.runfiles) => {
+            (at.inputs as usize).min(own.len())
+        }
+        _ => own.len(),
+    };
+    own[..position]
+        .iter()
+        .chain(
+            node.groups
+                .iter()
+                .filter(|group| !group.runfiles)
+                .flat_map(|group| group.inputs.iter()),
+        )
+        .chain(own[position..].iter())
+}
+
+/// Whether internal checks of aquery's derived values run (debug builds,
+/// `BAZEL_RS_PARITY_VERIFY=1`).
+pub fn parity_checked() -> bool {
+    // snapshot-unrecorded: a diagnostics check; it changes no result (it fails on a difference).
+    cfg!(debug_assertions) || std::env::var_os("BAZEL_RS_PARITY_VERIFY").is_some_and(|v| v == "1")
+}
+
 /// [`listed_inputs`] of a node whose shared runs are listed already
 /// (crate::scheduler::PlannedAction::runs_listed).
 pub fn runs_listed_inputs(node: &crate::scheduler::PlannedAction) -> Vec<String> {

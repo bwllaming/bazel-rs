@@ -271,6 +271,13 @@ impl Analysis {
     }
 }
 
+/// `record` lists its own inputs (set next), not its planned action's
+/// ([`ActionRecord::listed_from`]).
+fn unlist(record: &mut ActionRecord, meta: &Meta) {
+    record.listed_from = None;
+    record.input_order = meta.input_order_paths();
+}
+
 /// The internal string of internal bytes (crate::bazel_bytes): UTF-8 where
 /// valid, a lone byte as its private-use character.
 fn internal_string(bytes: &[u8]) -> String {
@@ -496,14 +503,14 @@ impl Engine {
             .filter(|id| !owned_by_the_build(id))
             .collect();
         if crate::plan_timings::enabled() {
-            eprintln!(
+            crate::snapshot::diag::line_fmt(format_args!(
                 "PERF-AQUERY nodes={} owners={} described={} unowned={} unexpected={} ungraphed={ungraphed}",
                 capture.nodes.len(),
                 capture.owners.len(),
                 jobs.len(),
                 unowned.len(),
                 unexpected.len(),
-            );
+            ));
         }
         // (And an owner outside the configured graph, which holds every
         // analyzed target.)
@@ -616,11 +623,11 @@ impl Engine {
         drop(display);
         actions.extend(tests.into_iter().filter(|(node, _)| wanted(*node)));
         if crate::plan_timings::enabled() {
-            eprintln!(
+            crate::snapshot::diag::line_fmt(format_args!(
                 "PERF-AQUERY described={} records={}",
                 jobs.len(),
                 actions.len()
-            );
+            ));
         }
         analysis.actions = actions;
         crate::perf_mark("aquery.records");
@@ -781,14 +788,14 @@ impl Engine {
             actions.extend(kept);
         }
         if crate::plan_timings::enabled() {
-            eprintln!(
+            crate::snapshot::diag::line_fmt(format_args!(
                 "PERF-AQUERY snapshot units={} blocks={} groups={} bytes={} records={}",
                 units.len(),
                 records.blocks.len(),
                 records.group_count,
                 records.bytes.len(),
                 actions.len()
-            );
+            ));
         }
         analysis.actions = actions;
         crate::perf_mark("aquery.records");
@@ -851,19 +858,18 @@ impl Engine {
         configurations: &[crate::aquery::Configuration],
         platform_infos: &HashMap<Label, Arc<crate::platforms::PlatformInfo>>,
     ) -> Vec<ActionRecord> {
-        // A shared run's groups (not runfiles trees) are inputs listed one
-        // by one, as the node lists them without sharing; a runfiles tree
-        // stays one input (crate::aquery::listed_inputs).
-        let flattened;
-        let node = if node.groups.iter().any(|group| !group.runfiles) {
-            flattened = node.runs_listed();
-            &flattened
-        } else {
-            node
-        };
-        let inputs = crate::aquery::runs_listed_inputs(node);
+        // The inputs are the node's listing (crate::aquery::listed_inputs: a
+        // shared run's groups, not runfiles trees, listed one by one, as the
+        // node lists them without sharing; a runfiles tree one input),
+        // listed only when a record needs them other than through
+        // `listed_from` (the records of the whole universe are described for
+        // an aquery snapshot: 70k PyCompile actions list the 1,655-file
+        // Python runtime).
+        let listing: std::cell::OnceCell<Vec<String>> = std::cell::OnceCell::new();
+        let listed = || -> &[String] { listing.get_or_init(|| crate::aquery::listed_inputs(node)) };
         let action = &node.action;
-        let meta: Meta = action.extra.aquery.as_deref().cloned().unwrap_or_default();
+        let no_meta = Meta::default();
+        let meta: &Meta = action.extra.aquery.as_deref().unwrap_or(&no_meta);
         let tool = configurations[configuration].is_tool;
         let label = owner.key.label.to_string();
         let (platform_label, properties) = self.aquery_platform(node, owner.key.config);
@@ -894,12 +900,11 @@ impl Engine {
         let primary_output = outputs.first().map(|(path, _)| path.as_str());
         // Action.getPrimaryInput: the first of the inputs NestedSet (a
         // Starlark spawn's declared inputs precede its tools).
-        let primary_input = meta
-            .input_order
-            .as_ref()
-            .and_then(|order| order.first())
-            .map(|file| file.path.as_str())
-            .or(inputs.first().map(String::as_str));
+        let first_input = match meta.input_order.as_ref().and_then(|order| order.first()) {
+            Some(file) => Some(file.path.clone()),
+            None => crate::aquery::first_listed_input(node),
+        };
+        let primary_input = first_input.as_deref();
         let suffix = action.id.rsplit_once('#').map(|(_, suffix)| suffix);
         let mut extra_records = Vec::new();
         let mut record = ActionRecord {
@@ -913,8 +918,9 @@ impl Engine {
             aspects: owner.aspects.clone(),
             execution_platform: (!no_config)
                 .then(|| crate::rule_declarations::canonical_form(&platform_label)),
-            inputs: inputs.clone(),
-            input_order: meta.input_order_paths(),
+            // Listed when written (ActionRecord::listed_from): not held as
+            // strings for every action of the universe at once.
+            listed_from: Some(index),
             outputs: outputs.clone(),
             expansion_error: meta.expansion_error.clone(),
             ..Default::default()
@@ -928,9 +934,7 @@ impl Engine {
         };
         let template_input = |template: &std::path::Path| -> (String, String) {
             let exec = template.to_string_lossy().into_owned();
-            let content = action
-                .inputs
-                .iter()
+            let content = crate::aquery::listed_sources(node)
                 .find(|(_, destination)| destination.as_os_str() == template.as_os_str())
                 // Recorded: an aquery snapshot prints the text it read.
                 .and_then(|(source, _)| crate::observed_fs::read(&**source).ok())
@@ -1043,7 +1047,8 @@ impl Engine {
                     "Translating {} BuildInfo file",
                     if *volatile { "volatile" } else { "stable" }
                 ));
-                record.action_key = self.aquery_native_key(&record, key_platform, &properties);
+                record.action_key =
+                    self.aquery_native_key(&record, listed(), key_platform, &properties);
             }
             (
                 None,
@@ -1080,9 +1085,10 @@ impl Engine {
                 // (its contents name absolute paths; not reproduced).
                 record.mnemonic = "SourceSymlinkManifest".into();
                 record.description = progress("Creating source manifest for %{label}");
+                unlist(&mut record, meta);
                 record.inputs.clear();
                 record.file_write = Some((false, String::new()));
-                record.action_key = self.aquery_native_key(&record, key_platform, &properties);
+                record.action_key = self.aquery_native_key(&record, &[], key_platform, &properties);
             }
             (
                 None,
@@ -1100,6 +1106,7 @@ impl Engine {
                     .to_owned();
                 record.mnemonic = "SymlinkTree".into();
                 record.description = progress(&format!("Creating runfiles tree {directory}"));
+                unlist(&mut record, meta);
                 record.inputs = vec![manifest_input];
                 record.environment = self
                     .configurations
@@ -1109,7 +1116,8 @@ impl Engine {
                     .fixed
                     .into_iter()
                     .collect();
-                record.action_key = self.aquery_native_key(&record, key_platform, &properties);
+                record.action_key =
+                    self.aquery_native_key(&record, &record.inputs, key_platform, &properties);
                 let mut tree = ActionRecord {
                     mnemonic: "RunfilesTree".into(),
                     pretty: Some(format!("runfiles for {label}")),
@@ -1145,7 +1153,8 @@ impl Engine {
                     action.extra.mnemonic.clone()
                 };
                 record.description = progress(&format!("{} %{{output}}", record.mnemonic));
-                record.action_key = self.aquery_native_key(&record, key_platform, &properties);
+                record.action_key =
+                    self.aquery_native_key(&record, listed(), key_platform, &properties);
                 if let Some(target) = &meta.absolute_symlink {
                     // SymlinkAction.toAbsolutePath: its raw progress message
                     // (no input to expand `%{input}`) and key.
@@ -1230,14 +1239,18 @@ impl Engine {
                     None => merged.into_iter().collect(),
                 };
                 record.execution_info = info;
-                let lines = meta
-                    .command_lines
-                    .clone()
-                    .unwrap_or_else(|| vec![CommandLinePart::Flat(arguments.clone())]);
+                let flat;
+                let lines: &[CommandLinePart] = match &meta.command_lines {
+                    Some(lines) => lines,
+                    None => {
+                        flat = [CommandLinePart::Flat(arguments.clone())];
+                        &flat
+                    }
+                };
                 let inherited: Vec<String> =
                     action.extra.inherited_environment.iter().cloned().collect();
                 let spawn = KeyKind::Spawn {
-                    command_lines: &lines,
+                    command_lines: lines,
                     mnemonic: &record.mnemonic,
                     environment: &record.environment,
                     inherited: &inherited,
@@ -1276,18 +1289,20 @@ impl Engine {
                 record.arguments = Some(arguments);
             }
         }
+        if crate::aquery::parity_checked() {
+            assert_eq!(
+                first_input.as_deref(),
+                meta.input_order
+                    .as_ref()
+                    .and_then(|order| order.first())
+                    .map(|file| file.path.as_str())
+                    .or(listed().first().map(String::as_str)),
+                "internal error: aquery: the primary input of {}",
+                action.id
+            );
+        }
         let mut records = vec![record];
         records.extend(extra_records);
-        // Listed again when written (ActionRecord::listed_from): not held
-        // as strings for every action of the universe at once.
-        let input_order = meta.input_order_paths();
-        for record in &mut records {
-            if record.inputs == inputs && record.input_order == input_order {
-                record.inputs = Vec::new();
-                record.input_order = None;
-                record.listed_from = Some(index);
-            }
-        }
         records
     }
 
@@ -1297,11 +1312,12 @@ impl Engine {
     fn aquery_native_key(
         &self,
         record: &ActionRecord,
+        inputs: &[String],
         platform: KeyPlatform<'_>,
         properties: &[(String, String)],
     ) -> String {
         let mut description = vec![record.mnemonic.clone()];
-        description.extend(record.inputs.iter().cloned());
+        description.extend(inputs.iter().cloned());
         description.extend(record.outputs.iter().map(|(path, _)| path.clone()));
         let lines = [CommandLinePart::Flat(description)];
         crate::aquery_key::action_key(
