@@ -274,7 +274,23 @@ pub(crate) fn create_compilation<'v>(
     {
         return Err(unsupported("per-package toolchain data"));
     }
-    if surface.config.coverage_enabled && !sources.is_empty() {
+    // JavaCompilationHelper.shouldInstrumentJar (:419-426): coverage, source
+    // files, and InstrumentedFilesCollector.shouldIncludeLocalSources of the
+    // rule (a test target only with `--instrument_test_targets`). An
+    // uninstrumented compilation is the plain one.
+    if surface.config.coverage_enabled
+        && !sources.is_empty()
+        && surface
+            .config
+            .instrumenting
+            .as_ref()
+            .is_some_and(|instrumenting| {
+                instrumenting.includes(
+                    &surface.label.to_string(),
+                    surface.rule_class.ends_with("_test"),
+                )
+            })
+    {
         return Err(unsupported("Java coverage instrumentation"));
     }
     let incompatible = strings(
@@ -353,15 +369,26 @@ pub(crate) fn create_compilation<'v>(
     };
     let classpath = flat(&classpath_node);
     let direct = flat(&direct_node);
-    // JavaCompileActionBuilder.build: reduced-classpath-incompatible
+    // JavaCompileActionBuilder.build: the configured
+    // `--experimental_java_classpath`; reduced-classpath-incompatible
     // processors, strict deps OFF and an absent jdeps select OFF.
-    let bazel = !plugins
+    let mode = if !plugins
         .classes
         .iter()
         .any(|class| incompatible.contains(class))
         && strict != "OFF"
-        && jdeps.is_some();
-    if !bazel {
+        && jdeps.is_some()
+    {
+        ClasspathMode::of_option(
+            &surface
+                .config
+                .option_value("experimental_java_classpath")
+                .to_string(),
+        )
+    } else {
+        ClasspathMode::Off
+    };
+    if mode == ClasspathMode::Off {
         dependency_node = command::empty(crate::starlark_types::Order::Default);
     }
     let dependency_jdeps = flat(&dependency_node);
@@ -470,6 +497,14 @@ pub(crate) fn create_compilation<'v>(
         let mut classpath_line = command::Line::default();
         classpath_line.add_set("--classpath", &classpath_node);
         arguments.extend(classpath_line.expand());
+        arguments.extend(
+            mode.full_classpath_flags(
+                &dependency_jdeps
+                    .iter()
+                    .map(|file| file.path.clone())
+                    .collect::<Vec<_>>(),
+            ),
+        );
         let mut display_info = key_info.clone();
         if let Some(jdeps) = &jdeps {
             display_info.push(("internal-inline-outputs".to_owned(), jdeps.path.clone()));
@@ -483,7 +518,7 @@ pub(crate) fn create_compilation<'v>(
             )),
             arguments: Some(arguments.into()),
             compute_key: Some(command::java_compile_key(
-                if bazel { 2 } else { 0 },
+                mode.ordinal(),
                 &executable,
                 &flags,
                 &classpath_node,
@@ -496,11 +531,6 @@ pub(crate) fn create_compilation<'v>(
         }
     });
     let paths = |files: &[File]| files.iter().map(|f| f.path.clone().into()).collect();
-    let mode = if bazel {
-        ClasspathMode::Bazel
-    } else {
-        ClasspathMode::Off
-    };
     let launcher = executable.expand();
     context
         .register_action(Registration {

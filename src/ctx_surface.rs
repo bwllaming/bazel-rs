@@ -103,14 +103,10 @@ pub struct CtxSurface {
     pub option_values: std::collections::BTreeMap<&'static str, crate::configuration::OptionValue>,
 }
 
-/// The currently supported Java classpath option. The fragment and native
-/// compilation factory share it so the factory cannot silently change modes.
-pub(crate) const JAVA_CLASSPATH_MODE: &str = "BAZEL";
-
 impl CtxSurface {
     /// The configured value of the table-driven option `name`
     /// (crate::configuration::VALUE_OPTIONS).
-    fn option_value(&self, name: &str) -> crate::configuration::OptionValue {
+    pub(crate) fn option_value(&self, name: &str) -> crate::configuration::OptionValue {
         self.option_values.get(name).cloned().unwrap_or_else(|| {
             crate::configuration::value_option(name)
                 .expect("a table-driven option")
@@ -1339,6 +1335,25 @@ fn use_ijars<'v>(surface: &CtxSurface, _heap: Heap<'v>) -> anyhow::Result<Value<
     Ok(Value::new_bool(java_flag(surface, "use_ijars")))
 }
 
+/// JavaConfiguration.getReduceJavaClasspathStarlark (:216-219): the
+/// `--experimental_java_classpath` constant's name.
+fn reduce_java_classpath<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    Ok(heap.alloc(
+        surface
+            .option_value("experimental_java_classpath")
+            .to_string(),
+    ))
+}
+
+/// JavaConfiguration.runAndroidLint
+/// (`--experimental_run_android_lint_on_java_rules`).
+fn run_android_lint<'v>(surface: &CtxSurface, _heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    Ok(Value::new_bool(java_flag(
+        surface,
+        "experimental_run_android_lint_on_java_rules",
+    )))
+}
+
 /// JavaConfiguration.getGenerateJavaDeps (`--java_deps`).
 fn generate_java_deps<'v>(surface: &CtxSurface, _heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
     Ok(Value::new_bool(java_flag(surface, "java_deps")))
@@ -1550,10 +1565,10 @@ fn members(kind: Kind) -> &'static [(&'static str, Member)] {
                 "reduce_java_classpath",
                 Method {
                     private: true,
-                    value: V::Str(JAVA_CLASSPATH_MODE),
+                    value: V::Dyn(reduce_java_classpath),
                 },
             ),
-            ("run_android_lint", Field(V::Bool(false))),
+            ("run_android_lint", Field(V::Dyn(run_android_lint))),
             ("split_bytecode_optimization_pass", Field(V::Bool(false))),
             ("strict_java_deps", Field(V::Dyn(strict_java_deps))),
             (

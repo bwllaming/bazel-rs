@@ -1,0 +1,6 @@
+bin=bazel-out/k8-fastbuild/bin
+lint=True
+flags=classpath_off,lint
+tool.bin=bazel-out/p-opt-exec/bin
+tool.lint=True
+tool.flags=classpath_off,lint

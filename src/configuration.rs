@@ -491,6 +491,8 @@ pub struct ValueOption {
 const STRICT_DEPS_MODES: &[&str] = &["OFF", "WARN", "ERROR", "STRICT", "DEFAULT"];
 /// JavaConfiguration.OneVersionEnforcementLevel (rules/java/JavaConfiguration.java:60-73).
 const ONE_VERSION_ENFORCEMENT_LEVELS: &[&str] = &["OFF", "WARNING", "ERROR"];
+/// JavaConfiguration.JavaClasspathMode (rules/java/JavaConfiguration.java:49-60).
+const JAVA_CLASSPATH_MODES: &[&str] = &["OFF", "JAVABUILDER", "BAZEL", "BAZEL_NO_FALLBACK"];
 
 /// The table-driven options (docs/CONFIGURATION.md "Value options"). Each
 /// row was checked against genuine Bazel 9.3.0 (paired capture
@@ -702,6 +704,49 @@ pub const VALUE_OPTIONS: &[ValueOption] = &[
         command_line: true,
         exec: ExecValue::Propagate,
         exec_source: "builtin_exec_platforms.bzl:372",
+    },
+    // JavaOptions.javaClasspath (`--experimental_java_classpath`, old name
+    // `--java_classpath`): `ctx.fragments.java.reduce_java_classpath()` and
+    // the native Javac and javac-turbine actions' classpath mode
+    // (crate::java_compile::ClasspathMode). JavaOptions.runAndroidLint
+    // (`--experimental_run_android_lint_on_java_rules`):
+    // `ctx.fragments.java.run_android_lint`. Both propagated
+    // (builtin_exec_platforms.bzl:367, 391); rules_java's analysis tests
+    // transition on them (B67).
+    ValueOption {
+        option: OptionDef {
+            name: "experimental_java_classpath",
+            old_name: Some("java_classpath"),
+            abbrev: None,
+            kind: OptionKind::Enum {
+                type_name: "Java classpath reduction strategy",
+                values: JAVA_CLASSPATH_MODES,
+            },
+            default: "BAZEL",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/java/JavaOptions.java:122-131",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:367",
+    },
+    ValueOption {
+        option: OptionDef {
+            name: "experimental_run_android_lint_on_java_rules",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "false",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/java/JavaOptions.java:342-349",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:391",
     },
     ValueOption {
         option: OptionDef {
@@ -4508,6 +4553,8 @@ mod tests {
                 "java_deps",
                 "experimental_one_version_enforcement",
                 "one_version_enforcement_on_java_tests",
+                "experimental_java_classpath",
+                "experimental_run_android_lint_on_java_rules",
                 "incompatible_disallow_java_import_exports",
                 "java_launcher",
                 "host_java_launcher",

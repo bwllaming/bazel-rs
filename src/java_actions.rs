@@ -593,10 +593,24 @@ pub(crate) fn create_header<'v>(
         let classpath = flat(&classpath_node);
         let direct = flat(&direct_node);
         let dependency_jdeps = flat(&dependency_node);
-        let bazel = !plugins
+        // JavaHeaderCompileAction.Builder.build (:452-456): the configured
+        // `--experimental_java_classpath`, OFF for reduced-classpath
+        // incompatible processors.
+        let mode = if plugins
             .classes
             .iter()
-            .any(|class| incompatible.contains(class));
+            .any(|class| incompatible.contains(class))
+        {
+            crate::java_compile::ClasspathMode::Off
+        } else {
+            crate::java_compile::ClasspathMode::of_option(
+                &crate::analysis_ctx::current_surface(v(0))
+                    .map_err(starlark::Error::new_other)?
+                    .config
+                    .option_value("experimental_java_classpath")
+                    .to_string(),
+            )
+        };
         let inputs = unique(
             mandatory
                 .iter()
@@ -615,13 +629,21 @@ pub(crate) fn create_header<'v>(
             let mut classpath_line = command::Line::default();
             classpath_line.add_set("--classpath", &classpath_node);
             arguments.extend(classpath_line.expand());
+            arguments.extend(
+                mode.full_classpath_flags(
+                    &dependency_jdeps
+                        .iter()
+                        .map(|file| file.path.clone())
+                        .collect::<Vec<_>>(),
+                ),
+            );
             let mut display_info = key_info.clone();
             display_info.push(("internal-inline-outputs".to_owned(), jdeps.path.clone()));
             meta = Some(crate::aquery::Meta {
                 progress: Some(progress.clone()),
                 arguments: Some(arguments.into()),
                 compute_key: Some(command::java_compile_key(
-                    if bazel { 2 } else { 0 },
+                    mode.ordinal(),
                     &executable,
                     &flags,
                     &classpath_node,
@@ -650,11 +672,7 @@ pub(crate) fn create_header<'v>(
                     inherited_environment: environment.inherited,
                     execution_info,
                     java_compile: Some(Box::new(crate::java_compile::JavaCompileSpec {
-                        mode: if bazel {
-                            crate::java_compile::ClasspathMode::Bazel
-                        } else {
-                            crate::java_compile::ClasspathMode::Off
-                        },
+                        mode,
                         flags: flags.expand(),
                         classpath: paths(&classpath),
                         direct_jars: paths(&direct),

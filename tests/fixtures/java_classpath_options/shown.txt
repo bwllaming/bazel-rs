@@ -1,0 +1,6 @@
+bin=bazel-out/k8-fastbuild-ST-5d200f84147e/bin
+lint=True
+flags=classpath_javabuilder,lint
+tool.bin=bazel-out/p-opt-exec-ST-b789f0bd2b04/bin
+tool.lint=True
+tool.flags=classpath_javabuilder,lint

@@ -151,6 +151,8 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "java_deps",
     "experimental_one_version_enforcement",
     "one_version_enforcement_on_java_tests",
+    "experimental_java_classpath",
+    "experimental_run_android_lint_on_java_rules",
     "incompatible_disallow_java_import_exports",
     "java_launcher",
     "host_java_launcher",
@@ -247,6 +249,14 @@ const GENERIC_VALUE_OPTIONS: &[(&str, &str)] = &[
     (
         "one_version_enforcement_on_java_tests",
         "rules.java.JavaOptions.enforceOneVersionOnJavaTests",
+    ),
+    (
+        "experimental_java_classpath",
+        "rules.java.JavaOptions.javaClasspath",
+    ),
+    (
+        "experimental_run_android_lint_on_java_rules",
+        "rules.java.JavaOptions.runAndroidLint",
     ),
     (
         "incompatible_disallow_java_import_exports",

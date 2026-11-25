@@ -119,7 +119,11 @@ AnsiStrippingOutputStream), and its action failure framing is its own
 
 - Extra Args, per-package toolchain data, JSpecify, Java coverage
   instrumentation and `--experimental_turbine_annotation_processing` fail
-  explicitly.
+  explicitly. Coverage instruments only what JavaCompilationHelper
+  .shouldInstrumentJar selects (source files and the rule passing
+  `--instrumentation_filter`; a test rule only with
+  `--instrument_test_targets`); any other compilation under coverage is the
+  plain one.
   Ordinary dependent/sourcejar/empty library builds are proven; the application
   rules_jvm_external Java-library cquery passes with this implementation.
   Subsequent runtime-classpath and native-directory helpers also unblock the
@@ -173,8 +177,14 @@ strings, never filesystem authority. Invalid UTF-8 dependency paths fail closed
 persisted. Binary snapshot format 6 stores intent only, with raw-path codecs.
 
 Strict OFF or an absent output jdeps selects effective OFF exactly as the
-genuine builder does. The CLI's other unmodelled classpath modes remain errors;
-the fragment and factory share the advertised default. Source-jar packaging
+genuine builder does. Otherwise the mode is the configuration's
+`--experimental_java_classpath` (a configuration option Starlark transitions
+write, B67), which `ctx.fragments.java.reduce_java_classpath()` reports too:
+`bazel` (the default) as above; `bazel_no_fallback` the reduced attempt with
+`--reduce_classpath_mode NONE` and no fallback; `javabuilder` one full spawn
+with `--reduce_classpath_mode JAVABUILDER_REDUCED --deps_artifacts <the
+dependencies' jdeps>` (JavaCompileAction.getFullClasspathLine; JavaBuilder
+reduces); `off` one full spawn. The key carries the mode's ordinal. Source-jar packaging
 continues through rules_java's own SingleJar action. Its optional manifest
 fields stringify None as `None`, as shown by the saved genuine argv. The
 `target_kind` bridge consumes actual rule-class metadata through aliases and

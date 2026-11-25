@@ -115,6 +115,7 @@ tests/fixtures/instrumented_files/workspace
 tests/fixtures/java_action_parity/ws
 tests/fixtures/java_actions/python
 tests/fixtures/java_actions/workspace
+tests/fixtures/java_classpath_options/workspace
 tests/fixtures/java_expand_opts/workspace
 tests/fixtures/java_native_deps_dirs/loader
 tests/fixtures/java_native_deps_dirs/workspace

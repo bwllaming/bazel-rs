@@ -1,0 +1,6 @@
+bin=bazel-out/k8-fastbuild/bin
+lint=False
+flags=
+tool.bin=bazel-out/p-opt-exec/bin
+tool.lint=False
+tool.flags=

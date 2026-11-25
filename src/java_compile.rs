@@ -6,10 +6,64 @@ use std::path::{Path, PathBuf};
 use crate::action::Action;
 use crate::command_line::{CommandLineSpec, Group, ParamFileInfo, ParamFileType, Part};
 
+/// JavaConfiguration.JavaClasspathMode of one compilation
+/// (`--experimental_java_classpath`, OFF when JavaCompileActionBuilder.build
+/// turns reduction off).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ClasspathMode {
     Off,
     Bazel,
+    /// JavaBuilder reduces the classpath itself from `--deps_artifacts`
+    /// (one full spawn).
+    Javabuilder,
+    /// A reduced spawn without the fallback (`--reduce_classpath_mode NONE`).
+    BazelNoFallback,
+}
+
+impl ClasspathMode {
+    /// The option's constant name (`OFF`, `JAVABUILDER`, `BAZEL`,
+    /// `BAZEL_NO_FALLBACK`).
+    pub(crate) fn of_option(name: &str) -> Self {
+        match name {
+            "OFF" => Self::Off,
+            "JAVABUILDER" => Self::Javabuilder,
+            "BAZEL_NO_FALLBACK" => Self::BazelNoFallback,
+            _ => Self::Bazel,
+        }
+    }
+
+    /// Bazel reduces the classpath from the dependencies' jdeps
+    /// (JavaCompileAction.execute's reduced spawn).
+    pub(crate) fn reduces(self) -> bool {
+        matches!(self, Self::Bazel | Self::BazelNoFallback)
+    }
+
+    /// The enum's ordinal (JavaCompileAction.computeKey).
+    pub(crate) fn ordinal(self) -> i32 {
+        match self {
+            Self::Off => 0,
+            Self::Javabuilder => 1,
+            Self::Bazel => 2,
+            Self::BazelNoFallback => 3,
+        }
+    }
+
+    /// The full spawn's classpath flags after `--classpath`
+    /// (JavaCompileAction.getFullClasspathLine).
+    pub(crate) fn full_classpath_flags(self, dependency_jdeps: &[String]) -> Vec<String> {
+        let mut flags = Vec::new();
+        if self == Self::Javabuilder {
+            flags.extend([
+                "--reduce_classpath_mode".to_owned(),
+                "JAVABUILDER_REDUCED".to_owned(),
+            ]);
+            if !dependency_jdeps.is_empty() {
+                flags.push("--deps_artifacts".to_owned());
+                flags.extend(dependency_jdeps.iter().cloned());
+            }
+        }
+        flags
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -42,7 +96,7 @@ impl JavaCompileSpec {
         {
             return Err("Java compilation requires a direct spawn with regular outputs and policy-owned parameter files".into());
         }
-        if self.mode == ClasspathMode::Bazel && self.output_jdeps.is_none() {
+        if self.mode.reduces() && self.output_jdeps.is_none() {
             return Err("BAZEL Java compilation requires an output jdeps artifact".into());
         }
         if let Some(output) = &self.output_jdeps
@@ -92,7 +146,7 @@ impl JavaCompileSpec {
         &self,
         mut read: impl FnMut(&Path) -> Result<Vec<u8>, String>,
     ) -> Result<Vec<PathBuf>, String> {
-        if self.mode == ClasspathMode::Off {
+        if !self.mode.reduces() {
             return Ok(self.classpath.clone());
         }
         let potential: HashSet<&Path> = self.classpath.iter().map(PathBuf::as_path).collect();
@@ -136,8 +190,8 @@ impl JavaCompileSpec {
                     .map(|path| path.to_string_lossy().into_owned()),
             );
         }
-        if self.mode == ClasspathMode::Bazel {
-            cp.extend([
+        match self.mode {
+            ClasspathMode::Bazel => cp.extend([
                 "--reduce_classpath_mode".to_owned(),
                 if fallback {
                     "BAZEL_FALLBACK"
@@ -145,7 +199,19 @@ impl JavaCompileSpec {
                     "BAZEL_REDUCED"
                 }
                 .to_owned(),
-            ]);
+            ]),
+            ClasspathMode::BazelNoFallback => {
+                cp.extend(["--reduce_classpath_mode".to_owned(), "NONE".to_owned()]);
+            }
+            mode => cp.extend(
+                mode.full_classpath_flags(
+                    &self
+                        .dependency_jdeps
+                        .iter()
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .collect::<Vec<_>>(),
+                ),
+            ),
         }
         let part = |args| Part {
             groups: vec![Group::Strings(args)],
@@ -176,7 +242,7 @@ impl JavaCompileSpec {
             .chain(
                 self.dependency_jdeps
                     .iter()
-                    .filter(|_| self.mode == ClasspathMode::Off),
+                    .filter(|_| !self.mode.reduces()),
             )
             .map(PathBuf::as_path)
             .collect();
