@@ -245,9 +245,10 @@ mod owned {
         pub retain_actions: bool,
         /// `ctx.super()` of an extending rule (rule(parent=...)).
         pub super_chain: RefCell<SuperChain>,
-        /// The configuration has `--experimental_output_paths=strip`: Args
-        /// and spawns record their path-mapped values (crate::path_mapping).
-        pub path_mapping: bool,
+        /// The configuration's path mapping (crate::path_mapping): with
+        /// `--experimental_output_paths=strip`, Args and spawns record their
+        /// path-mapped values.
+        pub path_mapping: crate::path_mapping::Policy,
     }
 
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
@@ -606,6 +607,16 @@ impl Context {
             .filter(|file| file.is_symlink)
             .map(|file| file.path.clone().into())
             .collect();
+        // The configuration's `--modify_execution_info` when a Starlark
+        // transition set it: the finalize applies it to the spawn
+        // (crate::execution_options).
+        if write.is_none() && extra.transform.is_none() {
+            extra.execution_info_modifiers = self
+                .path_mapping
+                .modifiers
+                .as_ref()
+                .map(|modifiers| modifiers.to_vec());
+        }
         let mut action = Action {
             id: format!("{}#{}", self.action_owner, actions.len()),
             command,
@@ -1437,9 +1448,9 @@ fn register_spawn(
     // mapped, a shell command never.
     let mapped_program = program
         .as_deref()
-        .filter(|_| context.path_mapping)
+        .filter(|_| context.path_mapping.strip)
         .and_then(crate::path_mapping::map_executable);
-    let mapped_executable = context.path_mapping.then(|| match &mapped_program {
+    let mapped_executable = context.path_mapping.strip.then(|| match &mapped_program {
         Some(mapped) => vec![mapped.clone()],
         None => executable.clone(),
     });
@@ -1832,7 +1843,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
         Ok(crate::args::alloc_args_with(
             eval.heap(),
             context.active.clone(),
-            context.path_mapping,
+            context.path_mapping.strip,
         ))
     }
     fn declare_file<'v>(
@@ -1994,7 +2005,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
         // tags with `--modify_execution_info` (crate::path_mapping); it
         // writes the mapped command line when its paths do not collide
         // (PathMappers.create in newDeterministicWriter).
-        let path_mapped = context.path_mapping && {
+        let path_mapped = context.path_mapping.strip && {
             let requirements = match execution_requirements {
                 Some(value) if !value.is_none() => string_dict(value, "execution_requirements")?,
                 _ => BTreeMap::new(),
@@ -2004,6 +2015,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
                 mnemonic,
                 &requirements,
                 &context.propagated_tags,
+                context.path_mapping.modifiers.as_deref(),
             );
             crate::path_mapping::effective(mnemonic, |key| {
                 requirements.contains_key(key) || tags.contains(key)
@@ -2942,7 +2954,7 @@ mod tests {
             rule_location: None,
             action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),
-            path_mapping: false,
+            path_mapping: Default::default(),
             action_owner: "//:target".into(),
             declared: RefCell::new(Vec::new()),
             shareable: RefCell::new(BTreeSet::new()),
@@ -3298,7 +3310,7 @@ r=rule(implementation=_rule,subrules=[S])
             label: Label::parse_canonical("//:target").unwrap(),
             action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),
-            path_mapping: false,
+            path_mapping: Default::default(),
             action_owner: "//:target".into(),
             declared: RefCell::new(Vec::new()),
             shareable: RefCell::new(BTreeSet::new()),

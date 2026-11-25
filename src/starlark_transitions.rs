@@ -159,6 +159,9 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     // CoreOptions.outputPathsMode: path mapping (crate::path_mapping; B33,
     // protobuf's and rules_java's analysis tests).
     "experimental_output_paths",
+    // CoreOptions.executionInfoModifier (NativeOptions::modify_execution_info;
+    // protobuf's path mapping analysis test): written, not read.
+    "modify_execution_info",
 ];
 
 /// Table-driven options (crate::configuration::VALUE_OPTIONS) read and
@@ -1186,6 +1189,12 @@ pub(crate) fn native_input<'v>(
         "stamp" => heap.alloc(native.stamp),
         "force_pic" => heap.alloc(native.force_pic),
         "collect_code_coverage" => heap.alloc(native.collect_code_coverage),
+        // A list of ExecutionInfoModifier objects: no Starlark value to read.
+        "modify_execution_info" => {
+            return Err(anyhow!(
+                "reading //command_line_option:modify_execution_info (ExecutionInfoModifier values) in a transition is not implemented in the native profile"
+            ));
+        }
         // A RegexFilter, whose converter has no Starlark reversal
         // (Converter.starlarkConvertible): no Starlark value to read.
         "instrumentation_filter" => {
@@ -2190,6 +2199,7 @@ fn convert_native(
             | "javacopt"
             | "host_javacopt"
             | "protocopt"
+            | "modify_execution_info"
     );
     let invalid = || format!("Invalid value type for option '{name}'");
     let parsing = |message: String| format!("OptionsParsingError for option '{name}': {message}");
@@ -2467,6 +2477,30 @@ fn convert_native(
                 "per_file_ltobackendopt" => native.per_file_ltobackendopts = values,
                 _ => native.host_per_file_copts = values,
             }
+        }
+        // CoreOptions.executionInfoModifier: allowMultiple
+        // List<ExecutionInfoModifier> (ExecutionInfoModifier.Converter per
+        // element); a bare string converts to one modifier, which the List
+        // field rejects. The configuration keeps the strings as given.
+        "modify_execution_info" => {
+            let convert = |text: &str| -> Result<String, String> {
+                crate::execution_options::parse_modifiers(text).map_err(parsing)?;
+                Ok(text.to_owned())
+            };
+            let values = match &raw.kind {
+                RawKind::List(items) => items
+                    .iter()
+                    .map(|item| convert(&item.element_text(false)))
+                    .collect::<Result<Vec<_>, _>>()?,
+                RawKind::String(text) => {
+                    convert(text)?;
+                    return Err(format!(
+                        "IllegalArgumentError for option '{name}': Can not set java.util.List field com.google.devtools.build.lib.analysis.config.CoreOptions.executionInfoModifier to com.google.devtools.build.lib.analysis.config.ExecutionInfoModifier"
+                    ));
+                }
+                _ => return Err(invalid()),
+            };
+            native.modify_execution_info = Some(values);
         }
         // CoreOptions.instrumentationFilter (RegexFilterConverter): a string
         // converts; the configuration keeps the text as given (its

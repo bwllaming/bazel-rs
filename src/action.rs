@@ -481,6 +481,11 @@ pub struct ActionExtra {
     /// with it is decided by [`path_mapping_effective`] and, at execution,
     /// by its inputs' collisions.
     pub path_mapping: Option<Box<PathMapping>>,
+    /// The `--modify_execution_info` values of the action's configuration
+    /// when a Starlark transition set them (NativeOptions
+    /// ::modify_execution_info): the planned request's finalize applies
+    /// them instead of the command line's (crate::execution_options).
+    pub execution_info_modifiers: Option<Vec<String>>,
 }
 
 /// The path-mapped command line of a spawn (CommandLines.expand with a

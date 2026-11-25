@@ -2311,6 +2311,14 @@ pub struct NativeOptions {
     /// only (Configuration::untrimmed_id); recorded for a test command.
     #[serde(skip)]
     pub test_env: Vec<EnvVar>,
+    /// CoreOptions.executionInfoModifier (`--modify_execution_info`) as a
+    /// Starlark transition set it, the option strings as given (each one
+    /// ExecutionInfoModifier); `None`: the command line's
+    /// (crate::execution_options, applied to every spawn). Propagated by
+    /// the exec transition (ExecutionTransitionFactory.java:261-262).
+    /// Omitted from the identity when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modify_execution_info: Option<Vec<String>>,
 }
 
 /// CoreOptions' instrumentation options (CoreOptions.java:358-389, 580-589).
@@ -2558,6 +2566,7 @@ impl Default for NativeOptions {
             host_action_env: Vec::new(),
             strict_action_env: true,
             test_env: Vec::new(),
+            modify_execution_info: None,
         }
     }
 }

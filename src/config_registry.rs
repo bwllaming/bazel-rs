@@ -762,6 +762,8 @@ pub fn exec_transition(
         strict_action_env: from.native.strict_action_env,
         // TestOptions are cloned (FunctionTransitionUtil.java:199-207).
         test_env: from.native.test_env.clone(),
+        // ExecutionTransitionFactory.java:261-262 copies it.
+        modify_execution_info: from.native.modify_execution_info.clone(),
     };
     let starlark = from
         .starlark
@@ -907,6 +909,14 @@ pub(crate) fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static
     options.insert(
         "per_file_ltobackendopt",
         per_label_options(&native.per_file_ltobackendopts),
+    );
+    // CoreOptions.executionInfoModifier: a List<ExecutionInfoModifier>,
+    // each the AutoValue's toString (crate::execution_options).
+    options.insert(
+        "modify_execution_info",
+        list(&crate::execution_options::modifier_strings(
+            native.modify_execution_info.as_deref(),
+        )),
     );
     options.insert("is exec configuration", format!("={}", native.is_exec));
     options.insert(

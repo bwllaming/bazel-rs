@@ -376,6 +376,7 @@ fn analysis_mapped(registered: &RegisteredAction) -> bool {
         &action.extra.mnemonic,
         &action.extra.execution_info,
         &action.execution_info,
+        action.extra.execution_info_modifiers.as_deref(),
     );
     let effective = crate::path_mapping::effective(&action.extra.mnemonic, |key| {
         requirements.contains_key(key) || tags.contains(key)

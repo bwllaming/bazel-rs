@@ -2149,6 +2149,7 @@ mod tests {
                     error: Some("map_each failed".into()),
                     write_content: Some(vec![0, 1]),
                 })),
+                execution_info_modifiers: Some(vec!["Genrule=+x".into()]),
             },
             shell_pad: true,
             executable_file: false,

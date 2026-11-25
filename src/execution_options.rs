@@ -59,6 +59,8 @@ pub struct ExecutionOptions {
     pub skip_genfiles_symlink: bool,
     /// `--modify_execution_info` values in order, each converted.
     pub modify_execution_info: Vec<Vec<Modifier>>,
+    /// The same values as given.
+    pub modify_execution_info_raw: Vec<String>,
     pub modify_execution_info_additive: bool,
     /// `--local_resources` (name, value) in order.
     pub local_resources: Vec<(String, f64)>,
@@ -181,6 +183,7 @@ impl Default for ExecutionOptions {
             convenience_symlinks_bep_event: true,
             skip_genfiles_symlink: true,
             modify_execution_info: Vec::new(),
+            modify_execution_info_raw: Vec::new(),
             modify_execution_info_additive: true,
             local_resources: Vec::new(),
             toolchain_resolution_debug: None,
@@ -193,6 +196,8 @@ impl Default for ExecutionOptions {
 #[derive(Clone, Debug)]
 pub struct Modifier {
     pattern: fancy_regex::Regex,
+    /// The regex as given (Expression.regex).
+    regex: String,
     remove: bool,
     key: String,
 }
@@ -226,6 +231,7 @@ pub fn parse_modifiers(input: &str) -> Result<Vec<Modifier>, String> {
             // Matcher.matches(): the whole mnemonic.
             pattern: fancy_regex::Regex::new(&format!("^(?:{regex})$"))
                 .map_err(|error| format!("Not a valid regular expression: {error}"))?,
+            regex: regex.to_owned(),
             remove: spec[index + 1..].starts_with('-'),
             key: spec[index + 2..].to_owned(),
         });
@@ -328,6 +334,7 @@ impl ExecutionOptions {
                 let modifiers = parse_modifiers(value)
                     .map_err(|error| format!("While parsing option {form}: {error}"))?;
                 self.modify_execution_info.push(modifiers);
+                self.modify_execution_info_raw.push(value.to_owned());
                 Ok(used)
             }));
         }
@@ -476,9 +483,58 @@ impl ExecutionOptions {
 static MODIFIERS: std::sync::RwLock<(Vec<Vec<Modifier>>, bool)> =
     std::sync::RwLock::new((Vec::new(), true));
 
+/// This command's `--modify_execution_info` values as given.
+static MODIFIER_STRINGS: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
+
 /// Install this command's execution info modifiers.
 pub fn install_modifiers(modifiers: Vec<Vec<Modifier>>, additive: bool) {
     *MODIFIERS.write().unwrap_or_else(|error| error.into_inner()) = (modifiers, additive);
+}
+
+/// Install this command's `--modify_execution_info` values as given
+/// ([`modifier_strings`]).
+pub fn install_modifier_strings(values: Vec<String>) {
+    *MODIFIER_STRINGS
+        .write()
+        .unwrap_or_else(|error| error.into_inner()) = values;
+}
+
+/// CoreOptions.executionInfoModifier of a configuration whose value a
+/// Starlark transition set (`configured`, NativeOptions::modify_execution_info),
+/// else this command's, each in its AutoValue toString form
+/// (`ExecutionInfoModifier{option=O, expressions=[Expression{regex=R,
+/// remove=B, key=K}, ...]}`): the ST- hash's view of the option.
+pub fn modifier_strings(configured: Option<&[String]>) -> Vec<String> {
+    let global;
+    let values: &[String] = match configured {
+        Some(values) => values,
+        None => {
+            global = MODIFIER_STRINGS
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            &global
+        }
+    };
+    values
+        .iter()
+        .map(|value| {
+            let expressions = parse_modifiers(value)
+                .unwrap_or_default()
+                .iter()
+                .map(|modifier| {
+                    format!(
+                        "Expression{{regex={}, remove={}, key={}}}",
+                        modifier.regex, modifier.remove, modifier.key
+                    )
+                })
+                .collect::<Vec<_>>();
+            format!(
+                "ExecutionInfoModifier{{option={value}, expressions=[{}]}}",
+                expressions.join(", ")
+            )
+        })
+        .collect()
 }
 
 /// BuildConfigurationValue.modifyExecutionInfo over an insertion-ordered
@@ -515,16 +571,34 @@ pub fn modified(
     mnemonic: &str,
     requirements: &std::collections::BTreeMap<String, String>,
     tags: &std::collections::BTreeSet<String>,
+    configured: Option<&[String]>,
 ) -> (
     std::collections::BTreeMap<String, String>,
     std::collections::BTreeSet<String>,
 ) {
     let guard = MODIFIERS.read().unwrap_or_else(|error| error.into_inner());
-    let (modifiers, additive) = &*guard;
+    let (global, additive) = &*guard;
+    let parsed;
+    let modifiers = match configured {
+        Some(values) => {
+            parsed = configured_modifiers(values);
+            &parsed
+        }
+        None => global,
+    };
     let mut requirements = requirements.clone();
     let mut tags = tags.clone();
     modify(modifiers, *additive, mnemonic, &mut requirements, &mut tags);
     (requirements, tags)
+}
+
+/// The modifiers of a configuration whose `--modify_execution_info` a
+/// Starlark transition set (validated when it did).
+fn configured_modifiers(values: &[String]) -> Vec<Vec<Modifier>> {
+    values
+        .iter()
+        .map(|value| parse_modifiers(value).unwrap_or_default())
+        .collect()
 }
 
 /// BuildConfigurationValue.modifiedExecutionInfo for every spawn of a
@@ -534,7 +608,11 @@ pub fn modified(
 pub fn apply_execution_info_modifiers(nodes: &mut [crate::scheduler::PlannedAction]) {
     let guard = MODIFIERS.read().unwrap_or_else(|error| error.into_inner());
     let (modifiers, additive) = &*guard;
-    if modifiers.iter().all(Vec::is_empty) {
+    if modifiers.iter().all(Vec::is_empty)
+        && nodes
+            .iter()
+            .all(|node| node.action.extra.execution_info_modifiers.is_none())
+    {
         return;
     }
     for node in nodes {
@@ -543,8 +621,15 @@ pub fn apply_execution_info_modifiers(nodes: &mut [crate::scheduler::PlannedActi
             continue;
         }
         let mnemonic = action.extra.mnemonic.clone();
+        // A configuration whose value a Starlark transition set uses its
+        // own (CoreOptions.executionInfoModifier per configuration).
+        let configured = action
+            .extra
+            .execution_info_modifiers
+            .as_deref()
+            .map(configured_modifiers);
         modify(
-            modifiers,
+            configured.as_deref().unwrap_or(modifiers),
             *additive,
             &mnemonic,
             &mut action.extra.execution_info,

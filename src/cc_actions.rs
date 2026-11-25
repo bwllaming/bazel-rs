@@ -732,7 +732,7 @@ pub(crate) fn call<'v>(
             let active = context.active.clone();
             // LinkCommandLine under a path mapper (CcToolchainVariables'
             // mapHeuristically, crate::args::add_strings).
-            let mapping = context.path_mapping;
+            let mapping = context.path_mapping.strip;
             let _ = context;
             data.require_action_config(&action).map_err(failure)?;
             let expanded = data.command_line(&action, variables, eval)?;

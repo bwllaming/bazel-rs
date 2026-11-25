@@ -238,6 +238,30 @@ pub fn strippable_by_paths<'a>(paths: impl IntoIterator<Item = &'a str>) -> bool
     true
 }
 
+/// What the analysis of a configured target needs of its configuration's
+/// path mapping: whether it is `--experimental_output_paths=strip`, and the
+/// `--modify_execution_info` values a Starlark transition set
+/// (NativeOptions::modify_execution_info; `None`: the command line's),
+/// which decide whether an action supports path mapping.
+#[derive(Clone, Debug, Default)]
+pub struct Policy {
+    pub strip: bool,
+    pub modifiers: Option<std::sync::Arc<[String]>>,
+}
+
+impl Policy {
+    /// The policy of a configuration.
+    pub fn of(native: &crate::configuration::NativeOptions) -> Self {
+        Self {
+            strip: native.output_paths_strip(),
+            modifiers: native
+                .modify_execution_info
+                .as_ref()
+                .map(|values| values.as_slice().into()),
+        }
+    }
+}
+
 /// How a File's Starlark attributes (`path`, `dirname`, `root`) report
 /// paths on this thread: the mapper stored in the Starlark semantics of a
 /// map_each callback (PathMapper.storeIn, Artifact.getExecPathStringForStarlark).

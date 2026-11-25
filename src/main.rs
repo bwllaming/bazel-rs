@@ -815,6 +815,9 @@ fn run() -> Result<(), String> {
         execution_options.modify_execution_info.clone(),
         execution_options.modify_execution_info_additive,
     );
+    bazel_rs::execution_options::install_modifier_strings(
+        execution_options.modify_execution_info_raw.clone(),
+    );
     // The convenience symlinks (crate::convenience_symlinks): updated by
     // build, test, run and coverage with an execution phase once planning
     // configured the top-level targets.

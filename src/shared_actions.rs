@@ -650,6 +650,7 @@ impl Fingerprint {
             owner: _,
             progress: _,
             path_mapping,
+            execution_info_modifiers,
         } = extra;
         self.paths(tree_outputs.iter());
         self.paths(tree_inputs.iter());
@@ -696,6 +697,12 @@ impl Fingerprint {
         if let Some(mapping) = path_mapping {
             self.tag(12);
             self.bytes(&postcard::to_stdvec(mapping).expect("plain path mapping"));
+        }
+        // Only actions of configurations whose `--modify_execution_info` a
+        // transition set: their requirements are modified by it.
+        if let Some(modifiers) = execution_info_modifiers {
+            self.tag(13);
+            self.strings(modifiers.iter());
         }
     }
 

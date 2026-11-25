@@ -120,7 +120,7 @@ pub(super) struct AspectCommit {
     pub(super) action_env: Arc<crate::action_env::ActionEnvironment>,
     pub(super) runfiles: crate::runfiles_tree::RunfilesOptions,
     /// ConfiguredOutputs.path_mapping.
-    pub(super) path_mapping: bool,
+    pub(super) path_mapping: crate::path_mapping::Policy,
     pub(super) loaded_functions: Arc<crate::analysis_runtime::LoadedFunctions>,
     pub(super) run_under: Option<Arc<analysis::RunUnderPrerequisite>>,
     pub(super) base_key: ConfiguredTargetKey,
@@ -145,7 +145,7 @@ impl AspectCommit {
             action_owner: &self.action_owner,
             action_env: self.action_env.clone(),
             runfiles: self.runfiles,
-            path_mapping: self.path_mapping,
+            path_mapping: self.path_mapping.clone(),
             loaded_functions: Some(&self.loaded_functions),
             run_under: self.run_under.clone(),
         }
@@ -1720,12 +1720,9 @@ fn plan_application<C: AspectCx>(
         action_owner,
         action_env,
         runfiles,
-        path_mapping: cx
-            .engine()
-            .configurations
-            .get(base_key.config)
-            .native
-            .output_paths_strip(),
+        path_mapping: crate::path_mapping::Policy::of(
+            &cx.engine().configurations.get(base_key.config).native,
+        ),
         loaded_functions,
         run_under,
         base_key: base_key.clone(),

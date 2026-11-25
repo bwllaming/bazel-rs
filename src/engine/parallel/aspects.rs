@@ -47,7 +47,7 @@ struct Job {
     action_owner: String,
     action_env: Arc<crate::action_env::ActionEnvironment>,
     runfiles: crate::runfiles_tree::RunfilesOptions,
-    path_mapping: bool,
+    path_mapping: crate::path_mapping::Policy,
     loaded_functions: Option<Arc<crate::analysis_runtime::LoadedFunctions>>,
     run_under: Option<Arc<crate::analysis::RunUnderPrerequisite>>,
 }
@@ -320,7 +320,7 @@ pub(in crate::engine) fn analysis(
                         action_owner: outputs.action_owner.to_owned(),
                         action_env: outputs.action_env.clone(),
                         runfiles: outputs.runfiles,
-                        path_mapping: outputs.path_mapping,
+                        path_mapping: outputs.path_mapping.clone(),
                         loaded_functions: outputs.loaded_functions.cloned(),
                         run_under: outputs.run_under.clone(),
                     });
@@ -340,7 +340,7 @@ pub(in crate::engine) fn analysis(
                             action_owner: outputs.action_owner.to_owned(),
                             action_env: outputs.action_env.clone(),
                             runfiles: outputs.runfiles,
-                            path_mapping: outputs.path_mapping,
+                            path_mapping: outputs.path_mapping.clone(),
                             loaded_functions: outputs.loaded_functions.cloned(),
                             run_under: outputs.run_under.clone(),
                         });
