@@ -152,7 +152,11 @@ impl Deferred {
                         .as_ref()
                         .and_then(|mapping| mapping.program.clone());
                     let mapped = spec
-                        .expand_mapped(Some(&lookup), executable)
+                        .expand_mapped(
+                            Some(&lookup),
+                            executable,
+                            crate::path_mapping::custom_stripping(&action.extra.mnemonic),
+                        )
                         .map_err(|e| format!("{progress} failed: {e}"));
                     action.extra.path_mapping =
                         Some(Box::new(crate::action::PathMapping::of_expansion(

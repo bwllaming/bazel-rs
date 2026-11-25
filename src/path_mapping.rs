@@ -158,6 +158,43 @@ pub fn fingerprint(path: &str) -> Cow<'_, str> {
     }
 }
 
+/// StrippingPathMapper.mapCustomStarlarkArgs: the Starlark mnemonics whose
+/// Args strip the value after certain flags heuristically (Android rules).
+pub fn custom_stripping(mnemonic: &str) -> bool {
+    mnemonic.contains("Android")
+        || matches!(
+            mnemonic,
+            "MergeManifests"
+                | "StarlarkRClassGenerator"
+                | "StarlarkAARGenerator"
+                | "JetifySrcs"
+                | "Desugar"
+        )
+}
+
+/// StrippingPathMapper.CustomStarlarkArgsIterator over one Args chunk: the
+/// argument after each of its flags is stripped heuristically.
+pub fn strip_custom_arguments(arguments: &mut [String]) {
+    const FLAGS: &[&str] = &[
+        "--mainData",
+        "--primaryData",
+        "--directData",
+        "--data",
+        "--resources",
+        "--mergeeManifests",
+        "--library",
+        "-i",
+        "--input",
+    ];
+    let mut strip_next = false;
+    for argument in arguments.iter_mut() {
+        if strip_next && let Cow::Owned(stripped) = strip_heuristically(argument) {
+            *argument = stripped;
+        }
+        strip_next = FLAGS.contains(&argument.as_str());
+    }
+}
+
 /// StrippingPathMapper.StringStripper.strip (PathMapper.mapHeuristically):
 /// every `bazel-out/<segment>/` in `text`, `<segment>` one or more of
 /// `[A-Za-z0-9_.-]`, becomes `bazel-out/cfg/` (Matcher.replaceAll: left to
@@ -328,6 +365,35 @@ mod tests {
         assert_eq!(
             strip_heuristically("x bazel-out/a+b/c"),
             "x bazel-out/a+b/c"
+        );
+    }
+
+    #[test]
+    fn android_mnemonics_strip_the_values_of_their_flags() {
+        assert!(custom_stripping("AndroidResourceLink"));
+        assert!(custom_stripping("Desugar"));
+        assert!(!custom_stripping("MyMnemonic"));
+        let mut arguments: Vec<String> = [
+            "--data",
+            "bazel-out/k8/bin/a:bazel-out/k8/bin/b",
+            "--other",
+            "bazel-out/k8/bin/c",
+            "-i",
+            "--data",
+        ]
+        .map(String::from)
+        .to_vec();
+        strip_custom_arguments(&mut arguments);
+        assert_eq!(
+            arguments,
+            [
+                "--data",
+                "bazel-out/cfg/bin/a:bazel-out/cfg/bin/b",
+                "--other",
+                "bazel-out/k8/bin/c",
+                "-i",
+                "--data",
+            ]
         );
     }
 

@@ -789,18 +789,21 @@ impl CommandLineSpec {
     /// CommandLines.expand with a StrippingPathMapper (crate::path_mapping):
     /// the mapped arguments (`executable` is the mapped executable part),
     /// lengths and parameter files, at their mapped paths.
+    /// `custom`: the spawn's mnemonic takes StrippingPathMapper
+    /// .mapCustomStarlarkArgs ([`crate::path_mapping::custom_stripping`]).
     pub(crate) fn expand_mapped(
         &self,
         trees: Option<TreeLookup<'_>>,
         executable: &[String],
+        custom: bool,
     ) -> Result<Expanded, String> {
-        self.expand_with(trees, Some(executable))
+        self.expand_with(trees, Some((executable, custom)))
     }
 
     fn expand_with(
         &self,
         trees: Option<TreeLookup<'_>>,
-        mapped: Option<&[String]>,
+        mapped: Option<(&[String], bool)>,
     ) -> Result<Expanded, String> {
         let parts = self.parts.len() + 1;
         let conservative = self.max_length as i64 - (parts * PARAM_FILE_ARG_LENGTH_ESTIMATE) as i64;
@@ -810,12 +813,15 @@ impl CommandLineSpec {
                 .map(|argument| java_length(argument) as i64 + 1)
                 .sum()
         };
-        let mut length = total(mapped.unwrap_or(&self.executable));
+        let mut length = total(mapped.map_or(&self.executable[..], |(executable, _)| executable));
         let mut arguments = Vec::new();
         let mut files = Vec::new();
         for part in &self.parts {
-            let chunk =
+            let mut chunk =
                 expand_groups_with(&part.groups, part.flag_per_line, trees, mapped.is_some())?;
+            if let Some((_, true)) = mapped {
+                crate::path_mapping::strip_custom_arguments(&mut chunk);
+            }
             let Some(param) = &part.param else {
                 length += total(&chunk);
                 arguments.extend(chunk);

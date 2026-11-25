@@ -414,7 +414,11 @@ fn mapped_starlark_argv(registered: &RegisteredAction) -> Vec<String> {
         } = &*deferred.0
     {
         // At analysis a deferred command line's arguments are empty.
-        if let Ok((arguments, files)) = spec.expand_mapped(None, executable) {
+        if let Ok((arguments, files)) = spec.expand_mapped(
+            None,
+            executable,
+            crate::path_mapping::custom_stripping(&action.extra.mnemonic),
+        ) {
             argv.extend(arguments);
             param_files = std::borrow::Cow::Owned(files);
         }

@@ -84,16 +84,15 @@ pub(crate) fn add_strings(args: &Args, values: Vec<String>) -> anyhow::Result<()
             .extend(values.iter().cloned().map(crate::aquery_key::ArgsOp::Text));
     });
     if args.mapping {
-        // CcToolchainVariables' string values under a path mapper
-        // (PathMapper.mapHeuristically: every output path's configuration
-        // segment stripped).
-        let mapped: Vec<String> = values
-            .iter()
-            .map(|value| crate::path_mapping::strip_heuristically(value).into_owned())
-            .collect();
-        if mapped != values {
-            return args.push(Group::Mapped(values, mapped));
-        }
+        // LinkCommandLine under a path mapper maps its artifacts and its
+        // CcToolchainVariables string values (PathMapper.mapHeuristically)
+        // separately; the expanded strings here cannot tell them apart, so
+        // a mapped CppLink (rules_cc's opt-in `cpp_link_path_mapping`
+        // feature) fails explicitly instead (crate::path_mapping).
+        return args.push(Group::MappedError(
+            values,
+            "path mapping of a cc_internal.get_link_args command line is not modelled in the native profile".to_owned(),
+        ));
     }
     args.push(Group::Strings(values))
 }

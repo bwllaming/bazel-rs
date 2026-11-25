@@ -8499,19 +8499,21 @@ pub fn remote_spawn(
 }
 
 /// [`remote_spawn`] for a build action: a non-zero exit fails it like a
-/// local spawn's, an execution timeout with `(Exit 142)`.
+/// local spawn's, an execution timeout with `(Exit 142)`. `action` is the
+/// executed spawn (a mapped action's mapped spawn, crate::path_mapping),
+/// `outputs` the action's own output paths (`--remote_download_regex`
+/// matches them).
 fn run_remotely(
     remote: &crate::remote_cache::RemoteCache,
-    action: &Action,
+    (action, outputs): (&Action, &[PathBuf]),
     spec: &crate::remote_cache::RemoteAction,
     blobs: &BTreeMap<crate::reapi::Digest, crate::remote_cache::BlobSource<'_>>,
     execroot: &Path,
 ) -> Result<RemoteRun, String> {
     let declared = declared_outputs(action)?;
     let failure = format!("action '{}'", action.id);
-    let stay_remote = |index: usize| {
-        crate::remote_outputs::may_stay_remote(&action.id, index, &action.outputs[index])
-    };
+    let stay_remote =
+        |index: usize| crate::remote_outputs::may_stay_remote(&action.id, index, &outputs[index]);
     match remote_spawn(
         remote,
         spec,
@@ -8862,7 +8864,7 @@ pub fn execute_with_remote(
     // `--remote_local_fallback` after a failed remote execution.
     let mut fallback = false;
     if remote_exec && let (Some(remote), Some((spec, blobs))) = (remote, &remote_spec) {
-        match run_remotely(remote, spawn, spec, blobs, &execroot)? {
+        match run_remotely(remote, (spawn, &action.outputs), spec, blobs, &execroot)? {
             RemoteRun::Done(done) => remote_hit = Some(done),
             RemoteRun::Fallback => fallback = true,
         }

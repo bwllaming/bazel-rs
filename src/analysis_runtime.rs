@@ -1537,15 +1537,17 @@ fn register_spawn(
         let mapped_arguments = mapped_executable.as_ref().and_then(|executable| {
             let mut mapped = executable.clone();
             for part in &spec.parts {
-                mapped.extend(
-                    crate::command_line::expand_groups_with(
-                        &part.groups,
-                        part.flag_per_line,
-                        None,
-                        true,
-                    )
-                    .ok()?,
-                );
+                let mut chunk = crate::command_line::expand_groups_with(
+                    &part.groups,
+                    part.flag_per_line,
+                    None,
+                    true,
+                )
+                .ok()?;
+                if crate::path_mapping::custom_stripping(&extra.mnemonic) {
+                    crate::path_mapping::strip_custom_arguments(&mut chunk);
+                }
+                mapped.extend(chunk);
             }
             Some(mapped.into())
         });
@@ -1613,7 +1615,11 @@ fn register_spawn(
                 mapped_program.clone(),
                 &arguments,
                 files.len(),
-                spec.expand_mapped(None, &executable),
+                spec.expand_mapped(
+                    None,
+                    &executable,
+                    crate::path_mapping::custom_stripping(&extra.mnemonic),
+                ),
             ))
         });
         (arguments, files, None, path_mapping)
