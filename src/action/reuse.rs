@@ -78,13 +78,17 @@ pub(super) struct Recorded {
 /// created, removed or renamed in it (link, symlink, unlink, rename,
 /// mkdir, rmdir), so one found in the recorded state again (inode and
 /// change time) holds exactly the entries it held here: no kept link was
-/// replaced and none of its files is another inode. Change times come from
-/// the kernel's coarse clock (CLOCK_REALTIME_COARSE, which `current_time`
-/// reads; finer multigrain stamps are never below it), so a change made in
-/// the tick in which a directory was last changed could leave its change
-/// time as it is: only directories whose change time is below the coarse
-/// clock read after them are recorded — any later change stamps a later
-/// time. The others are listed and verified entry by entry as before.
+/// replaced and none of its files is another inode — provided no later
+/// change can carry the same time. Like the digest memo's settled states
+/// (crate::digest_memo::settled, "racy git"), only directories whose change
+/// time is at least [`crate::digest_memo::RACY_MARGIN`] older than this
+/// process's clock read after them are recorded ([`settled_directory`]):
+/// filesystems that round times (ext3 or 128-byte ext4 inodes and HFS+ to
+/// 1 s, FAT to 2 s) would stamp a change made in the same second with the
+/// same time. Nothing is recorded on filesystems whose times come from
+/// another host's clock (NFS, SMB/CIFS, FUSE and virtiofs, 9p, Ceph, AFS,
+/// cluster filesystems; [`local_clock_filesystem`]), whose skew no margin
+/// bounds. The others are listed and verified entry by entry as before.
 pub(super) fn record(
     execroot: &Path,
     staged: &[StagedFile],
@@ -95,6 +99,9 @@ pub(super) fn record(
     let Ok(root) = open_directory_at(None, execroot) else {
         return Recorded::default();
     };
+    if !local_clock_filesystem(&root) {
+        return Recorded::default();
+    }
     // Every directory staging made or kept: those above a placed file, the
     // ones it creates for trees and source directories (empty ones too),
     // and those above a link it makes; and the directories holding an
@@ -173,8 +180,8 @@ pub(super) fn record(
             states.insert(directory.to_path_buf(), DirectoryState::of(&stat));
         }
     }
-    match coarse_now() {
-        Some(now) => states.retain(|_, state| state.ctime < now),
+    match clock_now() {
+        Some(now) => states.retain(|_, state| settled_directory(state.ctime, now)),
         None => states.clear(),
     }
     let mut listings: FxHashMap<PathBuf, Vec<(OsString, FileType)>> = FxHashMap::default();
@@ -210,21 +217,64 @@ pub(super) fn record(
     Recorded { states, listings }
 }
 
-/// The clock file change times are stamped from (Linux: the coarse real
-/// time clock); None elsewhere (nothing is trusted then).
+/// Whether a directory change time `ctime` is old enough that no later
+/// change can be stamped with it, `now` being this process's clock read
+/// after it ([`record`]): at least the racy margin before `now`, whatever
+/// the filesystem's time granularity (a future time never is).
+fn settled_directory(ctime: (i64, i64), now: (i64, i64)) -> bool {
+    let margin = i64::try_from(crate::digest_memo::RACY_MARGIN.as_secs()).unwrap_or(i64::MAX);
+    (ctime.0.saturating_add(margin), ctime.1) <= now
+}
+
+/// This process's real time clock (seconds, nanoseconds); None on other
+/// hosts than Linux (nothing is trusted there).
 #[cfg(target_os = "linux")]
-#[allow(clippy::useless_conversion)]
-fn coarse_now() -> Option<(i64, i64)> {
-    let now = rustix::time::clock_gettime(rustix::time::ClockId::RealtimeCoarse);
+fn clock_now() -> Option<(i64, i64)> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
     Some((
-        i64::try_from(now.tv_sec).ok()?,
-        i64::try_from(now.tv_nsec).ok()?,
+        i64::try_from(now.as_secs()).ok()?,
+        i64::from(now.subsec_nanos()),
     ))
 }
 
 #[cfg(not(target_os = "linux"))]
-fn coarse_now() -> Option<(i64, i64)> {
+fn clock_now() -> Option<(i64, i64)> {
     None
+}
+
+/// Whether the filesystem holding `directory` stamps times from this
+/// host's clock: not a network, FUSE (virtiofs included) or cluster
+/// filesystem (statfs magic numbers, linux/magic.h), whose server clock's
+/// skew no margin bounds.
+#[cfg(target_os = "linux")]
+fn local_clock_filesystem(directory: &std::os::fd::OwnedFd) -> bool {
+    const REMOTE: &[u64] = &[
+        0x6969,      // NFS_SUPER_MAGIC
+        0x517B,      // SMB_SUPER_MAGIC
+        0xFF53_4D42, // CIFS_SUPER_MAGIC
+        0xFE53_4D42, // SMB2_SUPER_MAGIC
+        0x6573_5546, // FUSE_SUPER_MAGIC (virtiofs too)
+        0x0102_1997, // V9FS_MAGIC
+        0x00C3_6400, // CEPH_SUPER_MAGIC
+        0x6B41_4653, // AFS_FS_MAGIC
+        0x5346_414F, // AFS_SUPER_MAGIC
+        0x7375_7245, // CODA_SUPER_MAGIC
+        0x7461_636F, // OCFS2_SUPER_MAGIC
+        0x0116_1970, // GFS2_MAGIC
+        0x0BD0_0BD0, // LUSTRE_SUPER_MAGIC
+    ];
+    rustix::fs::fstatfs(directory).is_ok_and(|stat| {
+        #[allow(clippy::useless_conversion, clippy::unnecessary_cast)]
+        let kind = (stat.f_type as u64) & 0xFFFF_FFFF;
+        !REMOTE.contains(&kind)
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn local_clock_filesystem(_directory: &std::os::fd::OwnedFd) -> bool {
+    false
 }
 
 /// A stashed work directory (its `execroot/`) and what staging placed in
@@ -798,6 +848,42 @@ fn reconcile_directory(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A directory is recorded only when its change time is at least the
+    /// racy margin old: on a filesystem rounding times to the second, a
+    /// change made in the second staging ended in (the process replaced an
+    /// entry) carries the recorded time again, so such a directory must
+    /// not be trusted — neither the current second nor the one before.
+    #[test]
+    fn directories_changed_within_the_racy_margin_are_not_recorded() {
+        let now = (1_000_000, 400_000_000);
+        // 1 s-rounded stamps of the current and the previous second.
+        assert!(!settled_directory((1_000_000, 0), now));
+        assert!(!settled_directory((999_999, 0), now));
+        // A nanosecond stamp just below the clock (overlayfs, ext4).
+        assert!(!settled_directory((999_999, 900_000_000), now));
+        assert!(!settled_directory((999_998, 400_000_001), now));
+        // Old enough, rounded or not.
+        assert!(settled_directory((999_998, 400_000_000), now));
+        assert!(settled_directory((999_998, 0), now));
+        assert!(settled_directory((990_000, 123), now));
+        // A future stamp (a skewed clock) never is.
+        assert!(!settled_directory((1_000_005, 0), now));
+    }
+
+    /// Directories of this host's local filesystems are eligible (the
+    /// tests' temporary root); the check is a statfs of the root.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn local_filesystems_stamp_from_this_hosts_clock() {
+        let root = crate::test_temp::root();
+        let fd = open_directory_at(None, &root).unwrap();
+        let kind = rustix::fs::fstatfs(&fd).unwrap().f_type;
+        // Not asserted on a network-mounted temporary root.
+        #[allow(clippy::useless_conversion, clippy::unnecessary_cast)]
+        let remote = matches!((kind as u64) & 0xFFFF_FFFF, 0x6969 | 0x6573_5546 | 0x517B);
+        assert_eq!(local_clock_filesystem(&fd), !remote);
+    }
 
     /// A stash put while the cache's last scope ends is either refused or
     /// removed by that end: none outlives the scope.

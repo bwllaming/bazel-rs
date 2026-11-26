@@ -10377,10 +10377,14 @@ mod tests {
         };
         let listed = reuse::LISTED.load(Ordering::Relaxed);
         let _scope = StashScope::enter(&cache);
-        // Each command waits past the coarse clock's tick, so the change
-        // times its staging left are older than the next record.
-        let check = "sleep 0.05; cat src/x/a src/y/b src/c > out/";
-        let first = execute(&cache, &action("first", &format!("{check}first"))).unwrap();
+        // The first command outlasts the racy margin (reuse::record), so
+        // the change times its staging left are settled at the next record.
+        let check = "cat src/x/a src/y/b src/c > out/";
+        let first = execute(
+            &cache,
+            &action("first", &format!("sleep 2.2; {check}first")),
+        )
+        .unwrap();
         let second = execute(
             &cache,
             &action(
