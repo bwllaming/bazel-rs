@@ -428,7 +428,7 @@ included: grpc's 11,419 labels, B66 fixed).
 | rules_pkg | DIFF⁹ | 20.3 / 17.4 | 3.6 / 0.2 / 0.2 | 60.4† / 55.7† | 1319 / 573 | 955, 1, 0, 2 | FAILED:1 PASSED:104 SKIPPED:19 / FAILED:2 PASSED:103 SKIPPED:19 | B34, stamp, C5 |
 | aspect-bazel-examples | RS-FAIL¹⁰ | 149.3 / 116.6 | 6.5 / 0.8 / 0.5 | 88.0 / 136.2† | 2997 / 2060 | 156499, 2587, 3, 1 | FAILED:2 PASSED:32 / FAILED:1 FAILED TO BUILD:5 PASSED:25 | B78 |
 | rules_java | DIFF¹¹ | 29.9 / 33.4 | 4.9 / 0.4 / 0.2 | 9.0 / 5.1 | 1898 / 1801 | 1021, 14, 0, 0 | PASSED:321 / same | C2 |
-| rules_py | RS-FAIL¹² | 39.8 / 64.7† | 8.5 / 1.2 / 31.5† | 201.9 / 157.6† | 4900 / 5969 | 3983, 21, 2, 4 | FAILED:2 PASSED:413 / FAILED:1 PASSED:412 | B87, B88, B33, B34 |
+| rules_py | RS-FAIL¹² | 43.1 / 82.1 | 7.9 / 0.9 / 30.7 | 202.6 / 233.6† | 3471 / 6261 | 4002, 2, 0, 1 | FAILED:2 PASSED:413 / FAILED:1 FAILED TO BUILD:2 PASSED:412 | B33, B34 |
 
 Notes:
 
@@ -472,24 +472,31 @@ Notes:
     last test, `test_strict_java_deps_error`, fixed: its testing aspect
     read `ctx.var` before the target platform was resolved). The 14
     only-genuine files are C2 `_javac` class files.
-12. Row from the parity-b83 run (2026-11-26), after B83 (a repository's
-    `REPO.bazel`/`.bazelignore` linked, rules_py's llvm-project overlay),
-    B84 (`platform(flags = ...)`), B85 (`ctx.rule.toolchains` under
-    `--incompatible_auto_exec_groups`: the `py_pex_binary` targets) and B86
-    (outputs below llvm-project's linked `libcxx/include`): 412 of the 413
-    tests bazel-rs runs pass (genuine 413 of 415; the same
-    `//bazel:defaults.update_test` fails on both), `query //...` matches
-    (7,996 labels), 3,983 outputs match. Left: B87 (stardoc's
-    `java_proto_library` aspect reads its `configuration_field` attribute
-    `_aspect_java_proto_toolchain` as None: `//docs/...`, the 2 tests and
-    most of the 21 only-genuine files), behind it B33's native Java actions
-    under `strip` (stardoc's renderer); B88 (the `_solib_k8` directory name
-    of `@python_3_13`'s `libpython3.13.so`: the 2 only-bazel-rs and 2
-    only-genuine files). The hash differences are three `.repo_mapping`
-    files and a wheel (B34; not investigated further). The cold and warm
-    `nobuild` and the build are slower than before because they now analyze
-    and build the llvm toolchain; the warm run saves no snapshot (the build
-    fails).
+12. Row from the parity-b87 run (2026-11-26), after B87 (an aspect
+    attribute's `configuration_field` default, stardoc's
+    `java_proto_library` aspect), B88 (the `_solib_k8` directory of
+    `@python_3_13`'s `libpython3.13.so`) and B90 (three `.repo_mapping`
+    files missing `rules_license+`, bazel_skylib's `//lib:always_true`
+    select() key's package metadata): the cold and warm `nobuild` now
+    succeed like genuine's (they analyze `//docs/...`), `query //...`
+    matches (7,996 labels), 4,002 outputs match, no only-bazel-rs output.
+    The build stops at B33's explicit remainder: the native Javac/Turbine
+    actions under `strip` (protobuf's `lite_runtime_only`,
+    rules_jvm_external's zip tool, stardoc's renderer), so `//docs`'
+    `py_api.md`/`uv_api.md` (the 2 only-genuine files) and its two
+    `update_docs` tests do not build (genuine: one passes, one fails);
+    the 412 other tests pass as on genuine (the same
+    `//bazel:defaults.update_test` fails on both). The one sampled hash
+    difference, `py/defs.doc_extract.binaryproto` (stardoc's extract of
+    the `py_pex_binary` macro), was B91 (the inherited `toolchains` and
+    `target_compatible_with` attributes' providers), fixed after the run
+    (rebuilt in the run's state: identical, with `docs/py_api.extract`).
+    A full comparison of the common outputs leaves 13 wheels: 10 zipped
+    from main-repository sources (`@bazel_tools//tools/zip:zipper`) with
+    genuine's 0644 against bazel-rs's read-only 0444 modes (B34), 3
+    `pep517_whl` builds that embed the build time (genuine differs from
+    itself). The build is slower than before because it now gets to
+    the Java and stardoc actions.
 
 **Summary (second batch).** 27 projects: 14 identical (abseil-py, bb-storage,
 boringssl, examples-bzlmod-02/04/06, grpc-gateway, rules_buf-bzlmod,
@@ -502,7 +509,8 @@ rules_nodejs-smoke, rules_rust-sys: C4; rules_scala-scala3: C5), 2 differ
 blocked on bazel-rs (aspect-bazel-examples: B78; rules_java: B67, after
 path-mapping one test; rules_py: B83, B84 after path-mapping, which
 modelled its `strip`). Since parity-b83 (2026-11-26) rules_java differs only
-by C2 and rules_py is blocked on B87.
+by C2; since parity-b87 rules_py is blocked only on B33's native Java
+actions under `strip`.
 
 **Summary (all 64).** 30 identical, 10 fail identically, 14 differ only
 cosmetically, 7 differ, 3 blocked (since parity-b83: 15 cosmetic, 2 blocked;
@@ -1754,9 +1762,10 @@ From the corpus-rerun2 run (2026-11-25, the released 0.5.1):
 1. B33 (path mapping, `--experimental_output_paths=strip`) was the top
    blocker; fixed on path-mapping (2026-11-25): protobuf's target builds,
    rules_java's 12 tests pass, rules_py runs every phase. B83, B84 (and
-   B85, B86 behind them) fixed on parity-b83: next for rules_py B87 (an
-   aspect's `configuration_field` attribute), then the native Java actions
-   under `strip` (B33's explicit remainder, stardoc's renderer), and B88.
+   B85, B86 behind them) fixed on parity-b83, B87, B88, B90, B91 on
+   parity-b87: rules_py's last blocker is the native Java actions under
+   `strip` (B33's explicit remainder: stardoc's renderer, protobuf's
+   `lite_runtime_only`).
 2. B34 (staged inputs' file modes and relative symlinks) is the only known
    bazel-rs output difference of passing builds (rules_python-bzlmod's
    zipapp, rules_pkg's `pkg_tar_test`).
