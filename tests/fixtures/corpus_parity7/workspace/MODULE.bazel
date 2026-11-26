@@ -1,0 +1,9 @@
+module(name = "corpus_parity7")
+
+r = use_repo_rule("//repo:r.bzl", "r")
+
+# B83: REPO.bazel left as a symlink to a file of the repository.
+r(name = "linked", mode = "link")
+
+# A dangling REPO.bazel symlink: Bazel creates the boundary file through it.
+r(name = "dangling", mode = "dangling")

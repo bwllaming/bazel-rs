@@ -71,6 +71,7 @@ tests/fixtures/corpus_parity4/project
 tests/fixtures/corpus_parity4/workspace
 tests/fixtures/corpus_parity5/workspace
 tests/fixtures/corpus_parity6/workspace
+tests/fixtures/corpus_parity7/workspace
 tests/fixtures/corpus_rulescc/workspace
 tests/fixtures/corpus_zig/workspace
 tests/fixtures/coverage_command/workspace

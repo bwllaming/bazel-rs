@@ -1,0 +1,100 @@
+{
+ "bazel": "9.3.1",
+ "cases": {
+  "aspect_reads_unresolved_target_platform": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [],
+   "outputs": {
+    "k8-fastbuild/bin/aspectvar/check.sh": "#!/bin/sh\necho \\c\\ \\c\\p\\u\\=\\x\\8\\6\\_\\6\\4\\ \\m\\o\\d\\e\\=\\f\\a\\s\\t\\b\\u\\i\\l\\d\\ \\k\\e\\y\\s\\=\\B\\I\\N\\D\\I\\R\\,\\C\\O\\M\\P\\I\\L\\A\\T\\I\\O\\N\\_\\M\\O\\D\\E\\,\\G\\E\\N\\D\\I\\R\\,\\T\\A\\R\\G\\E\\T\\_\\C\\P\\U\nexit 0",
+    "k8-fastbuild/bin/aspectvar/report.txt": "a cpu=x86_64 mode=opt keys=BINDIR,COMPILATION_MODE,GENDIR,TARGET_CPU\nb cpu=x86_64 mode=opt keys=BINDIR,COMPILATION_MODE,GENDIR,TARGET_CPU\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//aspectvar:report",
+    "//aspectvar:check"
+   ],
+   "workspace": "workspace"
+  },
+  "platform_flags_after_transition": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [],
+   "outputs": {
+    "k8-fastbuild-ST-b9c4ddbe3ff0/bin/pf/show.txt": "libc=host mode=fastbuild define=<unset> copts=\n",
+    "k8-opt-ST-50e14a73fe21/bin/pf/show.txt": "libc=child mode=opt define=yes copts=-DA,-DB\n",
+    "k8-opt-ST-ed572447ffac/bin/pf/show.txt": "libc=glibc mode=opt define=yes copts=-DA,-DB\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//pf:on_glibc",
+    "//pf:on_child",
+    "//pf:on_reset"
+   ],
+   "workspace": "workspace"
+  },
+  "platform_flags_inherited_top_level": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//pf:child"
+   ],
+   "outputs": {
+    "k8-opt/bin/pf/show.txt": "libc=child mode=opt define=yes copts=-DA,-DB\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//pf:show"
+   ],
+   "workspace": "workspace"
+  },
+  "platform_flags_top_level": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--platforms=//pf:glibc"
+   ],
+   "outputs": {
+    "k8-opt/bin/pf/show.txt": "libc=glibc mode=opt define=yes copts=-DA,-DB\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//pf:show"
+   ],
+   "workspace": "workspace"
+  },
+  "repository_boundary_symlink": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [],
+   "outputs": {
+    "k8-fastbuild/bin/external/+r+dangling/g.txt": "end\n",
+    "k8-fastbuild/bin/external/+r+linked/g.txt": "end\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "@linked//:t",
+    "@linked//:g",
+    "@dangling//:t",
+    "@dangling//:g"
+   ],
+   "workspace": "workspace"
+  }
+ },
+ "elf_sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c"
+}

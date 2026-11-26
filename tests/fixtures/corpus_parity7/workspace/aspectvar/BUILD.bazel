@@ -1,0 +1,20 @@
+load(":defs.bzl", "check_test", "lib", "report")
+
+lib(name = "a")
+
+lib(name = "b")
+
+lib(name = "c")
+
+report(
+    name = "report",
+    deps = [
+        ":a",
+        ":b",
+    ],
+)
+
+check_test(
+    name = "check",
+    target = ":c",
+)

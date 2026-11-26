@@ -1,0 +1,51 @@
+load(":defs.bzl", "on_platform", "show", "string_flag")
+
+string_flag(
+    name = "libc",
+    build_setting_default = "host",
+)
+
+# B84: platform-based flags.
+platform(
+    name = "glibc",
+    flags = [
+        "--//pf:libc=glibc",
+        "--compilation_mode=opt",
+        "--define=pf=yes",
+        "--copt=-DA",
+        "--copt=-DB",
+    ],
+)
+
+# Inherits its parent's flags; its own come after them.
+platform(
+    name = "child",
+    flags = ["--//pf:libc=child"],
+    parents = [":glibc"],
+)
+
+# A flag set back to its default is removed from the configuration.
+platform(
+    name = "reset",
+    flags = ["--//pf:libc=host"],
+)
+
+show(name = "show")
+
+on_platform(
+    name = "on_glibc",
+    platform = ":glibc",
+    target = ":show",
+)
+
+on_platform(
+    name = "on_child",
+    platform = ":child",
+    target = ":show",
+)
+
+on_platform(
+    name = "on_reset",
+    platform = ":reset",
+    target = ":show",
+)
