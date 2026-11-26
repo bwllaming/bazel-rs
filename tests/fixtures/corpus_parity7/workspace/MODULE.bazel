@@ -11,3 +11,6 @@ r(name = "dangling", mode = "dangling")
 # REPO.bazel linked from another repository's file.
 r(name = "foreign", mode = "foreign")
 register_toolchains("//aegtc:tc")
+
+# A source directory linked from another repository's tree.
+r(name = "overlay", mode = "overlay")

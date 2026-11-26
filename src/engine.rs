@@ -2672,28 +2672,52 @@ fn validate_output_directory_with(
         let step = match known {
             Some(step) => step,
             None => {
+                // An ignored directory is a deleted package, never a subpackage
+                // (ContainingPackageLookupFunction).
+                // So is an invalid package name (PackageLookupFunction.java:91-96).
+                let directory_step = |directory: &Path| {
+                    let subpackage = ignored.matching_entry(&relative).is_none()
+                        && !crate::ignored::is_deleted_directory(directory)
+                        && crate::label::is_valid_package_name(&relative)
+                        && (crate::observed_fs::is_file(directory.join("BUILD.bazel"))
+                            || crate::observed_fs::is_file(directory.join("BUILD")));
+                    // No nested repositories in Bazel 9.3
+                    // (LocalRepositoryLookupFunction.java:27-35).
+                    if subpackage {
+                        DirectoryStep::Subpackage
+                    } else {
+                        DirectoryStep::Continue
+                    }
+                };
                 let step = match crate::observed_fs::symlink_metadata(&directory) {
-                    Ok(metadata) if metadata.file_type().is_symlink() => DirectoryStep::Symlink,
+                    // Bazel follows a symlinked source directory. Followed
+                    // in a repository's published (immutable) tree where it
+                    // lands in a published tree, its own or another
+                    // repository's (B86: llvm-project's overlay links
+                    // `libcxx/include` from `@llvm-raw`); elsewhere (the
+                    // main repository) it stays an explicit gap.
+                    Ok(metadata) if metadata.file_type().is_symlink() => {
+                        match crate::observed_fs::canonicalize(&directory) {
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                DirectoryStep::Stop
+                            }
+                            Ok(resolved) if !crate::observed_fs::is_dir(&resolved) => {
+                                DirectoryStep::Stop
+                            }
+                            Ok(resolved)
+                                if crate::observed_fs::canonicalize(root).is_ok_and(|root| {
+                                    crate::workspace::in_sibling_store_tree(&root, &resolved)
+                                }) =>
+                            {
+                                directory_step(&directory)
+                            }
+                            _ => DirectoryStep::Symlink,
+                        }
+                    }
                     // Generated outputs inhabit another tree. A regular source file
                     // or missing path cannot contain a source subpackage boundary.
                     Ok(metadata) if !metadata.is_dir() => DirectoryStep::Stop,
-                    Ok(_) => {
-                        // An ignored directory is a deleted package, never a subpackage
-                        // (ContainingPackageLookupFunction).
-                        // So is an invalid package name (PackageLookupFunction.java:91-96).
-                        let subpackage = ignored.matching_entry(&relative).is_none()
-                            && !crate::ignored::is_deleted_directory(&directory)
-                            && crate::label::is_valid_package_name(&relative)
-                            && (crate::observed_fs::is_file(directory.join("BUILD.bazel"))
-                                || crate::observed_fs::is_file(directory.join("BUILD")));
-                        // No nested repositories in Bazel 9.3
-                        // (LocalRepositoryLookupFunction.java:27-35).
-                        if subpackage {
-                            DirectoryStep::Subpackage
-                        } else {
-                            DirectoryStep::Continue
-                        }
-                    }
+                    Ok(_) => directory_step(&directory),
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                         DirectoryStep::Stop
                     }

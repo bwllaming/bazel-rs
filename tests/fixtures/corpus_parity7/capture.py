@@ -26,6 +26,9 @@ CASES = {
     # B83: a repository rule's REPO.bazel left as a symlink (and a dangling one).
     'repository_boundary_symlink': (
         [], 'build', [], ['@linked//:t', '@linked//:g', '@dangling//:t', '@dangling//:g', '@foreign//:t', '@foreign//:g'], [], ['g.txt']),
+    # B86: an output below a source directory linked from another repository.
+    'output_below_linked_source_directory': (
+        [], 'build', [], ['@overlay//:o'], [], ['gen.txt']),
     # B84: platform(flags = ...) on transitioned configurations.
     'platform_flags_after_transition': (
         [], 'build', [], ['//pf:on_glibc', '//pf:on_child', '//pf:on_reset'], [], ['show.txt']),

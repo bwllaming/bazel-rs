@@ -55,6 +55,22 @@
    ],
    "workspace": "workspace"
   },
+  "output_below_linked_source_directory": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [],
+   "outputs": {
+    "k8-fastbuild/bin/external/+r+overlay/inc/gen.txt": "overlay\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "@overlay//:o"
+   ],
+   "workspace": "workspace"
+  },
   "platform_flags_after_transition": {
    "bin_paths": {},
    "command": "build",
