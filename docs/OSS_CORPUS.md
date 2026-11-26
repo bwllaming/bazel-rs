@@ -427,8 +427,8 @@ included: grpc's 11,419 labels, B66 fixed).
 | bazel-remote | DIFF⁸ | 29.0† / 27.8† | 4.5† / 0.3† / 2.8† | 40.2† / 38.1† | 1547 / 839 | 973, 0, 0, 1 | PASSED:13 / same | stamp |
 | rules_pkg | DIFF⁹ | 20.3 / 17.4 | 3.6 / 0.2 / 0.2 | 60.4† / 55.7† | 1319 / 573 | 955, 1, 0, 2 | FAILED:1 PASSED:104 SKIPPED:19 / FAILED:2 PASSED:103 SKIPPED:19 | B34, stamp, C5 |
 | aspect-bazel-examples | RS-FAIL¹⁰ | 149.3 / 116.6 | 6.5 / 0.8 / 0.5 | 88.0 / 136.2† | 2997 / 2060 | 156499, 2587, 3, 1 | FAILED:2 PASSED:32 / FAILED:1 FAILED TO BUILD:5 PASSED:25 | B78 |
-| rules_java | RS-FAIL¹¹ | 28.8 / 32.6† | 4.5 / 0.3 / 5.9† | 8.7 / 11.7† | 1805 / 1796 | 1018, 17, 0, 0 | PASSED:321 / PASSED:320 | B67 |
-| rules_py | RS-FAIL¹² | 38.6 / 38.5† | 7.7 / 0.8 / 6.3† | 110.7 / 9.9† | 4078 / 2088 | 2019, 1985, 0, 1 | FAILED:2 PASSED:413 / FAILED:1 PASSED:369 | B83, B84, B34 |
+| rules_java | DIFF¹¹ | 29.9 / 33.4 | 4.9 / 0.4 / 0.2 | 9.0 / 5.1 | 1898 / 1801 | 1021, 14, 0, 0 | PASSED:321 / same | C2 |
+| rules_py | RS-FAIL¹² | 39.8 / 64.7† | 8.5 / 1.2 / 31.5† | 201.9 / 157.6† | 4900 / 5969 | 3983, 21, 2, 4 | FAILED:2 PASSED:413 / FAILED:1 PASSED:412 | B87, B88, B33, B34 |
 
 Notes:
 
@@ -468,25 +468,28 @@ Notes:
     bazel-rs (environment), `//oci_python_image/hello_world:test_container`
     fails on bazel-rs (3 only-bazel-rs blobs in its image), and one mypy
     cache file's hash.
-11. Row from the path-mapping run (2026-11-25): 320 of 321 tests (B33's 12
-    Starlark transitions on `experimental_output_paths` and B67's first
-    three fixed). Left: `test_strict_java_deps_error` (B67: its testing
-    aspect reads `ctx.var` before the target platform is resolved). The 17
+11. Row from the parity-b83 run (2026-11-26): all 321 tests pass (B67's
+    last test, `test_strict_java_deps_error`, fixed: its testing aspect
+    read `ctx.var` before the target platform was resolved). The 14
     only-genuine files are C2 `_javac` class files.
-12. Row from the path-mapping run (2026-11-25): `--experimental_output_paths=strip`
-    (`bazel/workspace.bazelrc:22`) is modelled (B33), so bazel-rs runs
-    every phase: 369 of the 370 tests it runs pass (genuine 413 of 415);
-    `query //...` matches (7,996 labels). Left: B83 (a repository rule's
-    `REPO.bazel` symlink: `ERROR: cannot create REPO.bazel: File exists`
-    fails the analysis of `//docs/...` and the targets depending on that
-    repository, most of the 1,985 only-genuine files and of the 45 tests
-    that differ) and B84 (`platform(flags = ...)`: the `py_venv` snapshot
-    tests and the `py_pex_binary` tests; their 9 analysis errors `could not
-    resolve the binary's interpreter version` follow from it). The hash
-    difference is a genrule's zipper wheel (staged file modes, B34). Behind
-    B83: stardoc's renderer compiles Java under `strip` in genuine, which
-    bazel-rs fails explicitly (B33's native Java actions,
-    docs/PATH_MAPPING.md).
+12. Row from the parity-b83 run (2026-11-26), after B83 (a repository's
+    `REPO.bazel`/`.bazelignore` linked, rules_py's llvm-project overlay),
+    B84 (`platform(flags = ...)`), B85 (`ctx.rule.toolchains` under
+    `--incompatible_auto_exec_groups`: the `py_pex_binary` targets) and B86
+    (outputs below llvm-project's linked `libcxx/include`): 412 of the 413
+    tests bazel-rs runs pass (genuine 413 of 415; the same
+    `//bazel:defaults.update_test` fails on both), `query //...` matches
+    (7,996 labels), 3,983 outputs match. Left: B87 (stardoc's
+    `java_proto_library` aspect reads its `configuration_field` attribute
+    `_aspect_java_proto_toolchain` as None: `//docs/...`, the 2 tests and
+    most of the 21 only-genuine files), behind it B33's native Java actions
+    under `strip` (stardoc's renderer); B88 (the `_solib_k8` directory name
+    of `@python_3_13`'s `libpython3.13.so`: the 2 only-bazel-rs and 2
+    only-genuine files). The hash differences are three `.repo_mapping`
+    files and a wheel (B34; not investigated further). The cold and warm
+    `nobuild` and the build are slower than before because they now analyze
+    and build the llvm toolchain; the warm run saves no snapshot (the build
+    fails).
 
 **Summary (second batch).** 27 projects: 14 identical (abseil-py, bb-storage,
 boringssl, examples-bzlmod-02/04/06, grpc-gateway, rules_buf-bzlmod,
@@ -498,16 +501,18 @@ rules_nodejs-smoke, rules_rust-sys: C4; rules_scala-scala3: C5), 2 differ
 (bazel-remote: a stamped digest, not investigated; rules_pkg: B34) and 3 are
 blocked on bazel-rs (aspect-bazel-examples: B78; rules_java: B67, after
 path-mapping one test; rules_py: B83, B84 after path-mapping, which
-modelled its `strip`).
+modelled its `strip`). Since parity-b83 (2026-11-26) rules_java differs only
+by C2 and rules_py is blocked on B87.
 
 **Summary (all 64).** 30 identical, 10 fail identically, 14 differ only
-cosmetically, 7 differ, 3 blocked. Confirmed fixed by this run's
+cosmetically, 7 differ, 3 blocked (since parity-b83: 15 cosmetic, 2 blocked;
+rules_java differs only by C2). Confirmed fixed by this run's
 evidence: B53 (resolved with `--local_test_jobs=4`), B59 (except `strip`),
 B60–B66, B68–B72, B74, B76, B77, B79; B12 is genuine's own error. New:
 B82 (a package's later failing loads). Open, by projects affected: B33 (3:
 protobuf, rules_java, rules_py; fixed by path-mapping, 2026-11-25, except
 the native Java actions under `strip`), B34 (2: rules_python-bzlmod, rules_pkg),
-B67 (1: rules_java), B78 (1: aspect-bazel-examples), B47 (1:
+B67 (1: rules_java; fixed by parity-b83), B78 (1: aspect-bazel-examples), B47 (1:
 rules_jvm_external-simple, genuine fails too), B82 (1: flatbuffers, genuine
 fails too); not investigated: bazel-remote's stamped digest, rules_kotlin's
 KSP srcjar, aspect-bazel-examples' `test_container`.
@@ -688,18 +693,22 @@ run's evidence (the released 0.5.1, all 64 projects, 2026-11-25): open
 bugs first, ranked by the projects they affect in it; the "status" column
 says where each was found or fixed. B59–B71 are from the second batch
 (corpus-expand), B72–B79 from its reruns, B80–B81 from parity-small, B82
-from corpus-rerun2.
+from corpus-rerun2, B83–B84 from path-mapping, B85–B88 from parity-b83.
 
 | id | corpus-rerun2 (0.5.1) | status | summary |
 |---|---|---|---|
 | B33 | **fixed** (path-mapping, 2026-11-25) except the native Java actions under `strip`; 3 (protobuf: its target builds; rules_java: its 12 tests pass; rules_py: runs every phase, next B83/B84) | fixed (path-mapping) except native Java actions (explicit) | protobuf analysis. Fixed on corpus-parity4: symbolic-macro visibility delegation and alias select() keys under `--incompatible_config_setting_private_default_visibility` (5 visibility errors), `declare_file(sibling=)` from another package, per-attribute aspect views of aspects propagating over one attribute (`UpbMinitableCcInfo`/`JavaInfo` on proto_library targets), `Target.actions` of targets merged with aspects and of a rule under test's dependencies, `--dynamic_mode` transitions (rules_fuzzing). Fixed on corpus-parity5: transitions writing `instrumentation_filter` (`generated_sources_not_coverage_instrumented`; the filter is per configuration natively too). Left, an explicit gap: `experimental_output_paths=strip` with `modify_execution_info` (`test_compile_path_mapping`). Genuine's path mapping (PathMappers/StrippingPathMapper) rewrites `bazel-out/<cfg>/` to `bazel-out/cfg/` in the argv of every action with `supports-path-mapping` (or a listed mnemonic) that is not `local`, executes it with its inputs and outputs staged at the mapped paths (a genuine capture: such an action that echoes its argv writes `bazel-out/cfg/bin/...` into its output), keys it with the mapper's GUID and falls back when two inputs collide after mapping. Modelling it needs a mapper in Args expansion (File arguments, map_each roots, some mnemonics' string heuristics), path-rewritten staging and publication, and the key: not cheap, and running such actions unmapped would silently change their outputs. So `--experimental_output_paths=strip` on the command line and a transition writing it failed explicitly, naming path mapping. **Fixed on path-mapping** (docs/PATH_MAPPING.md, genuine capture tests/fixtures/path_mapping): the option is a configuration option; spawns supporting path mapping get mapped command lines (Args values recorded mapped and unmapped, map_each re-run with File attributes reporting mapped paths, the executable, parameter files), `Target.actions` and aquery show them (aquery keys with FOR_FINGERPRINTING and the GUID), execution stages inputs and produces outputs at `bazel-out/cfg/...` and publishes them at their own paths, falls back on colliding inputs with different contents, requires a sandbox, and shares one remote/disk cache entry across configurations (the REAPI digest equals genuine's); `ctx.actions.write` of Args maps too, and `--modify_execution_info` written by a transition is that configuration's. Left, explicit: the native Javac, Turbine and JavaResourceJar actions (and a mapped `cc_internal.get_link_args` CppLink) fail when they would run mapped |
 | B34 | **open**; 2 (rules_python-bzlmod's zipapp; rules_pkg's `pkg_tar_test`) | open, 2 (rules_python-bzlmod; rules_pkg `pkg_tar_test` fails, corpus-expand); assessed on corpus-last | `external/other_module+/other_module/pkg/bin_zipapp.zip` differs from genuine's: the same 2,076 entries, 2,059 of them with another mode and 10 a file instead of a symlink. rules_python's zipper (`tools/zipapp/zipper.py`) stores `st_mode` of each input (`os.stat` through the sandbox symlink: genuine's 0664/0644/0775/0755 for source and repository files, set by the checkout's umask and the download, against bazel-rs's read-only store blobs, 0444/0555), and stores an input as a relative symlink when the sandbox symlink's target is itself a relative symlink (10 links of the downloaded Python toolchain, `bin/python3 -> python3.11`, `lib/pkgconfig/python3.pc`; bazel-rs stages their resolved content, so the zip holds the file). Declared symlinks (`_bin.venv/bin/python3`) already match. Options: (1) genuine's modes need writable inodes (hardlinks share the inode's mode), which gives up the read-only blob protection of the store (docs/HARDLINK_STAGING.md): not sound; genuine's own modes also follow the umask, so its zip is not hermetic either. (2) Stage an input that is a relative symlink in an immutable repository tree as an absolute symlink to that tree entry (genuine's view, `readlink(readlink(p))` relative): sound for repository trees only (the workspace is live), but the executor rejects symlink inputs, verifies staged inodes and keys identities by blob, so it touches staging, verification and the REAPI input root: not cheap. Neither implemented |
-| B67 | **open**; 1 (rules_java: 4 tests at 0.5.1, 1 on main after it; 1 in the path-mapping run) | mostly fixed (corpus2-rest), 1 (rules_java; 13 analysis tests) | Starlark transitions on Java options: `experimental_strict_java_deps`, `java_header_compilation`, `use_ijars`, `java_deps`, `experimental_one_version_enforcement`, `one_version_enforcement_on_java_tests`, `incompatible_disallow_java_import_exports`, `java_launcher` and `host_java_launcher` are configuration options now (docs/CONFIGURATION.md; tests/fixtures/java_transition_options). `experimental_java_classpath` (the native Javac/JavacTurbine classpath modes) and `experimental_run_android_lint_on_java_rules` too, and `java_common.compile` under coverage instruments only what shouldInstrumentJar selects (parity-small; tests/fixtures/java_classpath_options). `experimental_output_paths` (12) is modelled since path-mapping (B33). Open: a testing aspect reading `ctx.var` in a configuration whose target platform was not resolved yet (`rule implementation needs the target platform`: aspect applications have no deferred-platform retry; 1 test, `test_strict_java_deps_error`) |
+| B67 | 1 (rules_java: 4 tests at 0.5.1, 1 on main after it; 1 in the path-mapping run) | **fixed** (parity-b83, 2026-11-26; rules_java's 321 tests pass) | Starlark transitions on Java options: `experimental_strict_java_deps`, `java_header_compilation`, `use_ijars`, `java_deps`, `experimental_one_version_enforcement`, `one_version_enforcement_on_java_tests`, `incompatible_disallow_java_import_exports`, `java_launcher` and `host_java_launcher` are configuration options now (docs/CONFIGURATION.md; tests/fixtures/java_transition_options). `experimental_java_classpath` (the native Javac/JavacTurbine classpath modes) and `experimental_run_android_lint_on_java_rules` too, and `java_common.compile` under coverage instruments only what shouldInstrumentJar selects (parity-small; tests/fixtures/java_classpath_options). `experimental_output_paths` (12) is modelled since path-mapping (B33). Fixed on parity-b83: a testing aspect reading `ctx.var` in a configuration whose target platform was not resolved yet (`rule implementation needs the target platform`; `test_strict_java_deps_error`): an aspect application analyzed on the coordinator whose prepare saw the platform deferred resolves it at its turn and is analyzed again, as a rule's commit does (docs/PARALLEL_ANALYSIS.md; tests/fixtures/corpus_parity7 `aspectvar/`) |
 | B78 | **open**; 1 (aspect-bazel-examples: 2,587 outputs, 5 tests) | open (corpus2-rest); 1 (aspect-bazel-examples, 2,587 outputs, 5 tests) | a repository script that finds a sibling repository through its own `realpath` (toolchains_llvm's `cc_wrapper.sh`, run by rules_go's GoStdlib with an absolute path: `realpath`, `dirname` twice, then the sibling's canonical name) lands in the native repository store, whose directories are content digests: `toolchain_path_prefix=<cache>/repositories/direct/trees/toolchains_llvm++llvm+llvm_toolchain_llvm/`. Genuine's realpath is `<output_base>/external/<repo>/...`, whose siblings are named. Any fix must make the parent of a repository file's real directory hold every repository by canonical name: a staged symlink cannot (realpath resolves it into the store); a per-worktree `external/` of real directories would need hardlink mirrors of whole repositories. Smallest sound-enough design (not implemented): constant links `direct/trees/<canonical name>` → `../../external/<canonical name>` (the repository's slot, docs/REPOSITORY_SLOTS.md, which already binds names cache-wide), created with the slot; it covers repositories with slots (module extension and builtin ones, toolchains_llvm's), inherits the slots' cache-wide binding (two worktrees using different versions of one canonical repository at once could see each other's), and needs the store's directory scans and the GC to skip non-digest entries |
 | B47 | **open**; 1 (rules_jvm_external-simple; genuine fails too) | open, 1 (rules_jvm_external-simple; genuine fails too, no Android SDK) | rules_android's `android_split_transition` reads `//command_line_option:Android configuration distinguisher`: "transition inputs ... do not correspond to valid settings" (an unmodelled Android native option) |
 | B82 | **open**; 1 (flatbuffers; genuine fails too) | open (corpus-rerun2); 1 (flatbuffers; genuine fails too); error reporting | a BUILD file whose first `load` fails (an unknown repository) and whose second names a repository whose fetch fails: genuine evaluates every load of the file and reports both failures (the fetch's and `error loading package 'pkg': …`); bazel-rs stops at the first failing load (reported without genuine's `error loading package` prefix) and never fetches the second repository. flatbuffers' `ts/BUILD.bazel` (`@aspect_rules_ts`, then `@flatbuffers_npm`, whose rules_js `verify_node_modules_ignored` check fails). Exit codes match |
-| B83 | — (found by path-mapping) | **open**; 1 (rules_py: `//docs/...` and the targets depending on the repository) | a repository rule that leaves `REPO.bazel` as a symlink (or anything but a regular file): repository_store's boundary check (`ensure_boundary`, src/repository_store.rs) inspects it without following the link and then fails `ERROR: cannot create REPO.bazel: File exists (os error 17)`; genuine's isValidRepoRoot follows it. Repro: `r = use_repo_rule("//:r.bzl", "r")`, `r(name = "rr")` with a rule doing `rctx.file("real", "")`, `rctx.symlink("real", "REPO.bazel")` and a `BUILD.bazel` with `filegroup(name = "t")`; `build @rr//:t` (genuine 9.3.1 builds it, checked). Not path mapping: the same with `--experimental_output_paths=off` |
-| B84 | — (found by path-mapping) | **open**; 1 (rules_py: the `py_venv` snapshot and `py_pex_binary` tests) | `platform(flags = ...)` (PlatformFunction.java:102-125: a platform's flags apply to the configurations targeting it): `ERROR: platform //py/tests/py-pex-binary:amd64_linux sets flags [--//uv/private/constraints/platform:platform_libc=glibc]: platform-based flags ... are not implemented in the native profile`; the `py_pex_binary` targets then fail `could not resolve the binary's interpreter version from its venv toolchain` (9 analysis errors). Repro: `platform(name = "p", flags = ["--//:s=x"])` with a `string_flag` `//:s` and a target built with `--platforms=//:p` |
+| B83 | — (found by path-mapping) | **fixed** (parity-b83, 2026-11-26) | a repository rule that leaves `REPO.bazel` as a symlink (or anything but a regular file): repository_store's boundary check (`ensure_boundary`, src/repository_store.rs) inspects it without following the link and then fails `ERROR: cannot create REPO.bazel: File exists (os error 17)`; genuine's isValidRepoRoot follows it. Repro: `r = use_repo_rule("//:r.bzl", "r")`, `r(name = "rr")` with a rule doing `rctx.file("real", "")`, `rctx.symlink("real", "REPO.bazel")` and a `BUILD.bazel` with `filegroup(name = "t")`; `build @rr//:t` (genuine 9.3.1 builds it, checked). Not path mapping: the same with `--experimental_output_paths=off` | Fixed on parity-b83: the boundary check follows links like isValidRepoRoot (`Path.exists()`; a dangling `REPO.bazel` link gets the empty file created at its target, as genuine's createEmptyFile does), and a `REPO.bazel` or `.bazelignore` may link into another repository's published tree, as a BUILD file may (rules_py's llvm-project overlay links every top-level entry of `@llvm-raw`); tests/fixtures/corpus_parity7 `repo/`
+| B84 | — (found by path-mapping) | **fixed** (parity-b83, 2026-11-26) | `platform(flags = ...)` (PlatformFunction.java:102-125: a platform's flags apply to the configurations targeting it): `ERROR: platform //py/tests/py-pex-binary:amd64_linux sets flags [--//uv/private/constraints/platform:platform_libc=glibc]: platform-based flags ... are not implemented in the native profile`; the `py_pex_binary` targets then fail `could not resolve the binary's interpreter version from its venv toolchain` (9 analysis errors). Repro: `platform(name = "p", flags = ["--//:s=x"])` with a `string_flag` `//:s` and a target built with `--platforms=//:p` | Fixed on parity-b83 (docs/PLATFORMS.md "Platform flags"): the flags merge into every configuration whose target platform the platform is, created by a Starlark transition, an exec transition or the command line (Starlark flags set or removed at their default, native options by their string conversion, `--define`, allowMultiple lists replaced); genuine capture tests/fixtures/corpus_parity7 `pf/` (the `ST-` output directories match)
+| B85 | — (found by parity-b83) | **fixed** (parity-b83, 2026-11-26) | an aspect's `ctx.rule.toolchains` of a base target using automatic exec groups (`--incompatible_auto_exec_groups`, rules_py's `bazel/defaults.bazelrc`) listed no types (`<toolchain_context.resolved_labels: >`), so rules_py's `py_pex_binary` closure aspect found no `@bazel_tools//tools/python:toolchain_type` on its `py_venv` and failed `could not resolve the binary's interpreter version from its venv toolchain` (9 analysis errors). Genuine's AspectContext.getRequestedToolchainTypesLabels/getToolchainTarget (analysis/AspectContext.java:98-135) read the automatic exec groups' contexts for such a target; so does bazel-rs now (tests/fixtures/corpus_parity7 `aegtc/`) |
+| B86 | — (found by parity-b83) | **fixed** (parity-b83, 2026-11-26) | an output below a source directory that is a symlink (`output include/__assertion_handler has an unsupported symlink source-tree parent …/libcxx/include`: llvm-project's overlay links `libcxx/include` from `@llvm-raw`; Bazel follows the link for its package-boundary check). bazel-rs now follows such a link in a repository's published tree when it lands in a published tree (its own or another repository's); in the main repository it stays an explicit error (tests/fixtures/corpus_parity7 `output_below_linked_source_directory`) |
+| B87 | — (found by parity-b83) | **open**; 1 (rules_py: `//docs/...`, 2 tests) | an aspect's private label attribute whose default is a `configuration_field(...)` (protobuf's `bazel_java_proto_aspect`: `_aspect_java_proto_toolchain = configuration_field(fragment = "proto", name = "proto_toolchain_for_java")`) is `None` in bazel-rs (the rule attribute resolves); genuine resolves it from the configuration (scratch check: `<alias target @@bazel_tools//tools/proto:java_toolchain of @@protobuf+//java/core:toolchain>`). The aspect's edges come from `aspect_attribute_labels` (src/engine.rs), which reads only static defaults; the late-bound value (crate::late_bound) must be resolved in the base target's configuration there and in phase 1's aspect edges. rules_py's stardoc `java_proto_library` then fails `type 'NoneType' has no operator [](Provider)` |
+| B88 | — (found by parity-b83) | **open**; 1 (rules_py: 2 + 2 files) | the `_solib_k8` directory of a shared library in an external repository: genuine links `@python_3_13//:libpython`'s `lib/libpython3.13.so` at `_solib_k8/_U_A_A+python_Uinterpreters+python_U3_U13_Ux86_U64_Uunknown_Ulinux_Ugnu_S_S_Clibpython___Ulib/`, bazel-rs at `…___Uexternal_S+python_Uinterpreters+python_U3_U13_Ux86_U64_Uunknown_Ulinux_Ugnu_Slib/` (the library's directory mangled from its exec path instead of its repository-relative path); not investigated further |
 | B81 | open; not exercised | open (parity-small); no project | a REPO.bazel that exists but cannot be read (a directory, an unreadable file): genuine `build` reports `ERROR: error reading REPO.bazel file at <path>` with the failed build's summary (exit 1) and `query` `ERROR: Target parsing failed due to unexpected exception: error reading REPO.bazel file at <path>` (exit 7); bazel-rs prints the same message as `bazel-rs: …` without the summary and exits 1 for both (genuine 9.3.1 scratch capture). The message itself matches (no cause; bazel-rs names the cause of a descriptor exhaustion only, crate::workspace::repo_file_read_error) |
 | B72 | fixed (aspect-bazel-examples analyzes) | fixed (corpus2-quick); 1 (aspect-bazel-examples) | native host budgets (100,000 nodes / 64 MiB weighted bytes) on module metadata Bazel bounds nowhere: the direct repository catalog (every direct repository's complete mapping is charged; a large root module exceeded it, and every load needing a repository mapping failed with `host preparation node limit exceeded`) and an extension-generated repository's recorded attributes (`repository @@…: host preparation node limit exceeded`). Both are unbounded now (depth and overflow still fail); the innate `use_repo_rule` group keeps its deliberate per-group profile |
 | B73 | not exercised | fixed (corpus2-rest); every project with a broken MODULE.bazel; exit code only | a module resolution failure (a root or dependency MODULE.bazel that fails, a missing `include()`, a module no registry has, an unparsable MODULE.bazel.lock or, under `--lockfile_mode=error`, an old one or a missing registry checksum) exits 48 like Bazel (ExitCode.EXTERNAL_DEPS_ERROR) in every command that computes the main repository mapping, `fetch` included (it reported `Fetching some target dependencies failed`, exit 2); 37 in `mod` and for a `local_path_override` whose directory does not exist (the override repository's fetch failure); crate::exit_code::module_failure, genuine matrix tests/fixtures/module_failure_exit_codes |
@@ -1740,15 +1749,15 @@ From the corpus-rerun2 run (2026-11-25, the released 0.5.1):
 
 1. B33 (path mapping, `--experimental_output_paths=strip`) was the top
    blocker; fixed on path-mapping (2026-11-25): protobuf's target builds,
-   rules_java's 12 tests pass, rules_py runs every phase. Next for rules_py:
-   B83 (a `REPO.bazel` symlink), B84 (`platform(flags = ...)`), then the
-   native Java actions under `strip` (B33's explicit remainder, stardoc's
-   renderer).
+   rules_java's 12 tests pass, rules_py runs every phase. B83, B84 (and
+   B85, B86 behind them) fixed on parity-b83: next for rules_py B87 (an
+   aspect's `configuration_field` attribute), then the native Java actions
+   under `strip` (B33's explicit remainder, stardoc's renderer), and B88.
 2. B34 (staged inputs' file modes and relative symlinks) is the only known
    bazel-rs output difference of passing builds (rules_python-bzlmod's
    zipapp, rules_pkg's `pkg_tar_test`).
 3. B78 (aspect-bazel-examples: toolchains_llvm's `realpath` cc wrapper),
-   then B67's last test (an aspect's deferred-platform retry), B47 and B82
+   then B47 and B82
    (both where genuine fails too).
 4. Not investigated yet: bazel-remote's stamped digest, rules_kotlin's
    KSP srcjar, aspect-bazel-examples' `test_container`.
