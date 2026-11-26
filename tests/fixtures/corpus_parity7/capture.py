@@ -38,6 +38,12 @@ CASES = {
     # nothing resolved before it (the default host platform).
     'aspect_reads_unresolved_target_platform': (
         [], 'build', [], ['//aspectvar:report', '//aspectvar:check'], [], ['report.txt', 'check.sh']),
+    # B85: an aspect's ctx.rule.toolchains under automatic exec groups (and
+    # without them).
+    'aspect_rule_toolchains_auto_exec_groups': (
+        [], 'build', ['--incompatible_auto_exec_groups'], ['//aegtc:report'], [], ['report.txt']),
+    'aspect_rule_toolchains': (
+        [], 'build', ['--noincompatible_auto_exec_groups'], ['//aegtc:report'], [], ['report.txt']),
 }
 
 TIME = re.compile(r'^\(\d\d:\d\d:\d\d\) ')

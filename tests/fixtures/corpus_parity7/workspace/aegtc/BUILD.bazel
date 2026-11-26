@@ -1,0 +1,21 @@
+load(":defs.bzl", "report", "toolchain_impl", "user")
+
+toolchain_type(name = "type")
+
+toolchain_impl(
+    name = "impl",
+    version = "1.2",
+)
+
+toolchain(
+    name = "tc",
+    toolchain = ":impl",
+    toolchain_type = ":type",
+)
+
+user(name = "user")
+
+report(
+    name = "report",
+    dep = ":user",
+)

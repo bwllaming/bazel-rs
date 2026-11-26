@@ -2,7 +2,9 @@
 //! (docs/OSS_CORPUS.md): a repository rule's REPO.bazel left as a symlink
 //! (B83), `platform(flags = ...)` on transitioned and top-level
 //! configurations (B84), and an aspect reading `ctx.var` in a configuration
-//! whose target platform nothing resolved before it (B67), the cases listed
+//! whose target platform nothing resolved before it (B67), an aspect's
+//! `ctx.rule.toolchains` of a base target using automatic exec groups
+//! (B85), the cases listed
 //! in tests/fixtures/corpus_parity7/capture.py. Every case replays the
 //! genuine Bazel 9.3.1 capture
 //! tests/fixtures/corpus_parity7/reference_receipt.json (written by

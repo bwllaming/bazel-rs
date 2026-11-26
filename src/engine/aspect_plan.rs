@@ -1472,17 +1472,54 @@ fn plan_application<C: AspectCx>(
             entries.entry(type_labels[0].clone()).or_insert(entry);
         }
         let engine = cx.engine();
-        let requested = engine
-            .toolchain_contexts
+        // AspectContext.getRequestedToolchainTypesLabels / getToolchainTarget
+        // (analysis/AspectContext.java:98-135): a base target using
+        // automatic exec groups requests its types in those groups, not in
+        // its default context.
+        let automatic = engine
+            .exec_group_contexts
             .get(base_key)
-            .map(|context| {
-                context
-                    .requested
+            .filter(|groups| groups.use_auto_exec_groups);
+        let requested: Vec<(Label, Label)> = match automatic {
+            Some(groups) => {
+                let mut requested: Vec<(Label, Label)> = Vec::new();
+                for group in groups
+                    .groups
                     .iter()
-                    .map(|(label, info)| (label.clone(), info.type_label.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
+                    .filter(|group| crate::exec_groups::is_automatic(&group.name))
+                {
+                    let pairs: Vec<(Label, Label)> = match &group.context {
+                        Some(context) => context
+                            .requested
+                            .iter()
+                            .map(|(label, info)| (label.clone(), info.type_label.clone()))
+                            .collect(),
+                        None => group
+                            .types
+                            .iter()
+                            .map(|label| (label.clone(), label.clone()))
+                            .collect(),
+                    };
+                    for (label, type_label) in pairs {
+                        if !requested.iter().any(|(seen, _)| *seen == label) {
+                            requested.push((label, type_label));
+                        }
+                    }
+                }
+                requested
+            }
+            None => engine
+                .toolchain_contexts
+                .get(base_key)
+                .map(|context| {
+                    context
+                        .requested
+                        .iter()
+                        .map(|(label, info)| (label.clone(), info.type_label.clone()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
         Arc::new(crate::toolchain_info::ToolchainContextData {
             target_description: format!(
                 "aspect {} applied to {} rule {}",

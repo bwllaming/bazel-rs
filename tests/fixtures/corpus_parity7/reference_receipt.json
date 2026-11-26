@@ -19,6 +19,42 @@
    ],
    "workspace": "workspace"
   },
+  "aspect_rule_toolchains": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--noincompatible_auto_exec_groups"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/aegtc/report.txt": "user in=True seen=toolchain 1.2\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//aegtc:report"
+   ],
+   "workspace": "workspace"
+  },
+  "aspect_rule_toolchains_auto_exec_groups": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--incompatible_auto_exec_groups"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/aegtc/report.txt": "user in=True seen=toolchain 1.2\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//aegtc:report"
+   ],
+   "workspace": "workspace"
+  },
   "platform_flags_after_transition": {
    "bin_paths": {},
    "command": "build",
