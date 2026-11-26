@@ -1037,10 +1037,13 @@ class StagesTest(unittest.TestCase):
             self.assertIn("| Built by | [GitHub Actions run](https://github.com/o/r/actions/runs/1) |", notes)
             self.assertIn("port(arm64): x", notes)
             self.assertIn("## Bazelisk", notes)
-            self.assertIn("export USE_BAZEL_VERSION=bazel-rs-1.2.3", notes)
+            self.assertIn("export USE_BAZEL_VERSION=1.2.3\n", notes)
             self.assertIn(
-                "export BAZELISK_FORMAT_URL='https://github.com/o/r/releases/download/v1.2.3/bazel-rs-1.2.3-%o-%m'", notes
+                "export BAZELISK_FORMAT_URL=https://github.com/o/r/releases/download/v1.2.3/bazel-rs-1.2.3-linux-x86_64"
+                "   # or linux-arm64, darwin-arm64\n",
+                notes,
             )
+            self.assertNotIn("%o", notes)
             self.assertEqual(len(result.assets), 4 + 3 + 7 + 1)
 
     def test_bare_binaries_need_the_executable(self):

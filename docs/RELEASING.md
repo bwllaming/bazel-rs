@@ -258,11 +258,13 @@ build: ~2 minutes) but enough for paired captures (docs/HOST_OS.md).
    (`linux-x86_64` from the static musl build, `linux-arm64`, `darwin-arm64`;
    `Target.bazelisk`), mode 0755, byte for byte the archive's `bazel-rs`.
    Next to each archive and executable: `<asset>.sha256`, and one
-   `SHA256SUMS` over all of them (`sha256sum -c` format). Bazelisk fetches a
-   release with `USE_BAZEL_VERSION=bazel-rs-<version>` (not semver: Bazelisk
-   picks x86_64 on Apple silicon for semver versions below 4.1) and
-   `BAZELISK_FORMAT_URL=https://github.com/<repo>/releases/download/v<version>/bazel-rs-<version>-%o-%m`;
-   `BAZELISK_VERIFY_SHA256` pins the platform's executable.
+   `SHA256SUMS` over all of them (`sha256sum -c` format). Bazelisk (checked
+   with v1.29.0) fetches one with `USE_BAZEL_VERSION=<version>` and
+   `BAZELISK_FORMAT_URL=https://github.com/<repo>/releases/download/v<version>/bazel-rs-<version>-<os>-<arch>`
+   written out, and `BAZELISK_VERIFY_SHA256` pins it (checked on cached runs
+   too). Not `%o-%m`: Bazelisk substitutes `x86_64` for `%m` on Apple silicon
+   when the version is semver below 4.1, which every 0.x version is; and the
+   version must look like a Bazel version (`bazel-rs-0.5.5` is rejected).
 3. **Smoke test** each binary extracted from its archive, in a scratch
    workspace with a scratch HOME, cache and TMPDIR and a dead HTTP(S) proxy (no
    network): `--version` (must print the release version), `version`, `help`,

@@ -265,9 +265,11 @@ def bazelisk_name(version: str, target: "Target") -> str:
     return f"{PACKAGE}-{version}-{target.bazelisk}"
 
 
-def bazelisk_format_url(gh_repo: str, version: str) -> str:
-    """BAZELISK_FORMAT_URL for this release's bare binaries."""
-    return f"https://github.com/{gh_repo}/releases/download/{tag_name(version)}/{PACKAGE}-{version}-%o-%m"
+def bazelisk_format_url(gh_repo: str, version: str, platform: str) -> str:
+    """BAZELISK_FORMAT_URL of one platform's bare binary, written out: no
+    `%o-%m`, because Bazelisk substitutes `x86_64` for `%m` on Apple silicon
+    when the version (a plain bazel-rs version) is semver below 4.1."""
+    return f"https://github.com/{gh_repo}/releases/download/{tag_name(version)}/{PACKAGE}-{version}-{platform}"
 
 
 def cargo_toml_version(text: str) -> str:
@@ -1319,24 +1321,28 @@ def install_commands(info: NotesInfo, best: AssetInfo, stem: str) -> list[str]:
 
 def bazelisk_notes(info: NotesInfo) -> list[str]:
     """The Bazelisk section: the bare binaries and the variables that fetch them."""
-    names = [
-        bazelisk_name(info.version, TARGETS_BY_TRIPLE[a.triple])
+    platforms = [
+        TARGETS_BY_TRIPLE[a.triple].bazelisk
         for a in info.assets
         if a.triple in TARGETS_BY_TRIPLE and TARGETS_BY_TRIPLE[a.triple].bazelisk
     ]
-    if not names:
+    if not platforms:
         return []
+    names = [f"{PACKAGE}-{info.version}-{p}" for p in platforms]
     return [
         "## Bazelisk",
         "",
         "The release also has the bare executables (" + ", ".join(f"`{n}`" for n in names) + "),",
-        "byte for byte the archives' `bazel-rs`, each with a `.sha256`, for Bazelisk. The version",
-        "must not parse as semver (Bazelisk would fetch x86_64 on Apple silicon for versions below 4.1):",
+        "byte for byte the archives' `bazel-rs`, each with a `.sha256`, for Bazelisk. Name the",
+        "platform's executable in full (Bazelisk substitutes `x86_64` for `%m` on Apple silicon",
+        "for versions below 4.1) and pin its sha256 from `SHA256SUMS`:",
         "",
         "```sh",
-        f"export USE_BAZEL_VERSION={PACKAGE}-{info.version}",
-        f"export BAZELISK_FORMAT_URL='{bazelisk_format_url(info.gh_repo, info.version)}'",
-        "export BAZELISK_VERIFY_SHA256=...   # optional: this platform's executable's sha256",
+        f"export USE_BAZEL_VERSION={info.version}",
+        f"export BAZELISK_FORMAT_URL={bazelisk_format_url(info.gh_repo, info.version, platforms[0])}"
+        + "   # or " + ", ".join(platforms[1:]) if len(platforms) > 1 else
+        f"export BAZELISK_FORMAT_URL={bazelisk_format_url(info.gh_repo, info.version, platforms[0])}",
+        f"export BAZELISK_VERIFY_SHA256=...   # sha256 of {names[0]}",
         "bazelisk version",
         "```",
         "",
