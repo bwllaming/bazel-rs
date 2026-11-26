@@ -464,40 +464,114 @@ impl AspectCx for CoordAspects<'_, '_> {
             return commit_application(self.engine, self.state, &commit, Ok(*analyzed), printed);
         }
         let (analyzed, printed) = match parallel::aspects::analysis(key, application, &outputs) {
-            parallel::aspects::Analysis::Here(application) => {
-                // B61: one that read a `Target.actions` not kept is
-                // analyzed again once the views are filled
-                // (crate::engine::target_views).
-                let attempt = analysis::analyze_aspect_buffered(&application, &outputs);
-                // Its direct dependency views: the `target` parameter, the
-                // base rule's (`ctx.rule.attr`), its own attributes' and
-                // its base aspects' attributes'.
-                let direct = || {
-                    target_views::unfilled(
-                        std::iter::once(&application.target)
-                            .chain(application.dependencies.values())
-                            .chain(application.aspect_dependencies.values())
-                            .chain(
-                                application
-                                    .base_aspect_attributes
-                                    .iter()
-                                    .flat_map(|base| base.dependencies.values()),
-                            ),
-                    )
-                };
-                self.engine.with_target_views(
-                    self.state,
-                    self.configured,
-                    attempt,
-                    crate::target_actions::take_wanted,
-                    &direct,
-                    || analysis::analyze_aspect_buffered(&application, &outputs),
-                )
+            parallel::aspects::Analysis::Here(mut application) => {
+                let mut platform_resolved = false;
+                loop {
+                    // B61: one that read a `Target.actions` not kept is
+                    // analyzed again once the views are filled
+                    // (crate::engine::target_views).
+                    let attempt = analysis::analyze_aspect_buffered(&application, &outputs);
+                    // Its direct dependency views: the `target` parameter, the
+                    // base rule's (`ctx.rule.attr`), its own attributes' and
+                    // its base aspects' attributes'.
+                    let direct = || {
+                        target_views::unfilled(
+                            std::iter::once(&application.target)
+                                .chain(application.dependencies.values())
+                                .chain(application.aspect_dependencies.values())
+                                .chain(
+                                    application
+                                        .base_aspect_attributes
+                                        .iter()
+                                        .flat_map(|base| base.dependencies.values()),
+                                ),
+                        )
+                    };
+                    let attempt = self.engine.with_target_views(
+                        self.state,
+                        self.configured,
+                        attempt,
+                        crate::target_actions::take_wanted,
+                        &direct,
+                        || analysis::analyze_aspect_buffered(&application, &outputs),
+                    );
+                    // B67: it read the base target configuration's target
+                    // platform (`ctx.var`'s TARGET_CPU) its prepare
+                    // deferred: resolved here, at the application's turn,
+                    // and the application analyzed again (as a rule's
+                    // commit, Engine::commit_custom_target); the aborted
+                    // attempt's prints are dropped with it.
+                    if !platform_resolved
+                        && platform_deferred(&application)
+                        && attempt.0.as_ref().is_err_and(|error| {
+                            error.contains(crate::platforms::NEEDS_TARGET_PLATFORM)
+                        })
+                    {
+                        platform_resolved = true;
+                        let platform = self
+                            .engine
+                            .deferred_target_platform(commit.base_key.config, self.configured)?;
+                        resolve_platform(&mut application, platform);
+                        continue;
+                    }
+                    break attempt;
+                }
             }
             parallel::aspects::Analysis::Done { analyzed, printed } => (Ok(*analyzed), printed),
             parallel::aspects::Analysis::Dry(providers) => return providers,
         };
         commit_application(self.engine, self.state, &commit, analyzed, printed)
+    }
+}
+
+/// Whether the application's base target platform is deferred (its
+/// prepare found it unresolved: crate::platforms::TargetPlatform).
+fn platform_deferred(application: &analysis::AspectApplication) -> bool {
+    let deferred = |surface: &crate::ctx_surface::CtxSurface| {
+        matches!(
+            surface.target_platform,
+            crate::platforms::TargetPlatform::Deferred
+        )
+    };
+    application
+        .rule
+        .custom
+        .as_ref()
+        .is_some_and(|custom| deferred(&custom.surface))
+        || application
+            .native
+            .as_ref()
+            .is_some_and(|native| deferred(&native.surface))
+}
+
+/// The application's deferred base target platform, resolved.
+fn resolve_platform(
+    application: &mut analysis::AspectApplication,
+    platform: Arc<crate::platforms::PlatformInfo>,
+) {
+    let resolved = crate::platforms::TargetPlatform::Resolved(platform);
+    let surface = |surface: &mut Arc<crate::ctx_surface::CtxSurface>| {
+        let mut updated = (**surface).clone();
+        updated.target_platform = resolved.clone();
+        *surface = Arc::new(updated);
+    };
+    if let Some(custom) = application.rule.custom.as_mut() {
+        if matches!(
+            custom.target_platform,
+            crate::platforms::TargetPlatform::Deferred
+        ) {
+            custom.target_platform = resolved.clone();
+        }
+        surface(&mut custom.surface);
+    }
+    if let Some(native) = application.native.as_mut() {
+        if matches!(
+            native.target_platform,
+            crate::platforms::TargetPlatform::Deferred
+        ) {
+            native.target_platform = resolved.clone();
+        }
+        surface(&mut native.surface);
     }
 }
 
