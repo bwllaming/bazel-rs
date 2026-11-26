@@ -1938,7 +1938,13 @@ pub(crate) trait Phase1: Host {
             return Ok(configuration);
         };
         let platform = platform.clone();
-        if crate::label::unresolvable_package_message(&platform.package_id()).is_some() {
+        // The default `--host_platform` (an alias of the host_platform
+        // extension's `@platforms//host`, which sets no flags) is not
+        // looked up: its packages stay unloaded where nothing else needs
+        // them.
+        if platform == crate::configuration::default_host_platform()
+            || crate::label::unresolvable_package_message(&platform.package_id()).is_some()
+        {
             return Ok(configuration);
         }
         let (_, actual) = self.static_alias_chain(&platform);

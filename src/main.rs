@@ -1544,8 +1544,6 @@ fn run() -> Result<(), String> {
         // Bazel's InvalidMnemonicException for the top-level configuration.
         bazel_rs::config_registry::validate_top(&top)?;
         engine.set_configuration(top);
-        // B84: the top-level target platform's `flags`.
-        engine.apply_top_platform_flags()?;
     }
     bazel_rs::perf_mark("startup.configuration");
     // TargetPattern.Parser's relativeDirectory is the working directory below

@@ -240,8 +240,11 @@ transition's own value of a flag the platform sets is overridden.
 The native profile (crate::platform_flags) merges them where configurations
 are created: the engine's transition and exec-transition nodes
 (`with_platform_flags`, src/engine/eval/nodes/phase1.rs) and, for the
-top-level configuration, `Engine::apply_top_platform_flags` right after the
-command's configuration is set. Only a `platform` rule (through plain
+top-level configuration, `Engine::apply_top_platform_flags` as analysis
+starts (the top-level configuration is replaced by the merged one; an
+incremental analysis compares the merged ones). The default
+`--host_platform` (`@bazel_tools//tools:host_platform`, which sets no
+flags) is not looked up; otherwise only a `platform` rule (through plain
 aliases) with `flags` or `parents` is resolved there, analyzed in the
 configuration the transition starts from (Bazel analyzes it in the empty
 one; a platform tree that depends on the configuration is already an

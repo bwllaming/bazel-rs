@@ -4436,7 +4436,7 @@ impl Engine {
 
     /// B84: merge the top-level target platform's `flags`
     /// (`platform(flags = ...)`, crate::platform_flags) into the top-level
-    /// configuration; called right after [`Self::set_configuration`].
+    /// configuration, as analysis starts (a no-op once merged).
     pub fn apply_top_platform_flags(&mut self) -> Result<(), String> {
         if let Some(configuration) = self.top_with_platform_flags()? {
             crate::config_registry::validate_top(&configuration)?;
@@ -11907,6 +11907,10 @@ impl Engine {
         for label in labels {
             self.report_pattern_deprecation(label);
         }
+        // B84: the top-level target platform's `flags` (the top-level
+        // configuration's key is created with them,
+        // BuildConfigurationKeyProducer), resolved as analysis starts.
+        self.apply_top_platform_flags()?;
         // Requested targets are analyzed in the top-level configuration;
         // generated files live under their own configuration's output root.
         let top = self.configurations.top();
