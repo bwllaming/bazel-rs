@@ -587,9 +587,12 @@ contend for (16 threads: ~4 µs per one-component `fstatat`, ~13 µs per
 directory open or four-component `fstatat`, against 0.5 µs alone); an
 OpenROAD compile stages ~4,300 files in ~435 directories. Right after
 staging, `reuse::record` stats each directory staging made or kept (inode
-and change time) and keeps those whose change time is below
-CLOCK_REALTIME_COARSE read afterwards — the clock file times are stamped
-from, so any later change in such a directory stamps another time — with
+and change time) and keeps those whose change time is at least the digest
+memo's racy margin (2 s) older than the clock read afterwards — so a later
+change stamps another time even on filesystems rounding times to the second
+(ext3, 128-byte ext4 inodes, HFS+, FAT) — and none on filesystems stamping
+from another host's clock (NFS, SMB/CIFS, FUSE/virtiofs, 9p, Ceph, AFS,
+cluster filesystems: statfs), with
 the exact listing of those holding nothing but placed files and the
 directories above them (directories holding a staged symlink — a linked
 source directory, an unresolved symlink input, a dangling link — are listed
@@ -599,8 +602,12 @@ listing stands for reading it and its placed entries are kept without
 `readlinkat`/`stat` (a symlink's text cannot change in place; a kept file is
 the same inode, whose state staging checks through its store file — one
 inspection, which also validates the blob). Directories that changed are
-read and verified entry by entry as before (unit test
-`reused_roots_trust_only_unchanged_directories`).
+read and verified entry by entry as before (unit tests
+`reused_roots_trust_only_unchanged_directories`,
+`directories_changed_within_the_racy_margin_are_not_recorded`). With the
+margin, a directory staging changed is trusted from its second reuse on:
+`//src/odb/src/db:db` trusts 83% of the reconciled directories (99.7% with
+the coarse-clock rule of the first version), same wall and CPU.
 
 **Tree files verified once per process (openroad-cpu).** Staging inspected
 every repository tree file it linked, for every action (2.7 M inspections
