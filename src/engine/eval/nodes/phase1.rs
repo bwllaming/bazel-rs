@@ -1155,6 +1155,10 @@ pub(crate) trait Phase1: Host {
             // the dependencies); a ToolchainException is the application's
             // error as is (AspectFunction.java:510-515).
             let toolchains = self.aspect_toolchain_contexts(&base_rule, config, aspect)?;
+            // Its late-bound attributes resolve in the base target's
+            // configuration (B87).
+            let aspect =
+                &crate::late_bound::configured_aspect(aspect, &self.configuration(config).native);
             if let Some(&application) = applications.get(index) {
                 // Record per application, including memoized toolchain contexts.
                 // The resolution memo is not an edge owner.
@@ -1200,6 +1204,10 @@ pub(crate) trait Phase1: Host {
             // addAspectAttributes), each in its attribute's configuration
             // over THIS aspect's execution platforms.
             for (owner, names) in crate::aspects::base_aspect_attributes(&path, &base_rule) {
+                let owner = crate::late_bound::configured_aspect(
+                    &owner,
+                    &self.configuration(config).native,
+                );
                 let owner_configs = self.aspect_attribute_configurations(
                     &base_rule,
                     &base_key,
@@ -1397,6 +1405,11 @@ pub(crate) trait Phase1: Host {
                             propagating.clone(),
                             seen,
                         )?;
+                    }
+                    // Late-bound attributes skip the visibility check
+                    // (CommonPrerequisiteValidator.java:156-159).
+                    if spec.declaration.late_bound {
+                        continue;
                     }
                     let dep_rule = match self.target(&dependency)? {
                         Target::Rule(dep_rule) => dep_rule,

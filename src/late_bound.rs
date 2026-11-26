@@ -146,6 +146,40 @@ pub(crate) fn configured_values<'a>(
     })
 }
 
+/// `aspect` with the resolvable late-bound defaults of its attributes
+/// replaced by their values in the base target's configuration `native`
+/// (OSS corpus B87). An aspect attribute named `_x` with a
+/// `configuration_field` default is analysis-dependent (`:x`), so
+/// DependencyResolutionHelpers.resolveAttribute (:437-486) resolves it like a
+/// rule's late-bound attribute, through resolveLateBoundDefault with
+/// `ruleConfig`, the configuration of the target the aspect applies to,
+/// whatever the attribute's `cfg` (a genuine 9.3.1 capture: a `cfg = "exec"`
+/// one too). The shared definition is returned when nothing changes.
+pub(crate) fn configured_aspect(
+    aspect: &std::sync::Arc<crate::aspects::AspectDefinition>,
+    native: &NativeOptions,
+) -> std::sync::Arc<crate::aspects::AspectDefinition> {
+    let resolved: Vec<(usize, AttrValue)> = aspect
+        .declaration
+        .attrs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (_, spec))| {
+            let field = spec.declaration.configuration_field.as_ref()?;
+            let value = AttrValue::Label(resolve(&field.fragment, &field.name, native)?);
+            (spec.default != value).then_some((index, value))
+        })
+        .collect();
+    if resolved.is_empty() {
+        return aspect.clone();
+    }
+    let mut configured = crate::aspects::AspectDefinition::clone(aspect);
+    for (index, value) in resolved {
+        configured.declaration.attrs[index].1.default = value;
+    }
+    std::sync::Arc::new(configured)
+}
+
 /// A failed dependency edge whose label is the configured value of a
 /// late-bound default: the target's own error, then the native gap. In the
 /// explicit-module profile (`--experimental-builtin-modules=false`) there is

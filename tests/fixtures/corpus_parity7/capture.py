@@ -3,8 +3,8 @@
 
 Usage: capture.py --bazel /path/to/bazel-9.3.1 --scratch DIR > reference_receipt.json
 
-Parity cases of the open-source corpus bugs fixed on branch parity-b83
-(docs/OSS_CORPUS.md). Each case runs once in a fresh copy of workspace/
+Parity cases of the open-source corpus bugs fixed on branches parity-b83
+and parity-b87 (docs/OSS_CORPUS.md). Each case runs once in a fresh copy of workspace/
 (--batch, no rc files, private HOME and output user root) and records the
 exit code, the stdout, the stderr lines matching the case's patterns (the
 workspace path replaced by <WS>) and the content of the named outputs by
@@ -47,6 +47,13 @@ CASES = {
         [], 'build', ['--incompatible_auto_exec_groups'], ['//aegtc:report'], [], ['report.txt']),
     'aspect_rule_toolchains': (
         [], 'build', ['--noincompatible_auto_exec_groups'], ['//aegtc:report'], [], ['report.txt']),
+    # B87 (parity-b87): an aspect attribute whose default is a
+    # configuration_field resolves in the configuration of the target the
+    # aspect applies to (a transitioned one too, and with cfg = "exec").
+    'aspect_late_bound_attribute': (
+        [], 'build', [], ['//lbaspect:report'], [], ['report.txt']),
+    'aspect_late_bound_attribute_flag': (
+        [], 'build', ['--custom_malloc=//lbaspect:m'], ['//lbaspect:report'], [], ['report.txt']),
 }
 
 TIME = re.compile(r'^\(\d\d:\d\d:\d\d\) ')

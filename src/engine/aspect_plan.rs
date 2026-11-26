@@ -1182,6 +1182,12 @@ fn plan_application<C: AspectCx>(
     if !aspect.applies_to_rule(&base_rule) {
         return Ok(BTreeMap::new());
     }
+    // The aspect's late-bound attributes resolve in the base target's
+    // configuration (B87; as phase 1 analyzed them).
+    let aspect = &crate::late_bound::configured_aspect(
+        aspect,
+        &cx.engine().configurations.get(base_key.config).native,
+    );
     // The application's dependencies: the aspect's own attributes, each
     // in its attribute's configuration (phase 1 analyzed them there,
     // Self::aspect_attribute_configurations), and the base rule's edges
@@ -1227,6 +1233,10 @@ fn plan_application<C: AspectCx>(
     // phase 1 analyzed them (Self::analyze_aspect_attribute_edges).
     let mut base_aspect_attributes = Vec::new();
     for (owner, names) in crate::aspects::base_aspect_attributes(&path, &base_rule) {
+        let owner = crate::late_bound::configured_aspect(
+            &owner,
+            &cx.engine().configurations.get(base_key.config).native,
+        );
         let memo = (base_key.clone(), aspect_attribute_memo_name(&owner, aspect));
         let owner_configs = cx.attribute_configs(&memo).ok_or_else(|| {
                 format!(

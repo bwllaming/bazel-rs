@@ -1,6 +1,40 @@
 {
  "bazel": "9.3.1",
  "cases": {
+  "aspect_late_bound_attribute": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [],
+   "outputs": {
+    "k8-fastbuild/bin/lbaspect/report.txt": "leaf malloc=@@//lbaspect:m2 exec_malloc=@@//lbaspect:m2 files=[\"m2.txt\"]\nmid malloc=None exec_malloc=None files=[]\ntop malloc=None exec_malloc=None files=[]\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//lbaspect:report"
+   ],
+   "workspace": "workspace"
+  },
+  "aspect_late_bound_attribute_flag": {
+   "bin_paths": {},
+   "command": "build",
+   "exit": 0,
+   "flags": [
+    "--custom_malloc=//lbaspect:m"
+   ],
+   "outputs": {
+    "k8-fastbuild/bin/lbaspect/report.txt": "leaf malloc=@@//lbaspect:m2 exec_malloc=@@//lbaspect:m2 files=[\"m2.txt\"]\nmid malloc=@@//lbaspect:m exec_malloc=@@//lbaspect:m files=[\"m.txt\"]\ntop malloc=@@//lbaspect:m exec_malloc=@@//lbaspect:m files=[\"m.txt\"]\n"
+   },
+   "startup": [],
+   "stderr": [],
+   "stdout": "",
+   "targets": [
+    "//lbaspect:report"
+   ],
+   "workspace": "workspace"
+  },
   "aspect_reads_unresolved_target_platform": {
    "bin_paths": {},
    "command": "build",

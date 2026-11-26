@@ -1,0 +1,13 @@
+load(":defs.bzl", "lib", "report", "transitioned_lib")
+
+filegroup(name = "m", srcs = ["m.txt"])
+
+filegroup(name = "m2", srcs = ["m2.txt"])
+
+lib(name = "leaf")
+
+transitioned_lib(name = "mid", deps = [":leaf"])
+
+lib(name = "top", deps = [":mid"])
+
+report(name = "report", deps = [":top"])
