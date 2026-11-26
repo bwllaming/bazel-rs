@@ -271,7 +271,9 @@ pub fn repo_file(root: &Path) -> Result<Option<PathBuf>, String> {
     }
     let resolved = observed_fs::canonicalize(&path)
         .map_err(|e| format!("cannot resolve REPO.bazel file {}: {e}", path.display()))?;
-    if !resolved.starts_with(&root) {
+    // A repository rule may link it from another repository's published
+    // tree (B83; as a BUILD file, `in_sibling_store_tree`).
+    if !resolved.starts_with(&root) && !in_sibling_store_tree(&root, &resolved) {
         return Err(format!(
             "REPO.bazel file {} resolves outside workspace {}",
             path.display(),

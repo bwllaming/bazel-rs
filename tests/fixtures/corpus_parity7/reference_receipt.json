@@ -82,6 +82,7 @@
    "flags": [],
    "outputs": {
     "k8-fastbuild/bin/external/+r+dangling/g.txt": "end\n",
+    "k8-fastbuild/bin/external/+r+foreign/g.txt": "end\n",
     "k8-fastbuild/bin/external/+r+linked/g.txt": "end\n"
    },
    "startup": [],
@@ -91,7 +92,9 @@
     "@linked//:t",
     "@linked//:g",
     "@dangling//:t",
-    "@dangling//:g"
+    "@dangling//:g",
+    "@foreign//:t",
+    "@foreign//:g"
    ],
    "workspace": "workspace"
   }

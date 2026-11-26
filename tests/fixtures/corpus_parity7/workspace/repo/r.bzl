@@ -2,6 +2,9 @@ def _r(rctx):
     if rctx.attr.mode == "link":
         rctx.file("real", "")
         rctx.symlink("real", "REPO.bazel")
+    elif rctx.attr.mode == "foreign":
+        # Linked from another repository's tree.
+        rctx.symlink(Label("@linked//:real"), "REPO.bazel")
     else:
         rctx.symlink("made", "REPO.bazel")
     rctx.file("BUILD.bazel", """

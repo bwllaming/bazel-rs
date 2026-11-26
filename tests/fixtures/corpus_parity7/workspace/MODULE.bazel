@@ -7,3 +7,6 @@ r(name = "linked", mode = "link")
 
 # A dangling REPO.bazel symlink: Bazel creates the boundary file through it.
 r(name = "dangling", mode = "dangling")
+
+# REPO.bazel linked from another repository's file.
+r(name = "foreign", mode = "foreign")
