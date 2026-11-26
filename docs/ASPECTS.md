@@ -397,6 +397,18 @@ own (`AspectApplication::aspect_dependencies`,
 AspectContext.getMainAspectPrerequisitesCollection), so an aspect attribute
 and a base rule attribute naming the same label never share a view.
 
+A label attribute whose default is a `configuration_field(...)` (an
+analysis-dependent `:x` attribute) takes its value in the BASE target's
+configuration, whatever its `cfg` (DependencyResolutionHelpers.resolveAttribute
+:437-486 resolves it with resolveLateBoundDefault and `ruleConfig`): phase 1
+and the planning use the aspect with those defaults resolved
+(`crate::late_bound::configured_aspect`, the fields crate::late_bound
+resolves; others stay `None`), and its edge skips the visibility check
+(CommonPrerequisiteValidator, as a rule's late-bound attribute). OSS corpus
+B87 (protobuf's `java_proto_library` aspect,
+`_aspect_java_proto_toolchain`); genuine capture
+tests/fixtures/corpus_parity7 `lbaspect/`.
+
 The aspect context's configuration surface is the base configured
 target's configuration (the aspect's RuleContext is built in it,
 ConfiguredTargetFactory.createAspect): `ctx.bin_dir`, `ctx.var`,

@@ -105,7 +105,14 @@ files and runfiles may use them (N23a failed explicitly).
   configured target key (genuine 9.3.1 capture
   `tests/fixtures/repo_mapping_closure`): a select() that picks another
   repository's target in one configuration changes only that
-  configuration's manifest.
+  configuration's manifest. A select() key's own `package_metadata`
+  targets (its package's `default_package_metadata`, analyzed in the
+  no-config configuration) count too, for a config_setting or alias key
+  but not for a constraint_value a config_setting lists (B90; bazel_skylib's
+  `//lib:always_true` brings rules_license's license targets). The keys
+  are no dependency edges: a prepare computed ahead of its turn (the
+  merge buffer, the pipeline's ahead prepares) waits for the planned
+  results it reads through them.
 * The tree (SymlinkTreeHelper.createSymlinks, exec/SymlinkTreeHelper.java:98-146):
   directories, symlinks to the absolute targets above, empty files (0644);
   `_main` always exists (createWorkspaceSubdirectory, :178-188); `MANIFEST` is a
