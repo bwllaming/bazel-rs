@@ -97,9 +97,8 @@ deprecation:
 `check_toolchain_types`, `allowed_toolchain_types` and
 `missing_toolchain_error` are consumed by toolchain resolution
 (docs/TOOLCHAINS.md); `flags`, `required_settings` and the execution
-properties are recorded but only execution platform resolution or
-platform-based flags would consume them; platform flags fail explicitly when
-the platform is the target platform (below).
+properties are recorded but only execution platform resolution and
+platform-based flags consume them (flags: "Platform flags" below).
 
 ## Target platform
 
@@ -157,8 +156,8 @@ and memoized per configuration:
 4. The target is analyzed; an analysis error is reported, followed by the same
    `referenced as a platform` line. A target without PlatformInfo at the end
    of its alias chain names that end.
-5. A platform with `flags` fails explicitly: platform-based flags
-   (`ParsedFlagsValue`, `PlatformFunction.java:102-125`) are not modelled.
+5. A platform's `flags` (its parents' first) are merged into the
+   configurations that target it ("Platform flags" below).
 
 **When.** An explicit `--platforms` entry is resolved before any target is
 analyzed, as Bazel resolves it when it creates the top-level configuration
@@ -220,6 +219,41 @@ b7686f14f3dc03f586299247aa30b3eeb85da03ee02d8b7fca0b273c82ae56fb in both; the
 application's generated `@host_platform//:constraints.bzl` lists
 `@platforms//cpu:x86_64` and `@platforms//os:linux`, as the 1.0.0 fixture
 yields natively).
+
+## Platform flags
+
+`platform(flags = [...])` (B84; Bazel 9.3 PlatformFunction,
+`analysis/platform/PlatformFunction.java:102-125`, and
+BuildConfigurationKeyProducer,
+`analysis/producers/BuildConfigurationKeyProducer.java:131-160`): whenever a
+configuration is created — the top-level one, each Starlark transition's
+output, each exec transition's — and its `--platforms` names one platform
+whose PlatformInfo has flags, the flags are parsed relative to the
+platform's package (`--flag_alias` names resolved, default values kept) and
+merged over the configuration's options (ParsedFlagsValue.mergeWith): a
+native option takes the parsed value (an allowMultiple option such as
+`--copt` gets the platform's list, replacing the configuration's; the last
+value of any other option wins), `--define` replaces the defines, a
+Starlark flag is set, or removed when the value is its default. So a
+transition's own value of a flag the platform sets is overridden.
+
+The native profile (crate::platform_flags) merges them where configurations
+are created: the engine's transition and exec-transition nodes
+(`with_platform_flags`, src/engine/eval/nodes/phase1.rs) and, for the
+top-level configuration, `Engine::apply_top_platform_flags` right after the
+command's configuration is set. Only a `platform` rule (through plain
+aliases) with `flags` or `parents` is resolved there, analyzed in the
+configuration the transition starts from (Bazel analyzes it in the empty
+one; a platform tree that depends on the configuration is already an
+explicit gap); one that cannot be resolved is left to the configuration's
+own platform lookup, which reports it. Native options convert as a
+Starlark transition's string values do; an option the native profile does
+not model, a non-`--name[=value]` form (`-c opt`) and NON_CONFIGURABLE
+options fail explicitly (`error applying the flags of platform P: ...`).
+Paired capture: tests/fixtures/corpus_parity7 (`pf/`: Starlark, native,
+`--define` and allowMultiple flags, inherited flags, a flag reset to its
+default, after a transition and as the top-level platform; the output
+directories' `ST-` hashes match).
 
 ## Constraint matching
 
@@ -326,8 +360,8 @@ and referenced by '//:cv_missing'`) or select() key error.
 * Exec groups are N35 (docs/EXEC_GROUPS.md); the exec transition is modelled (N18b,
   docs/CONFIGURATION.md: an exec configuration's target platform is the
   execution platform, the end of the host platform's alias chain); platform
-  `flags` as the target
-  platform; `required_settings` and select() in a target platform's tree;
+  `flags` other than `--name[=value]` forms of modelled options (above);
+  `required_settings` and select() in a target platform's tree;
   `platform_mappings` (a workspace file fails the build);
    `--experimental_platforms_api`. Incompatible target skipping is implemented
    separately from configured query (docs/INCOMPATIBLE_BUILD_SKIP.md).
@@ -409,7 +443,7 @@ analyzed, so only the incompatibility is reported, as in Bazel.
   the rules_go `go_config` shape (`//go/constraints/amd64:v2..v4` keys with a
   `None` default), invalid keys in rules without toolchain resolution,
   `config_setting` errors, prerequisite/duplicate/parents/exec-properties/
-  default-value/refinement errors, platform flags, non-platform and missing
+  default-value/refinement errors, platform flags (B84), non-platform and missing
   `--platforms`/`--host_platform` (exception classes, unknown repository,
   lazy execution platform), the empty-configuration rules (label settings,
   select()/label-setting/required_settings gaps), Starlark provider access and

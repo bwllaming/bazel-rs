@@ -493,17 +493,16 @@ exports_files(["data.txt"])
         assert!(output.status.success(), "{target}: {}", errors(&output));
         assert!(output.stdout.is_empty(), "{target}");
     }
-    // As target platforms: flags are not modelled; analysis errors are
-    // followed by InvalidPlatformException's text; non-platforms fail
-    // before analysis (PlatformLookupUtil.java:160-210).
+    // As the target platform, a platform's flags apply (B84; the paired
+    // capture is tests/fixtures/corpus_parity7) ...
+    let output = ws.run(&["build", "--platforms=//e:flagged", "//p:bare"]);
+    assert!(output.status.success(), "{}", errors(&output));
+    // ... analysis errors are followed by InvalidPlatformException's text;
+    // non-platforms fail before analysis (PlatformLookupUtil.java:160-210).
     let not_a_platform = |label: &str| {
         format!("Target {label} was referenced as a platform, but does not provide PlatformInfo")
     };
     for (platform, expected) in [
-        (
-            "//e:flagged",
-            "platform //e:flagged sets flags [--define=a=1]: platform-based flags (platform(flags = ...), analysis/platform/PlatformFunction.java:102-125) are not implemented in the native profile".to_owned(),
-        ),
         (
             "//e:dup",
             format!(

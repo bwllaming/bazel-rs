@@ -78,7 +78,13 @@ not cover, so parallel loading — P2 — attacks both large spans.)
   planned right after the target (`Engine::deferred_target_platform`).
   It used to go to a discarded plan: a later phase-1 edge to one of its
   memoized nodes (an alias to a constraint value) then ended at a target
-  phase 2 never planned (docs/AFFECTED_TARGETS.md §8.6).
+  phase 2 never planned (docs/AFFECTED_TARGETS.md §8.6). An aspect
+  application has the same retry (B67): one analyzed on the coordinator
+  whose prepare saw its base configuration's target platform deferred and
+  that reads it (`ctx.var`'s TARGET_CPU) resolves it there and is analyzed
+  again, its aborted attempt's prints dropped (`CoordAspects::analyze`);
+  a worker's or a walk's failed analysis of it is unusable and redone
+  there (tests/fixtures/corpus_parity7's `aspectvar/`).
 - Loading runs as commit-ordered units: BUILD prints buffered, `.bzl`
   top-level prints buffered in the shared cache entry (failures included)
   and replayed once per module in the package's load-DFS order; the
