@@ -2721,15 +2721,29 @@ fn ensure_directory(path: &Path) -> Result<(), String> {
 }
 
 fn ensure_boundary(root: &Path) -> Result<(), String> {
-    // Bazel 9.3 RepositoryFetchFunction / RepositoryUtils.isValidRepoRoot.
+    // Bazel 9.3 RepositoryFetchFunction / RepositoryUtils.isValidRepoRoot:
+    // `Path.exists()` follows symlinks, so a boundary file the repository
+    // rule left as a symlink (rctx.symlink("real", "REPO.bazel")) or as
+    // anything else that exists there counts (B83).
     for name in ["REPO.bazel", "MODULE.bazel", "WORKSPACE.bazel", "WORKSPACE"] {
-        if optional_metadata(&root.join(name))?.is_some_and(|metadata| metadata.is_file()) {
-            return Ok(());
+        let path = root.join(name);
+        match fs::metadata(&path) {
+            Ok(_) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("cannot inspect {}: {error}", path.display())),
         }
     }
     let path = root.join("REPO.bazel");
     let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
+    // A dangling REPO.bazel symlink does not exist for Bazel either; its
+    // createEmptyFile opens through the link (FileSystemUtils), so the
+    // empty file is created at the link's target.
+    let dangling = optional_metadata(&path)?.is_some_and(|metadata| metadata.is_symlink());
+    if dangling {
+        options.write(true).create(true).truncate(false);
+    } else {
+        options.write(true).create_new(true);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -7025,5 +7039,30 @@ mod tests {
             .is_err()
         );
         no_stages(cache.path());
+    }
+
+    /// B83: a boundary file left as a symlink counts (isValidRepoRoot
+    /// follows links); a dangling REPO.bazel link gets the empty file
+    /// created at its target.
+    #[cfg(unix)]
+    #[test]
+    fn boundary_follows_symlinks() {
+        let root = temp();
+        let linked = root.path().join("linked");
+        fs::create_dir(&linked).unwrap();
+        fs::write(linked.join("real"), b"x").unwrap();
+        std::os::unix::fs::symlink("real", linked.join("REPO.bazel")).unwrap();
+        ensure_boundary(&linked).unwrap();
+        assert_eq!(fs::read(linked.join("REPO.bazel")).unwrap(), b"x");
+        let dangling = root.path().join("dangling");
+        fs::create_dir(&dangling).unwrap();
+        std::os::unix::fs::symlink("made", dangling.join("REPO.bazel")).unwrap();
+        ensure_boundary(&dangling).unwrap();
+        assert_eq!(fs::read(dangling.join("made")).unwrap(), b"");
+        assert!(
+            fs::symlink_metadata(dangling.join("REPO.bazel"))
+                .unwrap()
+                .is_symlink()
+        );
     }
 }
