@@ -94,6 +94,8 @@ One concurrency group per tag (never cancelled). Two stages:
   published `aarch64-apple-darwin` archive and its `.sha256` with curl, runs
   `shasum -a 256 -c`, `codesign --verify` (the ad-hoc signature) and
   `bazel-rs --version`.
+  Then the same for the bare `bazel-rs-<version>-darwin-arm64` (also `cmp`
+  against the archive's binary).
 
 **Build records** (`<archive stem>.release.json`, schema 1): version, commit,
 compatibility target, rustc, and the archive's notes row (triple, platform,
@@ -250,8 +252,17 @@ build: ~2 minutes) but enough for paired captures (docs/HOST_OS.md).
    legal files of the embedded Bazel tools bundle (Bazel's `LICENSE`, the JDK's
    `legal/` notices); for the static targets also the statically linked C
    runtime (musl's `COPYRIGHT` and LLVM libunwind's licence, taken from the
-   zig distribution). Next to each archive: `<archive>.sha256`, and one
-   `SHA256SUMS` over all archives (`sha256sum -c` format).
+   zig distribution). The publish step also writes the **bare executables**
+   for Bazelisk, which downloads an executable, not an archive:
+   `bazel-rs-<version>-<os>-<arch>` with Bazelisk's `%o-%m` names
+   (`linux-x86_64` from the static musl build, `linux-arm64`, `darwin-arm64`;
+   `Target.bazelisk`), mode 0755, byte for byte the archive's `bazel-rs`.
+   Next to each archive and executable: `<asset>.sha256`, and one
+   `SHA256SUMS` over all of them (`sha256sum -c` format). Bazelisk fetches a
+   release with `USE_BAZEL_VERSION=bazel-rs-<version>` (not semver: Bazelisk
+   picks x86_64 on Apple silicon for semver versions below 4.1) and
+   `BAZELISK_FORMAT_URL=https://github.com/<repo>/releases/download/v<version>/bazel-rs-<version>-%o-%m`;
+   `BAZELISK_VERIFY_SHA256` pins the platform's executable.
 3. **Smoke test** each binary extracted from its archive, in a scratch
    workspace with a scratch HOME, cache and TMPDIR and a dead HTTP(S) proxy (no
    network): `--version` (must print the release version), `version`, `help`,

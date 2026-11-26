@@ -90,6 +90,11 @@ class Target:
     # The `@platforms//os` value of a host running it (the network smoke
     # test's HOST_CONSTRAINTS).
     os_value: str = "linux"
+    # Bazelisk's `%o-%m` for this platform when the release also ships the
+    # bare binary as `bazel-rs-<version>-<os>-<arch>` (Bazelisk downloads an
+    # executable, not an archive: BAZELISK_FORMAT_URL, docs/RELEASING.md).
+    # One per platform: the static build where there are two.
+    bazelisk: str | None = None
 
     @property
     def platform(self) -> str:
@@ -98,7 +103,10 @@ class Target:
 
 TARGETS = (
     Target(TARGET, "x86_64", EM_X86_64, None, static=False, default=True),
-    Target("x86_64-unknown-linux-musl", "x86_64", EM_X86_64, "x86_64-linux-musl", static=True, default=True),
+    Target(
+        "x86_64-unknown-linux-musl", "x86_64", EM_X86_64, "x86_64-linux-musl", static=True, default=True,
+        bazelisk="linux-x86_64",
+    ),
     # jemalloc fixes the page size at build time: 64 KiB covers 4/16/64 KiB
     # kernels (README "Global allocator"). rust-lld links it (static musl
     # needs no C driver), natively on the arm64 runner and when
@@ -106,7 +114,7 @@ TARGETS = (
     Target(
         "aarch64-unknown-linux-musl", "arm64", EM_AARCH64, "aarch64-linux-musl", static=True, default=True,
         runner="ubuntu-24.04-arm", cpu="aarch64", bundle="linux-arm64", kernel="4.1",
-        linker="rust-lld", env=(("JEMALLOC_SYS_WITH_LG_PAGE", "16"),),
+        linker="rust-lld", env=(("JEMALLOC_SYS_WITH_LG_PAGE", "16"),), bazelisk="linux-arm64",
     ),
     # macOS arm64, natively on GitHub's arm64 macOS runner: the host's cc
     # (Apple clang) builds jemalloc and ring; ld64 signs the executable
@@ -114,7 +122,7 @@ TARGETS = (
     Target(
         "aarch64-apple-darwin", "arm64", MACHO_ARM64, None, static=False, default=True,
         runner="macos-15", cpu="aarch64", bundle="darwin-arm64", os_name="macOS", kernel="",
-        binary="macho", os_value="osx",
+        binary="macho", os_value="osx", bazelisk="darwin-arm64",
     ),
 )
 TARGETS_BY_TRIPLE = {t.triple: t for t in TARGETS}
@@ -250,6 +258,16 @@ def is_pre_1_0(version: str) -> bool:
 
 def archive_stem(version: str, triple: str = TARGET) -> str:
     return f"{PACKAGE}-{version}-{triple}"
+
+
+def bazelisk_name(version: str, target: "Target") -> str:
+    """The bare binary's asset name: Bazelisk's `%o-%m` (target.bazelisk)."""
+    return f"{PACKAGE}-{version}-{target.bazelisk}"
+
+
+def bazelisk_format_url(gh_repo: str, version: str) -> str:
+    """BAZELISK_FORMAT_URL for this release's bare binaries."""
+    return f"https://github.com/{gh_repo}/releases/download/{tag_name(version)}/{PACKAGE}-{version}-%o-%m"
 
 
 def cargo_toml_version(text: str) -> str:
@@ -1149,6 +1167,30 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def bare_binaries(dist: Path, version: str, archives: Iterable[tuple["Target", Path]]) -> list[Path]:
+    """The executables of the archives of targets with a Bazelisk name, as
+    `dist/bazel-rs-<version>-<os>-<arch>` (mode 0755): byte for byte the
+    archive's `bazel-rs`, so Bazelisk runs the same binary as the archive."""
+    written = []
+    for target, archive in archives:
+        if target.bazelisk is None:
+            continue
+        member = f"{archive_stem(version, target.triple)}/{PACKAGE}"
+        with tarfile.open(archive) as tar:
+            try:
+                f = tar.extractfile(member)
+            except KeyError:
+                f = None
+            if f is None:
+                raise ReleaseError(f"{archive.name} has no {member}")
+            data = f.read()
+        out = dist / bazelisk_name(version, target)
+        out.write_bytes(data)
+        out.chmod(0o755)
+        written.append(out)
+    return written
+
+
 def write_checksums(dist: Path, assets: list[Path]) -> list[Path]:
     """`<asset>.sha256` per asset and a SHA256SUMS (sha256sum -c format)."""
     written, lines = [], []
@@ -1275,6 +1317,32 @@ def install_commands(info: NotesInfo, best: AssetInfo, stem: str) -> list[str]:
     ]
 
 
+def bazelisk_notes(info: NotesInfo) -> list[str]:
+    """The Bazelisk section: the bare binaries and the variables that fetch them."""
+    names = [
+        bazelisk_name(info.version, TARGETS_BY_TRIPLE[a.triple])
+        for a in info.assets
+        if a.triple in TARGETS_BY_TRIPLE and TARGETS_BY_TRIPLE[a.triple].bazelisk
+    ]
+    if not names:
+        return []
+    return [
+        "## Bazelisk",
+        "",
+        "The release also has the bare executables (" + ", ".join(f"`{n}`" for n in names) + "),",
+        "byte for byte the archives' `bazel-rs`, each with a `.sha256`, for Bazelisk. The version",
+        "must not parse as semver (Bazelisk would fetch x86_64 on Apple silicon for versions below 4.1):",
+        "",
+        "```sh",
+        f"export USE_BAZEL_VERSION={PACKAGE}-{info.version}",
+        f"export BAZELISK_FORMAT_URL='{bazelisk_format_url(info.gh_repo, info.version)}'",
+        "export BAZELISK_VERIFY_SHA256=...   # optional: this platform's executable's sha256",
+        "bazelisk version",
+        "```",
+        "",
+    ]
+
+
 def render_notes(info: NotesInfo, changelog: str, prepend: str | None = None) -> str:
     tag = tag_name(info.version)
     best = recommended_asset(info.assets)
@@ -1344,6 +1412,7 @@ def render_notes(info: NotesInfo, changelog: str, prepend: str | None = None) ->
         "alias and does not replace Bazel or Bazelisk; to try it under the `bazel` name in",
         "one shell, use `alias bazel=bazel-rs`.",
         "",
+        *bazelisk_notes(info),
         f"Documentation: [README.md]({blob}/README.md) (implemented subset, behaviour",
         f"changes, limitations), [PLAN.md]({blob}/PLAN.md) (status and remaining work).",
         "",
@@ -1833,14 +1902,15 @@ def build_release(
             print("build stage done: --stage publish collects these files")
             return Built(None, assets, archives)
 
-        assets = [*archives, *write_checksums(dist, archives)]
+        bare = bare_binaries(dist, version, [(t, archive) for t, archive, _, _ in built])
+        assets = [*archives, *bare, *write_checksums(dist, [*archives, *bare])]
         notes = write_notes(
             run, repo_dir=repo_dir, src=src, work=work, version=version, commit=commit, compat=compat, rustc=rustc,
             infos=infos, gh_repo=gh_repo, prerelease=prerelease, prepend=prepend,
             replace_changelog=replace_changelog, build_url=build_url,
         )
         print_artifacts([*assets, notes], infos, compat)
-        return Built(notes, assets, archives)
+        return Built(notes, assets, [*archives, *bare])
     finally:
         if not in_place:
             run(["git", "-C", repo_dir, "worktree", "remove", "--force", src], check=False, echo=True)
@@ -1880,7 +1950,8 @@ def collect_release(
     for _, archive in pairs:
         shutil.copyfile(archive, dist / archive.name)
         archives.append(dist / archive.name)
-    assets = [*archives, *write_checksums(dist, archives)]
+    bare = bare_binaries(dist, version, [(TARGETS_BY_TRIPLE[info.triple], a) for (info, _), a in zip(pairs, archives)])
+    assets = [*archives, *bare, *write_checksums(dist, [*archives, *bare])]
     infos = [info for info, _ in pairs]
     notes = write_notes(
         run, repo_dir=repo_dir, src=repo_dir, work=work, version=version, commit=commit, compat=compat, rustc=rustc,
@@ -1888,7 +1959,7 @@ def collect_release(
         replace_changelog=replace_changelog, build_url=build_url,
     )
     print_artifacts([*assets, notes], infos, compat)
-    return Built(notes, assets, archives)
+    return Built(notes, assets, [*archives, *bare])
 
 
 def report_problems(problems: list[str], dry_run: bool) -> None:

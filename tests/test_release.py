@@ -951,8 +951,10 @@ class StagesTest(unittest.TestCase):
     def write_build(self, root, triple, *, version="1.2.3", commit=HEAD, compat="9.3.1", data=None):
         t = release.TARGETS_BY_TRIPLE[triple]
         root.mkdir(parents=True, exist_ok=True)
-        archive = root / f"{release.archive_stem(version, triple)}.tar.gz"
-        archive.write_bytes(data or triple.encode())
+        stem = release.archive_stem(version, triple)
+        archive = root / f"{stem}.tar.gz"
+        binary = data or f"bazel-rs for {triple}".encode()
+        release.deterministic_tarball(archive, stem, [(release.PACKAGE, binary, 0o755)], 1_700_000_000)
         info = release.AssetInfo(
             triple, t.arch, archive.name, release.sha256_file(archive), "req", release.SMOKE_FULL, t.static,
             t.caveat, t.platform, t.kernel,
@@ -1010,17 +1012,47 @@ class StagesTest(unittest.TestCase):
                 targets=targets, source=built, work=work, prepend=None, replace_changelog=False,
                 build_url="https://github.com/o/r/actions/runs/1",
             )
-            self.assertEqual([a.name for a in result.archives], [f"{release.archive_stem('1.2.3', t.triple)}.tar.gz" for t in targets])
+            self.assertEqual([a.name for a in result.archives[:4]], [f"{release.archive_stem('1.2.3', t.triple)}.tar.gz" for t in targets])
             sums = (work / "dist" / "SHA256SUMS").read_text().splitlines()
-            self.assertEqual(len(sums), 4)
+            self.assertEqual(len(sums), 7)
             self.assertTrue(any(line.endswith("  bazel-rs-1.2.3-aarch64-apple-darwin.tar.gz") for line in sums), sums)
+            # Bazelisk's bare executables: one per platform (the static one on
+            # x86_64 Linux), byte for byte the archive's bazel-rs, mode 0755.
+            bare = {
+                "bazel-rs-1.2.3-linux-x86_64": "x86_64-unknown-linux-musl",
+                "bazel-rs-1.2.3-linux-arm64": "aarch64-unknown-linux-musl",
+                "bazel-rs-1.2.3-darwin-arm64": "aarch64-apple-darwin",
+            }
+            self.assertEqual([a.name for a in result.archives[4:]], list(bare))
+            for name, triple in bare.items():
+                path = work / "dist" / name
+                self.assertEqual(path.read_bytes(), f"bazel-rs for {triple}".encode())
+                self.assertEqual(path.stat().st_mode & 0o777, 0o755)
+                self.assertTrue(any(line.endswith(f"  {name}") for line in sums), sums)
+                self.assertTrue((work / "dist" / f"{name}.sha256").is_file())
             notes = result.notes.read_text()
             self.assertIn("Linux arm64 (`aarch64-unknown-linux-musl`)", notes)
             self.assertIn("macOS arm64 (`aarch64-apple-darwin`)", notes)
             self.assertIn("- `aarch64-apple-darwin`: macOS arm64 (Apple silicon), req; signed ad hoc", notes)
             self.assertIn("| Built by | [GitHub Actions run](https://github.com/o/r/actions/runs/1) |", notes)
             self.assertIn("port(arm64): x", notes)
-            self.assertEqual(len(result.assets), 4 + 4 + 1)
+            self.assertIn("## Bazelisk", notes)
+            self.assertIn("export USE_BAZEL_VERSION=bazel-rs-1.2.3", notes)
+            self.assertIn(
+                "export BAZELISK_FORMAT_URL='https://github.com/o/r/releases/download/v1.2.3/bazel-rs-1.2.3-%o-%m'", notes
+            )
+            self.assertEqual(len(result.assets), 4 + 3 + 7 + 1)
+
+    def test_bare_binaries_need_the_executable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dist = Path(tmp)
+            t = release.TARGETS_BY_TRIPLE["aarch64-apple-darwin"]
+            archive = dist / "a.tar.gz"
+            release.deterministic_tarball(archive, "other", [(release.PACKAGE, b"x", 0o755)], 1_700_000_000)
+            with self.assertRaisesRegex(release.ReleaseError, "has no bazel-rs-1.2.3-aarch64-apple-darwin/bazel-rs"):
+                release.bare_binaries(dist, "1.2.3", [(t, archive)])
+            gnu = release.TARGETS_BY_TRIPLE["x86_64-unknown-linux-gnu"]
+            self.assertEqual(release.bare_binaries(dist, "1.2.3", [(gnu, archive)]), [])
 
 
 class WorkflowTest(unittest.TestCase):

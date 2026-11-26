@@ -187,3 +187,14 @@ jobs:
           tar xzf "$stem.tar.gz"
           codesign --verify --verbose "$stem/bazel-rs"
           "$stem/bazel-rs" --version
+      - name: Download, check and run the bare darwin-arm64 executable (Bazelisk's asset)
+        run: |
+          name="bazel-rs-${TAG#v}-darwin-arm64"
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          cd "$RUNNER_TEMP"
+          curl -fsSL --retry 3 -O "$url/$name" -O "$url/$name.sha256"
+          shasum -a 256 -c "$name.sha256"
+          cmp "$name" "bazel-rs-${TAG#v}-aarch64-apple-darwin/bazel-rs"
+          chmod +x "$name"
+          codesign --verify --verbose "$name"
+          "./$name" --version
