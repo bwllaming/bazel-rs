@@ -1,0 +1,98 @@
+action 'Compiling extuser/main.c'
+  Mnemonic: CppCompile
+  Target: //extuser:main
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 5ffc2ea1f6ee317fa09a4d89dc6bc6097d087c1217ce2eb2ca46cd26db418ea8
+  Inputs: [external/+new_local_repository+extlib/include/ext.h, external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths, external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh, extuser/main.c]
+  Outputs: [bazel-out/k8-fastbuild/bin/extuser/_objs/main/main.pic.d, bazel-out/k8-fastbuild/bin/extuser/_objs/main/main.pic.o]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /usr/bin/gcc \
+    -U_FORTIFY_SOURCE \
+    -fstack-protector \
+    -Wall \
+    -Wunused-but-set-parameter \
+    -Wno-free-nonheap-object \
+    -fno-omit-frame-pointer \
+    -MD \
+    -MF \
+    bazel-out/k8-fastbuild/bin/extuser/_objs/main/main.pic.d \
+    '-frandom-seed=bazel-out/k8-fastbuild/bin/extuser/_objs/main/main.pic.o' \
+    -fPIC \
+    -iquote \
+    . \
+    -iquote \
+    bazel-out/k8-fastbuild/bin \
+    -iquote \
+    external/+new_local_repository+extlib \
+    -iquote \
+    bazel-out/k8-fastbuild/bin/external/+new_local_repository+extlib \
+    -iquote \
+    external/rules_cc+ \
+    -iquote \
+    bazel-out/k8-fastbuild/bin/external/rules_cc+ \
+    -iquote \
+    external/bazel_tools \
+    -iquote \
+    bazel-out/k8-fastbuild/bin/external/bazel_tools \
+    -Iexternal/+new_local_repository+extlib/include \
+    -Ibazel-out/k8-fastbuild/bin/external/+new_local_repository+extlib/include \
+    -c \
+    extuser/main.c \
+    -o \
+    bazel-out/k8-fastbuild/bin/extuser/_objs/main/main.pic.o \
+    -fno-canonical-system-headers \
+    -Wno-builtin-macro-redefined \
+    '-D__DATE__="redacted"' \
+    '-D__TIMESTAMP__="redacted"' \
+    '-D__TIME__="redacted"')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Linking extuser/main'
+  Mnemonic: CppLink
+  Target: //extuser:main
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: d7e9eadfeee4e51ab8b7c3718d06eefdf52b94369447034c1020c89d8a3036ab
+  Inputs: [bazel-out/k8-fastbuild/bin/_solib_k8/_U_A_A+new_Ulocal_Urepository+extlib_S_S_Clibext___Ulib/libext.so, bazel-out/k8-fastbuild/bin/extuser/_objs/main/main.pic.o, external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths, external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh, external/rules_cc+/cc/private/toolchain/build_interface_so, external/rules_cc+/cc/private/toolchain/link_dynamic_library.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/extuser/main]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, PWD=/proc/self/cwd, ZERO_AR_DATE=1]
+  Command Line: (exec /usr/bin/gcc \
+    -o \
+    bazel-out/k8-fastbuild/bin/extuser/main \
+    -Xlinker \
+    -rpath \
+    -Xlinker \
+    '$ORIGIN/../_solib_k8/_U_A_A+new_Ulocal_Urepository+extlib_S_S_Clibext___Ulib' \
+    -Xlinker \
+    -rpath \
+    -Xlinker \
+    '$ORIGIN/main.runfiles/_main/_solib_k8/_U_A_A+new_Ulocal_Urepository+extlib_S_S_Clibext___Ulib' \
+    -Lbazel-out/k8-fastbuild/bin/_solib_k8/_U_A_A+new_Ulocal_Urepository+extlib_S_S_Clibext___Ulib \
+    -Wl,-S \
+    '-fuse-ld=gold' \
+    -B/usr/bin \
+    -Wl,-no-as-needed \
+    -Wl,-z,relro,-z,now \
+    -pass-exit-codes \
+    bazel-out/k8-fastbuild/bin/extuser/_objs/main/main.pic.o \
+    -lext \
+    -Wl,--push-state,-as-needed \
+    -lstdc++ \
+    -Wl,--pop-state \
+    -Wl,--push-state,-as-needed \
+    -lm \
+    -Wl,--pop-state)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'SolibSymlink _solib_k8/_U_A_A+new_Ulocal_Urepository+extlib_S_S_Clibext___Ulib/libext.so'
+  Mnemonic: SolibSymlink
+  Target: @extlib//:libext
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 9b0f5496accb9913c53d9a1e3fa5ddc29e9ff2b404f087b505b854c392ab34dc
+  Inputs: [external/+new_local_repository+extlib/lib/libext.so]
+  Outputs: [bazel-out/k8-fastbuild/bin/_solib_k8/_U_A_A+new_Ulocal_Urepository+extlib_S_S_Clibext___Ulib/libext.so]
+

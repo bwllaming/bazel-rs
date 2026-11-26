@@ -751,35 +751,113 @@ fn cc_shared_library_and_dynamic_deps_match_genuine() {
         &["mnemonic('CppLink|CppArchive|SolibSymlink|CppCompile', //shared:all)"],
     );
     assert!(output.status.success(), "{}", stderr(&output));
-    let blocks = |text: &str| -> Vec<String> {
-        let mut blocks: Vec<String> = text
-            .split("\n\n")
-            .filter(|block| !block.trim().is_empty())
-            .map(|block| {
-                block
-                    .lines()
-                    .filter(|line| {
-                        !line.starts_with("  Execution platform: ")
-                            && !line.starts_with("# Configuration: ")
-                            && !line.starts_with("# Execution platform: ")
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .collect();
-        blocks.sort();
-        blocks
-    };
     let expected = fs::read_to_string(fixture().join("genuine_aquery_shared.txt")).unwrap();
     assert_eq!(
-        blocks(&String::from_utf8_lossy(&output.stdout)),
-        blocks(&expected)
+        aquery_blocks(&String::from_utf8_lossy(&output.stdout)),
+        aquery_blocks(&expected)
     );
     // The binary finds both shared libraries through its rpath and runs
     // (genuine: `112`).
     let run = ws.command("cache", "run", &["//shared:main"], &[]);
     assert!(run.status.success(), "{}", stderr(&run));
     assert_eq!(String::from_utf8_lossy(&run.stdout), "112\n");
+}
+
+/// An aquery text's action blocks, sorted, without the execution platform
+/// and configuration lines (the host platform's label and the
+/// configuration checksum differ natively).
+fn aquery_blocks(text: &str) -> Vec<String> {
+    let mut blocks: Vec<String> = text
+        .split("\n\n")
+        .filter(|block| !block.trim().is_empty())
+        .map(|block| {
+            block
+                .lines()
+                .filter(|line| {
+                    !line.starts_with("  Execution platform: ")
+                        && !line.starts_with("# Configuration: ")
+                        && !line.starts_with("# Execution platform: ")
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect();
+    blocks.sort();
+    blocks
+}
+
+/// The `@extlib` repository of B88's capture (PROVENANCE.md), appended to
+/// the fixture's MODULE.bazel. (A `build_file` label would link the
+/// repository's BUILD file into the main repository: OSS corpus B89.)
+const EXTLIB_MODULE: &str = r#"
+new_local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "new_local_repository")
+
+new_local_repository(
+    name = "extlib",
+    path = "extlib",
+    build_file_content = """load("@rules_cc//cc:defs.bzl", "cc_library")
+
+cc_library(
+    name = "libext",
+    srcs = ["lib/libext.so"],
+    hdrs = ["include/ext.h"],
+    includes = ["include"],
+    visibility = ["//visibility:public"],
+)
+""",
+)
+"#;
+
+/// OSS corpus B88: a prebuilt shared library in the `srcs` of an external
+/// repository's cc_library (rules_py's `@python_3_13//:libpython`) is
+/// linked below `_solib_k8/` in a directory mangled from its
+/// repository-relative path (SourceArtifact.getRootRelativePath), not its
+/// execution path. genuine_aquery_extlib.txt is genuine 9.3.1's
+/// `aquery "mnemonic('SolibSymlink|CppLink|CppCompile', set(//extuser:main @extlib//:libext))"`
+/// of the same module over BCR rules_cc 0.2.17 (PROVENANCE.md).
+#[test]
+fn external_repository_shared_library_solib_directory_matches_genuine() {
+    if !Path::new("/usr/bin/gcc").exists() && !Path::new("/usr/bin/cc").exists() {
+        eprintln!("skipped: no host C compiler for cc_configure");
+        return;
+    }
+    let ws = Workspace::new();
+    let mut module = fs::read_to_string(ws.root.join("MODULE.bazel")).unwrap();
+    module.push_str(EXTLIB_MODULE);
+    fs::write(ws.root.join("MODULE.bazel"), module).unwrap();
+    let extlib = ws.root.join("extlib");
+    fs::create_dir_all(extlib.join("lib")).unwrap();
+    let status = Command::new("gcc")
+        .args([
+            "-shared",
+            "-O0",
+            "-g0",
+            "-Wl,-build-id=none",
+            "-Wl,-soname=libext.so",
+            "ext.c",
+            "-o",
+            "lib/libext.so",
+        ])
+        .env_clear()
+        .envs([("PATH", "/usr/bin:/bin"), ("LC_ALL", "C"), ("LANG", "C")])
+        .current_dir(&extlib)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let output = ws.aquery(
+        "cache",
+        &["mnemonic('SolibSymlink|CppLink|CppCompile', set(//extuser:main @extlib//:libext))"],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let expected = fs::read_to_string(fixture().join("genuine_aquery_extlib.txt")).unwrap();
+    assert_eq!(
+        aquery_blocks(&String::from_utf8_lossy(&output.stdout)),
+        aquery_blocks(&expected)
+    );
+    // The binary finds the library through its rpath (genuine: `88`).
+    let run = ws.command("cache", "run", &["//extuser:main"], &[]);
+    assert!(run.status.success(), "{}", stderr(&run));
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "88\n");
 }
 
 /// P6/MEM (docs/OSS_CORPUS.md): a compile whose inputs list a large shared

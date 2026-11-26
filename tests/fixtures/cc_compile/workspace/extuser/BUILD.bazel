@@ -1,0 +1,13 @@
+# B88: a prebuilt shared library in an external repository's cc_library
+# srcs (rules_py's @python_3_13 `libpython`): its `_solib_k8` directory is
+# mangled from the library's repository-relative path (genuine 9.3.1
+# capture: ../../genuine_aquery_extlib.txt). @extlib is the
+# new_local_repository tests/cc_compile.rs (EXTLIB_MODULE) declares over
+# ../extlib.
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+cc_binary(
+    name = "main",
+    srcs = ["main.c"],
+    deps = ["@extlib//:libext"],
+)

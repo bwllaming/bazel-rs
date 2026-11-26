@@ -127,10 +127,20 @@ fn dynamic_library_soname(library_path: &str, preserve_name: bool, mnemonic: &st
 /// Artifact.getRootRelativePath of the file at `path`, which
 /// SolibSymlinkAction.getDynamicLibrarySymlink (:158-179) mangles: below
 /// its configuration's root for a generated file — `external/REPO/...` for
-/// an external repository's library, never its `../REPO` short path — and
-/// the execution path for a source file.
+/// an external repository's library, never its `../REPO` short path
+/// (DerivedArtifact.getRootRelativePath, actions/Artifact.java:307-309) —
+/// and for a source file its execution path, without the two leading
+/// segments in an external repository, whose source root is that
+/// repository's directory (SourceArtifact.getRootRelativePath, :773-775;
+/// `lib/libpython3.13.so` of `@python_3_13`, OSS corpus B88).
 fn root_relative_path(path: &str) -> &str {
-    crate::label::split_generated_root(path).map_or(path, |(_, relative)| relative)
+    if let Some((_, relative)) = crate::label::split_generated_root(path) {
+        return relative;
+    }
+    path.strip_prefix("external/")
+        .or_else(|| path.strip_prefix("../"))
+        .and_then(|rest| rest.split_once('/'))
+        .map_or(path, |(_, relative)| relative)
 }
 
 /// BuildConfigurationValue.getMnemonic of the configuration whose output
@@ -2117,11 +2127,29 @@ mod tests {
             mangled_name(&label, "_solib_k8", "k8-opt-exec", path, false, false),
             "_solib_k8/libexternal_Sprotobuf+_Ssrc_Sgoogle_Sprotobuf_Slibprotobuf.so"
         );
-        assert_eq!(
-            root_relative_path("external/r+/lib/libx.so"),
-            "external/r+/lib/libx.so"
-        );
+        // A source library of an external repository: its repository's
+        // source root (B88, genuine 9.3.1: rules_py's `@python_3_13`
+        // `_solib_k8/_U_A_A+python_Uinterpreters+..._S_S_Clibpython___Ulib/`).
+        assert_eq!(root_relative_path("external/r+/lib/libx.so"), "lib/libx.so");
+        assert_eq!(root_relative_path("../r+/lib/libx.so"), "lib/libx.so");
         assert_eq!(root_relative_path("cdep/libx.so"), "cdep/libx.so");
+        let label = Label::parse_canonical(
+            "@@+python_interpreters+python_3_13_x86_64_unknown_linux_gnu//:libpython",
+        )
+        .unwrap();
+        assert_eq!(
+            mangled_name(
+                &label,
+                "_solib_k8",
+                "k8-fastbuild",
+                root_relative_path(
+                    "external/+python_interpreters+python_3_13_x86_64_unknown_linux_gnu/lib/libpython3.13.so"
+                ),
+                true,
+                true
+            ),
+            "_solib_k8/_U_A_A+python_Uinterpreters+python_U3_U13_Ux86_U64_Uunknown_Ulinux_Ugnu_S_S_Clibpython___Ulib/libpython3.13.so"
+        );
     }
 
     #[test]
