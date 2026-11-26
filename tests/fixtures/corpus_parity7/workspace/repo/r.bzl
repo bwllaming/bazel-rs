@@ -2,9 +2,11 @@ def _r(rctx):
     if rctx.attr.mode == "link":
         rctx.file("real", "")
         rctx.symlink("real", "REPO.bazel")
+        rctx.file("ignore_list", "ignored\n")
     elif rctx.attr.mode == "foreign":
         # Linked from another repository's tree.
         rctx.symlink(Label("@linked//:real"), "REPO.bazel")
+        rctx.symlink(Label("@linked//:ignore_list"), ".bazelignore")
     else:
         rctx.symlink("made", "REPO.bazel")
     rctx.file("BUILD.bazel", """

@@ -401,7 +401,7 @@ pub fn for_repository(
 
 /// Read `<root>/.bazelignore` when it is a regular file (`FileValue.isFile`,
 /// following symlinks). Like REPO.bazel and BUILD files, it must resolve
-/// inside the repository.
+/// inside the repository or another repository's published tree.
 fn read_bazelignore(root: &Path) -> Result<Vec<(String, Option<String>)>, String> {
     let path = root.join(".bazelignore");
     match observed_fs::metadata(&path) {
@@ -413,7 +413,12 @@ fn read_bazelignore(root: &Path) -> Result<Vec<(String, Option<String>)>, String
     let canonical_root = observed_fs::canonicalize(root)
         .map_err(|e| format!("cannot resolve repository root {}: {e}", root.display()))?;
     let resolved = observed_fs::canonicalize(&path).map_err(|error| not_readable(&path, &error))?;
-    if !resolved.starts_with(&canonical_root) {
+    // A repository rule may link it from another repository's published
+    // tree (llvm-project's overlay links every top-level entry of
+    // `@llvm-raw`), as a BUILD file or REPO.bazel may.
+    if !resolved.starts_with(&canonical_root)
+        && !crate::workspace::in_sibling_store_tree(&canonical_root, &resolved)
+    {
         return Err(format!(
             ".bazelignore file {} resolves outside workspace {}",
             path.display(),

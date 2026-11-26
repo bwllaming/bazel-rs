@@ -315,7 +315,7 @@ pub(crate) fn is_package(root: &Path, package: &str) -> Result<bool, String> {
 /// A published tree is content-addressed and the BUILD file's READ records
 /// its bytes, like the store anchors of source links
 /// (crate::source_links::StoreTrees); stages and trash stay refused.
-fn in_sibling_store_tree(root: &Path, resolved: &Path) -> bool {
+pub(crate) fn in_sibling_store_tree(root: &Path, resolved: &Path) -> bool {
     root.ancestors().skip(1).any(|store| {
         crate::repository_store::store_tree_of(store, root).is_some_and(|tree| tree.root == root)
             && crate::repository_store::published_tree(store, resolved).is_some()
