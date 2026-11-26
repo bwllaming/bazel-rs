@@ -201,7 +201,7 @@ all 64 projects (59,464 labels; rules_py's query answers too).
 | highway | **OK** | 11.6 / 6.8 | 3.2 / 0.2 / 0.2 | 181.4 / 178.3 | 605 / 257 | 1053, 0, 0, 0 | PASSED:138 / same |  |
 | limdor-cpp | **OK** | 11.0 / 6.3 | 2.6 / 0.1 / 0.2 | 3.2 / 0.6 | 722 / 250 | 18, 0, 0, 0 | PASSED:1 / same |  |
 | limdor-rust | **OK** | 27.9 / 20.0 | 3.1 / 0.2 / 0.2 | 4.9 / 1.8 | 910 / 479 | 91, 0, 0, 0 | PASSED:1 / same |  |
-| openroad | **OK**¹ | 75.9 / 106.0 | 9.6 / 0.8 / 1.4 | `//:openroad` 674.5 / 1010.2 | 3330 / 4748 | `//:openroad` 19201, 0, 0, 0 (all hashed) | — |  |
+| openroad | **OK**¹ | 75.9 / 106.0 | 9.6 / 0.8 / 1.4 | `//:openroad` 674.5 / 1010.2 (openroad-cpu: 672.6 / 694.8) | 3330 / 4748 | `//:openroad` 19201, 0, 0, 0 (all hashed) | — |  |
 | rules-template | **OK** | 25.7 / 21.2 | 3.8 / 0.2 / 0.2 | 29.0 / 24.5 | 1293 / 380 | 446, 0, 0, 0 | PASSED:2 / same |  |
 | rules_go-basic_gazelle | **OK** | 25.2 / 42.8 | 3.9 / 0.3 / 0.2 | 32.5 / 32.7 | 1242 / 392 | 117, 0, 0, 0 | PASSED:1 / same |  |
 | rules_python-pip_parse | **OK** | 30.1 / 28.9 | 3.8 / 0.4 / 0.2 | 6.0 / 1.2 | 1632 / 757 | 56, 0, 0, 0 | PASSED:2 / same |  |
@@ -1289,7 +1289,7 @@ path-mapping it runs every phase, its results row).
 | highway | 14–52 | 11.6 / 6.8 | 1.71 | 3.2 / 0.2 / 0.2 | 1.00 | 181.4 / 178.3 | 1.02 | 776.1 / 765.5 | 1.01 | 605 / 257 | 2.4 |
 | limdor-cpp | 9–17 | 11.0 / 6.3 | 1.74 | 2.6 / 0.1 / 0.2 | 0.75 | 3.2 / 0.6 | 5.27 | 3.0 / 0.8 | 4.01 | 722 / 250 | 2.9 |
 | limdor-rust | 8–10 | 27.9 / 20.0 | 1.39 | 3.1 / 0.2 / 0.2 | 1.25 | 4.9 / 1.8 | 2.77 | 3.5 / 0.8 | 4.68 | 910 / 479 | 1.9 |
-| openroad (`//:openroad`) | 9–35 | 75.9 / 106.0 | 0.72 | 9.6 / 0.8 / 1.4 | 0.57 | 674.5 / 1010.2 | 0.67 | — / — | — | 3330 / 4748 | 0.7 |
+| openroad (`//:openroad`) | 9–35 | 75.9 / 106.0 | 0.72 | 9.6 / 0.8 / 1.4 | 0.57 | 674.5 / 1010.2 (openroad-cpu: 672.6 / 694.8) | 0.67 (0.97) | — / — | — | 3330 / 4748 | 0.7 |
 | rules-template | 16–26 | 25.7 / 21.2 | 1.21 | 3.8 / 0.2 / 0.2 | 1.25 | 29.0 / 24.5 | 1.18 | 4.2 / 0.9 | 4.64 | 1293 / 380 | 3.4 |
 | rules_go-basic_gazelle | 20–41 | 25.2 / 42.8 | 0.59 | 3.9 / 0.3 / 0.2 | 1.50 | 32.5 / 32.7 | 0.99 | 4.3 / 0.9 | 4.74 | 1242 / 392 | 3.2 |
 | rules_python-pip_parse | 14–20 | 30.1 / 28.9 | 1.04 | 3.8 / 0.4 / 0.2 | 1.60 | 6.0 / 1.2 | 4.81 | 5.0 / 2.4 | 2.11 | 1632 / 757 | 2.2 |
@@ -1379,7 +1379,8 @@ path-mapping it runs every phase, its results row).
   28.9). Slower: OpenROAD `//:openroad` (1,010 against 674 s for the same
   13,480 actions; CPU time 14,464 against 10,828 s, at a higher load:
   median 28 against 25, peaks 76 against 30; 994.6 against 714.0 in
-  corpus-rerun, 773.9 against 693.5 in openroad-perf), examples-frontend
+  corpus-rerun, 773.9 against 693.5 in openroad-perf; 694.8 against 672.6
+  since openroad-cpu, below), examples-frontend
   (135.5 against 61.0, both failing), aspect-bazel-examples (136.2 against
   88.0, failing on B78), rules_java (11.4 against 8.8, failing analysis),
   grpc-gateway (42.8 against 36.8), bb-storage (66.7 against 58.7; 68.2
@@ -1468,7 +1469,8 @@ files hash identically before and after the scheduler change.
   dependent actions first (`Graph::ready_key`; Bazel's evaluator orders by
   depth likewise). The jobs stay busy to the end (16.0 per 5 s window from
   the first to the last but one).
-- **P6: OpenROAD `build //:openroad` was 2.2× genuine** (mostly fixed;
+- **P6: OpenROAD `build //:openroad` was 2.2× genuine** (fixed; regressed
+  by B40 and fixed again in openroad-cpu, below;
   openroad-perf, footnote 20): 1,490.9 s → 773.9 s against genuine's
   693.5 s (676–702 s before) for the same 13,479/13,480 actions and 7,642
   sandboxed spawns; critical path 80.1 → 61.0 s against 56.6 s. The
@@ -1684,6 +1686,54 @@ were runs with the download cache pre-filled too, the fully cold runs take
   critical path, more speculation attempts for chains whose blockers are
   all requested, the pattern phase's extensions ahead.
 
+### Findings and fixes (branch openroad-cpu)
+
+Non-LTO release builds of main 8462f37f and the branch, genuine 9.3.1
+`--batch --host_jvm_args=-Xmx6g`, one after another under the host lock,
+`--jobs=16` on both tools (the harness's value). `build //:openroad` from
+scratch with the repositories kept; CPU split by polling the tool's own
+`/proc/<pid>/stat` (self) against wait4's total (children = total − self).
+
+| `//:openroad` | load (median) | wall (s) | CPU (s) | self user | self sys | children user | children sys | critical path |
+|---|---|---|---|---|---|---|---|---|
+| bazel-rs main | 22 | 988.0 | 14,535 | 369 | 3,973 | 8,695 | 1,498 | 62.7 |
+| bazel-rs openroad-cpu | 20 | 694.8 | 10,931 | 381 | 730 | 8,660 | 1,160 | 57.0 |
+| genuine 9.3.1 | 21 | 672.6 | 10,795 | 414 | 472 | 8,658 | 1,251 | 54.0 |
+
+Two earlier rounds of the branch at load 29–39: 692.1 and 809.1 s against
+genuine's 672.3 and 713.8 s.
+
+- **The extra CPU was bazel-rs's own kernel time, not the actions'.** The
+  compilers cost the same on both tools; bazel-rs's own system time was
+  3,744–3,973 s against genuine's 475. Execution-root reuse (P6) was off
+  for every compile since B40 (6bc458f3): OpenROAD's compiles have a
+  source directory input (the clang resource directory), which sandboxed
+  spawns see as a symlink, and such roots were never stashed (`PERF-STAGE
+  reuse roots=551` of 7,642; staging 2,453 s and root removal 1,517 s
+  summed over the jobs). Now they are reused (the link's path keeps
+  nothing in a reconciled root; staging links it again): 7,505 roots.
+- **Reconciliation trusts directories recorded unchanged; tree files are
+  verified once per process** (docs/HARDLINK_STAGING.md "Directories
+  recorded unchanged", "Tree files verified once"): on the overlay root
+  filesystem every path component, `stat` and directory open contends on
+  overlayfs' credential override (16 threads: ~4 µs per one-component
+  `fstatat`, ~13 µs per directory open, against 0.5 µs alone). Self
+  system time 966 s with reuse alone, 730 s with both.
+- **Cold `--nobuild` (P7, not fixed).** Fully cold (fresh output root,
+  cache and HOME): OpenROAD 81.5 s genuine, 104.2 s main, 103.7 s branch
+  (peak RSS 2.8 / 4.8 / 4.8 GB); rules_lint-python 31.4 / 51.8 / 50.2 s.
+  bazel-rs uses less CPU (OpenROAD 296–299 s against 343 s); the time is
+  the evaluator's sequential pass waiting for one repository after another
+  (`BAZEL_RS_EVAL_TIMELINE`): rules_lint-python's 44 s of phase 1 are
+  python 3.12 (5.8 s), the `pip` extension (8.9 s), multitool (3.1 s),
+  `pip_312_attrs` (3.5 s), `aspect_rules_js` (4.9 s) and gazelle's
+  `go_deps` errorformat (9.4 s, reached only at +29 s by `//test:flake8`),
+  which genuine fetches side by side from +11–15 s. Most waits are pool
+  loads "left by the pool" because their repository is unfetched and its
+  extension group not prepared: the repositories-ahead speculation of
+  cold-eval does not cover them. Next step: request such a repository (and
+  its group) ahead the moment the pool leaves the load.
+
 ## Recommendations
 
 From the corpus-rerun2 run (2026-11-25, the released 0.5.1):
@@ -1703,7 +1753,7 @@ From the corpus-rerun2 run (2026-11-25, the released 0.5.1):
 4. Not investigated yet: bazel-remote's stamped digest, rules_kotlin's
    KSP srcjar, aspect-bazel-examples' `test_container`.
 5. Performance: OpenROAD `//:openroad` (1.5× genuine's wall and 1.34× its
-   CPU time in this run) and cold analysis (P7) and peak RSS (4.7 against
+   CPU time in this run; 1.03× and 1.01× since openroad-cpu) and cold analysis (P7) and peak RSS (4.7 against
    3.3 GB); rules_lint-python's cold run (1.8× genuine in two runs); no
    analysis snapshot under `--lockfile_mode=off` (rules_zig,
    rules_rust-sys).
