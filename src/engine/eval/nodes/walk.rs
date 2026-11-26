@@ -858,6 +858,20 @@ impl Engine {
         Walk::new(self, &mut Vec::new(), configured, plan).target_platform(config)
     }
 
+    /// B84: the top-level configuration with its target platform's
+    /// `flags` merged (BuildConfigurationKeyProducer creates the top-level
+    /// configuration's key too), when they change it.
+    pub(in crate::engine) fn top_with_platform_flags(
+        &mut self,
+    ) -> Result<Option<Configuration>, String> {
+        let top = self.configurations.top_configuration().as_ref().clone();
+        let mut configured = ConfiguredNodes::default();
+        let mut plan = Vec::new();
+        let flagged = Walk::new(self, &mut Vec::new(), &mut configured, &mut plan)
+            .with_platform_flags(top.id, top.clone())?;
+        Ok((flagged.id != top.id).then_some(flagged))
+    }
+
     /// [`Host::platform_info`] in the walk.
     pub(in crate::engine) fn platform_info(
         &mut self,

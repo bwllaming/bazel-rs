@@ -1899,8 +1899,106 @@ pub(crate) trait Phase1: Host {
         platform: &Label,
     ) -> Result<ConfigId, String> {
         let target_scoped = self.target_scoped_flags(config)?;
-        self.intern_exec(config, platform.clone(), &target_scoped)
+        // B84: the execution platform's `flags` apply to the exec
+        // configuration too (BuildConfigurationKeyProducer runs for every
+        // transition's options).
+        let exec = crate::config_registry::exec_transition(
+            &self.configuration(config),
+            platform.clone(),
+            &target_scoped,
+        );
+        let flagged = self.with_platform_flags(config, exec.clone())?;
+        if flagged.id == exec.id {
+            return self
+                .intern_exec(config, platform.clone(), &target_scoped)
+                .map_err(|error| format!("{EXEC_INTERN_ERROR}{error}"));
+        }
+        self.intern_derived(flagged, &target_scoped)
             .map_err(|error| format!("{EXEC_INTERN_ERROR}{error}"))
+    }
+
+    /// B84: `configuration`, created from `from` by a transition, with its
+    /// target platform's `flags` merged over it (crate::platform_flags;
+    /// BuildConfigurationKeyProducer.checkTargetPlatformFlags,
+    /// analysis/producers/BuildConfigurationKeyProducer.java:146-160). Only
+    /// a `platform` that sets flags or has parents (which may) is resolved
+    /// here, in `from` (a platform's analysis does not depend on the
+    /// configuration: Bazel's is in the empty one); one that cannot be
+    /// resolved is left to the configuration's own platform lookup, which
+    /// reports it.
+    fn with_platform_flags(
+        &mut self,
+        from: ConfigId,
+        configuration: Configuration,
+    ) -> Result<Configuration, String> {
+        if configuration.native.no_config {
+            return Ok(configuration);
+        }
+        let [platform] = configuration.native.platforms.as_slice() else {
+            return Ok(configuration);
+        };
+        let platform = platform.clone();
+        if crate::label::unresolvable_package_message(&platform.package_id()).is_some() {
+            return Ok(configuration);
+        }
+        let (_, actual) = self.static_alias_chain(&platform);
+        let may_set_flags = match self.target(&actual) {
+            Ok(Target::Rule(rule)) if matches!(rule.kind, RuleKind::Native("platform")) => {
+                rule.native.as_ref().is_some_and(|native| {
+                    !native.strings("flags").is_empty() || !native.labels("parents").is_empty()
+                })
+            }
+            _ => false,
+        };
+        if !may_set_flags {
+            return Ok(configuration);
+        }
+        let Ok(info) = self.platform_info(&platform, from) else {
+            return Ok(configuration);
+        };
+        if info.flags.is_empty() {
+            return Ok(configuration);
+        }
+        // Parsed relative to the platform's package (PlatformFunction's
+        // PackageContext, :105-118).
+        let repositories = self.repositories().clone();
+        let labels = |text: &str| repositories.parse(text, &platform.repository, &platform.package);
+        let mut loader = |name: &str| -> Result<crate::starlark_options::LoadedTarget, String> {
+            use crate::starlark_options::LoadedTarget;
+            let label = repositories.parse(name, &platform.repository, &platform.package)?;
+            Ok(match self.target(&label)? {
+                Target::Source(_) => LoadedTarget::NotRule(label),
+                Target::Output(..) => LoadedTarget::OtherRule(label),
+                Target::Rule(rule) => {
+                    if let Some(info) = self.build_setting_info(&rule)? {
+                        LoadedTarget::BuildSetting(info)
+                    } else if matches!(rule.kind, RuleKind::Native("alias")) {
+                        let native = rule.native.as_ref().expect("native alias");
+                        let actual = if native.configurable.contains_key("actual") {
+                            None
+                        } else {
+                            match native.attrs.get("actual") {
+                                Some(crate::custom_rule::AttrValue::Label(Some(actual))) => {
+                                    Some(self.resolve_rule_src(&rule, actual)?)
+                                }
+                                _ => None,
+                            }
+                        };
+                        LoadedTarget::Alias { label, actual }
+                    } else {
+                        LoadedTarget::OtherRule(label)
+                    }
+                }
+            })
+        };
+        crate::platform_flags::apply(&configuration, &info.flags, &mut loader, &labels).map_err(
+            |error| {
+                format!(
+                    "error applying the flags of platform {}: {error}",
+                    crate::rule_declarations::canonical_form(&platform)
+                )
+            },
+        )
     }
 
     /// The Starlark flags of the top-level configuration and of `config`
@@ -2186,6 +2284,7 @@ pub(crate) trait Phase1: Host {
             .configurations
             .into_iter()
             .map(|(key, config)| {
+                let config = self.with_platform_flags(from, config).map_err(failure)?;
                 self.intern_derived(config, &target_scoped)
                     .map(|id| (key, id))
                     .map_err(failure)
@@ -4328,14 +4427,9 @@ pub(crate) trait Phase1: Host {
                     &self.alias_chain(config, label).1,
                 ))
             })?;
-        // PlatformFunction parses PlatformInfo.flags into the configuration
-        // (:102-125, ParsedFlagsValue): not modelled.
-        if !platform.flags.is_empty() {
-            return Err(PlatformError::Other(format!(
-                "platform {shown} sets flags [{}]: platform-based flags (platform(flags = ...), analysis/platform/PlatformFunction.java:102-125) are not implemented in the native profile",
-                platform.flags.join(", ")
-            )));
-        }
+        // PlatformFunction parses PlatformInfo.flags (:102-125); they are
+        // merged where a configuration targeting the platform is created
+        // (B84: Self::with_platform_flags).
         Ok(platform)
     }
 

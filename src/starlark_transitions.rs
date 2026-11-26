@@ -2156,26 +2156,10 @@ fn intern(text: &str) -> &'static str {
 /// (:640-760) for the modelled options; errors are its ValidationException
 /// texts (OptionsParsingException messages wrapped as `OptionsParsingError
 /// for option 'NAME': MESSAGE`).
-fn convert_native(
-    native: &mut NativeOptions,
-    name: &str,
-    raw: &Raw,
-    package_label: &dyn Fn(&str) -> Result<Label, String>,
-) -> Result<(), String> {
-    if let Some((_, field)) = GENERIC_VALUE_OPTIONS
-        .iter()
-        .find(|(option, _)| *option == name)
-    {
-        return convert_generic(
-            native,
-            crate::configuration::value_option(name).expect("a value option"),
-            field,
-            raw,
-            package_label,
-        );
-    }
-    let option = crate::configuration::option(name);
-    let list_typed = matches!(
+/// The allowMultiple (`List`-typed) native options a transition writes as a
+/// list ([`convert_native`]).
+fn native_list_typed(name: &str) -> bool {
+    matches!(
         name,
         "platforms"
             | "extra_toolchains"
@@ -2200,7 +2184,74 @@ fn convert_native(
             | "host_javacopt"
             | "protocopt"
             | "modify_execution_info"
-    );
+    )
+}
+
+/// A native option a platform's `flags` set (PlatformFunction parses them,
+/// ParsedFlagsValue.mergeWith sets each parsed option's value on the
+/// configuration, analysis/platform/PlatformFunction.java:102-125):
+/// `values` are the option's occurrences in order (an allowMultiple
+/// option's list replaces the configuration's, the last value of any other
+/// wins), `Some(enabled)` a boolean option's `--name`/`--noname`. The
+/// value converts as a transition's string value does ([`convert_native`]).
+pub(crate) fn set_native_from_flags(
+    native: &mut NativeOptions,
+    name: &str,
+    values: &[String],
+    enabled: Option<bool>,
+    package_label: &dyn Fn(&str) -> Result<Label, String>,
+) -> Result<(), String> {
+    let text = |value: &str| Raw {
+        kind: RawKind::String(value.to_owned()),
+        repr: format!("{value:?}"),
+        type_name: "string".to_owned(),
+    };
+    let raw = if let Some(enabled) = enabled {
+        Raw {
+            kind: RawKind::Bool(enabled),
+            repr: if enabled { "True" } else { "False" }.to_owned(),
+            type_name: "bool".to_owned(),
+        }
+    } else if native_list_typed(name) {
+        let items = values.iter().map(|value| text(value)).collect::<Vec<_>>();
+        Raw {
+            repr: format!(
+                "[{}]",
+                items
+                    .iter()
+                    .map(|item| item.repr.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            kind: RawKind::List(items),
+            type_name: "list".to_owned(),
+        }
+    } else {
+        text(values.last().map(String::as_str).unwrap_or_default())
+    };
+    convert_native(native, name, &raw, package_label)
+}
+
+fn convert_native(
+    native: &mut NativeOptions,
+    name: &str,
+    raw: &Raw,
+    package_label: &dyn Fn(&str) -> Result<Label, String>,
+) -> Result<(), String> {
+    if let Some((_, field)) = GENERIC_VALUE_OPTIONS
+        .iter()
+        .find(|(option, _)| *option == name)
+    {
+        return convert_generic(
+            native,
+            crate::configuration::value_option(name).expect("a value option"),
+            field,
+            raw,
+            package_label,
+        );
+    }
+    let option = crate::configuration::option(name);
+    let list_typed = native_list_typed(name);
     let invalid = || format!("Invalid value type for option '{name}'");
     let parsing = |message: String| format!("OptionsParsingError for option '{name}': {message}");
     if matches!(raw.kind, RawKind::None) {

@@ -4434,6 +4434,17 @@ impl Engine {
         self.set_configuration(configuration);
     }
 
+    /// B84: merge the top-level target platform's `flags`
+    /// (`platform(flags = ...)`, crate::platform_flags) into the top-level
+    /// configuration; called right after [`Self::set_configuration`].
+    pub fn apply_top_platform_flags(&mut self) -> Result<(), String> {
+        if let Some(configuration) = self.top_with_platform_flags()? {
+            crate::config_registry::validate_top(&configuration)?;
+            self.set_configuration(configuration);
+        }
+        Ok(())
+    }
+
     pub fn set_configuration(&mut self, configuration: Configuration) {
         self.configurations = Configurations::new(configuration);
         self.platforms.clear();

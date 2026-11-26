@@ -3013,7 +3013,7 @@ pub struct CommandLineOptions {
 /// CoreOptions, QueryCommand.java:59-67): CppOptions.java:236-282, 563-582,
 /// 602-667; CoreOptions.java:831-856; JavaOptions.java:50-69;
 /// ProtoConfiguration.java:49-56.
-const FLAG_LIST_OPTIONS: [(&str, bool); 20] = [
+pub(crate) const FLAG_LIST_OPTIONS: [(&str, bool); 20] = [
     ("copt", false),
     ("cxxopt", false),
     ("conlyopt", false),
@@ -3725,7 +3725,7 @@ pub fn unknown_repository_name(label: &Label) -> Option<&str> {
 }
 
 /// FragmentOptions.normalizeEntries then sortEntries (CoreOptions.java:1199-1208).
-fn normalize_defines(entries: Vec<(String, String)>) -> Vec<(String, String)> {
+pub(crate) fn normalize_defines(entries: Vec<(String, String)>) -> Vec<(String, String)> {
     let mut normalized: Vec<(String, String)> = Vec::new();
     for (key, value) in entries {
         match normalized.iter_mut().find(|(seen, _)| *seen == key) {

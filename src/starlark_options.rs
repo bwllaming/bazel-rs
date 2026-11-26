@@ -341,7 +341,7 @@ pub fn parse(
     loader: &mut dyn FnMut(&str) -> Result<LoadedTarget, String>,
     labels: &LabelParser<'_>,
 ) -> Result<BTreeMap<Label, SettingValue>, String> {
-    parse_inner(args, loader, labels).map_err(|failure| {
+    let parsed = parse_inner(args, loader, labels).map_err(|failure| {
         let Some(argument) = failure.argument else {
             return failure.message;
         };
@@ -352,14 +352,42 @@ pub fn parse(
             }
         }
         format!("{argument} :: {message}")
-    })
+    })?;
+    Ok(parsed
+        .into_iter()
+        .filter(|(info, value)| *value != info.default)
+        .map(|(info, value)| (info.label, value))
+        .collect())
+}
+
+/// [`parse`] with `includeDefaultValues` (ParsedFlagsFunction, as
+/// PlatformFunction parses a platform's `flags`): every setting given, in
+/// argument order, with whether its value is the setting's default
+/// (ParsedFlagsValue.mergeWith removes those from the configuration).
+/// Errors are `ARG :: MESSAGE` or the message.
+pub fn parse_with_defaults(
+    args: &[String],
+    loader: &mut dyn FnMut(&str) -> Result<LoadedTarget, String>,
+    labels: &LabelParser<'_>,
+) -> Result<Vec<(Label, SettingValue, bool)>, String> {
+    let parsed = parse_inner(args, loader, labels).map_err(|failure| match failure.argument {
+        Some(argument) => format!("{argument} :: {}", failure.message),
+        None => failure.message,
+    })?;
+    Ok(parsed
+        .into_iter()
+        .map(|(info, value)| {
+            let default = value == info.default;
+            (info.label, value, default)
+        })
+        .collect())
 }
 
 fn parse_inner(
     args: &[String],
     loader: &mut dyn FnMut(&str) -> Result<LoadedTarget, String>,
     labels: &LabelParser<'_>,
-) -> Result<BTreeMap<Label, SettingValue>, Failure> {
+) -> Result<Vec<(BuildSettingInfo, SettingValue)>, Failure> {
     let mut cache = BTreeMap::new();
     // parseArg (:289-342): every argument is loaded before any conversion.
     let mut unparsed: Vec<(String, String, BuildSettingInfo)> = Vec::new();
@@ -465,13 +493,7 @@ fn parse_inner(
     for (info, _) in &parsed {
         unmodelled_scope(info)?;
     }
-    let mut options = BTreeMap::new();
-    for (info, value) in parsed {
-        if value != info.default {
-            options.insert(info.label, value);
-        }
-    }
-    Ok(options)
+    Ok(parsed)
 }
 
 /// Scope.ScopeType.allowedAttributeValues (analysis/config/Scope.java:53-59).

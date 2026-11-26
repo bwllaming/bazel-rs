@@ -143,6 +143,7 @@ mod path_key;
 pub mod path_mapping;
 pub mod plan_timings;
 pub mod platform;
+mod platform_flags;
 mod platform_providers;
 pub mod platforms;
 mod prefetch;
