@@ -16,13 +16,15 @@
     "//err:unused_ok": "genuine/err_unused_ok.{binaryproto,textproto}",
     "//docs:skylib_lib": "genuine/docs_skylib_lib.{binaryproto,textproto}",
     "//docs:skylib_rules": "genuine/docs_skylib_rules.{binaryproto,textproto}",
-    "//docs:skylib_rules_main": "genuine/docs_skylib_rules_main.{binaryproto,textproto}"
+    "//docs:skylib_rules_main": "genuine/docs_skylib_rules_main.{binaryproto,textproto}",
+    "//inherit:inherit": "genuine/inherit_inherit.{binaryproto,textproto}"
   },
   "notes": {
     "pkg/defs.bzl": "every documentable kind: rules (attribute types, defaults, values, providers, advertised providers, executable/test), providers (field docs, init), functions (docstring sections, parameter roles, Label defaults), aspects, symbolic macros (attrs, finalizer), repository rules (environ), module extensions (tag classes), struct namespaces, re-exports, #: doc comments",
     "edge/edge.bzl": "external labels (@dep_mod), render_main_repo_name, build settings, tabs and non-ASCII (TextFormat octal escapes, Latin-1 tab expansion), symbol_names over nested structs, varargs before keyword-only parameters",
     "docs/*.bzl": "bazel_skylib 1.8.2's lib and rules modules re-exported (their sources are not visible to the main repository)",
-    "stardoc": "stardoc 0.8.0's stardoc() macro (same genuine): its `NAME.extract` starlark_doc_extract output is byte-identical natively; the renderer (java_binary over protobuf built from source) is not built natively (a protobuf dependency's genrule uses cmd_bash)"
+    "stardoc": "stardoc 0.8.0's stardoc() macro (same genuine): its `NAME.extract` starlark_doc_extract output is byte-identical natively; the renderer (java_binary over protobuf built from source) is not built natively (a protobuf dependency's genrule uses cmd_bash)",
+    "inherit/defs.bzl": "symbolic macros inheriting a Starlark rule's and the common attributes: the built-in `toolchains` and `target_compatible_with` attributes' required providers (TemplateVariableInfo, ConstraintValueInfo; OSS corpus B91, captured 2026-11-26 on parity-b87)"
   },
   "errors": {
     "//pkg:nodeps": {

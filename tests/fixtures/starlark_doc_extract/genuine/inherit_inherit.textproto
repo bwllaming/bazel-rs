@@ -1,0 +1,296 @@
+rule_info {
+  rule_name: "my_rule"
+  doc_string: "A rule to inherit from."
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "srcs"
+    doc_string: "Sources."
+    type: LABEL_LIST
+    default_value: "[]"
+  }
+  origin_key {
+    name: "my_rule"
+    file: "//inherit:defs.bzl"
+  }
+}
+module_docstring: "Macros inheriting attributes (rules_py\'s `py_pex_binary`, OSS corpus B91)."
+file: "//inherit:defs.bzl"
+macro_info {
+  macro_name: "from_rule"
+  doc_string: "Inherits my_rule\'s attributes, the common ones included."
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this macro instance. Normally, this is also the name for the macro\'s main or only target. The names of any other targets that this macro might create will be this name with a string suffix."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "visibility"
+    doc_string: "The visibility to be passed to this macro\'s exported targets. It always implicitly includes the location where this macro is instantiated, so this attribute only needs to be explicitly set if you want the macro\'s targets to be additionally visible somewhere else."
+    type: LABEL_LIST
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "expect_failure"
+    type: STRING
+    default_value: "None"
+    natively_defined: true
+  }
+  attribute {
+    name: "transitive_configs"
+    type: LABEL_LIST
+    default_value: "None"
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "deprecation"
+    type: STRING
+    default_value: "None"
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "tags"
+    type: STRING_LIST
+    default_value: "None"
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "testonly"
+    type: BOOLEAN
+    default_value: "None"
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "features"
+    type: STRING_LIST
+    default_value: "None"
+    natively_defined: true
+  }
+  attribute {
+    name: "compatible_with"
+    type: LABEL_LIST
+    default_value: "None"
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "restricted_to"
+    type: LABEL_LIST
+    default_value: "None"
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "package_metadata"
+    type: LABEL_LIST
+    default_value: "None"
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "aspect_hints"
+    type: LABEL_LIST
+    default_value: "None"
+    natively_defined: true
+  }
+  attribute {
+    name: "toolchains"
+    type: LABEL_LIST
+    provider_name_group {
+      provider_name: "TemplateVariableInfo"
+      origin_key {
+        name: "TemplateVariableInfo"
+        file: "<native>"
+      }
+    }
+    default_value: "None"
+    natively_defined: true
+  }
+  attribute {
+    name: "exec_properties"
+    type: STRING_DICT
+    default_value: "None"
+    natively_defined: true
+  }
+  attribute {
+    name: "exec_compatible_with"
+    type: LABEL_LIST
+    default_value: "None"
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "exec_group_compatible_with"
+    type: LABEL_LIST_DICT
+    default_value: "None"
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "target_compatible_with"
+    type: LABEL_LIST
+    provider_name_group {
+      provider_name: "ConstraintValueInfo"
+      origin_key {
+        name: "ConstraintValueInfo"
+        file: "<native>"
+      }
+    }
+    default_value: "None"
+    natively_defined: true
+  }
+  attribute {
+    name: "srcs"
+    doc_string: "Sources."
+    type: LABEL_LIST
+    default_value: "None"
+  }
+  origin_key {
+    name: "from_rule"
+    file: "//inherit:defs.bzl"
+  }
+}
+macro_info {
+  macro_name: "from_common"
+  doc_string: "Inherits the common attributes."
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this macro instance. Normally, this is also the name for the macro\'s main or only target. The names of any other targets that this macro might create will be this name with a string suffix."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "visibility"
+    doc_string: "The visibility to be passed to this macro\'s exported targets. It always implicitly includes the location where this macro is instantiated, so this attribute only needs to be explicitly set if you want the macro\'s targets to be additionally visible somewhere else."
+    type: LABEL_LIST
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "expect_failure"
+    type: STRING
+    default_value: "None"
+    natively_defined: true
+  }
+  attribute {
+    name: "transitive_configs"
+    type: LABEL_LIST
+    default_value: "None"
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "deprecation"
+    type: STRING
+    default_value: "None"
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "tags"
+    type: STRING_LIST
+    default_value: "None"
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "testonly"
+    type: BOOLEAN
+    default_value: "None"
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "features"
+    type: STRING_LIST
+    default_value: "None"
+    natively_defined: true
+  }
+  attribute {
+    name: "compatible_with"
+    type: LABEL_LIST
+    default_value: "None"
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "restricted_to"
+    type: LABEL_LIST
+    default_value: "None"
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "package_metadata"
+    type: LABEL_LIST
+    default_value: "None"
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "aspect_hints"
+    type: LABEL_LIST
+    default_value: "None"
+    natively_defined: true
+  }
+  attribute {
+    name: "toolchains"
+    type: LABEL_LIST
+    provider_name_group {
+      provider_name: "TemplateVariableInfo"
+      origin_key {
+        name: "TemplateVariableInfo"
+        file: "<native>"
+      }
+    }
+    default_value: "None"
+    natively_defined: true
+  }
+  attribute {
+    name: "exec_properties"
+    type: STRING_DICT
+    default_value: "None"
+    natively_defined: true
+  }
+  attribute {
+    name: "exec_compatible_with"
+    type: LABEL_LIST
+    default_value: "None"
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "exec_group_compatible_with"
+    type: LABEL_LIST_DICT
+    default_value: "None"
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "target_compatible_with"
+    type: LABEL_LIST
+    provider_name_group {
+      provider_name: "ConstraintValueInfo"
+      origin_key {
+        name: "ConstraintValueInfo"
+        file: "<native>"
+      }
+    }
+    default_value: "None"
+    natively_defined: true
+  }
+  origin_key {
+    name: "from_common"
+    file: "//inherit:defs.bzl"
+  }
+}

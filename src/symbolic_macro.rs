@@ -102,9 +102,31 @@ fn native_macro_attr(attribute: &crate::native_rules::NativeAttr) -> MacroAttr {
         declaration.flags.push("ORDER_INDEPENDENT".to_owned());
     }
     declaration.nonconfigurable = !attribute.configurable;
+    let mut spec = plain_spec(kind, attribute.mandatory, declaration);
+    // The built-in providers the common attributes require
+    // (BaseRuleClasses.java:328-361, StarlarkRuleClassFunctions.java:165-189):
+    // shown by starlark_doc_extract's attribute docs of an inheriting macro
+    // (rules_py's `py_pex_binary`).
+    let required = match attribute.name {
+        "toolchains" => Some((
+            crate::template_variable_info::PROVIDER_ID,
+            "TemplateVariableInfo",
+        )),
+        "target_compatible_with" => Some((
+            crate::platform_providers::CONSTRAINT_VALUE_ID,
+            "ConstraintValueInfo",
+        )),
+        _ => None,
+    };
+    if let Some((id, display_name)) = required {
+        spec.required_providers = vec![vec![crate::providers::ProviderRequirement {
+            id: id.to_owned(),
+            display_name: display_name.to_owned(),
+        }]];
+    }
     MacroAttr {
         name: attribute.name.to_owned(),
-        spec: plain_spec(kind, attribute.mandatory, declaration),
+        spec,
         configurable: attribute.configurable,
         starlark_defined: false,
         tristate,

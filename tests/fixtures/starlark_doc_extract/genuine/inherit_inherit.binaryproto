@@ -1,0 +1,59 @@
+
+…
+my_ruleA rule to inherit from.*
+nameA unique name for this target. 
+srcsSources.2[]"
+my_rule//inherit:defs.bzl*JMacros inheriting attributes (rules_py's `py_pex_binary`, OSS corpus B91).2//inherit:defs.bzlJ¨	
+	from_rule8Inherits my_rule's attributes, the common ones included.Ü
+nameÏA unique name for this macro instance. Normally, this is also the name for the macro's main or only target. The names of any other targets that this macro might create will be this name with a string suffix. œ
+
+visibility‡The visibility to be passed to this macro's exported targets. It always implicitly includes the location where this macro is instantiated, so this attribute only needs to be explicitly set if you want the macro's targets to be additionally visible somewhere else.8@
+expect_failure2None@ 
+transitive_configs2None8@
+deprecation2None8@
+tags2None8@
+testonly2None8@
+features2None@
+compatible_with2None8@
+restricted_to2None8@
+package_metadata2None8@
+aspect_hints2None@P
+
+toolchains*8
+TemplateVariableInfo 
+TemplateVariableInfo<native>2None@
+exec_properties
+2None@"
+exec_compatible_with2None8@(
+exec_group_compatible_with2None8@Z
+target_compatible_with*6
+ConstraintValueInfo
+ConstraintValueInfo<native>2None@
+srcsSources.2None"
+	from_rule//inherit:defs.bzlJù
+from_commonInherits the common attributes.Ü
+nameÏA unique name for this macro instance. Normally, this is also the name for the macro's main or only target. The names of any other targets that this macro might create will be this name with a string suffix. œ
+
+visibility‡The visibility to be passed to this macro's exported targets. It always implicitly includes the location where this macro is instantiated, so this attribute only needs to be explicitly set if you want the macro's targets to be additionally visible somewhere else.8@
+expect_failure2None@ 
+transitive_configs2None8@
+deprecation2None8@
+tags2None8@
+testonly2None8@
+features2None@
+compatible_with2None8@
+restricted_to2None8@
+package_metadata2None8@
+aspect_hints2None@P
+
+toolchains*8
+TemplateVariableInfo 
+TemplateVariableInfo<native>2None@
+exec_properties
+2None@"
+exec_compatible_with2None8@(
+exec_group_compatible_with2None8@Z
+target_compatible_with*6
+ConstraintValueInfo
+ConstraintValueInfo<native>2None@"!
+from_common//inherit:defs.bzl
