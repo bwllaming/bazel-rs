@@ -1,0 +1,10 @@
+# A constraint_value a select() key's config_setting lists (@mdd).
+package(default_package_metadata = ["//md:d"])
+
+constraint_setting(name = "s")
+
+constraint_value(
+    name = "v",
+    constraint_setting = ":s",
+    visibility = ["//visibility:public"],
+)

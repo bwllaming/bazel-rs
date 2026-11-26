@@ -1,0 +1,8 @@
+# Package metadata targets, each over its own repository.
+filegroup(name = "a", srcs = ["@mda//:x.txt"], visibility = ["//visibility:public"])
+
+filegroup(name = "b", srcs = ["@mdb//:x.txt"], visibility = ["//visibility:public"])
+
+filegroup(name = "c", srcs = ["@mdc//:x.txt"], visibility = ["//visibility:public"])
+
+filegroup(name = "d", srcs = ["@mdd//:x.txt"], visibility = ["//visibility:public"])

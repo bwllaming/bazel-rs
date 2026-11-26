@@ -1,0 +1,6 @@
+# A select() key that is an alias of a config_setting (@mdb).
+package(default_package_metadata = ["//md:b"])
+
+config_setting(name = "opt", values = {"compilation_mode": "opt"})
+
+alias(name = "key", actual = ":opt", visibility = ["//visibility:public"])

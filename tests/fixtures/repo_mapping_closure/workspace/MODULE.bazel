@@ -26,3 +26,18 @@ local_path_override(module_name = "asptool", path = "asptool")
 
 bazel_dep(name = "asptc")
 local_path_override(module_name = "asptc", path = "asptc")
+
+bazel_dep(name = "meta")
+local_path_override(module_name = "meta", path = "meta")
+
+bazel_dep(name = "mda")
+local_path_override(module_name = "mda", path = "mda")
+
+bazel_dep(name = "mdb")
+local_path_override(module_name = "mdb", path = "mdb")
+
+bazel_dep(name = "mdc")
+local_path_override(module_name = "mdc", path = "mdc")
+
+bazel_dep(name = "mdd")
+local_path_override(module_name = "mdd", path = "mdd")

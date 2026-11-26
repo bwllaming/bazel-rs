@@ -1504,7 +1504,8 @@ fn repo_mapping_manifests_include_generating_rules_and_select_keys() {
     // with a config_setting's constraint_values and their constraint_setting
     // (@constr, @setting; B62), and an attribute aspect's own dependencies
     // and toolchains (@asptool, @asptc; B62), also over the aspect-applied
-    // target (`over_aspect`).
+    // target (`over_aspect`), and a select() key's own package metadata
+    // (B90: @mda/@mdb/@mdc; not a constraint_value's, @mdd).
     // Expected bytes: genuine 9.3.1's, tests/fixtures/repo_mapping_closure.
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/repo_mapping_closure");
     let receipt: serde_json::Value =
@@ -1527,10 +1528,14 @@ fn repo_mapping_manifests_include_generating_rules_and_select_keys() {
         "//:from_constraint",
         "//:from_aspect",
         "//:over_aspect",
+        "//:from_metadata_sel",
+        "//:from_metadata_plain",
+        "//:from_metadata_setting",
+        "//:from_metadata_constraint",
     ]);
     success(&output);
     let expected = receipt["repo_mapping"].as_object().unwrap();
-    assert_eq!(expected.len(), 6);
+    assert_eq!(expected.len(), 10);
     for (name, content) in expected {
         let exec = name.replace("bazel-bin/", "bazel-out/k8-fastbuild/bin/");
         let path = single(&ws, &exec);

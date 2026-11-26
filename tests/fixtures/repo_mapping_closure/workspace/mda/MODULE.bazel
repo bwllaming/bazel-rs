@@ -1,0 +1,3 @@
+module(name = "mda")
+
+bazel_dep(name = "ext")

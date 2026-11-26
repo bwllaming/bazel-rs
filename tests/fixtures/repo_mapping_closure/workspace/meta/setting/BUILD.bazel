@@ -1,0 +1,8 @@
+# A select() key that is a config_setting (@mdc).
+package(default_package_metadata = ["//md:c"])
+
+config_setting(
+    name = "key",
+    values = {"compilation_mode": "opt"},
+    visibility = ["//visibility:public"],
+)

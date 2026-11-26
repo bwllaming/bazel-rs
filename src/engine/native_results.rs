@@ -90,6 +90,57 @@ impl Engine {
         config: ConfigId,
         transitive: &mut BTreeSet<String>,
     ) {
+        self.walk_config_conditions(rule, config, transitive, &mut |label, config| {
+            self.dependency_repositories_in(reads, label, Some(config))
+        });
+    }
+
+    /// The configured targets whose planned repositories
+    /// [`Self::config_condition_transitive_in`] reads for `rule`: a prepare
+    /// computed ahead of its turn waits for their results (crate::engine::
+    /// parallel::buffer's requirements; a `select()` key is no dependency
+    /// edge, so nothing else orders it before its dependent there). As
+    /// [`Self::dependency_repositories_in`] reads them: an output file's
+    /// generating rule, a rule transition's delegate.
+    /// Only the keys of loaded rules (those have results), each once.
+    pub(super) fn push_config_condition_requirements(
+        &self,
+        rule: &Rule,
+        config: ConfigId,
+        keys: &mut Vec<ConfiguredTargetKey>,
+    ) {
+        let mut found = Vec::new();
+        self.walk_config_conditions(rule, config, &mut BTreeSet::new(), &mut |label, config| {
+            let label = match self.generated.get(&label) {
+                Some((owner, _)) => owner.clone(),
+                None => label,
+            };
+            let key = ConfiguredTargetKey::new(label, config);
+            found.push(self.rule_delegations.get(&key).cloned().unwrap_or(key));
+            BTreeSet::new()
+        });
+        for key in found {
+            if self
+                .packages
+                .get(&key.label.package_id())
+                .is_some_and(|package| package.get(&key.label).is_some())
+                && !keys.contains(&key)
+            {
+                keys.push(key);
+            }
+        }
+    }
+
+    /// The walk of [`Self::config_condition_transitive_in`]: the
+    /// repositories it knows statically go to `transitive`, `planned` gives
+    /// those of a configured target from its planned results.
+    fn walk_config_conditions(
+        &self,
+        rule: &Rule,
+        config: ConfigId,
+        transitive: &mut BTreeSet<String>,
+        planned: &mut dyn FnMut(Label, ConfigId) -> BTreeSet<String>,
+    ) {
         // The loaded package's rule: the configured one has its selects
         // resolved (configured_attributes::configure).
         let Some(declared) = self
@@ -103,7 +154,7 @@ impl Engine {
             let Ok(label) = self.resolve_rule_src(rule, &text) else {
                 continue;
             };
-            self.prerequisite_repositories_in(reads, label, Some(config), transitive, 0);
+            self.walk_prerequisite(label, Some(config), transitive, planned, 0);
         }
     }
 
@@ -125,6 +176,29 @@ impl Engine {
         label: Label,
         config: Option<ConfigId>,
         transitive: &mut BTreeSet<String>,
+        depth: usize,
+    ) {
+        self.walk_prerequisite(
+            label,
+            config,
+            transitive,
+            &mut |label, config| self.dependency_repositories_in(reads, label, Some(config)),
+            depth,
+        );
+    }
+
+    /// The walk of [`Self::prerequisite_repositories_in`] (`planned` as in
+    /// [`Self::walk_config_conditions`]). A walked rule's `package_metadata`
+    /// targets, configured in the no-config configuration, are dependencies
+    /// of its configured target too (BaseRuleClasses.java:291-297): their
+    /// planned repositories count (B90: bazel_skylib's `//lib:always_true`
+    /// carries its package's license, from rules_license).
+    fn walk_prerequisite(
+        &self,
+        label: Label,
+        config: Option<ConfigId>,
+        transitive: &mut BTreeSet<String>,
+        planned: &mut dyn FnMut(Label, ConfigId) -> BTreeSet<String>,
         depth: usize,
     ) {
         let rule = self
@@ -174,12 +248,28 @@ impl Engine {
                 .map(|label| (label, false))
                 .collect(),
             _ => {
-                transitive.extend(self.dependency_repositories_in(reads, label, config));
+                match config {
+                    Some(config) => transitive.extend(planned(label, config)),
+                    None => {
+                        transitive.insert(label.repository.to_string());
+                    }
+                }
                 return;
             }
         };
         transitive.insert(label.repository.to_string());
         let Some(rule) = rule else { return };
+        // Not those of the constraints and platforms, which live in no
+        // configuration (genuine 9.3.1: a config_setting's constraint_value's
+        // package metadata is no transitive package of the dependent).
+        if config.is_some() {
+            for text in &rule.package_metadata {
+                let Ok(metadata) = self.resolve_rule_src(rule, text) else {
+                    continue;
+                };
+                transitive.extend(planned(metadata, crate::config_registry::no_config_id()));
+            }
+        }
         for (text, configured) in prerequisites {
             let Ok(prerequisite) = self.resolve_rule_src(rule, &text) else {
                 continue;
@@ -187,7 +277,7 @@ impl Engine {
             // Constraints and platforms live in no configuration; flag
             // values and an alias's actual in the dependent's.
             let config = if configured { config } else { None };
-            self.prerequisite_repositories_in(reads, prerequisite, config, transitive, depth + 1);
+            self.walk_prerequisite(prerequisite, config, transitive, planned, depth + 1);
         }
     }
 
@@ -216,7 +306,10 @@ impl Engine {
                         .copied()
                         .unwrap_or(key.config),
                 ),
-                EdgeCfg::NoConfig => None,
+                // `package_metadata` edges: their targets' transitive
+                // repositories in the no-config configuration, as a
+                // Starlark rule's (Engine::custom_dependencies_in; B90).
+                EdgeCfg::NoConfig => Some(crate::config_registry::no_config_id()),
                 EdgeCfg::Starlark(_) => {
                     unreachable!("native rules have no Starlark attribute transitions")
                 }

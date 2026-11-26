@@ -774,6 +774,12 @@ pub fn exec_transition(
     Configuration::new(native, starlark)
 }
 
+/// The id of [`no_config`], computed once.
+pub fn no_config_id() -> ConfigId {
+    static ID: OnceLock<ConfigId> = OnceLock::new();
+    *ID.get_or_init(|| no_config().id)
+}
+
 /// The no-config configuration (CommonOptions.EMPTY_OPTIONS,
 /// analysis/config/CommonOptions.java:32-42; NoConfigTransition.patch,
 /// analysis/config/transitions/NoConfigTransition.java:52-55).

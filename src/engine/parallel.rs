@@ -3639,6 +3639,9 @@ impl Engine {
                 }
             }
         }
+        // The keys its transitive repositories read through its `select()`
+        // keys (B90; as crate::engine::parallel::buffer's requirements).
+        self.push_config_condition_requirements(rule, key.config, &mut keys);
         // Waited for in reverse (Self::wait_or_ready pops).
         keys.reverse();
         Some(keys)
@@ -3836,6 +3839,7 @@ impl Engine {
                 }
             }
         }
+        self.push_config_condition_requirements(rule, key.config, &mut keys);
         // Waited for in reverse (Self::wait_or_ready pops): the first
         // dependency first.
         keys.reverse();

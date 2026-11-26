@@ -1,0 +1,7 @@
+module(name = "meta")
+
+bazel_dep(name = "ext")
+bazel_dep(name = "mda")
+bazel_dep(name = "mdb")
+bazel_dep(name = "mdc")
+bazel_dep(name = "mdd")

@@ -1,0 +1,3 @@
+module(name = "mdb")
+
+bazel_dep(name = "ext")

@@ -1,0 +1,14 @@
+# A select() key that is an alias with a configurable actual (bazel_skylib's
+# config_setting_group, `//lib:always_true`): its package's metadata (@mda).
+package(default_package_metadata = ["//md:a"])
+
+config_setting(name = "opt", values = {"compilation_mode": "opt"})
+
+alias(
+    name = "key",
+    actual = select({
+        ":opt": ":opt",
+        "//conditions:default": ":opt",
+    }),
+    visibility = ["//visibility:public"],
+)

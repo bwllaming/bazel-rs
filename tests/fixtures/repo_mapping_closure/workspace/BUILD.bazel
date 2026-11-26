@@ -64,3 +64,48 @@ my_bin(
         "@ext//:e.txt",
     ],
 )
+
+# A select() key's own package metadata (`package_metadata`, a no-config
+# edge) is a transitive package of the dependent (B90): an alias with a
+# configurable actual (bazel_skylib's `//lib:always_true`), an alias and a
+# config_setting.
+my_bin(
+    name = "from_metadata_sel",
+    data = ["@ext//:e.txt"],
+    flag = select({
+        "@meta//sel:key": "a",
+        "//conditions:default": "other",
+    }),
+)
+
+my_bin(
+    name = "from_metadata_plain",
+    data = ["@ext//:e.txt"],
+    flag = select({
+        "@meta//plain:key": "b",
+        "//conditions:default": "other",
+    }),
+)
+
+my_bin(
+    name = "from_metadata_setting",
+    data = ["@ext//:e.txt"],
+    flag = select({
+        "@meta//setting:key": "c",
+        "//conditions:default": "other",
+    }),
+)
+
+config_setting(
+    name = "metadata_constrained",
+    constraint_values = ["@meta//cv:v"],
+)
+
+my_bin(
+    name = "from_metadata_constraint",
+    data = ["@ext//:e.txt"],
+    flag = select({
+        ":metadata_constrained": "d",
+        "//conditions:default": "other",
+    }),
+)

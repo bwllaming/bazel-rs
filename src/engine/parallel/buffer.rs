@@ -1817,6 +1817,10 @@ fn requirements(
             ));
         }
     }
+    // The configured targets whose planned repositories its transitive
+    // repositories read through its `select()` keys (B90): no dependency
+    // edges, but planned before it (phase 1 analyzes the keys first).
+    engine.push_config_condition_requirements(rule, key.config, &mut keys);
     Some(keys)
 }
 

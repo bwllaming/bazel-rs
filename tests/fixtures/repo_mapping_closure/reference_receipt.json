@@ -1,11 +1,11 @@
 {
  "schema": "repo-mapping-closure-reference-receipt/v1",
- "purpose": "B6 and B62 (docs/OSS_CORPUS.md): the transitive packages of a repo mapping manifest include those of an output file's generating rule (its exec tool), of select() keys, of a select() key's config_setting's constraint_values and their constraint_setting, and of an attribute aspect's own dependencies and toolchains (B62's aspect part; also through a target over the aspect-applied one). Genuine Bazel 9.3.1 capture; tests/runfiles_trees.rs repo_mapping_manifests_include_generating_rules_and_select_keys asserts these bytes.",
+ "purpose": "B6 and B62 (docs/OSS_CORPUS.md): the transitive packages of a repo mapping manifest include those of an output file's generating rule (its exec tool), of select() keys, of a select() key's config_setting's constraint_values and their constraint_setting, and of an attribute aspect's own dependencies and toolchains (B62's aspect part; also through a target over the aspect-applied one), and of a select() key's own package metadata (B90: an alias with a configurable actual, an alias, a config_setting; not a config_setting's constraint_value's). Genuine Bazel 9.3.1 capture; tests/runfiles_trees.rs repo_mapping_manifests_include_generating_rules_and_select_keys asserts these bytes.",
  "reference": {
   "binary": "bazel-9.3.1-linux-x86_64",
   "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
   "startup": "--batch --ignore_all_rc_files --output_user_root=<private>",
-  "command": "build --lockfile_mode=off --platforms=//:p --host_platform=//:p //:from_output //:from_select //:plain //:from_constraint //:from_aspect //:over_aspect",
+  "command": "build --lockfile_mode=off --platforms=//:p --host_platform=//:p //:from_output //:from_select //:plain //:from_constraint //:from_aspect //:over_aspect //:from_metadata_sel //:from_metadata_plain //:from_metadata_setting //:from_metadata_constraint",
   "workspace": "tests/fixtures/repo_mapping_closure/workspace"
  },
  "repo_mapping": {
@@ -14,6 +14,10 @@
   "bazel-bin/plain.repo_mapping": ",ext,ext+\n,rmc,_main\next+,ext,ext+\n",
   "bazel-bin/from_constraint.repo_mapping": ",ext,ext+\n,rmc,_main\nconstr+,ext,ext+\next+,ext,ext+\nsetting+,ext,ext+\n",
   "bazel-bin/from_aspect.repo_mapping": ",ext,ext+\n,rmc,_main\nasptc+,ext,ext+\nasptool+,ext,ext+\next+,ext,ext+\n",
-  "bazel-bin/over_aspect.repo_mapping": ",ext,ext+\n,rmc,_main\nasptc+,ext,ext+\nasptool+,ext,ext+\next+,ext,ext+\n"
+  "bazel-bin/over_aspect.repo_mapping": ",ext,ext+\n,rmc,_main\nasptc+,ext,ext+\nasptool+,ext,ext+\next+,ext,ext+\n",
+  "bazel-bin/from_metadata_sel.repo_mapping": ",ext,ext+\n,rmc,_main\next+,ext,ext+\nmda+,ext,ext+\nmeta+,ext,ext+\n",
+  "bazel-bin/from_metadata_plain.repo_mapping": ",ext,ext+\n,rmc,_main\next+,ext,ext+\nmdb+,ext,ext+\nmeta+,ext,ext+\n",
+  "bazel-bin/from_metadata_setting.repo_mapping": ",ext,ext+\n,rmc,_main\next+,ext,ext+\nmdc+,ext,ext+\nmeta+,ext,ext+\n",
+  "bazel-bin/from_metadata_constraint.repo_mapping": ",ext,ext+\n,rmc,_main\next+,ext,ext+\nmeta+,ext,ext+\n"
  }
 }
